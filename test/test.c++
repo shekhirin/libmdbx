@@ -20,6 +20,8 @@ const char *testcase2str(const actor_testcase testcase) {
     return "jitter";
   case ac_try:
     return "try";
+  case ac_clone:
+    return "clone";
   case ac_copy:
     return "copy";
   case ac_append:

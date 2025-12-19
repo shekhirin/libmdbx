@@ -85,6 +85,7 @@ void testcase_setup(const char *casename, const actor_params &params, unsigned &
     configure_actor(last_space_id, ac_append, nullptr, params);
     configure_actor(last_space_id, ac_jitter, nullptr, params);
     configure_actor(last_space_id, ac_try, nullptr, params);
+    configure_actor(last_space_id, ac_clone, nullptr, params);
     configure_actor(last_space_id, ac_jitter, nullptr, params);
     configure_actor(last_space_id, ac_try, nullptr, params);
 #if !defined(_WIN32) && !defined(_WIN64)

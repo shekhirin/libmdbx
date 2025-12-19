@@ -36,7 +36,7 @@ MDBX_NORETURN void usage(void) {
        "Predefined complex scenarios/cases:\n"
        "  --case=...   Only `basic` scenario implemented for now\n"
        "    basic == Simultaneous multi-process execution\n"
-       "             of test-actors: nested,hill,ttl,copy,append,jitter,try\n"
+       "             of test-actors: nested,hill,ttl,copy,append,jitter,try,clone\n"
        "Test actors:\n"
        "  --hill                        Fill-up and empty-down\n"
        "                                by CRUD-operation quads\n"
@@ -45,6 +45,7 @@ MDBX_NORETURN void usage(void) {
        "                                with stochastic-size bellows\n"
        "  --jitter                      Jitter/delays simulation\n"
        "  --try                         Try write-transaction, no more\n"
+       "  --clone                       Clone read-only transaction snapshot\n"
        "  --copy                        Online copy/backup\n"
        "  --append                      Append-mode insertions\n"
        "  --dead.reader                 Dead-reader simulator\n"
@@ -520,6 +521,11 @@ int main(int argc, char *const argv[]) {
     if (config::parse_option(argc, argv, narg, "try", nullptr)) {
       fixup4qemu(params);
       configure_actor(last_space_id, ac_try, value, params);
+      continue;
+    }
+    if (config::parse_option(argc, argv, narg, "clone", nullptr)) {
+      fixup4qemu(params);
+      configure_actor(last_space_id, ac_clone, value, params);
       continue;
     }
     if (config::parse_option(argc, argv, narg, "copy", nullptr)) {

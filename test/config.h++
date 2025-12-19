@@ -20,6 +20,7 @@ enum actor_testcase {
 #endif /* Windows */
   ac_jitter,
   ac_try,
+  ac_clone,
   ac_copy,
   ac_append,
   ac_ttl,

@@ -139,12 +139,13 @@ set(LIBMDBX_TEST_SOURCES
     osal.h++
     osal-unix.c++
     osal-windows.c++
-    test.c++
-    test.h++
-    try.c++
-    utils.c++
-    utils.h++
-    append.c++
+	    test.c++
+	    test.h++
+	    try.c++
+	    clone.c++
+	    utils.c++
+	    utils.h++
+	    append.c++
     ttl.c++
     nested.c++
     fork.c++)

@@ -276,6 +276,96 @@ int mdbx_txn_begin_ex(MDBX_env *env, MDBX_txn *parent, MDBX_txn_flags_t flags, M
   return MDBX_SUCCESS;
 }
 
+static __always_inline int txn_clone_source_check(const MDBX_txn *source) {
+  if (unlikely(!source))
+    return MDBX_EINVAL;
+  if (unlikely(source->signature != txn_signature))
+    return MDBX_EBADSIGN;
+  if (unlikely((source->flags & MDBX_TXN_RDONLY) == 0))
+    return MDBX_EINVAL;
+  if (unlikely(source->flags & (MDBX_TXN_FINISHED | MDBX_TXN_ERROR | MDBX_TXN_HAS_CHILD | MDBX_TXN_PARKED)))
+    return MDBX_BAD_TXN;
+  if (unlikely(source->parent || source->nested))
+    return MDBX_BAD_TXN;
+  if (unlikely(source->txnid < MIN_TXNID || source->txnid > MAX_TXNID))
+    return MDBX_BAD_TXN;
+  return MDBX_SUCCESS;
+}
+
+int mdbx_txn_clone(const MDBX_txn *source, MDBX_txn **dest) {
+  if (unlikely(!dest))
+    return LOG_IFERR(MDBX_EINVAL);
+
+  int rc = txn_clone_source_check(source);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+
+  MDBX_env *const env = source->env;
+  rc = check_env(env, true);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+
+  const txnid_t snap_oldest = atomic_load64(&env->lck->cached_oldest, mo_AcquireRelease);
+  if (unlikely(source->txnid < snap_oldest))
+    return LOG_IFERR(MDBX_MVCC_RETARDED);
+
+  const uint32_t snapshot_pages_used = source->ro.slot ? atomic_load32(&source->ro.slot->snapshot_pages_used, mo_Relaxed)
+                                                       : (uint32_t)source->geo.first_unallocated;
+  const uint64_t snapshot_pages_retired =
+      source->ro.slot ? atomic_load64(&source->ro.slot->snapshot_pages_retired, mo_Relaxed) : 0;
+
+  MDBX_txn *txn = *dest;
+  const bool reuse = txn != nullptr;
+  if (reuse) {
+    rc = check_txn(txn, 0);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return LOG_IFERR(rc);
+    if (unlikely(txn->env != env))
+      return LOG_IFERR(MDBX_BAD_TXN);
+    if (unlikely((txn->flags & MDBX_TXN_RDONLY) == 0))
+      return LOG_IFERR(MDBX_EINVAL);
+  } else {
+    txn = txn_alloc(MDBX_TXN_RDONLY, env);
+    if (unlikely(!txn))
+      return LOG_IFERR(MDBX_ENOMEM);
+  }
+
+  if (reuse && unlikely(txn->owner != 0 || (txn->flags & MDBX_TXN_FINISHED) == 0)) {
+    rc = mdbx_txn_reset(txn);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return LOG_IFERR(rc);
+  }
+
+  rc = txn_renew(txn, MDBX_TXN_RDONLY);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    if (!reuse)
+      osal_free(txn);
+    return LOG_IFERR(rc);
+  }
+
+  txn->signature = txn_signature;
+  txn->userctx = source->userctx;
+
+  txn->txnid = source->txnid;
+  txn->front_txnid = source->txnid;
+  txn->geo = source->geo;
+  memcpy(txn->dbs, source->dbs, CORE_DBS * sizeof(txn->dbs[0]));
+  txn->canary = source->canary;
+
+  if (likely(txn->ro.slot)) {
+    reader_slot_t *const r = txn->ro.slot;
+    safe64_reset(&r->txnid, true);
+    atomic_store32(&r->snapshot_pages_used, snapshot_pages_used, mo_Relaxed);
+    atomic_store64(&r->snapshot_pages_retired, snapshot_pages_retired, mo_Relaxed);
+    safe64_write(&r->txnid, txn->txnid);
+    atomic_store32(&env->lck->rdt_refresh_flag, true, mo_AcquireRelease);
+  }
+
+  if (!reuse)
+    *dest = txn;
+  return MDBX_SUCCESS;
+}
+
 static void latency_gcprof(MDBX_commit_latency *latency, const MDBX_txn *txn) {
   MDBX_env *const env = txn->env;
   if (latency && likely(env->lck) && MDBX_ENABLE_PROFGC) {

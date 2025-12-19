@@ -3957,6 +3957,48 @@ LIBMDBX_INLINE_API(int, mdbx_txn_begin, (MDBX_env * env, MDBX_txn *parent, MDBX_
   return mdbx_txn_begin_ex(env, parent, flags, txn, NULL);
 }
 
+/** \brief Clone a read-only transaction.
+ * \ingroup c_transactions
+ *
+ * Creates a read-only transaction (or renews a previously reset one) which uses
+ * the same MVCC-snapshot as the \p source transaction. Thus both transactions
+ * will see exactly the same database state, regardless of any write
+ * transactions committed meanwhile.
+ *
+ * \note The \p source transaction must be a read-only top-level transaction,
+ *       i.e. started with `parent = NULL`.
+ * \warning The \p source transaction object must NOT be used concurrently from
+ *          different threads, including for cloning. NEVER!
+ *
+ * \param [in] source   An active read-only transaction handle returned by
+ *                      \ref mdbx_txn_begin_ex() or \ref mdbx_txn_begin().
+ * \param [in,out] dest Address where the cloned \ref MDBX_txn handle will be
+ *                      stored.
+ *                      - If `*dest` is NULL, a new transaction handle will be
+ *                        allocated.
+ *                      - Otherwise the `*dest` handle will be reset (if
+ *                        needed) and reused.
+ *
+ * \returns A non-zero error value on failure and 0 on success,
+ *          some possible errors are:
+ * \retval MDBX_PANIC            A fatal error occurred earlier and the
+ *                               environment must be shut down.
+ * \retval MDBX_BAD_TXN          \p source is finished, parked or otherwise
+ *                               unusable; or `*dest` refers to an incompatible
+ *                               transaction handle.
+ * \retval MDBX_MVCC_RETARDED    MVCC-snapshot used by \p source transaction is
+ *                               bygone.
+ * \retval MDBX_EBADSIGN         A transaction object has invalid signature,
+ *                               e.g. transaction was already terminated or
+ *                               memory was corrupted.
+ * \retval MDBX_THREAD_MISMATCH  Given `*dest` transaction is not owned by
+ *                               current thread.
+ * \retval MDBX_READERS_FULL     The reader lock table is full.
+ *                               See \ref mdbx_env_set_maxreaders().
+ * \retval MDBX_ENOMEM           Out of memory.
+ * \retval MDBX_EINVAL           An invalid parameter was specified. */
+LIBMDBX_API int mdbx_txn_clone(const MDBX_txn *source, MDBX_txn **dest);
+
 /** \brief Sets application information associated (a context pointer) with the
  * transaction.
  * \ingroup c_transactions
