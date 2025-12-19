@@ -3738,6 +3738,16 @@ public:
   /// \brief Start nested write transaction.
   txn_managed start_nested();
 
+  /// \brief Clone a read-only transaction.
+  ///
+  /// Creates a new read-only transaction that views the same MVCC snapshot
+  /// as this transaction. The cloned transaction has its own reader slot
+  /// and is completely independent from this transaction.
+  ///
+  /// \note Only read-only transactions can be cloned.
+  /// \returns A managed clone of this transaction.
+  txn_managed clone_reader() const;
+
   /// \brief Opens cursor for specified key-value map handle.
   inline cursor_managed open_cursor(map_handle map) const;
 

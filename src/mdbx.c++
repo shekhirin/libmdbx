@@ -1464,6 +1464,14 @@ txn_managed txn::start_nested() {
   return txn_managed(nested);
 }
 
+txn_managed txn::clone_reader() const {
+  MDBX_txn *cloned;
+  error::throw_on_nullptr(handle_, MDBX_BAD_TXN);
+  error::success_or_throw(::mdbx_txn_clone(handle_, &cloned));
+  assert(cloned != nullptr);
+  return txn_managed(cloned);
+}
+
 txn_managed::~txn_managed() noexcept {
   if (MDBX_UNLIKELY(handle_))
     MDBX_CXX20_UNLIKELY error::success_or_panic(::mdbx_txn_abort(handle_), "mdbx::~txn", "mdbx_txn_abort");

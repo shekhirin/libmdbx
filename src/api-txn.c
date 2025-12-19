@@ -537,3 +537,87 @@ int mdbx_txn_info(const MDBX_txn *txn, MDBX_txn_info *info, bool scan_rlt) {
 
   return MDBX_SUCCESS;
 }
+
+int mdbx_txn_clone(const MDBX_txn *src, MDBX_txn **dest) {
+  if (unlikely(!dest))
+    return LOG_IFERR(MDBX_EINVAL);
+  *dest = nullptr;
+
+  int rc = check_txn(src, MDBX_TXN_BLOCKED - MDBX_TXN_PARKED);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+
+  if (unlikely((src->flags & MDBX_TXN_RDONLY) == 0))
+    return LOG_IFERR(MDBX_EINVAL);
+
+  MDBX_env *const env = src->env;
+  rc = check_env(env, true);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+
+  if (unlikely(!env->lck_mmap.lck))
+    return LOG_IFERR(MDBX_EPERM);
+
+  if (unlikely(!src->ro.slot))
+    return LOG_IFERR(MDBX_BAD_TXN);
+
+  MDBX_txn *txn = txn_alloc(MDBX_TXN_RDONLY, env);
+  if (unlikely(!txn))
+    return LOG_IFERR(MDBX_ENOMEM);
+
+  bsr_t brs = mvcc_bind_slot(env);
+  if (unlikely(brs.err != MDBX_SUCCESS)) {
+    osal_free(txn);
+    return LOG_IFERR(brs.err);
+  }
+
+  txn->ro.slot = brs.slot;
+  txn->owner = (env->flags & MDBX_NOSTICKYTHREADS) ? 0 : osal_thread_self();
+
+  txn->txnid = src->txnid;
+  txn->front_txnid = src->front_txnid;
+  txn->geo = src->geo;
+  txn->canary = src->canary;
+  txn->parent = nullptr;
+  txn->nested = nullptr;
+
+  const size_t n_dbi = src->n_dbi;
+  txn->n_dbi = n_dbi;
+  memcpy(txn->dbs, src->dbs, n_dbi * sizeof(txn->dbs[0]));
+  memcpy(txn->dbi_state, src->dbi_state, n_dbi * sizeof(txn->dbi_state[0]));
+  memcpy(txn->dbi_seqs, src->dbi_seqs, n_dbi * sizeof(txn->dbi_seqs[0]));
+#if MDBX_ENABLE_DBI_SPARSE
+  const intptr_t bitmap_bytes = ceil_powerof2(env->max_dbi, CHAR_BIT * sizeof(txn->dbi_sparse[0])) / CHAR_BIT;
+  memcpy(txn->dbi_sparse, src->dbi_sparse, bitmap_bytes);
+#endif
+
+  memset(txn->cursors, 0, n_dbi * sizeof(txn->cursors[0]));
+  txn->userctx = src->userctx;
+
+  reader_slot_t *const r = txn->ro.slot;
+  const reader_slot_t *const rs = src->ro.slot;
+  const uint32_t snap_pages_used = atomic_load32(&rs->snapshot_pages_used, mo_Relaxed);
+  const uint64_t snap_pages_retired = atomic_load64(&rs->snapshot_pages_retired, mo_Relaxed);
+  atomic_store32(&r->snapshot_pages_used, snap_pages_used, mo_Relaxed);
+  atomic_store64(&r->snapshot_pages_retired, snap_pages_retired, mo_Relaxed);
+  safe64_write(&r->txnid, src->txnid);
+  atomic_store32(&env->lck->rdt_refresh_flag, true, mo_AcquireRelease);
+
+  txn->flags = MDBX_TXN_RDONLY | (env->flags & MDBX_NOSTICKYTHREADS);
+#if defined(_WIN32) || defined(_WIN64)
+  const size_t used_bytes = pgno2bytes(env, txn->geo.first_unallocated);
+  if (((used_bytes > env->geo_in_bytes.lower && env->geo_in_bytes.shrink) ||
+       (globals.running_under_Wine && used_bytes < env->geo_in_bytes.upper && env->geo_in_bytes.grow)) &&
+      (txn->flags & MDBX_NOSTICKYTHREADS) == 0) {
+    txn->flags |= txn_shrink_allowed;
+    imports.srwl_AcquireShared(&env->remap_guard);
+  }
+#endif
+
+  dxb_sanitize_tail(env, txn);
+  txn->signature = txn_signature;
+  *dest = txn;
+
+  DEBUG("clone txn %" PRIaTXN " from %p to %p on env %p", txn->txnid, (const void *)src, (void *)txn, (void *)env);
+  return MDBX_SUCCESS;
+}
