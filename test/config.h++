@@ -23,7 +23,8 @@ enum actor_testcase {
   ac_copy,
   ac_append,
   ac_ttl,
-  ac_nested
+  ac_nested,
+  ac_clone
 };
 
 enum actor_status {

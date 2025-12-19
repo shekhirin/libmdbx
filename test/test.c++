@@ -28,6 +28,8 @@ const char *testcase2str(const actor_testcase testcase) {
     return "ttl";
   case ac_nested:
     return "nested";
+  case ac_clone:
+    return "clone";
 #if !defined(_WIN32) && !defined(_WIN64)
   case ac_forkread:
     return "fork.reader";

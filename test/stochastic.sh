@@ -69,7 +69,7 @@ do
     LIST=basic
   ;;
   --single)
-    LIST="--nested --hill --append --ttl --copy"
+    LIST="--nested --hill --append --ttl --copy --clone"
   ;;
   --nested)
     LIST="--nested"
@@ -82,6 +82,9 @@ do
   ;;
   --ttl)
     LIST="--ttl"
+  ;;
+  --clone)
+    LIST="--clone"
   ;;
   --with-valgrind)
     echo " NOTE: Valgrind could produce some false-positive warnings"

@@ -47,6 +47,7 @@ MDBX_NORETURN void usage(void) {
        "  --try                         Try write-transaction, no more\n"
        "  --copy                        Online copy/backup\n"
        "  --append                      Append-mode insertions\n"
+       "  --clone                       Transaction cloning\n"
        "  --dead.reader                 Dead-reader simulator\n"
        "  --dead.writer                 Dead-writer simulator\n"
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -540,6 +541,11 @@ int main(int argc, char *const argv[]) {
     if (config::parse_option(argc, argv, narg, "nested", nullptr)) {
       fixup4qemu(params);
       configure_actor(last_space_id, ac_nested, value, params);
+      continue;
+    }
+    if (config::parse_option(argc, argv, narg, "clone", nullptr)) {
+      fixup4qemu(params);
+      configure_actor(last_space_id, ac_clone, value, params);
       continue;
     }
 #if !defined(_WIN32) && !defined(_WIN64)

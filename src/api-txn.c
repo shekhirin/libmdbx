@@ -189,15 +189,15 @@ int mdbx_txn_clone(const MDBX_txn *source, MDBX_txn **dest) {
   if (unlikely(!dest))
     return LOG_IFERR(MDBX_EINVAL);
 
-  int rc = check_txn(source, MDBX_TXN_BLOCKED - MDBX_TXN_PARKED);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return LOG_IFERR(rc);
-
-  if (unlikely((source->flags & MDBX_TXN_RDONLY) == 0))
+  if (unlikely(!source))
     return LOG_IFERR(MDBX_EINVAL);
+  if (unlikely(source->signature != txn_signature))
+    return LOG_IFERR(MDBX_EBADSIGN);
+  if (unlikely((source->flags & (MDBX_TXN_RDONLY | MDBX_TXN_FINISHED)) != MDBX_TXN_RDONLY))
+    return LOG_IFERR(MDBX_BAD_TXN);
 
   MDBX_env *const env = source->env;
-  rc = check_env(env, true);
+  int rc = check_env(env, true);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
 
