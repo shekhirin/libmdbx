@@ -1378,6 +1378,10 @@ static inline size_t dxb_storage_pgno_ceil2os_bytes(const dxb_storage_t *storage
   return ceil_powerof2((size_t)dxb_storage_pgno2bytes(storage, pgno), dxb_storage_os_alignment_unit());
 }
 
+static inline pgno_t dxb_storage_pgno_ceil2os_pgno(const dxb_storage_t *storage, size_t pgno) {
+  return (pgno_t)dxb_storage_bytes2pgno(storage, dxb_storage_pgno_ceil2os_bytes(storage, pgno));
+}
+
 static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, uint64_t offset, size_t bytes) {
   const uint64_t current = dxb_storage_current_size(storage);
   return offset <= current && bytes <= current - offset;
@@ -22266,6 +22270,7 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
   eASSERT0(env, (flags & MDBX_WRITEMAP) == 0);
   eASSERT0(env, pending->trees.gc.flags == MDBX_INTEGERKEY);
   eASSERT0(env, check_table_flags(pending->trees.main.flags));
+  dxb_storage_t *const storage = &env->dxb_storage;
   int rc;
 
   if (unlikely(!env->meta_shadow)) {
@@ -22308,16 +22313,17 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
       eASSERT0(env, largest_pgno >= NUM_METAS);
 
 #if defined(POSIX_FADV_DONTNEED)
-      const size_t discard_edge_pgno = pgno_ceil2os_pgno(env, largest_pgno);
+      const pgno_t discard_edge_pgno = dxb_storage_pgno_ceil2os_pgno(storage, largest_pgno);
       if (prev_discarded_pgno >= discard_edge_pgno + env->madv_threshold) {
-        const size_t prev_discarded_bytes = pgno_ceil2os_bytes(env, prev_discarded_pgno);
-        const size_t discard_edge_bytes = pgno2bytes(env, discard_edge_pgno);
+        const size_t prev_discarded_bytes = dxb_storage_pgno_ceil2os_bytes(storage, prev_discarded_pgno);
+        const size_t discard_edge_bytes = (size_t)dxb_storage_pgno2bytes(storage, discard_edge_pgno);
         /* из-за выравнивания prev_discarded_bytes и discard_edge_bytes
          * могут быть равны */
         if (prev_discarded_bytes > discard_edge_bytes) {
-          NOTICE("shrink-FADV_%s %zu..%zu", "DONTNEED", discard_edge_pgno, prev_discarded_pgno);
-          int err = dxb_storage_discard_range(&env->dxb_storage, discard_edge_bytes,
-                                              prev_discarded_bytes - discard_edge_bytes, dxb_discard_clean);
+          NOTICE("shrink-FADV_%s %zu..%zu", "DONTNEED", (size_t)discard_edge_pgno, prev_discarded_pgno);
+          int err =
+              dxb_storage_discard_range(storage, discard_edge_bytes, prev_discarded_bytes - discard_edge_bytes,
+                                        dxb_discard_clean);
           if (unlikely(MDBX_IS_ERROR(err))) {
             ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "shrink", "DONTNEED", discard_edge_bytes,
                   prev_discarded_bytes - discard_edge_bytes, err);
@@ -22339,7 +22345,8 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
               pending->geometry.grow_pv ? /* grow_step */ pv2pages(pending->geometry.grow_pv) : shrink_step;
           const pgno_t with_stockpile_gap = largest_pgno + stockpile_gap;
           const pgno_t aligned =
-              pgno_ceil2os_pgno(env, (size_t)with_stockpile_gap + aligner - with_stockpile_gap % aligner);
+              dxb_storage_pgno_ceil2os_pgno(storage, (size_t)with_stockpile_gap + aligner -
+                                                         with_stockpile_gap % aligner);
           const pgno_t bottom = (aligned > pending->geometry.lower) ? aligned : pending->geometry.lower;
           if (pending->geometry.now > bottom) {
             if (TROIKA_HAVE_STEADY(troika))
@@ -22387,7 +22394,7 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
     const dxb_sync_range_t sync_range = dxb_sync_range_all(pending->geometry.first_unallocated);
     eASSERT0(env, sync_range.begin <= sync_range.end);
     dxb_note_fsync_pgop(env, mode_bits);
-    rc = dxb_storage_sync_range(&env->dxb_storage, sync_range, mode_bits);
+    rc = dxb_storage_sync_range(storage, sync_range, mode_bits);
     if (unlikely(rc != MDBX_SUCCESS))
       goto fail;
     rc = (flags & MDBX_SAFE_NOSYNC) ? MDBX_RESULT_TRUE /* carry non-steady */
@@ -22468,24 +22475,24 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
   const meta_t undo_meta = *target;
   eASSERT0(env, pending->trees.gc.flags == MDBX_INTEGERKEY);
   eASSERT0(env, check_table_flags(pending->trees.main.flags));
-  rc = dxb_storage_write_bytes(&env->dxb_storage, dxb_io_meta, pending, sizeof(meta_t),
+  rc = dxb_storage_write_bytes(storage, dxb_io_meta, pending, sizeof(meta_t),
                                meta_payload_dxb_offset(env, target_number));
   if (unlikely(rc != MDBX_SUCCESS)) {
   undo:
     DEBUG("%s", "write failed, disk error?");
     /* On a failure, the pagecache still contains the new data.
      * Try write some old data back, to prevent it from being used. */
-    dxb_storage_write_bytes(&env->dxb_storage, dxb_io_meta, &undo_meta, sizeof(meta_t),
+    dxb_storage_write_bytes(storage, dxb_io_meta, &undo_meta, sizeof(meta_t),
                             meta_payload_dxb_offset(env, target_number));
     goto fail;
   }
   /* sync meta-pages */
-  if (dxb_storage_meta_write_needs_sync(&env->dxb_storage, env->incore)) {
+  if (dxb_storage_meta_write_needs_sync(storage, env->incore)) {
     if (flags & MDBX_NOMETASYNC)
       env->lck->unsynced_pages.weak += 1;
     else {
       dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
-      rc = dxb_storage_sync(&env->dxb_storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+      rc = dxb_storage_sync(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
       if (rc != MDBX_SUCCESS)
         goto undo;
     }
@@ -40145,6 +40152,7 @@ static bool basal_check_overlapped(lck_t *const lck, const mdbx_pid_t pid, const
 
 static int basal_start_locked(MDBX_txn *txn, unsigned flags) {
   MDBX_env *const env = txn->env;
+  const dxb_storage_t *const storage = &env->dxb_storage;
   if (unlikely(env->flags & ENV_FATAL_ERROR))
     return MDBX_PANIC;
 
@@ -40196,8 +40204,8 @@ static int basal_start_locked(MDBX_txn *txn, unsigned flags) {
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  eASSERT0(env, dxb_storage_current_covers(&env->dxb_storage, pgno2bytes(env, txn->geo.first_unallocated)));
-  eASSERT0(env, dxb_storage_current_within_limit(&env->dxb_storage));
+  eASSERT0(env, dxb_storage_current_covers(storage, dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated)));
+  eASSERT0(env, dxb_storage_current_within_limit(storage));
 
   if (env->options.need_dp_limit_adjust)
     env_options_adjust_dp_limit(env);
@@ -41446,6 +41454,7 @@ static int ro_start_continue(MDBX_txn *txn) {
 
 int txn_ro_start(MDBX_txn *txn, bool prepare_only) {
   MDBX_env *const env = txn->env;
+  const dxb_storage_t *const storage = &env->dxb_storage;
   txn->flags = txn_ro_flat | MDBX_TXN_FINISHED | (env->flags & MDBX_NOSTICKYTHREADS);
   int err = ro_slot_get(txn);
   if (unlikely(err != MDBX_SUCCESS))
@@ -41472,10 +41481,10 @@ int txn_ro_start(MDBX_txn *txn, bool prepare_only) {
     return err;
   }
 
-  eASSERT0(env, dxb_storage_current_covers(&env->dxb_storage, pgno2bytes(env, txn->geo.first_unallocated)));
-  eASSERT0(env, dxb_storage_current_within_limit(&env->dxb_storage));
+  eASSERT0(env, dxb_storage_current_covers(storage, dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated)));
+  eASSERT0(env, dxb_storage_current_within_limit(storage));
 #if defined(_WIN32) || defined(_WIN64)
-  const size_t used_bytes = pgno2bytes(env, txn->geo.first_unallocated);
+  const size_t used_bytes = (size_t)dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated);
   if (((used_bytes > env->geo_in_bytes.lower && env->geo_in_bytes.shrink) ||
        (globals.running_under_Wine &&
         /* under Wine acquisition of remap_lock is always required,
@@ -41913,6 +41922,7 @@ __cold static slr_t latch_maindb_locked(MDBX_txn *txn, MDBX_env *const env) {
 
 int txn_setup_primal(MDBX_txn *txn) {
   MDBX_env *const env = txn->env;
+  dxb_storage_t *const storage = &env->dxb_storage;
 
   if (unlikely(txn->txnid < MIN_TXNID || txn->txnid > MAX_TXNID)) {
     ERROR("%s", "environment corrupted by died writer, must shutdown!");
@@ -41966,21 +41976,22 @@ int txn_setup_primal(MDBX_txn *txn) {
     return MDBX_PANIC;
   }
 
-  const size_t size_bytes = pgno2bytes(env, txn->geo.end_pgno);
-  const size_t used_bytes = pgno2bytes(env, txn->geo.first_unallocated);
+  const size_t size_bytes = (size_t)dxb_storage_pgno2bytes(storage, txn->geo.end_pgno);
+  const size_t used_bytes = (size_t)dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated);
   const size_t required_bytes = (txn->flags & txn_ro_flat) ? used_bytes : size_bytes;
-  eASSERT0(env, dxb_storage_current_within_limit(&env->dxb_storage));
+  eASSERT0(env, dxb_storage_current_within_limit(storage));
   int err = MDBX_SUCCESS;
-  const size_t current_size = dxb_storage_current_size(&env->dxb_storage);
+  const size_t current_size = dxb_storage_current_size(storage);
   if (unlikely(required_bytes > current_size)) {
     /* Размер БД (для пишущих транзакций) или используемых данных (для
      * читающих транзакций) больше предыдущего/текущего размера внутри
      * процесса, увеличиваем. Сюда также попадает случай увеличения верхней
      * границы размера БД. */
-    if (txn->geo.upper > MAX_PAGENO + 1 || bytes2pgno(env, pgno2bytes(env, txn->geo.upper)) != txn->geo.upper)
+    if (txn->geo.upper > MAX_PAGENO + 1 ||
+        dxb_storage_bytes2pgno(storage, dxb_storage_pgno2bytes(storage, txn->geo.upper)) != txn->geo.upper)
       return MDBX_UNABLE_EXTEND_MAPSIZE;
     err = dxb_resize(env, txn->geo.first_unallocated, txn->geo.end_pgno, txn->geo.upper, implicit_grow);
-    eASSERT0(env, err != MDBX_SUCCESS || dxb_storage_current_within_limit(&env->dxb_storage));
+    eASSERT0(env, err != MDBX_SUCCESS || dxb_storage_current_within_limit(storage));
     return err;
   }
 
@@ -42017,12 +42028,12 @@ int txn_setup_primal(MDBX_txn *txn) {
       return err;
     }
 #endif
-    eASSERT0(env, dxb_storage_current_within_limit(&env->dxb_storage));
-    err = dxb_storage_fetch_filesize(&env->dxb_storage);
+    eASSERT0(env, dxb_storage_current_within_limit(storage));
+    err = dxb_storage_fetch_filesize(storage);
     if (likely(err == MDBX_SUCCESS)) {
-      eASSERT0(env, dxb_storage_filesize_covers(&env->dxb_storage, required_bytes));
-      if (dxb_storage_current_size(&env->dxb_storage) > dxb_storage_filesize(&env->dxb_storage))
-        dxb_storage_set_limit_from_filesize(&env->dxb_storage, dxb_storage_limit_size(&env->dxb_storage));
+      eASSERT0(env, dxb_storage_filesize_covers(storage, required_bytes));
+      if (dxb_storage_current_size(storage) > dxb_storage_filesize(storage))
+        dxb_storage_set_limit_from_filesize(storage, dxb_storage_limit_size(storage));
     }
 #if defined(_WIN32) || defined(_WIN64)
     imports.srwl_ReleaseShared(&env->remap_lock);

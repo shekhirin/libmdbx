@@ -3265,6 +3265,22 @@ six focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.122`
 batch, `1.142` crud, `1.245` iterate, `0.951` get, and `1.078` delete.
 
+A later sync and transaction setup geometry cleanup moved shrink discard
+alignment, meta sync/write calls, and transaction current-size checks onto
+storage-owned geometry. `dxb_sync_locked()` now derives discard ranges and
+shrink alignment from `dxb_storage_t`, while basal and read transaction setup
+validate storage coverage with storage page conversions instead of env-local
+byte math. Verification passed stale sync/txn storage conversion scans, stale
+data-file mmap and removed sync-adapter scans across the shipped core sources,
+`git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.129` batch, `1.161` crud, `1.110` iterate, `0.945`
+get, and `1.085` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
