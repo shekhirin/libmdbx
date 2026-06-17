@@ -4764,8 +4764,8 @@ static size_t estimate_rss(size_t database_bytes) {
   return database_bytes + database_bytes / 64 + (512 + MDBX_WORDBITS * 16) * MEGABYTE;
 }
 
-static int warmup_force_read(const MDBX_env *env, size_t used_range, uint64_t timeout_monotime) {
-  const size_t current_size = dxb_storage_current_size(&env->dxb_storage);
+static int warmup_force_read(const dxb_storage_t *storage, size_t used_range, uint64_t timeout_monotime) {
+  const size_t current_size = dxb_storage_current_size(storage);
   if (used_range > current_size)
     used_range = current_size;
   if (used_range == 0)
@@ -4783,7 +4783,7 @@ static int warmup_force_read(const MDBX_env *env, size_t used_range, uint64_t ti
 
   for (size_t offset = 0; offset < used_range;) {
     const size_t bytes = (used_range - offset < chunk) ? used_range - offset : chunk;
-    rc = dxb_storage_read(&env->dxb_storage, buffer, bytes, offset);
+    rc = dxb_storage_read(storage, buffer, bytes, offset);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     offset += bytes;
@@ -4819,6 +4819,7 @@ __cold int mdbx_env_warmup(const MDBX_env *env, const MDBX_txn *txn, MDBX_warmup
   } else {
     env = txn->env;
   }
+  const dxb_storage_t *const storage = &env->dxb_storage;
 
   const uint64_t timeout_monotime = (timeout_seconds_16dot16 && (flags & MDBX_warmup_force))
                                         ? osal_monotime() + osal_16dot16_to_monotime(timeout_seconds_16dot16)
@@ -4834,7 +4835,7 @@ __cold int mdbx_env_warmup(const MDBX_env *env, const MDBX_txn *txn, MDBX_warmup
       return LOG_IFERR(err);
     used_pgno = meta_recent_shadow(env, &troika).ptr_v->geometry.first_unallocated;
   }
-  const size_t used_range = dxb_storage_pgno_ceil2os_bytes(&env->dxb_storage, used_pgno);
+  const size_t used_range = dxb_storage_pgno_ceil2os_bytes(storage, used_pgno);
 
   int rc = MDBX_SUCCESS;
   if (flags & MDBX_warmup_touchlimit) {
@@ -4873,7 +4874,7 @@ __cold int mdbx_env_warmup(const MDBX_env *env, const MDBX_txn *txn, MDBX_warmup
     rc = err;
 
   if ((flags & MDBX_warmup_force) != 0 && (rc == MDBX_SUCCESS || rc == MDBX_ENOSYS))
-    rc = warmup_force_read(env, used_range, timeout_monotime);
+    rc = warmup_force_read(storage, used_range, timeout_monotime);
   if ((flags & MDBX_warmup_lock) != 0 && (rc == MDBX_SUCCESS || rc == MDBX_ENOSYS))
     rc = MDBX_ENOSYS;
 
@@ -4890,7 +4891,8 @@ __cold int mdbx_env_get_fd(const MDBX_env *env, mdbx_filehandle_t *arg) {
   if (unlikely(!arg))
     return LOG_IFERR(MDBX_EINVAL);
 
-  *arg = dxb_storage_data_fd(&env->dxb_storage);
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  *arg = dxb_storage_data_fd(storage);
   return MDBX_SUCCESS;
 }
 

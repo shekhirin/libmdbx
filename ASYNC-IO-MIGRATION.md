@@ -3450,6 +3450,21 @@ CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.169` batch, `1.214` crud, `0.857` iterate, `0.976`
 get, and `1.079` delete.
 
+A later warmup read cleanup routed forced warmup and fd lookup through bound
+storage handles. `warmup_force_read()` now accepts `dxb_storage_t` directly for
+current-size clamping and chunked data-file reads, `mdbx_env_warmup()` binds
+storage once for range sizing and forced-read dispatch, and `mdbx_env_get_fd()`
+uses a local storage handle before returning the data descriptor. Verification
+passed stale warmup storage-call scans, stale data-file mmap and removed
+sync-adapter scans across the shipped core sources, `git diff --check`, `make
+-f GNUmakefile mdbx_migration_smoke`, `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the
+six focused ASAN `migration_smoke` CTest entries. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.116`
+batch, `1.174` crud, `0.927` iterate, `1.012` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
