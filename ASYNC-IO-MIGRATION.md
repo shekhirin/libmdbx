@@ -4903,6 +4903,21 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.131` batch, `1.165` crud, `1.058` iterate,
 `0.935` get, and `1.087` delete.
 
+A later meta payload descriptor cleanup changed `dxb_storage_meta_io()` to
+derive metadata payload byte requests through `dxb_storage_page_field_io()`
+from `(meta slot, PAGEHDRSZ + payload_offset, bytes)`. The private meta
+payload/field offset helpers are gone; `dxb_storage_meta_page_offset()` remains
+for env-owned meta-shadow page addressing. Verification passed `git diff
+--check`, source scans proving the removed helpers are absent and the retained
+page-offset helper is limited to shadow-page layout, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.112` batch,
+`1.163` crud, `1.197` iterate, `0.926` get, and `1.082` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

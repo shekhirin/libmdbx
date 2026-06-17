@@ -1998,14 +1998,6 @@ static inline uint64_t dxb_storage_meta_page_offset(const dxb_storage_t *storage
   return dxb_storage_pgno2bytes(storage, number);
 }
 
-static inline uint64_t dxb_storage_meta_payload_offset(const dxb_storage_t *storage, unsigned number) {
-  return dxb_storage_meta_page_offset(storage, number) + PAGEHDRSZ;
-}
-
-static inline uint64_t dxb_storage_meta_field_offset(const dxb_storage_t *storage, unsigned number, size_t field_offset) {
-  return dxb_storage_meta_payload_offset(storage, number) + field_offset;
-}
-
 static inline int dxb_storage_meta_io(const dxb_storage_t *storage, unsigned number, size_t payload_offset,
                                       size_t bytes, dxb_meta_io_t *io) {
   if (unlikely(number >= NUM_METAS || payload_offset > sizeof(meta_t) || bytes > sizeof(meta_t) - payload_offset))
@@ -2014,10 +2006,7 @@ static inline int dxb_storage_meta_io(const dxb_storage_t *storage, unsigned num
   io->number = number;
   io->payload_offset = payload_offset;
   io->payload_bytes = bytes;
-  const uint64_t offset = dxb_storage_meta_field_offset(storage, number, payload_offset);
-  if (unlikely(bytes > UINT64_MAX - offset))
-    return MDBX_EINVAL;
-  return dxb_storage_byte_span_io(offset, offset + bytes, &io->bytes);
+  return dxb_storage_page_field_io(storage, number, PAGEHDRSZ + payload_offset, bytes, &io->bytes);
 }
 
 static inline int dxb_storage_meta_io_validate(const dxb_storage_t *storage, const dxb_meta_io_t *io) {
