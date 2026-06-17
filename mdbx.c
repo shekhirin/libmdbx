@@ -1865,14 +1865,6 @@ static inline int dxb_storage_coverage_io_from_bytes(const dxb_storage_t *storag
   return dxb_storage_page_io_from_bytes(storage, &io->bytes, &io->pages);
 }
 
-static inline int dxb_storage_coverage_io_from_page_prefix(const dxb_storage_t *storage, pgno_t end_pgno,
-                                                           dxb_coverage_io_t *io) {
-  int rc = dxb_storage_page_prefix_io(storage, end_pgno, &io->pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_byte_io_from_page(&io->pages, &io->bytes);
-}
-
 static inline int dxb_storage_coverage_io_validate(const dxb_storage_t *storage, const dxb_coverage_io_t *io) {
   dxb_coverage_io_t checked;
   int rc = dxb_storage_coverage_io_from_bytes(storage, &io->bytes, &checked);
@@ -2014,15 +2006,6 @@ static inline int dxb_storage_meta_io_validate(const dxb_storage_t *storage, con
                checked.payload_bytes != io->payload_bytes))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_meta_payload_io(const dxb_storage_t *storage, unsigned number, dxb_meta_io_t *io) {
-  return dxb_storage_meta_io(storage, number, 0, sizeof(meta_t), io);
-}
-
-static inline int dxb_storage_meta_field_io(const dxb_storage_t *storage, unsigned number, size_t field_offset,
-                                            size_t bytes, dxb_meta_io_t *io) {
-  return dxb_storage_meta_io(storage, number, field_offset, bytes, io);
 }
 
 /* The database environment. */
@@ -15388,8 +15371,13 @@ __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *t
   txn->canary = head.ptr_c->canary;
 
   dxb_storage_t *const storage = &txn->env->dxb_storage;
+  dxb_page_io_t required_pages;
+  int err = dxb_storage_page_prefix_io(storage, txn->geo.first_unallocated, &required_pages);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
   dxb_coverage_io_t required;
-  int err = dxb_storage_coverage_io_from_page_prefix(storage, txn->geo.first_unallocated, &required);
+  required.pages = required_pages;
+  err = dxb_storage_byte_io_from_page(&required.pages, &required.bytes);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
   const size_t required_bytes = required.bytes.bytes;
@@ -23591,7 +23579,7 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
   eASSERT0(env, pending->trees.gc.flags == MDBX_INTEGERKEY);
   eASSERT0(env, check_table_flags(pending->trees.main.flags));
   dxb_meta_io_t meta_request;
-  rc = dxb_storage_meta_payload_io(storage, target_number, &meta_request);
+  rc = dxb_storage_meta_io(storage, target_number, 0, sizeof(meta_t), &meta_request);
   if (unlikely(rc != MDBX_SUCCESS))
     goto fail;
   rc = dxb_storage_write_meta(storage, &meta_request, pending);
@@ -29967,7 +29955,7 @@ static int meta_unsteady(MDBX_env *env, dxb_storage_t *const storage, const txni
   if (MDBX_ENABLE_PGOP_STAT)
     env->lck->pgops.wops.weak += 1;
   dxb_meta_io_t request;
-  int err = dxb_storage_meta_field_io(storage, pgno, offsetof(meta_t, sign), sizeof(meta->sign), &request);
+  int err = dxb_storage_meta_io(storage, pgno, offsetof(meta_t, sign), sizeof(meta->sign), &request);
   if (likely(err == MDBX_SUCCESS))
     err = dxb_storage_write_meta(storage, &request, ptr);
   if (likely(err == MDBX_SUCCESS)) {

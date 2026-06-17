@@ -194,6 +194,10 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   are gone, while defrag copy tails, commit/pre-sync ranges, meta payload
   offsets, and coherency root-txnid probes build checked `dxb_page_io_t`
   requests before deriving copy, sync, or byte-range descriptors.
+  Single-use wrappers for coverage-prefix and meta payload/sign-field requests
+  are also gone; coherency head acceptance now constructs the page-prefix
+  coverage descriptor in place, and meta commit/wipe paths call
+  `dxb_storage_meta_io()` directly.
   Non-compacting environment-copy `sendfile()` and `copy_file_range()` fast
   paths now also build source `dxb_byte_io_t` requests before entering storage,
   and the in-file page-copy helper converts its source/destination page
