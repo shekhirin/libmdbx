@@ -5276,6 +5276,24 @@ the six focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.120` batch, `1.179` crud, `1.195` iterate, `0.967`
 get, and `1.071` delete.
 
+A later readahead cleanup removed the `dxb_readahead_io_t` wrapper from the C
+source. `dxb_set_readahead()` now computes the storage advice window as a
+checked `dxb_byte_io_t`, derives a page span only for logging, and submits
+normal/random advice directly through `dxb_storage_advise_range()`. Toggle-time
+prefetch now uses `dxb_storage_prefetch_readahead_bytes()`, which derives its
+page span internally before issuing the existing will-need advice. Verification
+passed `git diff --check`, source scans proving the old readahead wrapper,
+constructor/validator, and advice/prefetch wrapper helpers are gone, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest
+suite, forced tiny-cache fault injection, `cmake --build @cmake-asan-build`,
+the six focused ASAN `migration_smoke` CTest entries, and a rerun of
+`mdbx_migration_bench_lazy`. The first benchmark attempt missed the iterate
+threshold by noise at `0.695` versus `0.700`; the rerun passed with
+forced/default ratios of `0.959` batch, `0.992` crud, `0.979` iterate, `1.044`
+get, and `1.002` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
