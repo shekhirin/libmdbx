@@ -3154,6 +3154,22 @@ six focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.079`
 batch, `1.155` crud, `0.903` iterate, `1.078` get, and `1.066` delete.
 
+A later storage geometry signature cleanup removed redundant page-size byte
+arguments from cache invalidation, byte-write, discard, filesize, setup, resize,
+and cache-miss read helpers. These storage-owned helpers now receive the
+page-size shift and derive byte-sized page geometry internally, so callers no
+longer thread both `env->ps` and `env->ps2ln` through the same explicit-I/O
+boundary. Verification passed stale storage-geometry signature scans, stale
+data-file mmap and removed sync-adapter scans across the shipped core sources,
+`git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.108` batch, `1.152` crud, `0.935` iterate, `0.977`
+get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
