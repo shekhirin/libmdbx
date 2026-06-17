@@ -21270,6 +21270,16 @@ static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_p
   page_cache_unlock(storage);
 }
 
+static int dxb_storage_invalidate_cached_bytes_io(dxb_storage_t *storage, const dxb_byte_io_t *io,
+                                                  bool include_reusable) {
+  dxb_page_io_t pages;
+  int rc = dxb_storage_page_io_from_bytes(storage, io, &pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_storage_invalidate_cached_io(storage, &pages, include_reusable);
+  return MDBX_SUCCESS;
+}
+
 static inline bool page_cache_can_reuse(const MDBX_txn *txn) {
   return (txn->flags & txn_ro_both) != 0;
 }
@@ -22356,6 +22366,16 @@ static void dxb_storage_invalidate_written_io(dxb_storage_t *storage, const dxb_
   dxb_storage_invalidate_cached_io(storage, &io->pages, false);
 }
 
+#if MDBX_USE_COPYFILERANGE
+static int dxb_storage_invalidate_copied_io(dxb_storage_t *storage, const dxb_copy_io_t *io) {
+  int rc = dxb_storage_copy_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_storage_invalidate_cached_io(storage, &io->dst_pages, false);
+  return MDBX_SUCCESS;
+}
+#endif /* MDBX_USE_COPYFILERANGE */
+
 static int dxb_storage_write_pages(dxb_storage_t *storage, const dxb_write_io_t *io, const void *buf) {
   int rc = dxb_storage_write_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -22449,12 +22469,8 @@ static int dxb_storage_set_filesize_io(dxb_storage_t *storage, const dxb_filesiz
   if (target->bytes < old_filesize) {
     dxb_byte_io_t stale;
     int err = dxb_storage_filesize_shrink_tail_io(target, old_filesize, &stale);
-    if (likely(err == MDBX_SUCCESS)) {
-      dxb_page_io_t stale_pages;
-      err = dxb_storage_page_io_from_bytes(storage, &stale, &stale_pages);
-      if (likely(err == MDBX_SUCCESS))
-        dxb_storage_invalidate_cached_io(storage, &stale_pages, true);
-    }
+    if (likely(err == MDBX_SUCCESS))
+      (void)dxb_storage_invalidate_cached_bytes_io(storage, &stale, true);
   }
   return dxb_storage_set_filesize(storage, target);
 }
@@ -22557,12 +22573,7 @@ static int dxb_storage_copy_pages(dxb_storage_t *storage, const dxb_copy_io_t *i
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  dxb_write_io_t written;
-  rc = dxb_storage_write_io_from_page(storage, dxb_io_data, &io->dst_pages, &written);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_storage_invalidate_written_io(storage, &written);
-  return MDBX_SUCCESS;
+  return dxb_storage_invalidate_copied_io(storage, io);
 }
 #endif /* MDBX_USE_COPYFILERANGE */
 

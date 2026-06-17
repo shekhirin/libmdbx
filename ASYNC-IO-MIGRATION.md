@@ -5153,6 +5153,23 @@ focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
 The paired benchmark gate passed with forced/default ratios of `1.114` batch,
 `1.163` crud, `0.978` iterate, `0.990` get, and `1.077` delete.
 
+A later cache-invalidation descriptor cleanup added
+`dxb_storage_invalidate_cached_bytes_io()` for byte-range invalidation after
+truncate/shrink and `dxb_storage_invalidate_copied_io()` for same-file copy
+destinations. `dxb_storage_set_filesize_io()` now invalidates the stale tail
+through the shrink byte descriptor, and `dxb_storage_copy_pages()` invalidates
+from the copy descriptor instead of fabricating a `dxb_write_io_t` solely for
+cache eviction. Verification passed `git diff --check`, source scans proving
+the stale-tail local `dxb_storage_page_io_from_bytes()` conversion and the copy
+path's fake write descriptor are gone, the GNUmake `mdbx_migration_smoke`
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.118` batch, `1.148`
+crud, `0.861` iterate, `1.060` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
