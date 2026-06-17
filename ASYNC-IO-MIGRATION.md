@@ -4170,6 +4170,25 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.119` batch, `1.152` crud, `0.959` iterate, `0.983`
 get, and `1.073` delete.
 
+A later page-to-byte adapter cleanup added `dxb_storage_byte_io_from_page()`
+for storage paths that need to hand a checked `dxb_page_io_t` range to
+byte-addressed backends. Page prefetch, explicit page reads and writes, queued
+dirty-page insertion/writev submission, same-file page copy, and
+whole-meta-page shadow updates now derive their `dxb_byte_io_t` through that
+adapter instead of rebuilding byte descriptors from raw `offset`/`bytes` fields
+locally. This keeps the page range descriptor authoritative until the exact
+byte-oriented storage boundary.
+Verification passed `git diff --check`, source scans proving the old direct
+page-descriptor `offset`/`bytes` compound literals are gone from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `0.997` batch, `0.991` crud, `0.852` iterate, `1.065`
+get, and `1.003` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

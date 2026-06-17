@@ -1422,6 +1422,10 @@ static inline int dxb_storage_page_io(const dxb_storage_t *storage, pgno_t pgno,
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_byte_io_from_page(const dxb_page_io_t *pages, dxb_byte_io_t *io) {
+  return dxb_storage_byte_io(pages->offset, pages->bytes, io);
+}
+
 static inline uint64_t dxb_storage_bytes2pgno(const dxb_storage_t *storage, uint64_t bytes) {
   return bytes >> dxb_storage_pagesize_ln(storage);
 }
@@ -3892,8 +3896,11 @@ int meta_shadow_refresh(MDBX_env *env) {
 void meta_shadow_copy_page(const MDBX_env *env, const dxb_page_io_t *io, const page_t *page) {
   if (likely(env->meta_shadow)) {
     eASSERT0(env, io->npages == 1 && io->pgno < NUM_METAS);
-    const dxb_byte_io_t page_io = {io->offset, io->bytes};
-    memcpy(meta_shadow_bytes_ptr(env, &page_io), page, io->bytes);
+    dxb_byte_io_t page_io;
+    const int err = dxb_storage_byte_io_from_page(io, &page_io);
+    eASSERT0(env, err == MDBX_SUCCESS);
+    if (likely(err == MDBX_SUCCESS))
+      memcpy(meta_shadow_bytes_ptr(env, &page_io), page, io->bytes);
   }
 }
 
@@ -21095,7 +21102,7 @@ static inline int dxb_storage_add_queued_bytes(dxb_storage_t *storage, const dxb
 
 static inline int dxb_storage_add_queued_io(dxb_storage_t *storage, const dxb_page_io_t *io, void *data) {
   dxb_byte_io_t bytes;
-  int rc = dxb_storage_byte_io(io->offset, io->bytes, &bytes);
+  int rc = dxb_storage_byte_io_from_page(io, &bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   return dxb_storage_add_queued_bytes(storage, &bytes, data);
@@ -21299,7 +21306,10 @@ static int dxb_storage_advise_range(const dxb_storage_t *storage, const dxb_byte
 static int dxb_storage_prefetch_io(const dxb_storage_t *storage, const dxb_page_io_t *io) {
   if (io->npages == 0)
     return MDBX_SUCCESS;
-  const dxb_byte_io_t bytes = {io->offset, io->bytes};
+  dxb_byte_io_t bytes;
+  int rc = dxb_storage_byte_io_from_page(io, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   return dxb_storage_advise_range(storage, &bytes, dxb_advice_willneed);
 }
 
@@ -21548,7 +21558,10 @@ static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_i
 }
 
 static int dxb_storage_read_io(const dxb_storage_t *storage, const dxb_page_io_t *io, void *buf) {
-  const dxb_byte_io_t bytes = {io->offset, io->bytes};
+  dxb_byte_io_t bytes;
+  int rc = dxb_storage_byte_io_from_page(io, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   return dxb_storage_read_bytes(storage, &bytes, buf);
 }
 
@@ -21579,7 +21592,10 @@ static void dxb_storage_invalidate_written_io(dxb_storage_t *storage, enum dxb_i
 
 static int dxb_storage_write_io(dxb_storage_t *storage, enum dxb_io_channel channel, const dxb_page_io_t *io,
                                 const void *buf) {
-  const dxb_byte_io_t bytes = {io->offset, io->bytes};
+  dxb_byte_io_t bytes;
+  int rc = dxb_storage_byte_io_from_page(io, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   return dxb_storage_write_bytes(storage, channel, &bytes, buf);
 }
 
@@ -21625,7 +21641,7 @@ static int dxb_storage_writev_io(dxb_storage_t *storage, enum dxb_io_channel cha
   if (unlikely(bytes != io->bytes))
     return MDBX_EINVAL;
   dxb_byte_io_t request;
-  rc = dxb_storage_byte_io(io->offset, bytes, &request);
+  rc = dxb_storage_byte_io_from_page(io, &request);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   rc = dxb_storage_writev_bytes(storage, channel, &request, iov, sgvcnt);
@@ -21745,9 +21761,14 @@ static int dxb_storage_copy_bytes(const dxb_storage_t *storage, const dxb_byte_i
 static int dxb_storage_copy_io(dxb_storage_t *storage, const dxb_page_io_t *src, const dxb_page_io_t *dst) {
   if (unlikely(src->bytes != dst->bytes || src->npages != dst->npages))
     return MDBX_EINVAL;
-  const dxb_byte_io_t src_bytes = {src->offset, src->bytes};
-  const dxb_byte_io_t dst_bytes = {dst->offset, dst->bytes};
-  int rc = dxb_storage_copy_bytes(storage, &src_bytes, &dst_bytes);
+  dxb_byte_io_t src_bytes, dst_bytes;
+  int rc = dxb_storage_byte_io_from_page(src, &src_bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_byte_io_from_page(dst, &dst_bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_copy_bytes(storage, &src_bytes, &dst_bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
