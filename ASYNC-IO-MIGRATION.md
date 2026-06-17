@@ -3416,6 +3416,24 @@ focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.133`
 batch, `1.174` crud, `0.909` iterate, `0.988` get, and `1.081` delete.
 
+A later metadata storage-handle cleanup routed setup and metadata maintenance
+through bound storage handles. `dxb_setup()` now binds `dxb_storage_t` for
+initial meta-triplet writes and setup filesize checks, `meta_wipe_steady()`
+passes that handle through `meta_unsteady()`, `meta_sync()` and
+`meta_override()` use local storage handles for metadata write/sync decisions,
+`meta_validate()` uses a local storage handle for filesize refreshes, and
+`txn_basal_commit()` uses one for lazy meta-sync and dirty-write channel
+selection. Verification passed stale metadata storage-call scans, stale
+data-file mmap and removed sync-adapter scans across the shipped core sources,
+`git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.136` batch, `1.172` crud, `0.985` iterate, `0.983`
+get, and `1.087` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

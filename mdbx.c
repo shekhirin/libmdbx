@@ -21837,6 +21837,7 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
 }
 
 __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bits) {
+  dxb_storage_t *const storage = &env->dxb_storage;
   meta_t header;
   eASSERT0(env, !(env->flags & ENV_ACTIVE));
   int rc = MDBX_RESULT_FALSE;
@@ -21861,12 +21862,12 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
       return err;
 
     header = *meta_init_triplet(env, env->page_auxbuf);
-    dxb_storage_set_pagesize_ln(&env->dxb_storage, env->ps2ln);
-    err = dxb_storage_write_pages(&env->dxb_storage, dxb_io_data, 0, env->page_auxbuf, NUM_METAS);
+    dxb_storage_set_pagesize_ln(storage, env->ps2ln);
+    err = dxb_storage_write_pages(storage, dxb_io_data, 0, env->page_auxbuf, NUM_METAS);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
-    err = dxb_storage_set_filesize_as_current(&env->dxb_storage, env->geo_in_bytes.now);
+    err = dxb_storage_set_filesize_as_current(storage, env->geo_in_bytes.now);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
@@ -21898,8 +21899,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
 
   if (env->ps != header.pagesize)
     env_setup_pagesize(env, header.pagesize);
-  dxb_storage_set_pagesize_ln(&env->dxb_storage, env->ps2ln);
-  dxb_storage_t *const storage = &env->dxb_storage;
+  dxb_storage_set_pagesize_ln(storage, env->ps2ln);
   if ((env->flags & MDBX_RDONLY) == 0) {
     err = env_page_auxbuffer(env);
     if (unlikely(err != MDBX_SUCCESS))
@@ -21984,7 +21984,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   ENSURE_OBJ(env, env->geo_in_bytes.now >= allocated_bytes);
   if (!expected_filesize)
     expected_filesize = env->geo_in_bytes.now;
-  const uint64_t filesize_before = dxb_storage_filesize(&env->dxb_storage);
+  const uint64_t filesize_before = dxb_storage_filesize(storage);
   if (unlikely(filesize_before != env->geo_in_bytes.now)) {
     const uint64_t filesize_before_pgno = dxb_storage_bytes2pgno(storage, filesize_before);
     if (lck_rc != /* lck exclusive */ MDBX_RESULT_TRUE) {
@@ -28798,9 +28798,9 @@ __cold void meta_troika_dump(const MDBX_env *env, const troika_t *troika) {
 
 /*----------------------------------------------------------------------------*/
 
-static int meta_unsteady(MDBX_env *env, const txnid_t inclusive_upto, const pgno_t pgno) {
+static int meta_unsteady(MDBX_env *env, dxb_storage_t *const storage, const txnid_t inclusive_upto,
+                         const pgno_t pgno) {
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
-  dxb_storage_t *const storage = &env->dxb_storage;
   meta_t *const meta = meta_shadow_ptr(env, pgno);
   const txnid_t txnid = constmeta_txnid(meta);
   if (!meta_is_steady(meta) || txnid > inclusive_upto)
@@ -28823,17 +28823,18 @@ static int meta_unsteady(MDBX_env *env, const txnid_t inclusive_upto, const pgno
 }
 
 __cold int meta_wipe_steady(MDBX_env *env, txnid_t inclusive_upto) {
-  int err = meta_unsteady(env, inclusive_upto, 0);
+  dxb_storage_t *const storage = &env->dxb_storage;
+  int err = meta_unsteady(env, storage, inclusive_upto, 0);
   if (likely(!MDBX_IS_ERROR(err)))
-    err = meta_unsteady(env, inclusive_upto, 1);
+    err = meta_unsteady(env, storage, inclusive_upto, 1);
   if (likely(!MDBX_IS_ERROR(err)))
-    err = meta_unsteady(env, inclusive_upto, 2);
+    err = meta_unsteady(env, storage, inclusive_upto, 2);
 
   if (err == MDBX_RESULT_TRUE) {
     err = MDBX_SUCCESS;
-    if (dxb_storage_meta_write_uses_data_sync(&env->dxb_storage)) {
+    if (dxb_storage_meta_write_uses_data_sync(storage)) {
       dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
-      err = dxb_storage_sync(&env->dxb_storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+      err = dxb_storage_sync(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
     }
   }
 
@@ -28852,13 +28853,14 @@ __cold int meta_wipe_steady(MDBX_env *env, txnid_t inclusive_upto) {
 
 int meta_sync(const MDBX_env *env, const meta_ptr_t head) {
   eASSERT0(env, atomic_load32(&env->lck->meta_sync_txnid, mo_Relaxed) != (uint32_t)head.txnid);
+  const dxb_storage_t *const storage = &env->dxb_storage;
   /* Функция может вызываться (в том числе) при (env->flags & MDBX_NOMETASYNC) == 0,
    * когда мета-запись перенаправлена на dsync-дескриптор, например если предыдущая
    * транзакция была выполненна с флагом MDBX_NOMETASYNC. */
 
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
   dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
-  int rc = dxb_storage_sync(&env->dxb_storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+  int rc = dxb_storage_sync(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
 
   if (likely(rc == MDBX_SUCCESS))
     env->lck->meta_sync_txnid.weak = (uint32_t)head.txnid;
@@ -28917,6 +28919,7 @@ __cold meta_t *meta_init_triplet(const MDBX_env *env, void *buffer) {
 }
 
 __cold int __must_check_result meta_override(MDBX_env *env, size_t target, txnid_t txnid, const meta_t *shape) {
+  dxb_storage_t *const storage = &env->dxb_storage;
   page_t *const page = env->page_auxbuf;
   if (unlikely(!(target == 0 && shape) && !env->meta_shadow)) {
     int err = meta_shadow_refresh(env);
@@ -28978,10 +28981,10 @@ __cold int __must_check_result meta_override(MDBX_env *env, size_t target, txnid
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
   if (MDBX_ENABLE_PGOP_STAT)
     env->lck->pgops.wops.weak += 1;
-  rc = dxb_storage_write_pages(&env->dxb_storage, dxb_io_meta, (pgno_t)target, page, 1);
-  if (rc == MDBX_SUCCESS && dxb_storage_meta_write_uses_data_sync(&env->dxb_storage)) {
+  rc = dxb_storage_write_pages(storage, dxb_io_meta, (pgno_t)target, page, 1);
+  if (rc == MDBX_SUCCESS && dxb_storage_meta_write_uses_data_sync(storage)) {
     dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
-    rc = dxb_storage_sync(&env->dxb_storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+    rc = dxb_storage_sync(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
   }
   eASSERT0(env,
            (!env->txn && (env->flags & ENV_ACTIVE) == 0) ||
@@ -29075,14 +29078,15 @@ __cold int meta_validate(MDBX_env *env, meta_t *const meta, const page_t *const 
   }
 
   const uint64_t allocated_bytes = meta->geometry.first_unallocated * (uint64_t)meta->pagesize;
-  uint64_t filesize = dxb_storage_filesize(&env->dxb_storage);
+  dxb_storage_t *const storage = &env->dxb_storage;
+  uint64_t filesize = dxb_storage_filesize(storage);
   const uint64_t dxbsize_pages = filesize / (uint64_t)meta->pagesize;
   if (unlikely(allocated_bytes > filesize)) {
     /* Here could be a race with DB-shrinking performed by other process */
-    int err = dxb_storage_fetch_filesize(&env->dxb_storage);
+    int err = dxb_storage_fetch_filesize(storage);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    filesize = dxb_storage_filesize(&env->dxb_storage);
+    filesize = dxb_storage_filesize(storage);
     if (unlikely(allocated_bytes > filesize)) {
       WARNING("meta[%u] allocated-bytes (%" PRIu64 ") beyond filesize (%" PRIu64 "), skip it", meta_number,
               allocated_bytes, filesize);
@@ -40343,6 +40347,7 @@ int txn_basal_update_tbl_roots(MDBX_txn *txn) {
 
 int txn_basal_commit(MDBX_txn *txn, struct commit_timestamp *ts) {
   MDBX_env *const env = txn->env;
+  dxb_storage_t *const storage = &env->dxb_storage;
   cASSERT0(txn, txn == env->basal_txn && !txn->parent && !txn->nested);
   cASSERT0(txn, (txn->flags & MDBX_TXN_ERROR) == 0);
   cASSERT0(txn, (txn->flags & MDBX_WRITEMAP) == 0);
@@ -40366,8 +40371,7 @@ int txn_basal_commit(MDBX_txn *txn, struct commit_timestamp *ts) {
      * или msync() для гарантированной фиксации на диске мета-страницы,
      * которая была "лениво" отправлена на запись в предыдущей транзакции,
      * но не сброшена на диск из-за активного режима MDBX_NOMETASYNC. */
-    if (dxb_storage_can_lazy_meta_sync_with_data(&env->dxb_storage) &&
-        meta_sync_txnid == (uint32_t)head.txnid - txnid_dist)
+    if (dxb_storage_can_lazy_meta_sync_with_data(storage) && meta_sync_txnid == (uint32_t)head.txnid - txnid_dist)
       need_flush_for_nometasync = true;
     else {
       int err = meta_sync(env, head);
@@ -40441,7 +40445,7 @@ int txn_basal_commit(MDBX_txn *txn, struct commit_timestamp *ts) {
   cASSERT0(txn, txn->wr.loose_count == 0);
 
   const enum dxb_io_channel write_channel = dxb_storage_dirty_write_channel(
-      &env->dxb_storage, need_flush_for_nometasync, txn->wr.dirtylist->length, env->options.writethrough_threshold,
+      storage, need_flush_for_nometasync, txn->wr.dirtylist->length, env->options.writethrough_threshold,
       atomic_load64(&env->lck->unsynced_pages, mo_Relaxed));
 
   iov_ctx_t write_ctx;
