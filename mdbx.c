@@ -21487,16 +21487,34 @@ static int dxb_storage_write_pages(dxb_storage_t *storage, enum dxb_io_channel c
   return dxb_storage_write_io(storage, channel, &io, buf);
 }
 
-static int dxb_storage_writev(const dxb_storage_t *storage, enum dxb_io_channel channel, struct iovec *iov,
-                              size_t sgvcnt, uint64_t offset) {
+static int dxb_storage_iov_bytes(const struct iovec *iov, size_t sgvcnt, size_t *bytes) {
+  size_t total = 0;
+  for (size_t i = 0; i < sgvcnt; ++i) {
+    if (unlikely(iov[i].iov_len > SIZE_MAX - total))
+      return MDBX_EINVAL;
+    total += iov[i].iov_len;
+  }
+  *bytes = total;
+  return MDBX_SUCCESS;
+}
+
+static int dxb_storage_writev_bytes(const dxb_storage_t *storage, enum dxb_io_channel channel,
+                                    const dxb_byte_io_t *io, struct iovec *iov, size_t sgvcnt) {
+  size_t bytes;
+  int rc = dxb_storage_iov_bytes(iov, sgvcnt, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(bytes != io->bytes))
+    return MDBX_EINVAL;
+
   const mdbx_filehandle_t fd = dxb_storage_fd(storage, channel);
-  int rc = dxb_fault_inject_after_partial_writev("writev-partial", fd, iov, sgvcnt, offset);
+  rc = dxb_fault_inject_after_partial_writev("writev-partial", fd, iov, sgvcnt, io->offset);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   rc = dxb_fault_inject("writev");
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  rc = dxb_storage_pwritev(storage, channel, iov, sgvcnt, offset);
+  rc = dxb_storage_pwritev(storage, channel, iov, sgvcnt, io->offset);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   return dxb_fault_inject("writev-complete");
@@ -21508,21 +21526,22 @@ static int dxb_storage_writev_pages(dxb_storage_t *storage, enum dxb_io_channel 
   int rc = dxb_storage_page_io(storage, pgno, 0, &start);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  rc = dxb_storage_writev(storage, channel, iov, sgvcnt, start.offset);
+
+  size_t bytes;
+  rc = dxb_storage_iov_bytes(iov, sgvcnt, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_byte_io_t request;
+  rc = dxb_storage_byte_io(start.offset, bytes, &request);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_writev_bytes(storage, channel, &request, iov, sgvcnt);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
   if (dxb_io_channel_is_data(channel)) {
-    size_t bytes = 0;
-    for (size_t i = 0; i < sgvcnt; ++i) {
-      if (iov[i].iov_len > SIZE_MAX - bytes) {
-        bytes = SIZE_MAX;
-        break;
-      }
-      bytes += iov[i].iov_len;
-    }
     const size_t page_bytes = dxb_storage_pagesize(storage);
-    const size_t npages = (bytes == SIZE_MAX || bytes > SIZE_MAX - (page_bytes - 1))
+    const size_t npages = (bytes > SIZE_MAX - (page_bytes - 1))
                               ? SIZE_MAX
                               : (size_t)dxb_storage_bytes2pgno(storage, bytes + page_bytes - 1);
     dxb_page_io_t written;

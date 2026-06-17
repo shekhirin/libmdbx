@@ -162,8 +162,11 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   `dxb_storage_read()` helper is gone from the C source. Byte-addressed meta
   writes now use the same checked `dxb_byte_io_t` request shape before
   submission through `dxb_storage_write_bytes()`, and page writes adapt their
-  checked `dxb_page_io_t` through that byte-write submission point. The old raw
-  `dxb_storage_write()` helper is also gone from the C source.
+  checked `dxb_page_io_t` through that byte-write submission point. Vector page
+  writes now compute their iovec span, build a `dxb_byte_io_t` at the
+  page-derived offset, and submit through `dxb_storage_writev_bytes()`. The old
+  raw `dxb_storage_read()`, `dxb_storage_write()`, and `dxb_storage_writev()`
+  helpers are gone from the C source.
   Readahead plus data-file tail discard paths now
   use fd-backed advice/discard through storage; an earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
@@ -336,6 +339,9 @@ int dxb_storage_read_page_io(dxb_storage_t *storage,
                              const dxb_page_io_t *request, page_t *dst);
 int dxb_storage_write_bytes(dxb_storage_t *storage,
                             const dxb_byte_io_t *request, const void *src);
+int dxb_storage_writev_bytes(dxb_storage_t *storage,
+                             const dxb_byte_io_t *request,
+                             const struct iovec *iov, size_t sgvcnt);
 int dxb_storage_write_page_io(dxb_storage_t *storage,
                               const dxb_page_io_t *request, const page_t *src);
 int dxb_storage_prefetch_pages(dxb_storage_t *storage, pgno_t pgno,
@@ -3808,6 +3814,24 @@ focused ASAN `migration_smoke` CTest entries, and
 `mdbx_migration_bench_lazy`. The paired benchmark gate passed with
 forced/default ratios of `1.113` batch, `1.170` crud, `1.164` iterate, `0.927`
 get, and `1.080` delete.
+
+A later vector-write descriptor cleanup added `dxb_storage_writev_bytes()` for
+scatter/gather writes with an explicit `dxb_byte_io_t` request. The page-vector
+wrapper now computes the iovec byte span, builds a checked byte descriptor from
+the page-derived start offset, and submits that descriptor before invalidating
+the written page-cache range. The old raw `dxb_storage_writev()` helper is gone
+from the C source, leaving vector writes described by the same byte request
+shape as single-buffer byte writes before raw pwritev is reached. Verification
+passed `git diff --check`, source scans proving raw `dxb_storage_writev()`
+calls are gone, stale data-file mmap and removed sync-adapter scans across the
+shipped core sources, `make -f GNUmakefile mdbx_migration_smoke`, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke`
+CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
+passed with forced/default ratios of `1.117` batch, `1.155` crud, `0.743`
+iterate, `0.814` get, and `1.071` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
