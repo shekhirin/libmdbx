@@ -83,6 +83,11 @@ typedef struct page_cache {
   size_t pinned;
 } page_cache_t;
 
+typedef struct dxb_byte_io {
+  uint64_t offset;
+  size_t bytes;
+} dxb_byte_io_t;
+
 typedef struct dxb_page_io {
   pgno_t pgno;
   pgno_t end_pgno;
@@ -1356,6 +1361,15 @@ static inline uint64_t dxb_storage_npages2bytes(const dxb_storage_t *storage, ui
   return npages << dxb_storage_pagesize_ln(storage);
 }
 
+static inline int dxb_storage_byte_io(uint64_t offset, size_t bytes, dxb_byte_io_t *io) {
+  if (unlikely(bytes > UINT64_MAX - offset))
+    return MDBX_EINVAL;
+
+  io->offset = offset;
+  io->bytes = bytes;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_page_io(const dxb_storage_t *storage, pgno_t pgno, size_t npages, dxb_page_io_t *io) {
   const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
   const uint64_t max_pgno = (uint64_t)MAX_PAGENO + 1u;
@@ -1715,7 +1729,7 @@ static int dxb_storage_fetch_filesize_if_current_lacks(dxb_storage_t *storage, s
 MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno_t used_pgno, const pgno_t size_pgno,
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
-static int dxb_storage_read(const dxb_storage_t *storage, void *buf, size_t bytes, uint64_t offset);
+static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *io, void *buf);
 static int dxb_storage_read_io(const dxb_storage_t *storage, const dxb_page_io_t *io, void *buf);
 static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
                                    size_t bytes, uint64_t offset);
@@ -4813,7 +4827,11 @@ static int warmup_force_read(const dxb_storage_t *storage, size_t used_range, ui
 
   for (size_t offset = 0; offset < used_range;) {
     const size_t bytes = (used_range - offset < chunk) ? used_range - offset : chunk;
-    rc = dxb_storage_read(storage, buffer, bytes, offset);
+    dxb_byte_io_t request;
+    rc = dxb_storage_byte_io(offset, bytes, &request);
+    if (unlikely(rc != MDBX_SUCCESS))
+      break;
+    rc = dxb_storage_read_bytes(storage, &request, buffer);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     offset += bytes;
@@ -5748,7 +5766,11 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
     /* fallback to portable */
     const size_t chunk =
         ((size_t)MDBX_ENVCOPY_WRITEBUF < used_size - offset) ? (size_t)MDBX_ENVCOPY_WRITEBUF : used_size - offset;
-    rc = dxb_storage_read(storage, data_buffer, chunk, offset);
+    dxb_byte_io_t request;
+    rc = dxb_storage_byte_io(offset, chunk, &request);
+    if (unlikely(rc != MDBX_SUCCESS))
+      break;
+    rc = dxb_storage_read_bytes(storage, &request, data_buffer);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     if (flags & MDBX_CP_THROTTLE_MVCC) {
@@ -14556,7 +14578,10 @@ static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, co
   const uint64_t offset = dxb_storage_page_field_offset(storage, root_pgno, offsetof(page_t, txnid));
   const bool storage_probe_possible = dxb_storage_contains_range(storage, offset, sizeof(probe->txnid));
   if (likely(storage_probe_possible)) {
-    const int err = dxb_storage_read(storage, &probe->txnid, sizeof(probe->txnid), offset);
+    dxb_byte_io_t request;
+    int err = dxb_storage_byte_io(offset, sizeof(probe->txnid), &request);
+    if (likely(err == MDBX_SUCCESS))
+      err = dxb_storage_read_bytes(storage, &request, &probe->txnid);
     if (unlikely(err != MDBX_SUCCESS)) {
       if (report)
         WARNING("catch %s-db root %" PRIaPGNO " read error %d for meta_txnid %" PRIaTXN " %s", name, root_pgno, err,
@@ -21388,18 +21413,19 @@ static int dxb_storage_sync_range(const dxb_storage_t *storage, dxb_sync_range_t
   return dxb_storage_sync(storage, mode_bits);
 }
 
-static int dxb_storage_read(const dxb_storage_t *storage, void *buf, size_t bytes, uint64_t offset) {
+static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *io, void *buf) {
   int rc = dxb_fault_inject("read");
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  rc = dxb_storage_pread(storage, buf, bytes, offset);
+  rc = dxb_storage_pread(storage, buf, io->bytes, io->offset);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   return dxb_fault_inject("read-complete");
 }
 
 static int dxb_storage_read_io(const dxb_storage_t *storage, const dxb_page_io_t *io, void *buf) {
-  return dxb_storage_read(storage, buf, io->bytes, io->offset);
+  const dxb_byte_io_t bytes = {io->offset, io->bytes};
+  return dxb_storage_read_bytes(storage, &bytes, buf);
 }
 
 static int dxb_storage_write(const dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf, size_t bytes,
@@ -21715,11 +21741,16 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
                                                         : globals.sys_pagesize) *
                             meta_number;
 
+    dxb_byte_io_t request;
+    int err = dxb_storage_byte_io(offset, MDBX_MIN_PAGESIZE, &request);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+
     char buffer[MDBX_MIN_PAGESIZE];
     unsigned retryleft = 42;
     while (1) {
       TRACE("reading meta[%d]: offset %u, bytes %u, retry-left %u", meta_number, offset, MDBX_MIN_PAGESIZE, retryleft);
-      int err = dxb_storage_read(storage, buffer, MDBX_MIN_PAGESIZE, offset);
+      err = dxb_storage_read_bytes(storage, &request, buffer);
       if (err == MDBX_ENODATA && offset == 0 && loop_count == 0 && dxb_storage_filesize(storage) == 0 &&
           mode_bits /* non-zero for DB creation */ != 0) {
         NOTICE("read meta: empty file (%d, %s)", err, mdbx_strerror(err));
@@ -21728,7 +21759,7 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
 #if defined(_WIN32) || defined(_WIN64)
       if (err == ERROR_LOCK_VIOLATION) {
         SleepEx(0, true);
-        err = dxb_storage_read(storage, buffer, MDBX_MIN_PAGESIZE, offset);
+        err = dxb_storage_read_bytes(storage, &request, buffer);
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
           WARNING("read meta[%u,%u]: %i, %s", offset, MDBX_MIN_PAGESIZE, err, mdbx_strerror(err));
           continue;
@@ -21741,11 +21772,11 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
       }
 
       char again[MDBX_MIN_PAGESIZE];
-      err = dxb_storage_read(storage, again, MDBX_MIN_PAGESIZE, offset);
+      err = dxb_storage_read_bytes(storage, &request, again);
 #if defined(_WIN32) || defined(_WIN64)
       if (err == ERROR_LOCK_VIOLATION) {
         SleepEx(0, true);
-        err = dxb_storage_read(storage, again, MDBX_MIN_PAGESIZE, offset);
+        err = dxb_storage_read_bytes(storage, &request, again);
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
           WARNING("read meta[%u,%u]: %i, %s", offset, MDBX_MIN_PAGESIZE, err, mdbx_strerror(err));
           continue;

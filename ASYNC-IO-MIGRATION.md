@@ -155,6 +155,11 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   fallback page reads now also build one-page `dxb_page_io_t` requests and
   submit them through `dxb_storage_read_io()`, leaving no helper-local
   page-read conversion layer between page-number callers and storage reads.
+  Remaining byte-addressed reads, including warmup range scans, portable
+  environment-copy chunks, coherency root-txnid probes, and startup meta-header
+  double-reads before page size is known, now build checked `dxb_byte_io_t`
+  requests and submit them through `dxb_storage_read_bytes()`. The old raw
+  `dxb_storage_read()` helper is gone from the C source.
   Readahead plus data-file tail discard paths now
   use fd-backed advice/discard through storage; an earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
@@ -317,10 +322,14 @@ Introduce a data-file storage abstraction before changing page callers:
 
 ```c
 typedef struct dxb_storage dxb_storage_t;
+typedef struct dxb_byte_io dxb_byte_io_t;
+typedef struct dxb_page_io dxb_page_io_t;
 
 int dxb_storage_open(MDBX_env *env, dxb_storage_t **out);
-int dxb_storage_read(dxb_storage_t *storage, pgno_t pgno, page_t *dst,
-                     size_t npages);
+int dxb_storage_read_bytes(dxb_storage_t *storage, const dxb_byte_io_t *request,
+                           void *dst);
+int dxb_storage_read_page_io(dxb_storage_t *storage,
+                             const dxb_page_io_t *request, page_t *dst);
 int dxb_storage_write(dxb_storage_t *storage, const page_t *src, pgno_t pgno,
                       size_t npages);
 int dxb_storage_prefetch_pages(dxb_storage_t *storage, pgno_t pgno,
@@ -3753,6 +3762,27 @@ fault injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
 benchmark gate passed with forced/default ratios of `1.112` batch, `1.154`
 crud, `0.824` iterate, `1.041` get, and `1.080` delete.
+
+A later byte-read descriptor cleanup added `dxb_byte_io_t` and
+`dxb_storage_byte_io()` for checked byte-addressed read requests. Warmup forced
+range reads, portable environment-copy fallback chunks, coherency root-txnid
+probes, and startup meta-header double-reads now build a byte descriptor before
+calling `dxb_storage_read_bytes()`. Page-addressed reads continue to use
+`dxb_page_io_t` and `dxb_storage_read_io()`, which now adapts its checked page
+request through the same byte-read submission helper. The old raw
+`dxb_storage_read()` helper is gone from the C source, leaving storage reads
+described by explicit byte or page request objects before raw pread is reached.
+Verification passed `git diff --check`, source scans proving raw
+`dxb_storage_read()` calls are gone, stale data-file mmap and removed
+sync-adapter scans across the shipped core sources, `make -f GNUmakefile
+mdbx_migration_smoke`, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.108` batch, `1.193` crud, `1.032` iterate, `1.025`
+get, and `1.107` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
