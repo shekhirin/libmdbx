@@ -1622,14 +1622,14 @@ MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
 static int dxb_storage_read(const dxb_storage_t *storage, void *buf, size_t bytes, uint64_t offset);
-static int dxb_storage_write_bytes(const dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
+static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
                                    size_t bytes, uint64_t offset, size_t pagesize, uint8_t pagesize_ln);
-static int dxb_storage_write_pages(const dxb_storage_t *storage, uint8_t pagesize_ln, enum dxb_io_channel channel,
+static int dxb_storage_write_pages(dxb_storage_t *storage, uint8_t pagesize_ln, enum dxb_io_channel channel,
                                    pgno_t pgno, const void *buf, size_t npages);
-static int dxb_storage_writev_pages(const dxb_storage_t *storage, uint8_t pagesize_ln, enum dxb_io_channel channel,
+static int dxb_storage_writev_pages(dxb_storage_t *storage, uint8_t pagesize_ln, enum dxb_io_channel channel,
                                     pgno_t pgno, struct iovec *iov, size_t sgvcnt);
 #if MDBX_USE_COPYFILERANGE
-static int dxb_storage_copy_pages(const dxb_storage_t *storage, uint8_t pagesize_ln, pgno_t src_pgno, pgno_t dst_pgno,
+static int dxb_storage_copy_pages(dxb_storage_t *storage, uint8_t pagesize_ln, pgno_t src_pgno, pgno_t dst_pgno,
                                   size_t npages);
 static int dxb_storage_copy_to_fd(const dxb_storage_t *storage, mdbx_filehandle_t dst_fd, off_t *src_offset,
                                   off_t *dst_offset, size_t bytes, bool *copied, bool *unavailable,
@@ -20303,12 +20303,11 @@ static void page_cache_release_all(dxb_storage_t *storage, bool env_active) {
   page_cache_unlock(storage);
 }
 
-static void dxb_storage_invalidate_cached_pages(const dxb_storage_t *const_storage, pgno_t begin, pgno_t end,
+static void dxb_storage_invalidate_cached_pages(dxb_storage_t *storage, pgno_t begin, pgno_t end,
                                                 bool include_reusable) {
   if (begin >= end)
     return;
 
-  dxb_storage_t *const storage = (dxb_storage_t *)const_storage;
   page_cache_lock(storage);
   page_cache_t *const cache = &storage->page_cache;
   page_cache_entry_t *entry = cache->entries;
@@ -20329,7 +20328,7 @@ static void dxb_storage_invalidate_cached_pages(const dxb_storage_t *const_stora
   page_cache_unlock(storage);
 }
 
-static void dxb_storage_invalidate_cached_bytes(const dxb_storage_t *storage, uint64_t offset, size_t bytes,
+static void dxb_storage_invalidate_cached_bytes(dxb_storage_t *storage, uint64_t offset, size_t bytes,
                                                 size_t pagesize, uint8_t pagesize_ln, bool include_reusable) {
   if (bytes == 0)
     return;
@@ -20974,7 +20973,7 @@ static int dxb_storage_discard_remove_range(const dxb_storage_t *storage, size_t
   return MDBX_RESULT_TRUE;
 }
 
-static int dxb_storage_discard_range(const dxb_storage_t *storage, size_t offset, size_t length, size_t pagesize,
+static int dxb_storage_discard_range(dxb_storage_t *storage, size_t offset, size_t length, size_t pagesize,
                                      uint8_t pagesize_ln, enum dxb_discard_mode mode) {
   if (length == 0)
     return MDBX_SUCCESS;
@@ -21212,7 +21211,7 @@ static int dxb_storage_write(const dxb_storage_t *storage, enum dxb_io_channel c
   return dxb_fault_inject("write-complete");
 }
 
-static int dxb_storage_write_bytes(const dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
+static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
                                    size_t bytes, uint64_t offset, size_t pagesize, uint8_t pagesize_ln) {
   int rc = dxb_storage_write(storage, channel, buf, bytes, offset);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -21222,7 +21221,7 @@ static int dxb_storage_write_bytes(const dxb_storage_t *storage, enum dxb_io_cha
   return MDBX_SUCCESS;
 }
 
-static void dxb_storage_invalidate_written_pages(const dxb_storage_t *storage, enum dxb_io_channel channel,
+static void dxb_storage_invalidate_written_pages(dxb_storage_t *storage, enum dxb_io_channel channel,
                                                  pgno_t pgno, size_t npages) {
   if (!dxb_io_channel_is_data(channel))
     return;
@@ -21235,7 +21234,7 @@ static void dxb_storage_invalidate_written_pages(const dxb_storage_t *storage, e
     dxb_storage_invalidate_cached_pages(storage, pgno, (pgno_t)end, false);
 }
 
-static int dxb_storage_write_pages(const dxb_storage_t *storage, uint8_t pagesize_ln, enum dxb_io_channel channel,
+static int dxb_storage_write_pages(dxb_storage_t *storage, uint8_t pagesize_ln, enum dxb_io_channel channel,
                                    pgno_t pgno, const void *buf, size_t npages) {
   const size_t bytes = npages << pagesize_ln;
   const uint64_t offset = (uint64_t)pgno << pagesize_ln;
@@ -21262,7 +21261,7 @@ static int dxb_storage_writev(const dxb_storage_t *storage, enum dxb_io_channel 
   return dxb_fault_inject("writev-complete");
 }
 
-static int dxb_storage_writev_pages(const dxb_storage_t *storage, uint8_t pagesize_ln, enum dxb_io_channel channel,
+static int dxb_storage_writev_pages(dxb_storage_t *storage, uint8_t pagesize_ln, enum dxb_io_channel channel,
                                     pgno_t pgno, struct iovec *iov, size_t sgvcnt) {
   const uint64_t offset = (uint64_t)pgno << pagesize_ln;
   int rc = dxb_storage_writev(storage, channel, iov, sgvcnt, offset);
@@ -21376,7 +21375,7 @@ static int dxb_storage_copy_bytes(const dxb_storage_t *storage, off_t *src_offse
   return dxb_fault_inject("copy-complete");
 }
 
-static int dxb_storage_copy_pages(const dxb_storage_t *storage, uint8_t pagesize_ln, pgno_t src_pgno, pgno_t dst_pgno,
+static int dxb_storage_copy_pages(dxb_storage_t *storage, uint8_t pagesize_ln, pgno_t src_pgno, pgno_t dst_pgno,
                                   size_t npages) {
   if (unlikely(npages > ((size_t)SSIZE_MAX >> pagesize_ln)))
     return MDBX_EINVAL;

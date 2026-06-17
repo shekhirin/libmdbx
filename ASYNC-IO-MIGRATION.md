@@ -3040,6 +3040,23 @@ focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.102`
 batch, `1.144` crud, `0.991` iterate, `1.011` get, and `1.087` delete.
 
+A later page-cache invalidation mutability cleanup made cache-mutating storage
+operations take mutable `dxb_storage_t` targets. Data-page writes, writev
+submission, same-file page copies, destructive discard, and the page/byte cache
+invalidation helpers no longer accept `const dxb_storage_t` before mutating
+storage-owned cache state. Read-only file operations still keep const storage
+parameters, so the helper signatures now distinguish raw observation from cache
+state mutation. Verification passed mutating-storage const-signature scans,
+stale data-file mmap and removed sync-adapter scans across the shipped core
+sources, `git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.148` batch, `1.179` crud, `1.908` iterate, `1.090`
+get, and `1.200` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
