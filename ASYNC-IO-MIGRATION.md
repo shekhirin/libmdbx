@@ -4809,6 +4809,22 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.116` batch, `1.148`
 crud, `1.281` iterate, `0.946` get, and `1.081` delete.
 
+A later startup meta-probe cleanup added `dxb_storage_meta_probe_io()` for the
+bootstrapping read path that must probe meta pages before the database page size
+is known. `dxb_read_header()` now derives each minimum-page double-read request
+from a checked `(probe_pagesize, meta_number)` descriptor and logs the descriptor
+offset/length instead of open-coding `offset, MDBX_MIN_PAGESIZE` in the retry
+loop. Verification passed `git diff --check`, source scans proving the old raw
+startup meta-probe request and stale `%u,%u` meta-read log formats are gone, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.117` batch, `1.158` crud, `0.994` iterate, `0.994`
+get, and `1.083` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

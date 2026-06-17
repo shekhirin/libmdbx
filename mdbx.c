@@ -1950,6 +1950,15 @@ static inline bool dxb_storage_contains_coverage(const dxb_storage_t *storage, c
   return dxb_storage_contains_range(storage, &io->bytes);
 }
 
+static inline int dxb_storage_meta_probe_io(size_t probe_pagesize, unsigned number, dxb_byte_io_t *io) {
+  if (unlikely(number >= NUM_METAS || probe_pagesize < MDBX_MIN_PAGESIZE))
+    return MDBX_EINVAL;
+  if (unlikely(number && (uint64_t)probe_pagesize > UINT64_MAX / number))
+    return MDBX_EINVAL;
+
+  return dxb_storage_byte_io((uint64_t)probe_pagesize * number, MDBX_MIN_PAGESIZE, io);
+}
+
 static inline uint64_t dxb_storage_meta_page_offset(const dxb_storage_t *storage, unsigned number) {
   ASSERT(number < NUM_METAS);
   return dxb_storage_pgno2bytes(storage, number);
@@ -22556,22 +22565,22 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
   unsigned guess_pagesize = 0;
   for (unsigned loop_count = 0; loop_count < loop_limit; ++loop_count) {
     const unsigned meta_number = loop_count % NUM_METAS;
-    const unsigned offset = (guess_pagesize             ? guess_pagesize
-                             : (loop_count > NUM_METAS) ? env->ps
-                                                        : globals.sys_pagesize) *
-                            meta_number;
+    const size_t probe_pagesize = guess_pagesize             ? guess_pagesize
+                                  : (loop_count > NUM_METAS) ? env->ps
+                                                             : globals.sys_pagesize;
 
     dxb_byte_io_t request;
-    int err = dxb_storage_byte_io(offset, MDBX_MIN_PAGESIZE, &request);
+    int err = dxb_storage_meta_probe_io(probe_pagesize, meta_number, &request);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
     char buffer[MDBX_MIN_PAGESIZE];
     unsigned retryleft = 42;
     while (1) {
-      TRACE("reading meta[%d]: offset %u, bytes %u, retry-left %u", meta_number, offset, MDBX_MIN_PAGESIZE, retryleft);
+      TRACE("reading meta[%d]: offset %" PRIu64 ", bytes %zu, retry-left %u", meta_number, request.offset,
+            request.bytes, retryleft);
       err = dxb_storage_read_bytes(storage, &request, buffer);
-      if (err == MDBX_ENODATA && offset == 0 && loop_count == 0 && dxb_storage_filesize(storage) == 0 &&
+      if (err == MDBX_ENODATA && request.offset == 0 && loop_count == 0 && dxb_storage_filesize(storage) == 0 &&
           mode_bits /* non-zero for DB creation */ != 0) {
         NOTICE("read meta: empty file (%d, %s)", err, mdbx_strerror(err));
         return err;
@@ -22581,13 +22590,13 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
         SleepEx(0, true);
         err = dxb_storage_read_bytes(storage, &request, buffer);
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
-          WARNING("read meta[%u,%u]: %i, %s", offset, MDBX_MIN_PAGESIZE, err, mdbx_strerror(err));
+          WARNING("read meta[%" PRIu64 ",%zu]: %i, %s", request.offset, request.bytes, err, mdbx_strerror(err));
           continue;
         }
       }
 #endif /* Windows */
       if (err != MDBX_SUCCESS) {
-        ERROR("read meta[%u,%u]: %i, %s", offset, MDBX_MIN_PAGESIZE, err, mdbx_strerror(err));
+        ERROR("read meta[%" PRIu64 ",%zu]: %i, %s", request.offset, request.bytes, err, mdbx_strerror(err));
         return err;
       }
 
@@ -22598,13 +22607,13 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
         SleepEx(0, true);
         err = dxb_storage_read_bytes(storage, &request, again);
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
-          WARNING("read meta[%u,%u]: %i, %s", offset, MDBX_MIN_PAGESIZE, err, mdbx_strerror(err));
+          WARNING("read meta[%" PRIu64 ",%zu]: %i, %s", request.offset, request.bytes, err, mdbx_strerror(err));
           continue;
         }
       }
 #endif /* Windows */
       if (err != MDBX_SUCCESS) {
-        ERROR("read meta[%u,%u]: %i, %s", offset, MDBX_MIN_PAGESIZE, err, mdbx_strerror(err));
+        ERROR("read meta[%" PRIu64 ",%zu]: %i, %s", request.offset, request.bytes, err, mdbx_strerror(err));
         return err;
       }
 
