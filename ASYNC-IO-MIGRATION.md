@@ -249,7 +249,7 @@ remaining page access on explicit storage plus pinned page-cache buffers:
 - Data-page sync now routes directly through `dxb_fsync()`/storage-fd sync;
   the data-file `dxb_msync()` wrapper and its `osal_msync()` mapping branch
   have been removed.
-- `dxb_resize()` now always uses `dxb_storage_resize()` for data-file
+- `dxb_resize()` now uses `dxb_storage_resize_bytes()` for data-file
   current/limit/filesize management. The OSAL data-file remap helper
   `osal_mresize()` and its remap flags have been removed.
 - `dxb_setup()` now routes all accepted environments through the no-data-mapping
@@ -2923,6 +2923,24 @@ tiny-cache fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
 `migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
 forced/default ratios of `1.116` batch, `1.165` crud, `0.975` iterate, `1.015`
 get, and `1.076` delete.
+
+A later setup/resize adapter cleanup removed the env-shaped
+`dxb_setup_storage()` and `dxb_storage_resize()` shims. `dxb_setup()` now checks
+the setup byte-geometry invariant and calls `dxb_storage_setup_bytes()`
+directly with explicit storage, flags, options, and page geometry, while
+`dxb_resize()` calls `dxb_storage_resize_bytes()` directly after computing the
+locked byte-size transition and resize flags. This leaves setup and resize
+state transitions behind storage-owned byte helpers instead of preserving
+one-call environment adapters. Verification passed `git diff --check`, stale
+adapter scans, stale data-file mmap symbol scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public CTest suite including migration tool
+roundtrip coverage, deterministic forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and focused ASAN `migration_smoke` CTest.
+The paired `mdbx_migration_bench_lazy` gate reported forced/default ratios of
+`1.089` batch, `1.156` crud, `0.982` iterate, `0.998` get, and `1.073`
+delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.

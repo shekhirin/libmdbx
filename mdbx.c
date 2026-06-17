@@ -21463,11 +21463,6 @@ static int dxb_storage_setup_bytes(dxb_storage_t *storage, const size_t size, co
   return MDBX_SUCCESS;
 }
 
-static int dxb_setup_storage(MDBX_env *env, const size_t size, const size_t limit, const unsigned options) {
-  eASSERT0(env, size <= limit);
-  return dxb_storage_setup_bytes(&env->dxb_storage, size, limit, env->flags, options, env->ps, env->ps2ln);
-}
-
 static int dxb_storage_resize_bytes(dxb_storage_t *storage, const size_t size, const size_t limit, const unsigned flags,
                                     size_t pagesize, uint8_t pagesize_ln) {
   int rc = dxb_storage_fetch_filesize(storage);
@@ -21495,10 +21490,6 @@ static int dxb_storage_resize_bytes(dxb_storage_t *storage, const size_t size, c
 
   dxb_storage_set_size_with_known_filesize(storage, size, limit);
   return MDBX_SUCCESS;
-}
-
-static int dxb_storage_resize(MDBX_env *env, const size_t size, const size_t limit, const unsigned flags) {
-  return dxb_storage_resize_bytes(&env->dxb_storage, size, limit, flags, env->ps, env->ps2ln);
 }
 
 __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive, const mdbx_mode_t mode_bits) {
@@ -21669,7 +21660,7 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
       env->lck->discarded_tail.weak = size_pgno;
   }
 
-  rc = dxb_storage_resize(env, size_bytes, limit_bytes, resize_flags);
+  rc = dxb_storage_resize_bytes(storage, size_bytes, limit_bytes, resize_flags, env->ps, env->ps2ln);
   eASSERT0(env, dxb_storage_current_within_limit(storage));
 
   if (rc == MDBX_SUCCESS) {
@@ -21965,7 +21956,9 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
 
   const unsigned storage_options = (lck_rc && env->stuck_meta < 0) ? MMAP_OPTION_SETLENGTH : 0;
   NOTICE("%s", "open without data-file mmap");
-  err = dxb_setup_storage(env, env->geo_in_bytes.now, env->geo_in_bytes.upper, storage_options);
+  eASSERT0(env, env->geo_in_bytes.now <= env->geo_in_bytes.upper);
+  err = dxb_storage_setup_bytes(&env->dxb_storage, env->geo_in_bytes.now, env->geo_in_bytes.upper, env->flags,
+                                storage_options, env->ps, env->ps2ln);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
