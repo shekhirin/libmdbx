@@ -1417,9 +1417,9 @@ static inline pgno_t dxb_storage_pgno_ceil2os_pgno(const dxb_storage_t *storage,
   return (pgno_t)dxb_storage_bytes2pgno(storage, dxb_storage_pgno_ceil2os_bytes(storage, pgno));
 }
 
-static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, uint64_t offset, size_t bytes) {
+static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
   const uint64_t current = dxb_storage_current_size(storage);
-  return offset <= current && bytes <= current - offset;
+  return io->offset <= current && io->bytes <= current - io->offset;
 }
 
 static inline uint64_t dxb_storage_meta_page_offset(const dxb_storage_t *storage, unsigned number) {
@@ -14580,12 +14580,11 @@ static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, co
 
   const dxb_storage_t *const storage = &env->dxb_storage;
   const uint64_t offset = dxb_storage_page_field_offset(storage, root_pgno, offsetof(page_t, txnid));
-  const bool storage_probe_possible = dxb_storage_contains_range(storage, offset, sizeof(probe->txnid));
+  dxb_byte_io_t request;
+  int err = dxb_storage_byte_io(offset, sizeof(probe->txnid), &request);
+  const bool storage_probe_possible = likely(err == MDBX_SUCCESS) && dxb_storage_contains_range(storage, &request);
   if (likely(storage_probe_possible)) {
-    dxb_byte_io_t request;
-    int err = dxb_storage_byte_io(offset, sizeof(probe->txnid), &request);
-    if (likely(err == MDBX_SUCCESS))
-      err = dxb_storage_read_bytes(storage, &request, &probe->txnid);
+    err = dxb_storage_read_bytes(storage, &request, &probe->txnid);
     if (unlikely(err != MDBX_SUCCESS)) {
       if (report)
         WARNING("catch %s-db root %" PRIaPGNO " read error %d for meta_txnid %" PRIaTXN " %s", name, root_pgno, err,
@@ -20492,16 +20491,16 @@ static void dxb_storage_invalidate_cached_pages(dxb_storage_t *storage, pgno_t b
   page_cache_unlock(storage);
 }
 
-static void dxb_storage_invalidate_cached_bytes(dxb_storage_t *storage, uint64_t offset, size_t bytes,
+static void dxb_storage_invalidate_cached_bytes(dxb_storage_t *storage, const dxb_byte_io_t *io,
                                                 bool include_reusable) {
-  if (bytes == 0)
+  if (io->bytes == 0)
     return;
 
-  const uint64_t begin = dxb_storage_bytes2pgno(storage, offset);
-  uint64_t end_bytes = offset + bytes;
+  const uint64_t begin = dxb_storage_bytes2pgno(storage, io->offset);
+  uint64_t end_bytes = io->offset + io->bytes;
   const uint64_t max_pgno = (uint64_t)MAX_PAGENO + 1u;
   const uint64_t max_bytes = dxb_storage_pgno2bytes(storage, max_pgno);
-  if (end_bytes < offset || end_bytes > max_bytes)
+  if (end_bytes < io->offset || end_bytes > max_bytes)
     end_bytes = max_bytes;
 
   const size_t pagesize = dxb_storage_pagesize(storage);
@@ -21226,13 +21225,13 @@ static int dxb_storage_discard_range(dxb_storage_t *storage, const dxb_byte_io_t
   case dxb_discard_remove: {
     int rc = dxb_storage_discard_remove_range(storage, io);
     if (rc == MDBX_SUCCESS)
-      dxb_storage_invalidate_cached_bytes(storage, io->offset, io->bytes, true);
+      dxb_storage_invalidate_cached_bytes(storage, io, true);
     return rc;
   }
   case dxb_discard_remove_or_clean: {
     int rc = dxb_storage_discard_remove_range(storage, io);
     if (rc == MDBX_SUCCESS)
-      dxb_storage_invalidate_cached_bytes(storage, io->offset, io->bytes, true);
+      dxb_storage_invalidate_cached_bytes(storage, io, true);
     return (rc == MDBX_RESULT_TRUE) ? dxb_storage_discard_clean_range(storage, io) : rc;
   }
   }
@@ -21458,7 +21457,7 @@ static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel c
     return rc;
 
   if (dxb_io_channel_is_data(channel))
-    dxb_storage_invalidate_cached_bytes(storage, io->offset, io->bytes, false);
+    dxb_storage_invalidate_cached_bytes(storage, io, false);
   return MDBX_SUCCESS;
 }
 
@@ -21585,8 +21584,11 @@ static int dxb_storage_set_filesize_bytes(dxb_storage_t *storage, uint64_t bytes
   int rc = dxb_storage_set_filesize_on_disk(storage, bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  if (bytes < old_filesize)
-    dxb_storage_invalidate_cached_bytes(storage, bytes, (size_t)(old_filesize - bytes), true);
+  if (bytes < old_filesize) {
+    const uint64_t stale_bytes64 = old_filesize - bytes;
+    const dxb_byte_io_t stale = {bytes, stale_bytes64 > SIZE_MAX ? SIZE_MAX : (size_t)stale_bytes64};
+    dxb_storage_invalidate_cached_bytes(storage, &stale, true);
+  }
   dxb_storage_set_filesize(storage, bytes);
   return MDBX_SUCCESS;
 }

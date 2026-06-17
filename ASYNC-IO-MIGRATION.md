@@ -187,6 +187,9 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
   branches.
+  Coherency root probes now build a byte descriptor before checking the current
+  file view, and cache invalidation receives the same descriptor shape from
+  writes, discard, and truncate-driven shrink paths.
   Data-page sync callers now use explicit range sync through storage instead of
   choosing `msync()` versus `fsync()` themselves, and explicit meta-write call
   sites apply the existing `meta_fd == data_fd` sync rule before submitting
@@ -3955,6 +3958,24 @@ CTest suite, forced tiny-cache fault injection, `cmake --build
 `mdbx_migration_bench_lazy`. The paired benchmark gate passed with
 forced/default ratios of `1.118` batch, `1.186` crud, `1.048` iterate, `0.962`
 get, and `1.073` delete.
+
+A later cache-invalidation descriptor cleanup changed the storage-local current
+file-view probe and page-cache invalidation helper to receive `dxb_byte_io_t`
+ranges instead of loose offset/length pairs. The coherency root-txnid probe now
+builds one checked byte request, tests that descriptor against the current
+storage size, and reuses it for the explicit read. Data-write, discard-remove,
+and truncate-driven stale-tail invalidation now pass descriptors into the cache
+invalidation boundary, keeping cache eviction keyed by the same byte request
+shape used by explicit reads, writes, advice, and copy helpers. Verification
+passed `git diff --check`, source scans proving the current-view and
+invalidation helpers no longer receive loose range arguments, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.116` batch,
+`1.164` crud, `1.004` iterate, `1.005` get, and `1.064` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
