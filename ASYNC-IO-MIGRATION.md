@@ -5408,6 +5408,25 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.118` batch, `1.157` crud,
 `0.994` iterate, `1.019` get, and `1.080` delete.
 
+A later dirty-write queue byte-request cleanup removed the remaining
+page-span wrappers around queue sizing and enqueue. `iov_init()` now builds the
+queue capacity span as a checked page range and then derives the byte request
+before calling `dxb_storage_prepare_write_queue_bytes()`. `iov_page()` now does
+the same for each dirty page span before calling `dxb_storage_add_queued_bytes()`,
+so the OSAL write queue receives only byte descriptors from its callers. The
+completion walk still converts queued byte descriptors back to exact page spans
+for shadow-buffer release validation. Verification passed `git diff --check`,
+source scans proving the old page-span queue helpers and
+`dxb_storage_write_bytes_from_page_span()` are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.091` batch, `1.170` crud, `1.181` iterate, `0.970`
+get, and `1.086` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

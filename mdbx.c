@@ -1545,16 +1545,6 @@ static inline bool dxb_storage_io_channel_valid(enum dxb_io_channel channel) {
   return false;
 }
 
-static inline int dxb_storage_write_bytes_from_page_span(const dxb_storage_t *storage, enum dxb_io_channel channel,
-                                                        const dxb_page_io_t *pages, dxb_byte_io_t *bytes) {
-  if (unlikely(!dxb_storage_io_channel_valid(channel)))
-    return MDBX_EINVAL;
-  int rc = dxb_storage_page_io_validate(storage, pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_byte_io_from_page(pages, bytes);
-}
-
 static inline uint64_t dxb_storage_bytes2pgno(const dxb_storage_t *storage, uint64_t bytes) {
   return bytes >> dxb_storage_pagesize_ln(storage);
 }
@@ -21374,18 +21364,12 @@ static inline bool dxb_storage_write_queue_is_empty(dxb_storage_t *storage) {
   return osal_ioring_used(dxb_storage_write_queue(storage)) == 0;
 }
 
-static inline int dxb_storage_prepare_write_queue(dxb_storage_t *storage, size_t items, size_t bytes) {
-  return osal_ioring_prepare(dxb_storage_write_queue(storage), items, bytes);
-}
-
-static inline int dxb_storage_prepare_write_queue_page_span(dxb_storage_t *storage, size_t items,
-                                                           enum dxb_io_channel channel,
-                                                           const dxb_page_io_t *io) {
-  dxb_byte_io_t bytes;
-  int rc = dxb_storage_write_bytes_from_page_span(storage, channel, io, &bytes);
+static inline int dxb_storage_prepare_write_queue_bytes(dxb_storage_t *storage, size_t items,
+                                                       const dxb_byte_io_t *io) {
+  int rc = dxb_storage_byte_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return dxb_storage_prepare_write_queue(storage, items, ceil_powerof2(bytes.bytes, globals.sys_pagesize));
+  return osal_ioring_prepare(dxb_storage_write_queue(storage), items, ceil_powerof2(io->bytes, globals.sys_pagesize));
 }
 
 static inline void dxb_storage_reset_write_queue(dxb_storage_t *storage) {
@@ -21399,15 +21383,6 @@ static inline int dxb_storage_add_queued_bytes(dxb_storage_t *storage, const dxb
   if (unlikely(io->offset > SIZE_MAX))
     return MDBX_EINVAL;
   return osal_ioring_add(dxb_storage_write_queue(storage), io, data);
-}
-
-static inline int dxb_storage_add_queued_page_span(dxb_storage_t *storage, enum dxb_io_channel channel,
-                                                  const dxb_page_io_t *io, void *data) {
-  dxb_byte_io_t bytes;
-  int rc = dxb_storage_write_bytes_from_page_span(storage, channel, io, &bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_add_queued_bytes(storage, &bytes, data);
 }
 
 static inline void dxb_storage_walk_write_queue(dxb_storage_t *storage, iov_ctx_t *ctx,
@@ -34685,12 +34660,18 @@ int iov_init(MDBX_txn *const txn, iov_ctx_t *ctx, size_t items, size_t npages, e
   ctx->env = txn->env;
   ctx->storage = &ctx->env->dxb_storage;
   ctx->channel = channel;
+  if (unlikely(!dxb_storage_io_channel_valid(channel)))
+    return ctx->err = MDBX_EINVAL;
   eASSERT0(ctx->env, dxb_storage_iov_channel_is_ready(ctx->storage, channel));
   dxb_page_io_t queue_pages;
   ctx->err = dxb_storage_page_io(ctx->storage, 0, npages, &queue_pages);
   if (unlikely(ctx->err != MDBX_SUCCESS))
     return ctx->err;
-  ctx->err = dxb_storage_prepare_write_queue_page_span(ctx->storage, items, channel, &queue_pages);
+  dxb_byte_io_t queue_bytes;
+  ctx->err = dxb_storage_byte_io_from_page(&queue_pages, &queue_bytes);
+  if (unlikely(ctx->err != MDBX_SUCCESS))
+    return ctx->err;
+  ctx->err = dxb_storage_prepare_write_queue_bytes(ctx->storage, items, &queue_bytes);
   if (likely(ctx->err == MDBX_SUCCESS)) {
 #if MDBX_NEED_WRITTEN_RANGE
     ctx->flush_begin = MAX_PAGENO;
@@ -34783,11 +34764,18 @@ int iov_page(MDBX_txn *txn, iov_ctx_t *ctx, page_t *dp, size_t npages) {
 
   dp->txnid = txn->txnid;
   cASSERT0(txn, is_spilled(txn, dp));
+  cASSERT0(txn, dxb_storage_io_channel_valid(ctx->channel));
+  if (unlikely(!dxb_storage_io_channel_valid(ctx->channel)))
+    return ctx->err = MDBX_EINVAL;
   dxb_page_io_t queued_pages;
   int err = dxb_storage_page_io(ctx->storage, dp->pgno, npages, &queued_pages);
   if (unlikely(err != MDBX_SUCCESS))
     return ctx->err = err;
-  err = dxb_storage_add_queued_page_span(ctx->storage, ctx->channel, &queued_pages, dp);
+  dxb_byte_io_t queued_bytes;
+  err = dxb_storage_byte_io_from_page(&queued_pages, &queued_bytes);
+  if (unlikely(err != MDBX_SUCCESS))
+    return ctx->err = err;
+  err = dxb_storage_add_queued_bytes(ctx->storage, &queued_bytes, dp);
   if (unlikely(err != MDBX_SUCCESS)) {
     ctx->err = err;
     if (unlikely(err != MDBX_RESULT_TRUE)) {
@@ -34797,7 +34785,7 @@ int iov_page(MDBX_txn *txn, iov_ctx_t *ctx, page_t *dp, size_t npages) {
     err = iov_write(ctx);
     cASSERT0(txn, iov_empty(ctx));
     if (likely(err == MDBX_SUCCESS)) {
-      err = dxb_storage_add_queued_page_span(ctx->storage, ctx->channel, &queued_pages, dp);
+      err = dxb_storage_add_queued_bytes(ctx->storage, &queued_bytes, dp);
       if (unlikely(err != MDBX_SUCCESS)) {
         iov_complete(ctx);
         return ctx->err = err;
