@@ -20467,9 +20467,10 @@ static inline bool page_cache_can_reuse(const MDBX_txn *txn) {
   return (txn->flags & txn_ro_both) != 0;
 }
 
-static inline bool page_cache_entry_can_reuse(const page_cache_entry_t *entry, const pgno_t pgno,
+static inline bool page_cache_entry_can_reuse(const page_cache_entry_t *entry, const dxb_page_io_t *request,
                                               const txnid_t snapshot) {
-  if (!entry->reusable || entry->io.pgno != pgno || entry->snapshot_txnid != snapshot)
+  ASSERT(request->npages == 1);
+  if (!entry->reusable || entry->io.pgno != request->pgno || entry->snapshot_txnid != snapshot)
     return false;
 
   if (entry->pins == 0)
@@ -20488,14 +20489,15 @@ static inline pgr_t dxb_storage_make_cached_pgr(page_cache_entry_t *entry) {
   return ret;
 }
 
-static pgr_t dxb_storage_lookup_cached_page(dxb_storage_t *storage, const pgno_t pgno, const txnid_t snapshot,
+static pgr_t dxb_storage_lookup_cached_page(dxb_storage_t *storage, const dxb_page_io_t *request,
+                                            const txnid_t snapshot,
                                             const bool reusable) {
   if (!reusable)
     return pgr_error(MDBX_RESULT_TRUE);
 
   page_cache_lock(storage);
   for (page_cache_entry_t *entry = storage->page_cache.entries; entry; entry = entry->next) {
-    if (page_cache_entry_can_reuse(entry, pgno, snapshot)) {
+    if (page_cache_entry_can_reuse(entry, request, snapshot)) {
       entry->pins += 1;
       entry->owner->pinned += 1;
       pgr_t ret = dxb_storage_make_cached_pgr(entry);
@@ -20507,24 +20509,22 @@ static pgr_t dxb_storage_lookup_cached_page(dxb_storage_t *storage, const pgno_t
   return pgr_error(MDBX_RESULT_TRUE);
 }
 
-static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, const pgno_t pgno, const txnid_t snapshot,
+static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, const dxb_page_io_t *request,
+                                          const txnid_t snapshot,
                                           const bool reusable, const bool tracked) {
   page_cache_entry_t *entry = osal_calloc(1, sizeof(*entry));
   if (unlikely(!entry))
     return pgr_error(MDBX_ENOMEM);
 
-  int err = dxb_storage_page_io(storage, pgno, 1, &entry->io);
-  if (unlikely(err != MDBX_SUCCESS))
-    goto bailout;
-
   const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
   entry->owner = tracked ? &storage->page_cache : nullptr;
   entry->storage = storage;
+  entry->io = *request;
   entry->snapshot_txnid = snapshot;
   entry->pins = 1;
   entry->pagesize_ln = pagesize_ln;
   entry->reusable = reusable;
-  err = osal_memalign_alloc(globals.sys_pagesize, entry->io.bytes, (void **)&entry->page);
+  int err = osal_memalign_alloc(globals.sys_pagesize, entry->io.bytes, (void **)&entry->page);
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
@@ -20584,12 +20584,17 @@ static pgr_t page_cache_read(MDBX_txn *txn, const pgno_t pgno, const bool track_
   dxb_storage_t *const storage = &env->dxb_storage;
   const bool reusable = page_cache_can_reuse(txn);
   const txnid_t snapshot = reusable ? txn_basis_snapshot(txn) : 0;
-  pgr_t cached = dxb_storage_lookup_cached_page(storage, pgno, snapshot, reusable);
+  dxb_page_io_t request;
+  int err = dxb_storage_page_io(storage, pgno, 1, &request);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  pgr_t cached = dxb_storage_lookup_cached_page(storage, &request, snapshot, reusable);
   if (cached.err == MDBX_SUCCESS)
     return cached;
 
   const bool tracked = reusable || track_private || CHECKS0_ENABLED();
-  return dxb_storage_read_cached_page(storage, pgno, snapshot, reusable, tracked);
+  return dxb_storage_read_cached_page(storage, &request, snapshot, reusable, tracked);
 }
 
 static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr_t *pgr) {

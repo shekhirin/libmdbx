@@ -142,7 +142,10 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   storage operations that fill or invalidate them. Cache miss fills and
   overflow-span materialization now pass the stored descriptor directly into
   the storage read helper, so the cache entry's descriptor is also the actual
-  read request shape rather than a parallel bookkeeping copy.
+  read request shape rather than a parallel bookkeeping copy. The page-cache
+  read boundary now constructs that checked request descriptor before lookup,
+  so cache hits, miss fills, and future async submission share the same
+  storage-owned request object.
   Readahead plus data-file tail discard paths now
   use fd-backed advice/discard through storage; an earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
@@ -473,9 +476,11 @@ The exact representation can differ, but the contract must be explicit:
    entries so ownership checks still work. Cache entries store the same
    `dxb_page_io_t` descriptor used by storage reads/writes, so overlap
    invalidation and large-page expansion no longer maintain separate
-   pgno/span/byte fields. Cache miss fills and overflow-span materialization
-   submit reads through that descriptor. Fast key/value cache hits now
-   materialize through the explicit page cache. The remaining read-cache work is
+   pgno/span/byte fields. `page_cache_read()` now builds a checked
+   single-page request descriptor before cache lookup, and cache miss fills plus
+   overflow-span materialization submit reads through descriptors. Fast
+   key/value cache hits now materialize through the explicit page cache. The
+   remaining read-cache work is
    stronger eviction/invalidation policy, reducing over-retention in cursorless
    public reads, and moving more value lifetime decisions to stable cache-owned
    references that can be pinned before returning.
@@ -3644,6 +3649,22 @@ forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the
 six focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.103`
 batch, `1.151` crud, `0.995` iterate, `0.993` get, and `1.076` delete.
+
+A later cache-read request cleanup moved descriptor construction to the
+`page_cache_read()` boundary. Lookup and miss-fill helpers now receive the same
+checked single-page `dxb_page_io_t` request instead of raw `pgno`, so cache-hit
+matching, miss allocation, and the eventual storage read use one page-I/O
+shape. This keeps the public API synchronous while making the read-cache entry
+point closer to an async request submission boundary. Verification passed stale
+pgno-based cache-read scans, stale data-file mmap scans across the shipped core
+sources, `git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.099` batch, `1.161` crud, `0.971` iterate, `0.976`
+get, and `1.087` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
