@@ -35496,43 +35496,50 @@ void page_shadow_release(MDBX_env *env, page_t *dp, size_t npages) {
   }
 }
 
+static void page_kill_writev(dxb_storage_t *storage, pgno_t *pgno, struct iovec *iov, size_t n) {
+  if (unlikely(n == 0))
+    return;
+
+  dxb_page_io_t killed_pages;
+  dxb_write_io_t killed_io;
+  if (likely(dxb_storage_page_io(storage, *pgno, n, &killed_pages) == MDBX_SUCCESS &&
+             dxb_storage_write_io_from_page(storage, dxb_io_data, &killed_pages, &killed_io) == MDBX_SUCCESS)) {
+    dxb_storage_writev_pages(storage, &killed_io, iov, n);
+    *pgno = killed_pages.end_pgno;
+  }
+}
+
 __cold static void page_kill(MDBX_txn *txn, page_t *mp, pgno_t pgno, size_t npages) {
   MDBX_env *const env = txn->env;
   dxb_storage_t *const storage = &env->dxb_storage;
   DEBUG("kill %zu page(s) %" PRIaPGNO, npages, pgno);
   eASSERT0(env, pgno >= NUM_METAS && npages);
   if (!is_frozen(txn, mp)) {
-    const size_t bytes = (size_t)dxb_storage_npages2bytes(storage, npages);
-    memset(mp, -1, bytes);
-    mp->pgno = pgno;
     dxb_page_io_t killed_pages;
     dxb_write_io_t killed_io;
     if (likely(dxb_storage_page_io(storage, pgno, npages, &killed_pages) == MDBX_SUCCESS &&
-               dxb_storage_write_io_from_page(storage, dxb_io_data, &killed_pages, &killed_io) == MDBX_SUCCESS))
+               dxb_storage_write_io_from_page(storage, dxb_io_data, &killed_pages, &killed_io) == MDBX_SUCCESS)) {
+      memset(mp, -1, killed_pages.bytes);
+      mp->pgno = pgno;
       dxb_storage_write_pages(storage, &killed_io, mp);
+    }
   } else {
+    dxb_page_io_t aux_page;
+    if (unlikely(dxb_storage_page_io(storage, pgno, 1, &aux_page) != MDBX_SUCCESS))
+      return;
     struct iovec iov[MDBX_AUXILARY_IOV_MAX];
-    iov[0].iov_len = dxb_storage_pagesize(storage);
+    iov[0].iov_len = aux_page.bytes;
     iov[0].iov_base = ptr_disp(env->page_auxbuf, iov[0].iov_len);
     pgno_t iov_pgno = pgno;
     size_t n = 1;
     while (--npages) {
       iov[n] = iov[0];
       if (++n == MDBX_AUXILARY_IOV_MAX) {
-        dxb_page_io_t killed_pages;
-        dxb_write_io_t killed_io;
-        if (likely(dxb_storage_page_io(storage, iov_pgno, MDBX_AUXILARY_IOV_MAX, &killed_pages) == MDBX_SUCCESS &&
-                   dxb_storage_write_io_from_page(storage, dxb_io_data, &killed_pages, &killed_io) == MDBX_SUCCESS))
-          dxb_storage_writev_pages(storage, &killed_io, iov, MDBX_AUXILARY_IOV_MAX);
-        iov_pgno += MDBX_AUXILARY_IOV_MAX;
+        page_kill_writev(storage, &iov_pgno, iov, n);
         n = 0;
       }
     }
-    dxb_page_io_t killed_pages;
-    dxb_write_io_t killed_io;
-    if (likely(dxb_storage_page_io(storage, iov_pgno, n, &killed_pages) == MDBX_SUCCESS &&
-               dxb_storage_write_io_from_page(storage, dxb_io_data, &killed_pages, &killed_io) == MDBX_SUCCESS))
-      dxb_storage_writev_pages(storage, &killed_io, iov, n);
+    page_kill_writev(storage, &iov_pgno, iov, n);
   }
 }
 

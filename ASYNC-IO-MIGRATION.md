@@ -5051,6 +5051,24 @@ focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
 The paired benchmark gate passed with forced/default ratios of `1.115` batch,
 `1.171` crud, `1.120` iterate, `0.957` get, and `1.081` delete.
 
+A later killed-page descriptor cleanup added `page_kill_writev()` so frozen
+kill-page auxiliary writev batches build and advance from checked
+`dxb_page_io_t` descriptors. Non-frozen `page_kill()` writes now use the checked
+kill-span descriptor's byte length for payload poisoning before writing through
+the same descriptor, while frozen writes use a one-page descriptor for auxiliary
+buffer sizing and chunk descriptors for writev submission/next-page advancement.
+Verification passed `git diff --check`, source scans proving the targeted
+`page_kill()` raw `dxb_storage_npages2bytes(storage, npages)`,
+`dxb_storage_pagesize(storage)` iov sizing, and `iov_pgno +=` chunk advancement
+are gone, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.144` batch, `1.173` crud, `1.020` iterate, `1.009`
+get, and `1.080` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
