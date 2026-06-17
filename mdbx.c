@@ -20869,17 +20869,6 @@ static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_p
   page_cache_unlock(storage);
 }
 
-static void dxb_storage_invalidate_cached_bytes(dxb_storage_t *storage, const dxb_byte_io_t *io,
-                                                bool include_reusable) {
-  if (io->bytes == 0)
-    return;
-
-  dxb_page_io_t pages;
-  const int err = dxb_storage_page_io_from_bytes(storage, io, &pages);
-  if (likely(err == MDBX_SUCCESS))
-    dxb_storage_invalidate_cached_io(storage, &pages, include_reusable);
-}
-
 static inline bool page_cache_can_reuse(const MDBX_txn *txn) {
   return (txn->flags & txn_ro_both) != 0;
 }
@@ -21612,13 +21601,13 @@ static int dxb_storage_discard_range(dxb_storage_t *storage, const dxb_discard_i
   case dxb_discard_remove: {
     rc = dxb_storage_discard_remove_range(storage, &io->bytes);
     if (rc == MDBX_SUCCESS)
-      dxb_storage_invalidate_cached_bytes(storage, &io->bytes, true);
+      dxb_storage_invalidate_cached_io(storage, &io->pages, true);
     return rc;
   }
   case dxb_discard_remove_or_clean: {
     rc = dxb_storage_discard_remove_range(storage, &io->bytes);
     if (rc == MDBX_SUCCESS)
-      dxb_storage_invalidate_cached_bytes(storage, &io->bytes, true);
+      dxb_storage_invalidate_cached_io(storage, &io->pages, true);
     return (rc == MDBX_RESULT_TRUE) ? dxb_storage_discard_clean_range(storage, &io->bytes) : rc;
   }
   }
@@ -21852,8 +21841,6 @@ static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel c
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  if (dxb_io_channel_is_data(channel))
-    dxb_storage_invalidate_cached_bytes(storage, io, false);
   return MDBX_SUCCESS;
 }
 
@@ -21882,7 +21869,12 @@ static int dxb_storage_write_pages(dxb_storage_t *storage, const dxb_write_io_t 
     return rc;
   if (unlikely(checked.offset != io->bytes.offset || checked.bytes != io->bytes.bytes))
     return MDBX_EINVAL;
-  return dxb_storage_write_bytes(storage, io->channel, &io->bytes, buf);
+  rc = dxb_storage_write_bytes(storage, io->channel, &io->bytes, buf);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_storage_invalidate_written_io(storage, io);
+  return MDBX_SUCCESS;
 }
 
 static int dxb_storage_iov_bytes(const struct iovec *iov, size_t sgvcnt, size_t *bytes) {
@@ -21958,7 +21950,10 @@ static int dxb_storage_set_filesize_io(dxb_storage_t *storage, const dxb_filesiz
   if (target->bytes < old_filesize) {
     const uint64_t stale_bytes64 = old_filesize - target->bytes;
     const dxb_byte_io_t stale = {target->bytes, stale_bytes64 > SIZE_MAX ? SIZE_MAX : (size_t)stale_bytes64};
-    dxb_storage_invalidate_cached_bytes(storage, &stale, true);
+    dxb_page_io_t stale_pages;
+    const int err = dxb_storage_page_io_from_bytes(storage, &stale, &stale_pages);
+    if (likely(err == MDBX_SUCCESS))
+      dxb_storage_invalidate_cached_io(storage, &stale_pages, true);
   }
   dxb_storage_set_filesize(storage, target);
   return MDBX_SUCCESS;

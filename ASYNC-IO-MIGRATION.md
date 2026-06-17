@@ -4374,6 +4374,27 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.113` batch, `1.177`
 crud, `0.876` iterate, `0.982` get, and `1.075` delete.
 
+A later cache-invalidation descriptor cleanup removed the byte-to-page
+invalidation helper from the storage cache boundary. Page writes now invalidate
+through their already validated `dxb_write_io_t` page descriptor after the
+single-buffer write succeeds, matching vector page writes. Destructive discard
+paths invalidate through the validated `dxb_discard_io_t` page span, and
+filesize shrink invalidation builds one page descriptor for the stale tail
+before entering the page-cache invalidator. This keeps cache eviction keyed by
+the same page request shapes used by reads, writes, copies, and discards,
+instead of re-deriving page spans from byte requests at the final cache
+boundary. Verification passed `git diff --check`, source scans proving
+`dxb_storage_invalidate_cached_bytes()` is gone and page/discard/write
+invalidation routes through `dxb_storage_invalidate_cached_io()`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.097` batch, `1.197` crud, `1.067` iterate, `1.009`
+get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
