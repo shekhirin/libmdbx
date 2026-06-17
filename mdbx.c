@@ -9282,8 +9282,30 @@ static inline MDBX_cache_result_t cache_error(int err) {
   return cache_result(err, MDBX_CACHE_ERROR);
 }
 
-static inline int cache_offset_from_ref(const dxb_storage_t *storage, const page_ref_t *ref, const MDBX_val *data,
-                                        size_t *offset) {
+static inline bool cache_io_fits_public_entry(const dxb_byte_io_t *io) {
+  return io->offset <= SIZE_MAX && io->bytes <= UINT32_MAX;
+}
+
+static inline int cache_store_entry_io(MDBX_cache_entry_t *entry, const dxb_byte_io_t *io, txnid_t trunk_txnid,
+                                       uint64_t confirmed_txnid) {
+  if (unlikely(!cache_io_fits_public_entry(io)))
+    return MDBX_RESULT_TRUE;
+
+  entry->offset = (size_t)io->offset;
+  entry->length = (uint32_t)io->bytes;
+  entry->trunk_txnid = trunk_txnid;
+  entry->last_confirmed_txnid = confirmed_txnid;
+  return MDBX_SUCCESS;
+}
+
+static inline int cache_entry_io(const MDBX_cache_entry_t *entry, dxb_byte_io_t *io) {
+  if (!entry->offset)
+    return MDBX_NOTFOUND;
+  return dxb_storage_byte_io(entry->offset, entry->length, io);
+}
+
+static inline int cache_value_io_from_ref(const dxb_storage_t *storage, const page_ref_t *ref, const MDBX_val *data,
+                                          dxb_byte_io_t *io) {
   if (!ref->page || !data->iov_base)
     return MDBX_NOTFOUND;
 
@@ -9295,24 +9317,23 @@ static inline int cache_offset_from_ref(const dxb_storage_t *storage, const page
   if ((size_t)inside > span || data->iov_len > span - (size_t)inside)
     return MDBX_NOTFOUND;
 
-  *offset = (size_t)dxb_storage_pgno2bytes(storage, ref->pgno) + (size_t)inside;
-  return MDBX_SUCCESS;
+  return dxb_storage_byte_io(dxb_storage_pgno2bytes(storage, ref->pgno) + (size_t)inside, data->iov_len, io);
 }
 
-static int cache_value_offset(const MDBX_cursor *mc, const MDBX_val *data, size_t *offset) {
+static int cache_value_io(const MDBX_cursor *mc, const MDBX_val *data, dxb_byte_io_t *io) {
   const dxb_storage_t *const storage = &mc->txn->env->dxb_storage;
-  int err = cache_offset_from_ref(storage, &mc->value_ref, data, offset);
+  int err = cache_value_io_from_ref(storage, &mc->value_ref, data, io);
   if (err == MDBX_SUCCESS)
     return MDBX_SUCCESS;
 
   if (mc->top >= 0) {
-    err = cache_offset_from_ref(storage, &mc->pgref[mc->top], data, offset);
+    err = cache_value_io_from_ref(storage, &mc->pgref[mc->top], data, io);
     if (err == MDBX_SUCCESS)
       return MDBX_SUCCESS;
   }
 
   for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i) {
-    err = cache_offset_from_ref(storage, &mc->pgref[i], data, offset);
+    err = cache_value_io_from_ref(storage, &mc->pgref[i], data, io);
     if (err == MDBX_SUCCESS)
       return MDBX_SUCCESS;
   }
@@ -9327,17 +9348,22 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
   }
 
   const dxb_storage_t *const storage = &txn->env->dxb_storage;
-  const size_t used_bytes = (size_t)dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated);
-  if (entry->offset >= used_bytes || entry->length > used_bytes - entry->offset)
+  dxb_byte_io_t value_io;
+  int err = cache_entry_io(entry, &value_io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  const uint64_t used_bytes = dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated);
+  if (value_io.offset >= used_bytes || value_io.bytes > used_bytes - value_io.offset)
     return MDBX_INVALID;
 
-  const pgno_t pgno = (pgno_t)dxb_storage_bytes2pgno(storage, entry->offset);
+  const pgno_t pgno = (pgno_t)dxb_storage_bytes2pgno(storage, value_io.offset);
   if (pgno < NUM_METAS || pgno >= txn->geo.first_unallocated)
     return MDBX_INVALID;
 
-  const size_t page_offset = entry->offset - (size_t)dxb_storage_pgno2bytes(storage, pgno);
+  const size_t page_offset = (size_t)(value_io.offset - dxb_storage_pgno2bytes(storage, pgno));
   dxb_page_io_t request;
-  int err = dxb_storage_page_io(storage, pgno, 1, &request);
+  err = dxb_storage_page_io(storage, pgno, 1, &request);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
@@ -9359,7 +9385,7 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
   }
 
   const size_t span = (size_t)dxb_storage_npages2bytes(storage, pgr.ref.npages ? pgr.ref.npages : 1);
-  if (unlikely(page_offset > span || entry->length > span - page_offset)) {
+  if (unlikely(page_offset > span || value_io.bytes > span - page_offset)) {
     err = MDBX_INVALID;
     goto bailout;
   }
@@ -9374,7 +9400,7 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
         cursor_ref_retain(nullptr, pgr.ref);
 
   data->iov_base = ptr_disp(pgr.page, page_offset);
-  data->iov_len = entry->length;
+  data->iov_len = value_io.bytes;
 
 bailout:
   pgr_release(nullptr, &pgr);
@@ -9440,18 +9466,21 @@ static MDBX_cache_result_t cache_get_nommap_refresh(const MDBX_txn *txn, MDBX_db
         goto bailout;
       result = cache_result(MDBX_SUCCESS, MDBX_CACHE_DIRTY);
     } else {
-      size_t offset = 0;
-      err = cache_value_offset(&cx.outer, data, &offset);
+      dxb_byte_io_t value_io;
+      err = cache_value_io(&cx.outer, data, &value_io);
       if (unlikely(err != MDBX_SUCCESS))
         goto bailout;
       err = cursor_couple_capture_txn_pins(&cx);
       if (unlikely(err != MDBX_SUCCESS))
         goto bailout;
-      entry->offset = offset;
-      entry->length = (uint32_t)data->iov_len;
-      entry->trunk_txnid = trunk_txnid;
-      entry->last_confirmed_txnid = committed_snapshot_txnid;
-      result = cache_result(MDBX_SUCCESS, MDBX_CACHE_REFRESHED);
+      err = cache_store_entry_io(entry, &value_io, trunk_txnid, committed_snapshot_txnid);
+      if (unlikely(err == MDBX_RESULT_TRUE)) {
+        err = MDBX_SUCCESS;
+        result = cache_result(MDBX_SUCCESS, MDBX_CACHE_UNABLE);
+      } else if (unlikely(err != MDBX_SUCCESS))
+        goto bailout;
+      else
+        result = cache_result(MDBX_SUCCESS, MDBX_CACHE_REFRESHED);
     }
   } else if (err == MDBX_NOTFOUND) {
     data->iov_base = nullptr;

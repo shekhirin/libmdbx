@@ -4111,6 +4111,27 @@ CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
 passed with forced/default ratios of `1.154` batch, `1.154` crud, `1.200`
 iterate, `0.957` get, and `1.087` delete.
 
+A later public-cache descriptor cleanup kept `MDBX_cache_entry_t` unchanged but
+added internal conversion helpers for its public data-file offset/length pair.
+Cache-hit materialization now adapts an entry into a checked `dxb_byte_io_t`
+before validating the used range, deriving the containing page request, and
+returning the pinned value bytes. Cache refresh now derives a `dxb_byte_io_t`
+from the cursor-retained value reference, then stores it back to the public
+entry only when the descriptor fits the public offset/length fields; otherwise
+the already-found value is returned as `MDBX_CACHE_UNABLE` instead of recording
+a lossy cache entry. The migration smoke source explicitly covers
+`mdbx_cache_get()` refresh and `mdbx_cache_get_SingleThreaded()` hit paths.
+Verification passed `git diff --check`, source scans proving the old
+`cache_offset_from_ref()` and `cache_value_offset()` helpers are gone from
+`mdbx.c`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke`
+CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
+passed with forced/default ratios of `1.120` batch, `1.148` crud, `1.242`
+iterate, `1.406` get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
