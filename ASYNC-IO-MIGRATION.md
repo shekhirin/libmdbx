@@ -3296,6 +3296,22 @@ six focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.125`
 batch, `1.185` crud, `1.004` iterate, `0.984` get, and `1.082` delete.
 
+A later coherency storage-geometry cleanup moved root-page txnid probe offsets
+and transaction-head required-size checks onto `dxb_storage_t`. The root probe
+now derives the `page_t.txnid` byte offset through a storage-owned page-field
+helper before issuing the explicit read, and `coherency_fetch_head()` refreshes
+the current storage view using storage page conversion instead of env-local
+byte math. Verification passed stale coherency conversion scans, stale data-file
+mmap and removed sync-adapter scans across the shipped core sources,
+`git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.091` batch, `1.150` crud, `1.128` iterate, `0.981`
+get, and `1.084` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

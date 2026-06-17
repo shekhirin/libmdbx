@@ -1354,6 +1354,11 @@ static inline uint64_t dxb_storage_bytes2pgno(const dxb_storage_t *storage, uint
   return bytes >> dxb_storage_pagesize_ln(storage);
 }
 
+static inline uint64_t dxb_storage_page_field_offset(const dxb_storage_t *storage, pgno_t pgno,
+                                                     size_t field_offset) {
+  return dxb_storage_pgno2bytes(storage, pgno) + field_offset;
+}
+
 static inline size_t dxb_storage_os_alignment_unit(void) {
   return MDBX_ROUNDING_TO_ALLOCATION_GRANULARITY ? globals.sys_allocation_granularity : globals.sys_pagesize;
 }
@@ -14489,10 +14494,11 @@ static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, co
     return true;
   probe->present = true;
 
-  const uint64_t offset = pgno2bytes(env, root_pgno) + offsetof(page_t, txnid);
-  const bool storage_probe_possible = dxb_storage_contains_range(&env->dxb_storage, offset, sizeof(probe->txnid));
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  const uint64_t offset = dxb_storage_page_field_offset(storage, root_pgno, offsetof(page_t, txnid));
+  const bool storage_probe_possible = dxb_storage_contains_range(storage, offset, sizeof(probe->txnid));
   if (likely(storage_probe_possible)) {
-    const int err = dxb_storage_read(&env->dxb_storage, &probe->txnid, sizeof(probe->txnid), offset);
+    const int err = dxb_storage_read(storage, &probe->txnid, sizeof(probe->txnid), offset);
     if (unlikely(err != MDBX_SUCCESS)) {
       if (report)
         WARNING("catch %s-db root %" PRIaPGNO " read error %d for meta_txnid %" PRIaTXN " %s", name, root_pgno, err,
@@ -14618,9 +14624,10 @@ __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *t
   VALGRIND_MAKE_MEM_UNDEFINED(txn->dbs + CORE_DBS, txn->env->max_dbi - CORE_DBS);
   txn->canary = head.ptr_c->canary;
 
-  const size_t required_bytes = pgno2bytes(txn->env, txn->geo.first_unallocated);
-  if (unlikely(required_bytes > dxb_storage_current_size(&txn->env->dxb_storage))) {
-    const int err = dxb_storage_fetch_filesize_if_current_lacks(&txn->env->dxb_storage, required_bytes);
+  dxb_storage_t *const storage = &txn->env->dxb_storage;
+  const size_t required_bytes = (size_t)dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated);
+  if (unlikely(required_bytes > dxb_storage_current_size(storage))) {
+    const int err = dxb_storage_fetch_filesize_if_current_lacks(storage, required_bytes);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
