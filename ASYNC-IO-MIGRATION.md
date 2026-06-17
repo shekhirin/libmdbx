@@ -4395,6 +4395,23 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.097` batch, `1.197` crud, `1.067` iterate, `1.009`
 get, and `1.073` delete.
 
+A later storage-size descriptor validation cleanup added
+`dxb_storage_size_io_validate()` so setup and resize executors rebuild and
+validate their `dxb_size_io_t` request before using its current/limit values to
+set file length, refresh observed filesize, or mutate cached storage geometry.
+This keeps the storage geometry boundary aligned with the descriptor-validation
+pattern used by read, write, sync, discard, copy, outbound, and coverage
+requests. Verification passed `git diff --check`, source scans proving
+`dxb_storage_setup_size()` and `dxb_storage_resize_size()` validate
+`dxb_size_io_t` before use, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.131` batch, `1.167` crud, `0.973` iterate,
+`0.991` get, and `1.078` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

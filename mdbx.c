@@ -1462,6 +1462,16 @@ static inline int dxb_storage_size_io(size_t current, size_t limit, dxb_size_io_
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_size_io_validate(const dxb_size_io_t *io) {
+  dxb_size_io_t checked;
+  int rc = dxb_storage_size_io(io->current, io->limit, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.current != io->current || checked.limit != io->limit))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_filesize_io(uint64_t bytes, dxb_filesize_io_t *io) {
   io->bytes = bytes;
   return MDBX_SUCCESS;
@@ -22121,8 +22131,10 @@ static int dxb_storage_sendfile_to_fd(const dxb_storage_t *storage, const dxb_ou
 
 static int dxb_storage_setup_size(dxb_storage_t *storage, const dxb_size_io_t *target, const unsigned flags,
                                   const unsigned options) {
-  int rc;
   ASSERT(dxb_storage_pagesize_ln(storage) > 0);
+  int rc = dxb_storage_size_io_validate(target);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   if ((flags & MDBX_RDONLY) == 0 && (options & MMAP_OPTION_SETLENGTH) != 0) {
     dxb_filesize_io_t filesize;
     rc = dxb_storage_filesize_io(target->current, &filesize);
@@ -22142,7 +22154,11 @@ static int dxb_storage_setup_size(dxb_storage_t *storage, const dxb_size_io_t *t
 }
 
 static int dxb_storage_resize_size(dxb_storage_t *storage, const dxb_size_io_t *target, const unsigned flags) {
-  int rc = dxb_storage_fetch_filesize(storage);
+  int rc = dxb_storage_size_io_validate(target);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  rc = dxb_storage_fetch_filesize(storage);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
