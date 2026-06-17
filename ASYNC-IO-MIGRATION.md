@@ -133,9 +133,10 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   use fd-backed advice/discard through storage; an earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
   branches.
-  Data-page sync callers now use `dxb_sync_data()` instead of choosing
-  `msync()` versus `fsync()` themselves, and explicit meta-write call sites use
-  `dxb_sync_meta_written()` for the existing `meta_fd == data_fd` sync rule.
+  Data-page sync callers now use explicit range sync through storage instead of
+  choosing `msync()` versus `fsync()` themselves, and explicit meta-write call
+  sites use `dxb_sync_meta_written()` for the existing `meta_fd == data_fd`
+  sync rule.
 - `MDBX_env` now contains an env-owned `dxb_storage_t` block for the data, meta,
   and dsync fds, `filesize`, `current`, and `limit` state, the explicit page
   cache, and the dirty-write queue. DXB helper internals and non-pointer size
@@ -246,7 +247,7 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   still uses its direct close sequence because it must preserve the existing
   fcntl lock restoration order, but the fds it closes are taken from
   `dxb_storage_t`/`env_dxb_fd()` before resetting the storage state.
-- Data-page sync now routes directly through `dxb_fsync()`/storage-fd sync;
+- Data-page sync now routes directly through storage-fd sync;
   the data-file `dxb_msync()` wrapper and its `osal_msync()` mapping branch
   have been removed.
 - `dxb_resize()` now uses `dxb_storage_resize_bytes()` for data-file
@@ -346,11 +347,12 @@ The exact representation can differ, but the contract must be explicit:
    data-file tail discard/deallocation hints now go through
    `dxb_storage_advise_range()`, `dxb_storage_prefetch_pages()`, and
    `dxb_storage_discard_range()` with explicit page geometry, using fd-backed
-   advice/discard for accepted environments. Data-page sync now
-   goes through `dxb_sync_data()`, and explicit meta writes use
+   advice/discard for accepted environments. Data-page sync now carries an
+   explicit page-range intent to storage, and explicit meta writes use
    `dxb_sync_meta_written()` for their follow-up sync decision. Defrag
-   file-range copies now go through `dxb_copy_pages()`, and the portable
-   non-compacting copy fallback reads through `dxb_read()`. `MDBX_env` now has a
+   file-range copies now go through storage-owned page-copy helpers, and the
+   portable non-compacting copy fallback reads through storage-owned byte reads.
+   `MDBX_env` now has a
    `dxb_storage_t`
    block for data/meta handle selection and file-size/current/limit state.
    Route remaining mmap-era storage state, sync/advisory operations, explicit
@@ -2941,6 +2943,23 @@ roundtrip coverage, deterministic forced tiny-cache fault injection,
 The paired `mdbx_migration_bench_lazy` gate reported forced/default ratios of
 `1.089` batch, `1.156` crud, `0.982` iterate, `0.998` get, and `1.073`
 delete.
+
+A later sync-adapter cleanup removed the env-shaped `dxb_fsync()` and
+`dxb_sync_data()` wrappers. Metadata sync paths now keep pgop accounting at the
+environment layer and call `dxb_storage_sync()` directly, while the pre-writer
+data sync path calls `dxb_sync_data_range()` with an explicit
+`dxb_sync_range_all()` range instead of passing only a page count through a
+one-call adapter. This leaves range-bearing data sync and storage-owned meta
+sync submission as the remaining explicit sync surfaces. Verification passed
+`git diff --check`, stale sync-wrapper scans, stale data-file mmap symbol scans,
+`make -f GNUmakefile mdbx_migration_smoke`, direct default and forced
+tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public CTest suite including
+migration tool roundtrip coverage, deterministic forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.123` batch, `1.178` crud, `1.045` iterate, `1.021`
+get, and `1.094` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.

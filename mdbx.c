@@ -1618,11 +1618,8 @@ static int dxb_storage_fetch_filesize_if_current_lacks(dxb_storage_t *storage, s
 MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno_t used_pgno, const pgno_t size_pgno,
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
-MDBX_INTERNAL int dxb_fsync(const MDBX_env *env, enum osal_syncmode_bits mode_bits);
 MDBX_INTERNAL int dxb_sync_data_range(const MDBX_env *env, dxb_sync_range_t range,
                                       enum osal_syncmode_bits mode_bits, unsigned flags);
-MDBX_INTERNAL int dxb_sync_data(const MDBX_env *env, size_t length_pages, enum osal_syncmode_bits mode_bits,
-                                unsigned flags);
 MDBX_INTERNAL int dxb_sync_meta_written(const MDBX_env *env, enum osal_syncmode_bits mode_bits);
 static int dxb_storage_read(const dxb_storage_t *storage, void *buf, size_t bytes, uint64_t offset);
 static int dxb_storage_write_bytes(const dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
@@ -21047,11 +21044,6 @@ static inline void dxb_note_fsync_pgop(const MDBX_env *env, enum osal_syncmode_b
     env->lck->pgops.fsync.weak += (mode_bits > MDBX_SYNC_NONE);
 }
 
-int dxb_fsync(const MDBX_env *env, enum osal_syncmode_bits mode_bits) {
-  dxb_note_fsync_pgop(env, mode_bits);
-  return dxb_storage_sync(&env->dxb_storage, mode_bits);
-}
-
 int dxb_sync_data_range(const MDBX_env *env, dxb_sync_range_t range, enum osal_syncmode_bits mode_bits,
                         unsigned flags) {
   eASSERT0(env, range.begin <= range.end);
@@ -21061,12 +21053,11 @@ int dxb_sync_data_range(const MDBX_env *env, dxb_sync_range_t range, enum osal_s
   return dxb_storage_sync_range(&env->dxb_storage, range, mode_bits);
 }
 
-int dxb_sync_data(const MDBX_env *env, size_t length_pages, enum osal_syncmode_bits mode_bits, unsigned flags) {
-  return dxb_sync_data_range(env, dxb_sync_range_all((pgno_t)length_pages), mode_bits, flags);
-}
-
 int dxb_sync_meta_written(const MDBX_env *env, enum osal_syncmode_bits mode_bits) {
-  return dxb_storage_meta_write_uses_data_sync(&env->dxb_storage) ? dxb_fsync(env, mode_bits) : MDBX_SUCCESS;
+  if (!dxb_storage_meta_write_uses_data_sync(&env->dxb_storage))
+    return MDBX_SUCCESS;
+  dxb_note_fsync_pgop(env, mode_bits);
+  return dxb_storage_sync(&env->dxb_storage, mode_bits);
 }
 
 #if MDBX_ENABLE_DXB_FAULT_INJECTION
@@ -22599,7 +22590,8 @@ retry:;
       /* pre-sync to avoid latency for writer */
       if (unsynced_pages > /* FIXME: define threshold */ 42 && (flags & MDBX_SAFE_NOSYNC) == 0) {
         eASSERT0(env, ((flags ^ env->flags) & MDBX_WRITEMAP) == 0);
-        err = dxb_sync_data(env, head.ptr_c->geometry.first_unallocated, MDBX_SYNC_DATA, flags);
+        err = dxb_sync_data_range(env, dxb_sync_range_all(head.ptr_c->geometry.first_unallocated), MDBX_SYNC_DATA,
+                                  flags);
 
         if (unlikely(err != MDBX_SUCCESS))
           return err;
@@ -28775,7 +28767,8 @@ int meta_sync(const MDBX_env *env, const meta_ptr_t head) {
    * транзакция была выполненна с флагом MDBX_NOMETASYNC. */
 
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
-  int rc = dxb_fsync(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+  dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+  int rc = dxb_storage_sync(&env->dxb_storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
 
   if (likely(rc == MDBX_SUCCESS))
     env->lck->meta_sync_txnid.weak = (uint32_t)head.txnid;
