@@ -109,11 +109,6 @@ typedef struct dxb_meta_io {
   size_t payload_bytes;
 } dxb_meta_io_t;
 
-typedef struct dxb_coverage_io {
-  dxb_byte_io_t bytes;
-  dxb_page_io_t pages;
-} dxb_coverage_io_t;
-
 typedef struct dxb_lock_io {
   uint64_t offset;
   uint64_t bytes;
@@ -1711,43 +1706,6 @@ static inline bool dxb_discard_mode_valid(enum dxb_discard_mode mode) {
   return false;
 }
 
-static inline int dxb_storage_coverage_io_from_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *bytes,
-                                                     dxb_coverage_io_t *io) {
-  io->bytes = *bytes;
-  return dxb_storage_page_io_from_bytes(storage, &io->bytes, &io->pages);
-}
-
-static inline int dxb_storage_coverage_io_from_page(const dxb_storage_t *storage, const dxb_page_io_t *pages,
-                                                    dxb_coverage_io_t *io) {
-  int rc = dxb_storage_page_io_validate(storage, pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  io->pages = *pages;
-  return dxb_storage_byte_io_from_page(&io->pages, &io->bytes);
-}
-
-static inline int dxb_storage_coverage_io_from_page_prefix(const dxb_storage_t *storage, pgno_t end_pgno,
-                                                           dxb_coverage_io_t *io) {
-  dxb_page_io_t pages;
-  int rc = dxb_storage_page_prefix_io(storage, end_pgno, &pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_coverage_io_from_page(storage, &pages, io);
-}
-
-static inline int dxb_storage_coverage_io_validate(const dxb_storage_t *storage, const dxb_coverage_io_t *io) {
-  dxb_coverage_io_t checked;
-  int rc = dxb_storage_coverage_io_from_bytes(storage, &io->bytes, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.bytes.offset != io->bytes.offset || checked.bytes.bytes != io->bytes.bytes ||
-               checked.pages.pgno != io->pages.pgno || checked.pages.end_pgno != io->pages.end_pgno ||
-               checked.pages.npages != io->pages.npages || checked.pages.offset != io->pages.offset ||
-               checked.pages.bytes != io->pages.bytes))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 static inline size_t dxb_storage_os_alignment_unit(void) {
   return MDBX_ROUNDING_TO_ALLOCATION_GRANULARITY ? globals.sys_allocation_granularity : globals.sys_pagesize;
 }
@@ -1800,12 +1758,6 @@ static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, cons
     return false;
   const uint64_t current = dxb_storage_current_size(storage);
   return io->offset <= current && io->bytes <= current - io->offset;
-}
-
-static inline bool dxb_storage_contains_coverage(const dxb_storage_t *storage, const dxb_coverage_io_t *io) {
-  if (unlikely(dxb_storage_coverage_io_validate(storage, io) != MDBX_SUCCESS))
-    return false;
-  return dxb_storage_contains_range(storage, &io->bytes);
 }
 
 static inline int dxb_storage_meta_probe_io(size_t probe_pagesize, unsigned number, dxb_byte_io_t *io) {
@@ -2131,7 +2083,7 @@ static int dxb_storage_check_readonly(const dxb_storage_t *storage, const pathch
 static inline int dxb_storage_set_filesize(dxb_storage_t *storage, const dxb_filesize_io_t *filesize);
 static inline int dxb_storage_set_current(dxb_storage_t *storage, const dxb_filesize_io_t *filesize);
 static int dxb_storage_fetch_filesize(dxb_storage_t *storage);
-static int dxb_storage_fetch_filesize_if_current_lacks(dxb_storage_t *storage, const dxb_coverage_io_t *io);
+static int dxb_storage_fetch_filesize_for_page_span_if_needed(dxb_storage_t *storage, const dxb_page_io_t *io);
 MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno_t used_pgno, const pgno_t size_pgno,
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
@@ -15116,12 +15068,9 @@ static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, co
   if (likely(err == MDBX_SUCCESS))
     err = dxb_storage_page_subrange_bytes_io(storage, &root_page, offsetof(page_t, txnid), sizeof(probe->txnid),
                                             &bytes);
-  dxb_coverage_io_t request;
-  if (likely(err == MDBX_SUCCESS))
-    err = dxb_storage_coverage_io_from_bytes(storage, &bytes, &request);
-  const bool storage_probe_possible = likely(err == MDBX_SUCCESS) && dxb_storage_contains_coverage(storage, &request);
+  const bool storage_probe_possible = likely(err == MDBX_SUCCESS) && dxb_storage_contains_range(storage, &bytes);
   if (likely(storage_probe_possible)) {
-    err = dxb_storage_read_bytes(storage, &request.bytes, &probe->txnid);
+    err = dxb_storage_read_bytes(storage, &bytes, &probe->txnid);
     if (unlikely(err != MDBX_SUCCESS)) {
       if (report)
         WARNING("catch %s-db root %" PRIaPGNO " read error %d for meta_txnid %" PRIaTXN " %s", name, root_pgno, err,
@@ -15248,13 +15197,13 @@ __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *t
   txn->canary = head.ptr_c->canary;
 
   dxb_storage_t *const storage = &txn->env->dxb_storage;
-  dxb_coverage_io_t required;
-  int err = dxb_storage_coverage_io_from_page_prefix(storage, txn->geo.first_unallocated, &required);
+  dxb_page_io_t required;
+  int err = dxb_storage_page_prefix_io(storage, txn->geo.first_unallocated, &required);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  const size_t required_bytes = required.bytes.bytes;
+  const size_t required_bytes = required.bytes;
   if (unlikely(required_bytes > dxb_storage_current_size(storage))) {
-    err = dxb_storage_fetch_filesize_if_current_lacks(storage, &required);
+    err = dxb_storage_fetch_filesize_for_page_span_if_needed(storage, &required);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
@@ -22276,11 +22225,15 @@ static int dxb_storage_fetch_filesize(dxb_storage_t *storage) {
   return dxb_storage_note_filesize(storage, &filesize);
 }
 
-static int dxb_storage_fetch_filesize_if_current_lacks(dxb_storage_t *storage, const dxb_coverage_io_t *io) {
-  int rc = dxb_storage_coverage_io_validate(storage, io);
+static int dxb_storage_fetch_filesize_for_page_span_if_needed(dxb_storage_t *storage, const dxb_page_io_t *io) {
+  int rc = dxb_storage_page_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return dxb_storage_contains_coverage(storage, io) ? MDBX_SUCCESS : dxb_storage_fetch_filesize(storage);
+  dxb_byte_io_t bytes;
+  rc = dxb_storage_byte_io_from_page(io, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_contains_range(storage, &bytes) ? MDBX_SUCCESS : dxb_storage_fetch_filesize(storage);
 }
 
 #if MDBX_USE_COPYFILERANGE

@@ -5319,6 +5319,23 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.106` batch, `1.166` crud, `1.027` iterate, `0.983`
 get, and `1.075` delete.
 
+A later coverage cleanup removed the `dxb_coverage_io_t` wrapper from the C
+source. The coherency root probe now checks and reads its byte subrange directly,
+while snapshot head refresh builds a checked page-prefix descriptor and passes
+it to `dxb_storage_fetch_filesize_for_page_span_if_needed()`, which validates the
+page span and derives the byte coverage internally before deciding whether a
+fresh on-disk filesize read is needed. Verification passed `git diff --check`,
+source scans proving the coverage wrapper, constructors, validator, coverage
+contains helper, and old filesize-refresh helper are gone from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.121` batch, `1.161` crud, `0.803` iterate, `1.049`
+get, and `1.072` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
