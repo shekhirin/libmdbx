@@ -164,9 +164,13 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   submission through `dxb_storage_write_bytes()`, and page writes adapt their
   checked `dxb_page_io_t` through that byte-write submission point. Vector page
   writes now compute their iovec span, build a `dxb_byte_io_t` at the
-  page-derived offset, and submit through `dxb_storage_writev_bytes()`. The old
-  raw `dxb_storage_read()`, `dxb_storage_write()`, and `dxb_storage_writev()`
-  helpers are gone from the C source.
+  page-derived offset, and submit through `dxb_storage_writev_bytes()`. Queued
+  dirty writes now adapt their checked page request into a checked
+  `dxb_byte_io_t` before insertion, and `osal_ioring_add()`/`osal_ioring_walk()`
+  exchange that byte request shape with dirty-write completion instead of
+  loose offset/length pairs. The old raw `dxb_storage_read()`,
+  `dxb_storage_write()`, `dxb_storage_writev()`, and
+  `dxb_storage_add_queued_write()` helpers are gone from the C source.
   Readahead plus data-file tail discard paths now
   use fd-backed advice/discard through storage; an earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
@@ -2781,8 +2785,9 @@ A later dirty-write queued-pages helper cleanup added
 `dxb_storage_add_queued_pages()` beside the byte-addressed queue helper.
 `iov_page()` now submits dirty pages by page number and page count, leaving
 page-to-offset and page-count-to-byte conversion inside the storage-owned queue
-surface. The byte-addressed `dxb_storage_add_queued_write()` remains available
-for lower-level queue internals, but dirty-page commit submission now matches
+surface. At that checkpoint the byte-addressed
+`dxb_storage_add_queued_write()` remained available for lower-level queue
+internals, but dirty-page commit submission already matched
 the storage-owned page read, write, copy, and prefetch helpers. Verification
 passed `git diff --check`, stale data-file mmap symbol scans, dirty-write
 queued-page routing scans, `make -f GNUmakefile mdbx_migration_smoke`, direct
@@ -3832,6 +3837,24 @@ shipped core sources, `make -f GNUmakefile mdbx_migration_smoke`, direct
 CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
 passed with forced/default ratios of `1.117` batch, `1.155` crud, `0.743`
 iterate, `0.814` get, and `1.071` delete.
+
+A later dirty-write queue descriptor cleanup moved `dxb_byte_io_t` into the
+internal header and changed `osal_ioring_add()` plus `osal_ioring_walk()` to
+exchange byte request descriptors. `dxb_storage_add_queued_io()` now adapts its
+checked `dxb_page_io_t` into a checked `dxb_byte_io_t` before queue insertion,
+and dirty-page completion receives that descriptor for page-number checks and
+shadow-buffer release accounting. The old raw
+`dxb_storage_add_queued_write()` helper is gone, leaving dirty-write queue
+add/walk boundaries described by the same byte request shape used by direct
+byte reads, writes, and vector writes. Verification passed `git diff --check`,
+`make -f GNUmakefile mdbx_migration_smoke`, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public migration
+CTest suite, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.094` batch, `1.167` crud, `1.171` iterate, `0.921`
+get, and `1.071` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
