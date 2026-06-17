@@ -22808,7 +22808,8 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
    */
 
   env->pid = osal_getpid();
-  int rc = dxb_storage_open_data(&env->dxb_storage, env, env->pathname.dxb,
+  dxb_storage_t *const storage = &env->dxb_storage;
+  int rc = dxb_storage_open_data(storage, env, env->pathname.dxb,
                                  (env->flags & MDBX_RDONLY) ? MDBX_OPEN_DXB_READ : MDBX_OPEN_DXB_LAZY, mode);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
@@ -22822,7 +22823,7 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   /* Set the position in files outside of the data to avoid corruption
    * due to erroneous use of file descriptors in the application code. */
   const uint64_t safe_parking_lot_offset = UINT64_C(0x7fffFFFF80000000);
-  dxb_storage_park_data(&env->dxb_storage, safe_parking_lot_offset);
+  dxb_storage_park_data(storage, safe_parking_lot_offset);
 #if defined(_WIN32) || defined(_WIN64)
   env->dxb_lock_event = CreateEventW(nullptr, true, false, nullptr);
   if (unlikely(!env->dxb_lock_event))
@@ -22831,16 +22832,16 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   if (unlikely(!env->lck_lock_event))
     return (int)GetLastError();
   if (!(env->flags & (MDBX_RDONLY | MDBX_SAFE_NOSYNC | MDBX_NOMETASYNC | MDBX_EXCLUSIVE))) {
-    rc = dxb_storage_open_overlapped(&env->dxb_storage, env, env->pathname.dxb);
+    rc = dxb_storage_open_overlapped(storage, env, env->pathname.dxb);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    dxb_storage_park_overlapped(&env->dxb_storage, safe_parking_lot_offset);
+    dxb_storage_park_overlapped(storage, safe_parking_lot_offset);
   }
 #else
   if (mode == 0) {
     /* pickup mode for lck-file */
     struct stat st;
-    rc = dxb_storage_stat(&env->dxb_storage, &st);
+    rc = dxb_storage_stat(storage, &st);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
     mode = st.st_mode;
@@ -22861,10 +22862,10 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
                       | MDBX_EXCLUSIVE
 #endif /* !Windows */
                       ))) {
-    rc = dxb_storage_open_dsync(&env->dxb_storage, env, env->pathname.dxb, (env->flags & MDBX_NOMETASYNC) == 0);
+    rc = dxb_storage_open_dsync(storage, env, env->pathname.dxb, (env->flags & MDBX_NOMETASYNC) == 0);
     if (unlikely(MDBX_IS_ERROR(rc)))
       return rc;
-    dxb_storage_park_dsync(&env->dxb_storage, safe_parking_lot_offset);
+    dxb_storage_park_dsync(storage, safe_parking_lot_offset);
   }
 
   const MDBX_env_flags_t lazy_flags = MDBX_SAFE_NOSYNC | MDBX_UTTERLY_NOSYNC | MDBX_NOMETASYNC;
@@ -22922,7 +22923,7 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   if (MDBX_IS_ERROR(dxb_rc))
     return dxb_rc;
 
-  rc = dxb_storage_check_incore(&env->dxb_storage, &env->incore);
+  rc = dxb_storage_check_incore(storage, &env->incore);
   if (env->incore) {
     NOTICE("%s", "in-core database");
   } else if (unlikely(rc != MDBX_SUCCESS)) {
@@ -22960,12 +22961,13 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
     }
   }
 
-  rc = dxb_storage_create_write_queue(&env->dxb_storage, (env->flags & MDBX_RDONLY) != 0);
+  rc = dxb_storage_create_write_queue(storage, (env->flags & MDBX_RDONLY) != 0);
   return rc;
 }
 
 __cold int env_close(MDBX_env *env, bool resurrect_after_fork) {
   const unsigned flags = env->flags;
+  dxb_storage_t *const storage = &env->dxb_storage;
   env->flags &= ~ENV_INTERNAL_FLAGS;
   if (flags & ENV_TXKEY) {
     thread_key_delete(env->me_txkey);
@@ -22984,14 +22986,14 @@ __cold int env_close(MDBX_env *env, bool resurrect_after_fork) {
   env->defer_free = nullptr;
 #endif /* MDBX_ENABLE_DBI_LOCKFREE */
 
-  dxb_storage_destroy_write_queue(&env->dxb_storage, (flags & MDBX_RDONLY) != 0);
+  dxb_storage_destroy_write_queue(storage, (flags & MDBX_RDONLY) != 0);
 
   env->lck = nullptr;
   if (env->lck_mmap.lck)
     osal_munmap(&env->lck_mmap);
 
 #if defined(_WIN32) || defined(_WIN64)
-  eASSERT0(env, !dxb_storage_has_overlapped_data_fd(&env->dxb_storage));
+  eASSERT0(env, !dxb_storage_has_overlapped_data_fd(storage));
   if (env->dxb_lock_event != INVALID_HANDLE_VALUE) {
     CloseHandle(env->dxb_lock_event);
     env->dxb_lock_event = INVALID_HANDLE_VALUE;
@@ -23007,7 +23009,7 @@ __cold int env_close(MDBX_env *env, bool resurrect_after_fork) {
   }
 #endif /* Windows */
 
-  (void)dxb_storage_close(&env->dxb_storage, (env->flags & ENV_ACTIVE) != 0);
+  (void)dxb_storage_close(storage, (env->flags & ENV_ACTIVE) != 0);
 
   if (env->lck_mmap.fd != INVALID_HANDLE_VALUE) {
     (void)osal_closefile(env->lck_mmap.fd);

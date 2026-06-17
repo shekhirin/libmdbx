@@ -3434,6 +3434,22 @@ CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.136` batch, `1.172` crud, `0.985` iterate, `0.983`
 get, and `1.087` delete.
 
+A later environment lifecycle cleanup routed data-file open and close plumbing
+through bound storage handles. `env_open()` now binds `dxb_storage_t` once for
+data, overlapped, and dsync handle open/park operations, mode/stat probing,
+incore checks, and write-queue creation. `env_close()` now uses a bound storage
+handle for write-queue destruction, overlapped-handle assertions, and data-file
+close. Verification passed stale lifecycle storage-call scans, stale data-file
+mmap and removed sync-adapter scans across the shipped core sources,
+`git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.169` batch, `1.214` crud, `0.857` iterate, `0.976`
+get, and `1.079` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
