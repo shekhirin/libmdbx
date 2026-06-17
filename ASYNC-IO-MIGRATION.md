@@ -2702,10 +2702,11 @@ get, and `1.081` delete.
 A later storage page-prefetch helper cleanup added `dxb_storage_prefetch_pages()`
 beside the byte-range advisory helper. `dxb_prefetch()` now supplies the
 environment page-size shift and delegates to storage for page-to-byte conversion
-and `dxb_advice_willneed` submission, while `dxb_advise_range()` remains the
-byte-range wrapper for callers that already operate in bytes and still owns the
-zero-length fast path. Verification passed `git diff --check`, stale data-file
-mmap symbol scans, storage prefetch routing scans, `make -f GNUmakefile
+and `dxb_advice_willneed` submission. At that checkpoint,
+`dxb_advise_range()` remained the byte-range wrapper for callers that already
+operated in bytes and still owned the zero-length fast path. Verification passed
+`git diff --check`, stale data-file mmap symbol scans, storage prefetch routing
+scans, `make -f GNUmakefile
 mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
 --build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
 the full 15-test public CTest suite including migration tool roundtrip coverage,
@@ -2794,6 +2795,20 @@ deterministic forced tiny-cache fault injection, `cmake --build
 @cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
 `mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.144`
 batch, `1.184` crud, `0.997` iterate, `0.972` get, and `1.068` delete.
+
+A later advisory-range cleanup moved the zero-length fast path into
+`dxb_storage_advise_range()`. The env-shaped `dxb_advise_range()` now only
+delegates byte ranges to storage, so advisory behavior, no-op range handling,
+and platform-specific `fcntl()`/`posix_fadvise()` fallback policy sit behind
+one storage-owned surface. Verification passed `git diff --check`, stale
+data-file mmap symbol scans, advisory routing scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public CTest suite including migration tool roundtrip coverage,
+deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.105`
+batch, `1.164` crud, `0.815` iterate, `1.070` get, and `1.088` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.

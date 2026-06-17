@@ -20914,6 +20914,9 @@ static int dxb_storage_check_readonly(const dxb_storage_t *storage, const pathch
 
 static int dxb_storage_advise_range(const dxb_storage_t *storage, size_t offset, size_t length,
                                     enum dxb_advice advice) {
+  if (length == 0)
+    return MDBX_SUCCESS;
+
 #if defined(F_RDADVISE)
   if (advice == dxb_advice_willneed) {
     struct radvisory hint;
@@ -21513,8 +21516,6 @@ static int dxb_storage_resize(MDBX_env *env, const size_t size, const size_t lim
 }
 
 int dxb_advise_range(const MDBX_env *env, size_t offset, size_t length, enum dxb_advice advice) {
-  if (length == 0)
-    return MDBX_SUCCESS;
   return dxb_storage_advise_range(&env->dxb_storage, offset, length, advice);
 }
 
