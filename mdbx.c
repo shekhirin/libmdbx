@@ -1937,6 +1937,25 @@ static inline pgno_t dxb_storage_pgno_ceil2os_pgno(const dxb_storage_t *storage,
   return (pgno_t)dxb_storage_bytes2pgno(storage, dxb_storage_pgno_ceil2os_bytes(storage, pgno));
 }
 
+static inline int dxb_storage_readahead_window_bytes_io(const dxb_storage_t *storage, pgno_t prev_edge, pgno_t edge,
+                                                        bool force_whole, dxb_byte_io_t *io) {
+  const uint64_t max_pgno = (uint64_t)MAX_PAGENO + 1u;
+  if (unlikely((uint64_t)prev_edge > max_pgno || (uint64_t)edge > max_pgno))
+    return MDBX_EINVAL;
+
+  const pgno_t begin_edge = (prev_edge < edge) ? prev_edge : edge;
+  const pgno_t end_edge = (prev_edge < edge) ? edge : prev_edge;
+  const size_t limit = dxb_storage_limit_size(storage);
+  size_t offset = force_whole ? 0 : dxb_storage_pgno_ceil2os_bytes(storage, begin_edge);
+  offset = (offset < limit) ? offset : limit;
+  size_t end = dxb_storage_pgno_ceil2os_bytes(storage, end_edge);
+  end = (end < limit) ? end : limit;
+  if (unlikely(end < offset))
+    return MDBX_EINVAL;
+
+  return dxb_storage_byte_io(offset, end - offset, io);
+}
+
 static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
   if (unlikely(dxb_storage_byte_io_validate(io) != MDBX_SUCCESS))
     return false;
@@ -22799,22 +22818,13 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
   const dxb_storage_t *const storage = &env->dxb_storage;
   const bool toggle = force_whole || ((enable ^ env->lck->readahead_anchor) & 1) || !env->lck->readahead_anchor;
   const pgno_t prev_edge = env->lck->readahead_anchor >> 1;
-  const size_t limit = dxb_storage_limit_size(storage);
-  size_t offset = toggle ? 0 : dxb_storage_pgno_ceil2os_bytes(storage, (prev_edge < edge) ? prev_edge : edge);
-  offset = (offset < limit) ? offset : limit;
-
-  size_t length = dxb_storage_pgno_ceil2os_bytes(storage, (prev_edge < edge) ? edge : prev_edge);
-  length = (length < limit) ? length : limit;
-  length -= offset;
-
-  eASSERT0(env, 0 <= (intptr_t)length);
-  if (length == 0)
-    return MDBX_SUCCESS;
 
   dxb_byte_io_t window_bytes;
-  int err = dxb_storage_byte_io(offset, length, &window_bytes);
+  int err = dxb_storage_readahead_window_bytes_io(storage, prev_edge, edge, toggle, &window_bytes);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
+  if (window_bytes.bytes == 0)
+    return MDBX_SUCCESS;
 
   dxb_readahead_io_t window;
   err = dxb_storage_readahead_io_from_bytes(storage, &window_bytes, &window);

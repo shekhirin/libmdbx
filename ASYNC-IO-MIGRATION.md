@@ -4841,6 +4841,22 @@ focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
 The paired benchmark gate passed with forced/default ratios of `1.135` batch,
 `1.161` crud, `1.157` iterate, `0.936` get, and `1.069` delete.
 
+A later readahead edge-window cleanup added
+`dxb_storage_readahead_window_bytes_io()` so `dxb_set_readahead()` derives the
+clamped byte descriptor for `(prev_edge, edge, toggle)` through a
+storage-boundary helper before converting it to the page-aware readahead
+request. The old local `offset`/`length` construction and direct
+loose byte-request path are gone from the readahead toggle logic. Verification
+passed `git diff --check`, source scans proving the old loose readahead
+byte-window construction is absent, the GNUmake `mdbx_migration_smoke` target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.131` batch, `1.142`
+crud, `0.871` iterate, `0.997` get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
