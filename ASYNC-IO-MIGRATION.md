@@ -2875,6 +2875,22 @@ fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
 forced/default ratios of `1.123` batch, `1.177` crud, `0.933` iterate, `1.120`
 get, and `1.099` delete.
 
+A later read-routing cleanup removed the env-shaped `dxb_read()` and
+`dxb_read_pages()` wrappers. Warmup reads, environment copy fallback reads,
+root-txnid probes, defrag page reads, and meta-page probing now call
+`dxb_storage_read()` or `dxb_storage_read_pages()` directly with the environment
+storage handle and page geometry. This leaves explicit data-file reads behind
+storage helpers instead of preserving extra env adapters for byte/page reads.
+Verification passed `git diff --check`, stale data-file mmap symbol scans,
+read-routing scans, `make -f GNUmakefile mdbx_migration_smoke`, direct default
+and forced tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite
+including migration tool roundtrip coverage, deterministic forced tiny-cache
+fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.121` batch, `1.188` crud, `1.050` iterate, `1.006`
+get, and `1.087` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

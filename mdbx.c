@@ -1627,8 +1627,7 @@ MDBX_INTERNAL int dxb_sync_meta_written(const MDBX_env *env, enum osal_syncmode_
 MDBX_INTERNAL int dxb_advise_range(const MDBX_env *env, size_t offset, size_t length, enum dxb_advice advice);
 MDBX_INTERNAL int dxb_prefetch(const MDBX_env *env, pgno_t pgno, size_t npages);
 MDBX_INTERNAL int dxb_discard_range(const MDBX_env *env, size_t offset, size_t length, enum dxb_discard_mode mode);
-MDBX_INTERNAL int __must_check_result dxb_read(const MDBX_env *env, void *buf, size_t bytes, uint64_t offset);
-MDBX_INTERNAL int __must_check_result dxb_read_pages(const MDBX_env *env, pgno_t pgno, void *buf, size_t npages);
+static int dxb_storage_read(const dxb_storage_t *storage, void *buf, size_t bytes, uint64_t offset);
 MDBX_INTERNAL int dxb_write(const MDBX_env *env, enum dxb_io_channel channel, const void *buf, size_t bytes,
                             uint64_t offset);
 MDBX_INTERNAL int dxb_writev_pages(const MDBX_env *env, enum dxb_io_channel channel, pgno_t pgno, struct iovec *iov,
@@ -4728,7 +4727,7 @@ static int warmup_force_read(const MDBX_env *env, size_t used_range, uint64_t ti
 
   for (size_t offset = 0; offset < used_range;) {
     const size_t bytes = (used_range - offset < chunk) ? used_range - offset : chunk;
-    rc = dxb_read(env, buffer, bytes, offset);
+    rc = dxb_storage_read(&env->dxb_storage, buffer, bytes, offset);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     offset += bytes;
@@ -5659,7 +5658,7 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
     /* fallback to portable */
     const size_t chunk =
         ((size_t)MDBX_ENVCOPY_WRITEBUF < used_size - offset) ? (size_t)MDBX_ENVCOPY_WRITEBUF : used_size - offset;
-    rc = dxb_read(env, data_buffer, chunk, offset);
+    rc = dxb_storage_read(&env->dxb_storage, data_buffer, chunk, offset);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     if (flags & MDBX_CP_THROTTLE_MVCC) {
@@ -14446,7 +14445,7 @@ static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, co
   const uint64_t offset = pgno2bytes(env, root_pgno) + offsetof(page_t, txnid);
   const bool storage_probe_possible = dxb_storage_contains_range(&env->dxb_storage, offset, sizeof(probe->txnid));
   if (likely(storage_probe_possible)) {
-    const int err = dxb_read(env, &probe->txnid, sizeof(probe->txnid), offset);
+    const int err = dxb_storage_read(&env->dxb_storage, &probe->txnid, sizeof(probe->txnid), offset);
     if (unlikely(err != MDBX_SUCCESS)) {
       if (report)
         WARNING("catch %s-db root %" PRIaPGNO " read error %d for meta_txnid %" PRIaTXN " %s", name, root_pgno, err,
@@ -18791,7 +18790,7 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
 #if MDBX_CHECKING > 1
     ASSERT(!pnl_contains(dfc->repnl_clone, arc->key_or_pgno));
 #endif /* MDBX_CHECKING > 1 */
-    err = dxb_read_pages(txn->env, arc->key_or_pgno, dst, 1);
+    err = dxb_storage_read_pages(&txn->env->dxb_storage, txn->env->ps2ln, arc->key_or_pgno, dst, 1);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
@@ -18823,7 +18822,7 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
 #if MDBX_CHECKING > 1
       ASSERT(!pnl_contains(dfc->repnl_clone, src_pgno));
 #endif /* MDBX_CHECKING > 1 */
-      err = dxb_read_pages(env, src_pgno, txn->env->page_auxbuf, 1);
+      err = dxb_storage_read_pages(&env->dxb_storage, env->ps2ln, src_pgno, txn->env->page_auxbuf, 1);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
 #if MDBX_CHECKING > 1
@@ -21448,14 +21447,6 @@ static int dxb_storage_sendfile_to_fd(const dxb_storage_t *storage, mdbx_filehan
 }
 #endif /* MDBX_USE_SENDFILE */
 
-int dxb_read(const MDBX_env *env, void *buf, size_t bytes, uint64_t offset) {
-  return dxb_storage_read(&env->dxb_storage, buf, bytes, offset);
-}
-
-int dxb_read_pages(const MDBX_env *env, pgno_t pgno, void *buf, size_t npages) {
-  return dxb_storage_read_pages(&env->dxb_storage, env->ps2ln, pgno, buf, npages);
-}
-
 int dxb_write(const MDBX_env *env, enum dxb_io_channel channel, const void *buf, size_t bytes, uint64_t offset) {
   return dxb_storage_write_bytes(&env->dxb_storage, channel, buf, bytes, offset, env->ps, env->ps2ln);
 }
@@ -21565,7 +21556,7 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
     unsigned retryleft = 42;
     while (1) {
       TRACE("reading meta[%d]: offset %u, bytes %u, retry-left %u", meta_number, offset, MDBX_MIN_PAGESIZE, retryleft);
-      int err = dxb_read(env, buffer, MDBX_MIN_PAGESIZE, offset);
+      int err = dxb_storage_read(&env->dxb_storage, buffer, MDBX_MIN_PAGESIZE, offset);
       if (err == MDBX_ENODATA && offset == 0 && loop_count == 0 &&
           dxb_storage_filesize(&env->dxb_storage) == 0 &&
           mode_bits /* non-zero for DB creation */ != 0) {
@@ -21575,7 +21566,7 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
 #if defined(_WIN32) || defined(_WIN64)
       if (err == ERROR_LOCK_VIOLATION) {
         SleepEx(0, true);
-        err = dxb_read(env, buffer, MDBX_MIN_PAGESIZE, offset);
+        err = dxb_storage_read(&env->dxb_storage, buffer, MDBX_MIN_PAGESIZE, offset);
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
           WARNING("read meta[%u,%u]: %i, %s", offset, MDBX_MIN_PAGESIZE, err, mdbx_strerror(err));
           continue;
@@ -21588,11 +21579,11 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
       }
 
       char again[MDBX_MIN_PAGESIZE];
-      err = dxb_read(env, again, MDBX_MIN_PAGESIZE, offset);
+      err = dxb_storage_read(&env->dxb_storage, again, MDBX_MIN_PAGESIZE, offset);
 #if defined(_WIN32) || defined(_WIN64)
       if (err == ERROR_LOCK_VIOLATION) {
         SleepEx(0, true);
-        err = dxb_read(env, again, MDBX_MIN_PAGESIZE, offset);
+        err = dxb_storage_read(&env->dxb_storage, again, MDBX_MIN_PAGESIZE, offset);
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
           WARNING("read meta[%u,%u]: %i, %s", offset, MDBX_MIN_PAGESIZE, err, mdbx_strerror(err));
           continue;
