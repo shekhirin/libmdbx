@@ -3886,6 +3886,7 @@ MDBX_INTERNAL int meta_wipe_steady(MDBX_env *env, txnid_t inclusive_upto);
 
 struct iov_ctx {
   MDBX_env *env;
+  dxb_storage_t *storage;
   enum dxb_io_channel channel;
   int err;
 #ifndef MDBX_NEED_WRITTEN_RANGE
@@ -33787,26 +33788,27 @@ pgr_t page_get_large(const MDBX_cursor *const mc, const pgno_t pgno, const txnid
 
 int iov_init(MDBX_txn *const txn, iov_ctx_t *ctx, size_t items, size_t npages, enum dxb_io_channel channel) {
   ctx->env = txn->env;
+  ctx->storage = &ctx->env->dxb_storage;
   ctx->channel = channel;
-  eASSERT0(txn->env, dxb_storage_iov_channel_is_ready(&txn->env->dxb_storage, channel));
-  ctx->err = dxb_storage_prepare_write_queue_pages(&txn->env->dxb_storage, items, npages);
+  eASSERT0(ctx->env, dxb_storage_iov_channel_is_ready(ctx->storage, channel));
+  ctx->err = dxb_storage_prepare_write_queue_pages(ctx->storage, items, npages);
   if (likely(ctx->err == MDBX_SUCCESS)) {
 #if MDBX_NEED_WRITTEN_RANGE
     ctx->flush_begin = MAX_PAGENO;
     ctx->flush_end = MIN_PAGENO;
 #endif /* MDBX_NEED_WRITTEN_RANGE */
-    dxb_storage_reset_write_queue(&txn->env->dxb_storage);
+    dxb_storage_reset_write_queue(ctx->storage);
   }
   return ctx->err;
 }
 
 static bool iov_empty(const iov_ctx_t *ctx) {
-  return dxb_storage_write_queue_is_empty(&ctx->env->dxb_storage);
+  return dxb_storage_write_queue_is_empty(ctx->storage);
 }
 
 static void iov_callback4dirtypages(iov_ctx_t *ctx, size_t offset, void *data, size_t bytes) {
   MDBX_env *const env = ctx->env;
-  const dxb_storage_t *const storage = &env->dxb_storage;
+  const dxb_storage_t *const storage = ctx->storage;
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
 
   page_t *wp = (page_t *)data;
@@ -33834,13 +33836,13 @@ static void iov_callback4dirtypages(iov_ctx_t *ctx, size_t offset, void *data, s
 
 static void iov_complete(iov_ctx_t *ctx) {
   eASSERT0(ctx->env, (ctx->env->flags & MDBX_WRITEMAP) == 0);
-  dxb_storage_walk_write_queue(&ctx->env->dxb_storage, ctx, iov_callback4dirtypages);
-  dxb_storage_reset_write_queue(&ctx->env->dxb_storage);
+  dxb_storage_walk_write_queue(ctx->storage, ctx, iov_callback4dirtypages);
+  dxb_storage_reset_write_queue(ctx->storage);
 }
 
 int iov_write(iov_ctx_t *ctx) {
   eASSERT0(ctx->env, !iov_empty(ctx));
-  osal_ioring_write_result_t r = dxb_storage_write_queued(&ctx->env->dxb_storage, ctx->channel);
+  osal_ioring_write_result_t r = dxb_storage_write_queued(ctx->storage, ctx->channel);
   if (MDBX_ENABLE_PGOP_STAT)
     ctx->env->lck->pgops.wops.weak += r.wops;
   ctx->err = r.err;
@@ -33851,8 +33853,8 @@ int iov_write(iov_ctx_t *ctx) {
 }
 
 int iov_page(MDBX_txn *txn, iov_ctx_t *ctx, page_t *dp, size_t npages) {
-  MDBX_env *const env = txn->env;
   cASSERT0(txn, ctx->err == MDBX_SUCCESS);
+  cASSERT0(txn, ctx->storage == &txn->env->dxb_storage);
   cASSERT0(txn, dp->pgno >= MIN_PAGENO && dp->pgno < txn->geo.first_unallocated);
   cASSERT0(txn, is_modifable(txn, dp));
   cASSERT0(txn, !(dp->flags & ~(P_BRANCH | P_LEAF | P_DUPFIX | P_LARGE)));
@@ -33867,7 +33869,7 @@ int iov_page(MDBX_txn *txn, iov_ctx_t *ctx, page_t *dp, size_t npages) {
 
   dp->txnid = txn->txnid;
   cASSERT0(txn, is_spilled(txn, dp));
-  int err = dxb_storage_add_queued_pages(&env->dxb_storage, dp->pgno, dp, npages);
+  int err = dxb_storage_add_queued_pages(ctx->storage, dp->pgno, dp, npages);
   if (unlikely(err != MDBX_SUCCESS)) {
     ctx->err = err;
     if (unlikely(err != MDBX_RESULT_TRUE)) {
@@ -33877,7 +33879,7 @@ int iov_page(MDBX_txn *txn, iov_ctx_t *ctx, page_t *dp, size_t npages) {
     err = iov_write(ctx);
     cASSERT0(txn, iov_empty(ctx));
     if (likely(err == MDBX_SUCCESS)) {
-      err = dxb_storage_add_queued_pages(&env->dxb_storage, dp->pgno, dp, npages);
+      err = dxb_storage_add_queued_pages(ctx->storage, dp->pgno, dp, npages);
       if (unlikely(err != MDBX_SUCCESS)) {
         iov_complete(ctx);
         return ctx->err = err;
@@ -40064,6 +40066,7 @@ __hot bool txl_contain(const txl_t txl, txnid_t id) {
 
 static int txn_write(MDBX_txn *txn, iov_ctx_t *ctx) {
   cASSERT0(txn, (txn->flags & MDBX_WRITEMAP) == 0);
+  cASSERT0(txn, ctx->storage == &txn->env->dxb_storage);
   dpl_t *const dl = txn_dpl_sort(txn);
   int rc = MDBX_SUCCESS;
   size_t r, w, total_npages = 0;
@@ -40085,8 +40088,7 @@ static int txn_write(MDBX_txn *txn, iov_ctx_t *ctx) {
     rc = iov_write(ctx);
   }
 
-  if (likely(rc == MDBX_SUCCESS) &&
-      dxb_storage_iov_channel_is_primary_data(&txn->env->dxb_storage, ctx->channel)) {
+  if (likely(rc == MDBX_SUCCESS) && dxb_storage_iov_channel_is_primary_data(ctx->storage, ctx->channel)) {
     txn->env->lck->unsynced_pages.weak += total_npages;
     if (!txn->env->lck->eoos_timestamp.weak)
       txn->env->lck->eoos_timestamp.weak = osal_monotime();
