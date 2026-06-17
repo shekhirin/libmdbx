@@ -5445,6 +5445,22 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.105` batch, `1.159` crud,
 `1.100` iterate, `0.915` get, and `1.071` delete.
 
+A later outbound-copy fast-path cleanup removed the page-span wrappers around
+environment-copy `sendfile()` and `copy_file_range()` submissions. `copy_asis()`
+now derives the remaining source byte descriptor once at the page-cache/storage
+boundary, passes that descriptor directly to `dxb_storage_sendfile_bytes_to_fd()`
+or `dxb_storage_copy_bytes_to_fd()`, and derives the portable fallback read
+subrange from the same byte descriptor. Verification passed `git diff --check`,
+source scans proving the old `dxb_storage_sendfile_page_span_to_fd()` and
+`dxb_storage_copy_page_span_to_fd()` helpers are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.120` batch,
+`1.156` crud, `1.103` iterate, `1.149` get, and `1.066` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
