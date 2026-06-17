@@ -96,6 +96,11 @@ typedef struct dxb_lock_io {
   uint64_t bytes;
 } dxb_lock_io_t;
 
+typedef struct dxb_size_io {
+  size_t current;
+  size_t limit;
+} dxb_size_io_t;
+
 struct page_cache_entry {
   page_cache_entry_t *next;
   page_cache_t *owner;
@@ -1376,6 +1381,15 @@ static inline int dxb_storage_lock_io(uint64_t offset, uint64_t bytes, dxb_lock_
 
   io->offset = offset;
   io->bytes = bytes;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_size_io(size_t current, size_t limit, dxb_size_io_t *io) {
+  if (unlikely(current > limit))
+    return MDBX_EINVAL;
+
+  io->current = current;
+  io->limit = limit;
   return MDBX_SUCCESS;
 }
 
@@ -21729,50 +21743,49 @@ static int dxb_storage_sendfile_to_fd(const dxb_storage_t *storage, mdbx_filehan
 }
 #endif /* MDBX_USE_SENDFILE */
 
-static int dxb_storage_setup_bytes(dxb_storage_t *storage, const size_t size, const size_t limit, const unsigned flags,
-                                   const unsigned options) {
+static int dxb_storage_setup_size(dxb_storage_t *storage, const dxb_size_io_t *target, const unsigned flags,
+                                  const unsigned options) {
   int rc;
   ASSERT(dxb_storage_pagesize_ln(storage) > 0);
   if ((flags & MDBX_RDONLY) == 0 && (options & MMAP_OPTION_SETLENGTH) != 0) {
-    rc = dxb_storage_set_filesize_bytes(storage, size);
+    rc = dxb_storage_set_filesize_bytes(storage, target->current);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    dxb_storage_set_size_with_known_filesize(storage, size, limit);
+    dxb_storage_set_size_with_known_filesize(storage, target->current, target->limit);
   } else {
     rc = dxb_storage_fetch_filesize(storage);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    dxb_storage_set_limit_from_filesize(storage, limit);
+    dxb_storage_set_limit_from_filesize(storage, target->limit);
   }
   return MDBX_SUCCESS;
 }
 
-static int dxb_storage_resize_bytes(dxb_storage_t *storage, const size_t size, const size_t limit,
-                                    const unsigned flags) {
+static int dxb_storage_resize_size(dxb_storage_t *storage, const dxb_size_io_t *target, const unsigned flags) {
   int rc = dxb_storage_fetch_filesize(storage);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
   if (flags & MDBX_RDONLY) {
     const uint64_t filesize = dxb_storage_filesize(storage);
-    if (size > filesize)
+    if (target->current > filesize)
       rc = MDBX_UNABLE_EXTEND_MAPSIZE;
-    else if (size < filesize && filesize > limit)
+    else if (target->current < filesize && filesize > target->limit)
       rc = MDBX_EPERM;
-    dxb_storage_set_limit_from_filesize(storage, limit);
+    dxb_storage_set_limit_from_filesize(storage, target->limit);
     return rc;
   }
 
   const uint64_t filesize = dxb_storage_filesize(storage);
-  if (filesize != size) {
-    if (size > filesize || (flags & txn_shrink_allowed)) {
-      rc = dxb_storage_set_filesize_bytes(storage, size);
+  if (filesize != target->current) {
+    if (target->current > filesize || (flags & txn_shrink_allowed)) {
+      rc = dxb_storage_set_filesize_bytes(storage, target->current);
       if (unlikely(rc != MDBX_SUCCESS))
         return rc;
     }
   }
 
-  dxb_storage_set_size_with_known_filesize(storage, size, limit);
+  dxb_storage_set_size_with_known_filesize(storage, target->current, target->limit);
   return MDBX_SUCCESS;
 }
 
@@ -21927,6 +21940,10 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
   eASSERT0(env, limit_bytes >= size_bytes);
   eASSERT0(env, dxb_storage_bytes2pgno(storage, size_bytes) >= size_pgno);
   eASSERT0(env, dxb_storage_bytes2pgno(storage, limit_bytes) >= limit_pgno);
+  dxb_size_io_t target_size;
+  rc = dxb_storage_size_io(size_bytes, limit_bytes, &target_size);
+  if (unlikely(rc != MDBX_SUCCESS))
+    goto bailout;
 
   unsigned resize_flags = env->flags & (MDBX_RDONLY | MDBX_UTTERLY_NOSYNC);
   if (mode >= impilict_shrink)
@@ -21951,7 +21968,7 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
       env->lck->discarded_tail.weak = size_pgno;
   }
 
-  rc = dxb_storage_resize_bytes(storage, size_bytes, limit_bytes, resize_flags);
+  rc = dxb_storage_resize_size(storage, &target_size, resize_flags);
   eASSERT0(env, dxb_storage_current_within_limit(storage));
 
   if (rc == MDBX_SUCCESS) {
@@ -22262,7 +22279,11 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   const unsigned storage_options = (lck_rc && env->stuck_meta < 0) ? MMAP_OPTION_SETLENGTH : 0;
   NOTICE("%s", "open without data-file mmap");
   eASSERT0(env, env->geo_in_bytes.now <= env->geo_in_bytes.upper);
-  err = dxb_storage_setup_bytes(storage, env->geo_in_bytes.now, env->geo_in_bytes.upper, env->flags, storage_options);
+  dxb_size_io_t target_size;
+  err = dxb_storage_size_io(env->geo_in_bytes.now, env->geo_in_bytes.upper, &target_size);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  err = dxb_storage_setup_size(storage, &target_size, env->flags, storage_options);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 

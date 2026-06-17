@@ -4036,6 +4036,24 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.113` batch, `1.156`
 crud, `1.008` iterate, `0.994` get, and `1.087` delete.
 
+A later storage geometry descriptor cleanup introduced `dxb_size_io_t` for the
+data-file current-size/limit pair used by open setup and resize. `dxb_setup()`
+and `dxb_resize()` now build a checked target-size descriptor before entering
+the storage helpers, and the storage setup/resize entry points consume that
+descriptor instead of loose `size`/`limit` arguments. This leaves file-length
+mutation and storage current/limit bookkeeping behind the same validated
+request-object style used by explicit reads, writes, sync ranges, advice,
+parking, and locks. Verification passed `git diff --check`, source scans
+proving the old `dxb_storage_setup_bytes()` and `dxb_storage_resize_bytes()`
+helpers are gone from `mdbx.c`, the GNUmake `mdbx_migration_smoke` target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.096` batch, `1.155`
+crud, `1.044` iterate, `0.978` get, and `1.097` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
