@@ -4189,6 +4189,25 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `0.997` batch, `0.991` crud, `0.852` iterate, `1.065`
 get, and `1.003` delete.
 
+A later sync-range descriptor cleanup added `dxb_sync_io_t` and
+`dxb_storage_sync_io()` so data-page sync callers describe the range and sync
+flags as one request. Commit-time data sync and writer-free pre-sync now build
+checked sync descriptors with both page and byte spans before entering
+`dxb_storage_sync_range()`, which validates the derived byte span before
+preserving the current whole-file `fsync()` behavior. This keeps the durable
+sync boundary ready for future range-aware or async completion backends without
+changing current persistence semantics. Verification passed `git diff --check`,
+source scans proving the old `dxb_page_io_t sync_range` locals and separate
+`dxb_storage_sync_range(..., mode_bits)` calls are gone from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.106` batch, `1.163` crud, `1.003` iterate, `0.991`
+get, and `1.076` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
