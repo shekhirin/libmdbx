@@ -197,6 +197,8 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   through storage.
   Data-file descriptor parking now uses a checked zero-length `dxb_byte_io_t`
   request instead of passing a loose raw offset through storage helpers.
+  Data-file POSIX lock ranges now build checked `dxb_lock_io_t` descriptors
+  before entering storage lock helpers.
 - `MDBX_env` now contains an env-owned `dxb_storage_t` block for the data, meta,
   and dsync fds, `filesize`, `current`, and `limit` state, the explicit page
   cache, and the dirty-write queue. DXB helper internals and non-pointer size
@@ -4015,6 +4017,24 @@ offsets, the GNUmake `mdbx_migration_smoke` target, direct
 CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
 passed with forced/default ratios of `1.127` batch, `1.166` crud, `0.959`
 iterate, `0.966` get, and `1.058` delete.
+
+A later data-file lock range cleanup introduced `dxb_lock_io_t` for POSIX DXB
+file-lock ranges that may need `OFF_T_MAX` extents without fitting the normal
+`dxb_byte_io_t` `size_t` length on every target. The data-file lock operation
+and retry helpers now receive this descriptor, validate offset/length bounds
+before casting to `off_t`, and `lck_seize()`, `lck_downgrade()`,
+`lck_upgrade()`, and `lck_destroy()` build checked whole-file, pid-slot, and
+split-around-pid lock ranges before entering storage. Lock-file mmap and
+lock-file record locking remain unchanged. Verification passed `git diff
+--check`, source scans proving the data-file storage lock helpers no longer
+receive loose raw offset/length pairs, the GNUmake `mdbx_migration_smoke`
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.113` batch, `1.156`
+crud, `1.008` iterate, `0.994` get, and `1.087` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
