@@ -4633,6 +4633,25 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.143` batch, `1.170` crud, `1.121` iterate,
 `0.963` get, and `1.085` delete.
 
+A later POSIX copy fast-path validation cleanup made the raw
+`copy_file_range()` and `sendfile()` storage wrappers revalidate the checked
+byte/outbound descriptors immediately before syscall submission. The wrappers
+now derive their own local `off_t` source offsets from the descriptor shape,
+validate destination offsets for outbound `copy_file_range()`, and normalize
+descriptor rejection through `errno` before the higher-level copy classifiers
+decode syscall outcomes. This removes the last loose source-offset handoff from
+the accelerated environment-copy and same-file copy path, keeping those raw
+syscall boundaries aligned with the explicit request objects used by the
+portable read/write/copy fallback. Verification passed `git diff --check`, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.143` batch, `1.159` crud, `0.998` iterate, `1.002`
+get, and `1.078` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
