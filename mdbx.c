@@ -1447,13 +1447,6 @@ static inline int dxb_storage_byte_io_validate(const dxb_byte_io_t *io) {
   return MDBX_SUCCESS;
 }
 
-static inline int dxb_storage_byte_span_io(uint64_t begin, uint64_t end, dxb_byte_io_t *io) {
-  if (unlikely(end < begin || end - begin > SIZE_MAX))
-    return MDBX_EINVAL;
-
-  return dxb_storage_byte_io(begin, (size_t)(end - begin), io);
-}
-
 static inline int dxb_storage_byte_subrange_io(const dxb_byte_io_t *range, size_t offset, size_t bytes,
                                                dxb_byte_io_t *io) {
   int rc = dxb_storage_byte_io_validate(range);
@@ -1819,15 +1812,6 @@ static inline int dxb_storage_discard_io_from_bytes(const dxb_storage_t *storage
   io->bytes = *bytes;
   io->mode = mode;
   return dxb_storage_page_io_from_bytes(storage, &io->bytes, &io->pages);
-}
-
-static inline int dxb_storage_discard_io(const dxb_storage_t *storage, uint64_t begin, uint64_t end,
-                                         enum dxb_discard_mode mode, dxb_discard_io_t *io) {
-  dxb_byte_io_t bytes;
-  int rc = dxb_storage_byte_span_io(begin, end, &bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_discard_io_from_bytes(storage, &bytes, mode, io);
 }
 
 static inline int dxb_storage_discard_io_validate(const dxb_storage_t *storage, const dxb_discard_io_t *io) {
@@ -22716,8 +22700,11 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
 
   if (size_bytes < prev_size && mode > implicit_grow) {
     NOTICE("resize-DONTNEED %u..%u", size_pgno, (pgno_t)dxb_storage_bytes2pgno(storage, prev_size));
+    dxb_byte_io_t discard_bytes;
     dxb_discard_io_t discard;
-    rc = dxb_storage_discard_io(storage, size_bytes, prev_size, dxb_discard_clean, &discard);
+    rc = dxb_storage_byte_io(size_bytes, prev_size - size_bytes, &discard_bytes);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = dxb_storage_discard_io_from_bytes(storage, &discard_bytes, dxb_discard_clean, &discard);
     if (likely(rc == MDBX_SUCCESS))
       rc = dxb_storage_discard_range(storage, &discard);
     if (unlikely(MDBX_IS_ERROR(rc))) {
@@ -23294,8 +23281,11 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
 #if defined(POSIX_FADV_DONTNEED)
     NOTICE("open-FADV_%s %u..%u", "DONTNEED", env->lck->discarded_tail.weak,
            (pgno_t)dxb_storage_bytes2pgno(storage, current_size));
+    dxb_byte_io_t discard_bytes;
     dxb_discard_io_t discard;
-    err = dxb_storage_discard_io(storage, allocated_aligned2os_bytes, current_size, dxb_discard_clean, &discard);
+    err = dxb_storage_byte_io(allocated_aligned2os_bytes, current_size - allocated_aligned2os_bytes, &discard_bytes);
+    if (likely(err == MDBX_SUCCESS))
+      err = dxb_storage_discard_io_from_bytes(storage, &discard_bytes, dxb_discard_clean, &discard);
     if (likely(err == MDBX_SUCCESS))
       err = dxb_storage_discard_range(storage, &discard);
     if (unlikely(MDBX_IS_ERROR(err)))
@@ -23366,9 +23356,12 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
          * могут быть равны */
         if (prev_discarded_bytes > discard_edge_bytes) {
           NOTICE("shrink-FADV_%s %zu..%zu", "DONTNEED", (size_t)discard_edge_pgno, prev_discarded_pgno);
+          dxb_byte_io_t discard_bytes;
           dxb_discard_io_t discard;
           int err =
-              dxb_storage_discard_io(storage, discard_edge_bytes, prev_discarded_bytes, dxb_discard_clean, &discard);
+              dxb_storage_byte_io(discard_edge_bytes, prev_discarded_bytes - discard_edge_bytes, &discard_bytes);
+          if (likely(err == MDBX_SUCCESS))
+            err = dxb_storage_discard_io_from_bytes(storage, &discard_bytes, dxb_discard_clean, &discard);
           if (likely(err == MDBX_SUCCESS))
             err = dxb_storage_discard_range(storage, &discard);
           if (unlikely(MDBX_IS_ERROR(err))) {

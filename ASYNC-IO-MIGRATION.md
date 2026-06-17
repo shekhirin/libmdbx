@@ -4763,6 +4763,21 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.114` batch, `1.167`
 crud, `0.918` iterate, `1.016` get, and `1.088` delete.
 
+A later discard-range cleanup removed the loose begin/end discard constructor
+and its byte-span wrapper. Resize shrink advice, setup-time tail discard, and
+sync-time shrink discard now build checked `dxb_byte_io_t` descriptors at the
+call site before deriving the `dxb_discard_io_t`, so file-discard requests enter
+the storage layer through descriptor validation instead of hidden endpoint
+conversion. Verification passed `git diff --check`, source scans proving the
+removed loose discard helpers are absent, the GNUmake `mdbx_migration_smoke`
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.119` batch, `1.162`
+crud, `1.010` iterate, `0.951` get, and `1.080` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
