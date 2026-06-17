@@ -4541,6 +4541,25 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.109` batch, `1.149` crud, `1.020` iterate, `1.012`
 get, and `1.065` delete.
 
+A later file-range request validation cleanup added
+`dxb_storage_copy_io_validate()`, `dxb_storage_outbound_io_validate()`, and
+`dxb_storage_discard_io_validate()` so same-file page copies, outbound
+copy/sendfile requests, and discard requests are rebuilt from their canonical
+byte/page descriptors before the storage executor consumes them. The old
+executor-local discard, copy, and outbound validation blocks are gone, leaving
+those file-range operations aligned with the descriptor-validation path used by
+read, write, sync, metadata, and readahead requests. Verification passed
+`git diff --check`, source scans proving file-range executors call the new
+validators and the stale inline validation patterns appear only inside those
+validators, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.124` batch, `1.151` crud, `0.976` iterate,
+`0.994` get, and `1.081` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

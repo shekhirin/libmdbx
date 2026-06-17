@@ -1639,6 +1639,23 @@ static inline int dxb_storage_copy_io(const dxb_storage_t *storage, pgno_t src_p
   return dxb_storage_copy_io_from_pages(storage, &src, &dst, io);
 }
 
+static inline int dxb_storage_copy_io_validate(const dxb_storage_t *storage, const dxb_copy_io_t *io) {
+  dxb_copy_io_t checked;
+  int rc = dxb_storage_copy_io_from_pages(storage, &io->src_pages, &io->dst_pages, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.src_bytes.offset != io->src_bytes.offset || checked.src_bytes.bytes != io->src_bytes.bytes ||
+               checked.dst_bytes.offset != io->dst_bytes.offset || checked.dst_bytes.bytes != io->dst_bytes.bytes ||
+               checked.src_pages.pgno != io->src_pages.pgno || checked.src_pages.end_pgno != io->src_pages.end_pgno ||
+               checked.src_pages.npages != io->src_pages.npages ||
+               checked.src_pages.offset != io->src_pages.offset || checked.src_pages.bytes != io->src_pages.bytes ||
+               checked.dst_pages.pgno != io->dst_pages.pgno || checked.dst_pages.end_pgno != io->dst_pages.end_pgno ||
+               checked.dst_pages.npages != io->dst_pages.npages ||
+               checked.dst_pages.offset != io->dst_pages.offset || checked.dst_pages.bytes != io->dst_pages.bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline uint64_t dxb_storage_bytes2pgno(const dxb_storage_t *storage, uint64_t bytes) {
   return bytes >> dxb_storage_pagesize_ln(storage);
 }
@@ -1692,6 +1709,22 @@ static inline int dxb_storage_outbound_io(const dxb_storage_t *storage, uint64_t
   return dxb_storage_outbound_io_from_bytes(storage, &src, dst_fd, dst_offset, has_dst_offset, io);
 }
 
+static inline int dxb_storage_outbound_io_validate(const dxb_storage_t *storage, const dxb_outbound_io_t *io) {
+  dxb_outbound_io_t checked;
+  const uint64_t dst_offset = io->has_dst_offset ? (uint64_t)io->dst_offset : 0;
+  int rc =
+      dxb_storage_outbound_io_from_bytes(storage, &io->src_bytes, io->dst_fd, dst_offset, io->has_dst_offset, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.src_bytes.offset != io->src_bytes.offset || checked.src_bytes.bytes != io->src_bytes.bytes ||
+               checked.src_pages.pgno != io->src_pages.pgno || checked.src_pages.end_pgno != io->src_pages.end_pgno ||
+               checked.src_pages.npages != io->src_pages.npages || checked.src_pages.offset != io->src_pages.offset ||
+               checked.src_pages.bytes != io->src_pages.bytes || checked.dst_fd != io->dst_fd ||
+               checked.dst_offset != io->dst_offset || checked.has_dst_offset != io->has_dst_offset))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline bool dxb_discard_mode_valid(enum dxb_discard_mode mode) {
   switch (mode) {
   case dxb_discard_clean:
@@ -1719,6 +1752,19 @@ static inline int dxb_storage_discard_io(const dxb_storage_t *storage, uint64_t 
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   return dxb_storage_discard_io_from_bytes(storage, &bytes, mode, io);
+}
+
+static inline int dxb_storage_discard_io_validate(const dxb_storage_t *storage, const dxb_discard_io_t *io) {
+  dxb_discard_io_t checked;
+  int rc = dxb_storage_discard_io_from_bytes(storage, &io->bytes, io->mode, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.bytes.offset != io->bytes.offset || checked.bytes.bytes != io->bytes.bytes ||
+               checked.pages.pgno != io->pages.pgno || checked.pages.end_pgno != io->pages.end_pgno ||
+               checked.pages.npages != io->pages.npages || checked.pages.offset != io->pages.offset ||
+               checked.pages.bytes != io->pages.bytes || checked.mode != io->mode))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
 }
 
 static inline int dxb_storage_readahead_io(const dxb_storage_t *storage, uint64_t offset, size_t bytes,
@@ -21781,15 +21827,9 @@ static int dxb_storage_discard_remove_range(const dxb_storage_t *storage, const 
 }
 
 static int dxb_storage_discard_range(dxb_storage_t *storage, const dxb_discard_io_t *io) {
-  dxb_discard_io_t checked;
-  int rc = dxb_storage_discard_io_from_bytes(storage, &io->bytes, io->mode, &checked);
+  int rc = dxb_storage_discard_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  if (unlikely(checked.bytes.offset != io->bytes.offset || checked.bytes.bytes != io->bytes.bytes ||
-               checked.pages.pgno != io->pages.pgno || checked.pages.end_pgno != io->pages.end_pgno ||
-               checked.pages.npages != io->pages.npages || checked.pages.offset != io->pages.offset ||
-               checked.pages.bytes != io->pages.bytes))
-    return MDBX_EINVAL;
 
   if (io->bytes.bytes == 0)
     return MDBX_SUCCESS;
@@ -22193,28 +22233,10 @@ static int dxb_storage_fetch_filesize_if_current_lacks(dxb_storage_t *storage, c
   return dxb_storage_contains_coverage(storage, io) ? MDBX_SUCCESS : dxb_storage_fetch_filesize(storage);
 }
 
-#if MDBX_USE_COPYFILERANGE || MDBX_USE_SENDFILE
-static int dxb_storage_validate_outbound_io(const dxb_storage_t *storage, const dxb_outbound_io_t *io) {
-  dxb_outbound_io_t checked;
-  const uint64_t dst_offset = io->has_dst_offset ? (uint64_t)io->dst_offset : 0;
-  int rc =
-      dxb_storage_outbound_io_from_bytes(storage, &io->src_bytes, io->dst_fd, dst_offset, io->has_dst_offset, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.src_bytes.offset != io->src_bytes.offset || checked.src_bytes.bytes != io->src_bytes.bytes ||
-               checked.src_pages.pgno != io->src_pages.pgno || checked.src_pages.end_pgno != io->src_pages.end_pgno ||
-               checked.src_pages.npages != io->src_pages.npages || checked.src_pages.offset != io->src_pages.offset ||
-               checked.src_pages.bytes != io->src_pages.bytes || checked.dst_fd != io->dst_fd ||
-               checked.dst_offset != io->dst_offset || checked.has_dst_offset != io->has_dst_offset))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-#endif /* MDBX_USE_COPYFILERANGE || MDBX_USE_SENDFILE */
-
 #if MDBX_USE_COPYFILERANGE
 static int dxb_storage_copy_to_fd(const dxb_storage_t *storage, dxb_outbound_io_t *io, size_t *advanced, bool *copied,
                                   bool *unavailable, bool *not_same_filesystem) {
-  int rc = dxb_storage_validate_outbound_io(storage, io);
+  int rc = dxb_storage_outbound_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (unlikely(!io->has_dst_offset))
@@ -22273,13 +22295,9 @@ static int dxb_storage_copy_bytes(const dxb_storage_t *storage, const dxb_byte_i
 }
 
 static int dxb_storage_copy_pages(dxb_storage_t *storage, const dxb_copy_io_t *io) {
-  dxb_copy_io_t checked;
-  int rc = dxb_storage_copy_io_from_pages(storage, &io->src_pages, &io->dst_pages, &checked);
+  int rc = dxb_storage_copy_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  if (unlikely(checked.src_bytes.offset != io->src_bytes.offset || checked.src_bytes.bytes != io->src_bytes.bytes ||
-               checked.dst_bytes.offset != io->dst_bytes.offset || checked.dst_bytes.bytes != io->dst_bytes.bytes))
-    return MDBX_EINVAL;
 
   rc = dxb_storage_copy_bytes(storage, &io->src_bytes, &io->dst_bytes);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -22297,7 +22315,7 @@ static int dxb_storage_copy_pages(dxb_storage_t *storage, const dxb_copy_io_t *i
 #if MDBX_USE_SENDFILE
 static int dxb_storage_sendfile_to_fd(const dxb_storage_t *storage, const dxb_outbound_io_t *io,
                                       size_t *advanced, bool *copied, bool *unavailable) {
-  int rc = dxb_storage_validate_outbound_io(storage, io);
+  int rc = dxb_storage_outbound_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
