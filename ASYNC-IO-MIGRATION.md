@@ -4335,6 +4335,27 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.132` batch, `1.135`
 crud, `0.975` iterate, `0.981` get, and `1.087` delete.
 
+A later outbound-copy descriptor cleanup added `dxb_outbound_io_t` so
+environment-copy fast paths carry the DXB source byte span, derived source page
+span, destination fd, and optional destination offset as one storage request.
+The `sendfile()` pipe path and destination-file `copy_file_range()` path in
+`copy_asis()` now build that outbound descriptor before entering storage, and
+the storage helpers rebuild and validate the source page span and destination
+state before issuing the synchronous syscall. The portable fallback remains a
+plain byte read because it stages source bytes through a caller-owned buffer.
+Verification passed `git diff --check`, source scans proving the old
+`dxb_storage_sendfile_to_fd(..., fd, dxb_byte_io_t, ...)`,
+`dxb_storage_copy_to_fd(..., fd, dxb_byte_io_t, ...)`, and local
+`out_offset` call shapes are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.134` batch, `1.141` crud, `1.014` iterate, `1.016`
+get, and `1.061` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
