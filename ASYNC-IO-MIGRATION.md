@@ -3387,6 +3387,20 @@ CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.101` batch, `1.164` crud, `0.887` iterate, `1.101`
 get, and `1.068` delete.
 
+A later header-read cleanup routed open-time meta probing through a local
+storage handle. `dxb_read_header()` now binds `dxb_storage_t` once and uses it
+for filesize refresh, empty-file detection, and both meta-page read attempts in
+the retry loop. Verification passed stale header-read storage-call scans, stale
+data-file mmap and removed sync-adapter scans across the shipped core sources,
+`git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.119` batch, `1.167` crud, `1.073` iterate, `1.013`
+get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -21552,8 +21552,9 @@ static int dxb_storage_resize_bytes(dxb_storage_t *storage, const size_t size, c
 }
 
 __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive, const mdbx_mode_t mode_bits) {
+  dxb_storage_t *const storage = &env->dxb_storage;
   memset(dest, 0, sizeof(meta_t));
-  int rc = dxb_storage_fetch_filesize(&env->dxb_storage);
+  int rc = dxb_storage_fetch_filesize(storage);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
@@ -21575,9 +21576,8 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
     unsigned retryleft = 42;
     while (1) {
       TRACE("reading meta[%d]: offset %u, bytes %u, retry-left %u", meta_number, offset, MDBX_MIN_PAGESIZE, retryleft);
-      int err = dxb_storage_read(&env->dxb_storage, buffer, MDBX_MIN_PAGESIZE, offset);
-      if (err == MDBX_ENODATA && offset == 0 && loop_count == 0 &&
-          dxb_storage_filesize(&env->dxb_storage) == 0 &&
+      int err = dxb_storage_read(storage, buffer, MDBX_MIN_PAGESIZE, offset);
+      if (err == MDBX_ENODATA && offset == 0 && loop_count == 0 && dxb_storage_filesize(storage) == 0 &&
           mode_bits /* non-zero for DB creation */ != 0) {
         NOTICE("read meta: empty file (%d, %s)", err, mdbx_strerror(err));
         return err;
@@ -21585,7 +21585,7 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
 #if defined(_WIN32) || defined(_WIN64)
       if (err == ERROR_LOCK_VIOLATION) {
         SleepEx(0, true);
-        err = dxb_storage_read(&env->dxb_storage, buffer, MDBX_MIN_PAGESIZE, offset);
+        err = dxb_storage_read(storage, buffer, MDBX_MIN_PAGESIZE, offset);
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
           WARNING("read meta[%u,%u]: %i, %s", offset, MDBX_MIN_PAGESIZE, err, mdbx_strerror(err));
           continue;
@@ -21598,11 +21598,11 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
       }
 
       char again[MDBX_MIN_PAGESIZE];
-      err = dxb_storage_read(&env->dxb_storage, again, MDBX_MIN_PAGESIZE, offset);
+      err = dxb_storage_read(storage, again, MDBX_MIN_PAGESIZE, offset);
 #if defined(_WIN32) || defined(_WIN64)
       if (err == ERROR_LOCK_VIOLATION) {
         SleepEx(0, true);
-        err = dxb_storage_read(&env->dxb_storage, again, MDBX_MIN_PAGESIZE, offset);
+        err = dxb_storage_read(storage, again, MDBX_MIN_PAGESIZE, offset);
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
           WARNING("read meta[%u,%u]: %i, %s", offset, MDBX_MIN_PAGESIZE, err, mdbx_strerror(err));
           continue;
