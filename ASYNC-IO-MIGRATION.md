@@ -4152,6 +4152,24 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.112` batch, `1.151`
 crud, `0.841` iterate, `0.929` get, and `1.076` delete.
 
+A later readahead-window descriptor cleanup added `dxb_readahead_io_t` and
+`dxb_storage_readahead_io()` so `dxb_set_readahead()` describes each computed
+window once. Advisory calls now use the descriptor's checked byte range, while
+prefetch uses the descriptor's derived page range instead of rebuilding
+begin/end page numbers locally. This keeps readahead advice and prefetch keyed
+by one explicit request shape, matching the descriptor model used by resize,
+discard, cache invalidation, sync, and page I/O paths. Verification passed
+`git diff --check`, source scans proving the stale `begin_pgno`/`end_pgno` locals
+and local prefetch descriptor are gone from `dxb_set_readahead()`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.119` batch, `1.152` crud, `0.959` iterate, `0.983`
+get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

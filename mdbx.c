@@ -91,6 +91,11 @@ typedef struct dxb_page_io {
   size_t bytes;
 } dxb_page_io_t;
 
+typedef struct dxb_readahead_io {
+  dxb_byte_io_t bytes;
+  dxb_page_io_t pages;
+} dxb_readahead_io_t;
+
 typedef struct dxb_lock_io {
   uint64_t offset;
   uint64_t bytes;
@@ -1441,6 +1446,15 @@ static inline int dxb_storage_page_io_from_bytes(const dxb_storage_t *storage, c
     end = begin;
 
   return dxb_storage_page_io(storage, (pgno_t)begin, (size_t)(end - begin), io);
+}
+
+static inline int dxb_storage_readahead_io(const dxb_storage_t *storage, uint64_t offset, size_t bytes,
+                                           dxb_readahead_io_t *io) {
+  int rc = dxb_storage_byte_io(offset, bytes, &io->bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  return dxb_storage_page_io_from_bytes(storage, &io->bytes, &io->pages);
 }
 
 static inline uint64_t dxb_storage_page_field_offset(const dxb_storage_t *storage, pgno_t pgno,
@@ -22085,14 +22099,12 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
   if (length == 0)
     return MDBX_SUCCESS;
 
-  dxb_byte_io_t advice;
-  int err = dxb_storage_byte_io(offset, length, &advice);
+  dxb_readahead_io_t window;
+  int err = dxb_storage_readahead_io(storage, offset, length, &window);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  const pgno_t begin_pgno = (pgno_t)dxb_storage_bytes2pgno(storage, offset);
-  const pgno_t end_pgno = (pgno_t)dxb_storage_bytes2pgno(storage, offset + length);
-  NOTICE("readahead %s %u..%u", enable ? "ON" : "OFF", begin_pgno, end_pgno);
+  NOTICE("readahead %s %u..%u", enable ? "ON" : "OFF", window.pages.pgno, window.pages.end_pgno);
 
   if (toggle) {
     int err = dxb_storage_set_readahead(storage, enable);
@@ -22101,7 +22113,7 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
   }
 
   if (enable) {
-    err = dxb_storage_advise_range(storage, &advice, dxb_advice_normal);
+    err = dxb_storage_advise_range(storage, &window.bytes, dxb_advice_normal);
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
     if (toggle) {
@@ -22110,17 +22122,13 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
        * on following access to the hinted region.
        * 19.6.0 Darwin Kernel Version 19.6.0: Tue Jan 12 22:13:05 PST 2021;
        * root:xnu-6153.141.16~1/RELEASE_X86_64 x86_64 */
-      dxb_page_io_t prefetch;
-      err = dxb_storage_page_io(storage, begin_pgno, end_pgno - begin_pgno, &prefetch);
-      if (unlikely(err != MDBX_SUCCESS))
-        return err;
-      err = dxb_storage_prefetch_io(storage, &prefetch);
+      err = dxb_storage_prefetch_io(storage, &window.pages);
       if (unlikely(MDBX_IS_ERROR(err)))
         return err;
     }
   } else {
     env_clear_incore_cache(env);
-    err = dxb_storage_advise_range(storage, &advice, dxb_advice_random);
+    err = dxb_storage_advise_range(storage, &window.bytes, dxb_advice_random);
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
   }
