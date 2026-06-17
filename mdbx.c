@@ -1744,6 +1744,19 @@ static inline int dxb_storage_sync_io(const dxb_storage_t *storage, pgno_t pgno,
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_sync_io_validate(const dxb_storage_t *storage, const dxb_sync_io_t *io) {
+  dxb_sync_io_t checked;
+  int rc = dxb_storage_sync_io(storage, io->pages.pgno, io->pages.npages, io->mode_bits, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.bytes.offset != io->bytes.offset || checked.bytes.bytes != io->bytes.bytes ||
+               checked.pages.pgno != io->pages.pgno || checked.pages.end_pgno != io->pages.end_pgno ||
+               checked.pages.npages != io->pages.npages || checked.pages.offset != io->pages.offset ||
+               checked.pages.bytes != io->pages.bytes || checked.mode_bits != io->mode_bits))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline uint64_t dxb_storage_page_field_offset(const dxb_storage_t *storage, pgno_t pgno,
                                                      size_t field_offset) {
   return dxb_storage_pgno2bytes(storage, pgno) + field_offset;
@@ -21962,16 +21975,9 @@ static int dxb_storage_sync(const dxb_storage_t *storage, enum osal_syncmode_bit
 }
 
 static int dxb_storage_sync_range(const dxb_storage_t *storage, const dxb_sync_io_t *io) {
-  int rc = dxb_storage_page_io_validate(storage, &io->pages);
+  int rc = dxb_storage_sync_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  dxb_byte_io_t checked;
-  rc = dxb_storage_byte_io_from_page(&io->pages, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.offset != io->bytes.offset || checked.bytes != io->bytes.bytes))
-    return MDBX_EINVAL;
-
   return dxb_storage_sync(storage, io->mode_bits);
 }
 

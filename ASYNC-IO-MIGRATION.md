@@ -4507,6 +4507,22 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.113` batch, `1.175`
 crud, `1.018` iterate, `0.990` get, and `1.069` delete.
 
+A later sync request validation cleanup added
+`dxb_storage_sync_io_validate()` so range-sync descriptors are rebuilt from
+their page range and mode before the storage sync boundary consumes them.
+`dxb_storage_sync_range()` now rejects malformed sync descriptors through the
+same storage-owned request validation pattern used by byte, page, metadata,
+filesize, coverage, and readahead requests. Verification passed
+`git diff --check`, source scans proving the sync boundary calls
+`dxb_storage_sync_io_validate()`, the GNUmake `mdbx_migration_smoke` target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.137` batch, `1.168`
+crud, `0.930` iterate, `1.005` get, and `1.084` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
