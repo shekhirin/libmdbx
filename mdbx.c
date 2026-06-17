@@ -1985,6 +1985,10 @@ static inline uint64_t dxb_storage_meta_page_offset(const dxb_storage_t *storage
   return dxb_storage_pgno2bytes(storage, number);
 }
 
+static inline int dxb_storage_meta_pages_io(const dxb_storage_t *storage, dxb_page_io_t *io) {
+  return dxb_storage_page_prefix_io(storage, NUM_METAS, io);
+}
+
 static inline int dxb_storage_meta_io(const dxb_storage_t *storage, unsigned number, size_t payload_offset,
                                       size_t bytes, dxb_meta_io_t *io) {
   if (unlikely(number >= NUM_METAS || payload_offset > sizeof(meta_t) || bytes > sizeof(meta_t) - payload_offset))
@@ -4347,7 +4351,11 @@ static inline void *meta_shadow_bytes_ptr(const MDBX_env *env, const dxb_byte_io
 __cold static int meta_shadow_alloc(MDBX_env *env) {
   const dxb_storage_t *const storage = &env->dxb_storage;
   eASSERT0(env, dxb_storage_pagesize(storage) == env->ps);
-  const size_t bytes = (size_t)dxb_storage_npages2bytes(storage, NUM_METAS);
+  dxb_page_io_t meta_pages;
+  int err = dxb_storage_meta_pages_io(storage, &meta_pages);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  const size_t bytes = meta_pages.bytes;
   if (likely(env->meta_shadow && env->meta_shadow_bytes == bytes))
     return MDBX_SUCCESS;
 
@@ -4357,7 +4365,7 @@ __cold static int meta_shadow_alloc(MDBX_env *env) {
     env->meta_shadow_bytes = 0;
   }
 
-  int err = osal_memalign_alloc(globals.sys_pagesize, bytes, &env->meta_shadow);
+  err = osal_memalign_alloc(globals.sys_pagesize, bytes, &env->meta_shadow);
   if (likely(err == MDBX_SUCCESS)) {
     env->meta_shadow_bytes = bytes;
     memset(env->meta_shadow, 0, bytes);
@@ -4372,7 +4380,7 @@ int meta_shadow_refresh(MDBX_env *env) {
     return err;
 
   dxb_page_io_t meta_pages;
-  err = dxb_storage_page_prefix_io(storage, NUM_METAS, &meta_pages);
+  err = dxb_storage_meta_pages_io(storage, &meta_pages);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
   dxb_read_io_t request;
@@ -6115,7 +6123,11 @@ __cold static void meta_make_sizeable(meta_t *meta) {
 __cold static int copy_with_compacting(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, uint8_t *buffer,
                                        const bool dest_is_pipe, const MDBX_copy_flags_t flags) {
   const dxb_storage_t *const storage = &env->dxb_storage;
-  const size_t meta_bytes = (size_t)dxb_storage_npages2bytes(storage, NUM_METAS);
+  dxb_page_io_t meta_pages;
+  int err = dxb_storage_meta_pages_io(storage, &meta_pages);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  const size_t meta_bytes = meta_pages.bytes;
   uint8_t *const data_buffer = buffer + ceil_powerof2(meta_bytes, globals.sys_pagesize);
   meta_t *const meta = meta_init_triplet(env, buffer);
   meta_set_txnid(env, meta, txn->txnid);
@@ -6276,7 +6288,11 @@ __cold static int copy_with_compacting(MDBX_env *env, MDBX_txn *txn, mdbx_fileha
 __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, uint8_t *buffer,
                             const bool dest_is_pipe, const MDBX_copy_flags_t flags) {
   const dxb_storage_t *const storage = &env->dxb_storage;
-  const size_t meta_bytes = (size_t)dxb_storage_npages2bytes(storage, NUM_METAS);
+  dxb_page_io_t meta_pages;
+  int rc = dxb_storage_meta_pages_io(storage, &meta_pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  const size_t meta_bytes = meta_pages.bytes;
   uint8_t *const data_buffer = buffer + ceil_powerof2(meta_bytes, globals.sys_pagesize);
   meta_t *const meta = meta_init_triplet(env, buffer);
   meta_set_txnid(env, meta, txn->txnid);
@@ -6293,7 +6309,7 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
     meta->canary.v = constmeta_txnid(meta);
   }
 
-  int rc = MDBX_SUCCESS;
+  rc = MDBX_SUCCESS;
   if (flags & MDBX_CP_THROTTLE_MVCC) {
     rc = mdbx_txn_park(txn, false);
     if (unlikely(rc != MDBX_SUCCESS))
@@ -6453,9 +6469,13 @@ __cold static int copy2fd(MDBX_txn *txn, mdbx_filehandle_t fd, MDBX_copy_flags_t
 
   MDBX_env *const env = txn->env;
   const dxb_storage_t *const storage = &env->dxb_storage;
-  const size_t meta_bytes = (size_t)dxb_storage_npages2bytes(storage, NUM_METAS);
+  dxb_page_io_t meta_pages;
+  rc = dxb_storage_meta_pages_io(storage, &meta_pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  const size_t meta_bytes = meta_pages.bytes;
   const size_t buffer_size =
-      dxb_storage_pgno_ceil2os_bytes(storage, NUM_METAS) +
+      dxb_storage_bytes_ceil2os_bytes(storage, meta_pages.bytes) +
       ceil_powerof2(((flags & MDBX_CP_COMPACT) ? 2 * (size_t)MDBX_ENVCOPY_WRITEBUF : (size_t)MDBX_ENVCOPY_WRITEBUF),
                     globals.sys_pagesize);
 
@@ -22935,7 +22955,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
     header = *meta_init_triplet(env, env->page_auxbuf);
     dxb_storage_set_pagesize_ln(storage, env->ps2ln);
     dxb_page_io_t meta_pages;
-    err = dxb_storage_page_prefix_io(storage, NUM_METAS, &meta_pages);
+    err = dxb_storage_meta_pages_io(storage, &meta_pages);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
     dxb_write_io_t metas_io;
@@ -23121,8 +23141,11 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  eASSERT0(env,
-           allocated_bytes >= dxb_storage_npages2bytes(storage, NUM_METAS) && allocated_bytes <= dxb_storage_limit_size(storage));
+  dxb_page_io_t meta_pages;
+  err = dxb_storage_meta_pages_io(storage, &meta_pages);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  eASSERT0(env, allocated_bytes >= meta_pages.bytes && allocated_bytes <= dxb_storage_limit_size(storage));
 
   err = meta_shadow_refresh(env);
   if (unlikely(err != MDBX_SUCCESS))

@@ -5069,6 +5069,25 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed with
 forced/default ratios of `1.144` batch, `1.173` crud, `1.020` iterate, `1.009`
 get, and `1.080` delete.
 
+A later meta-triplet descriptor cleanup added `dxb_storage_meta_pages_io()` so
+shadow metadata allocation/refresh, copy/export meta-buffer sizing,
+new-database meta-page writes, and open-time minimum allocated-size checks all
+derive the three-meta-page span from a checked `dxb_page_io_t` descriptor. This
+removes the remaining direct `dxb_storage_npages2bytes(storage, NUM_METAS)`
+callers and avoids using a raw page-count-to-byte conversion at those storage
+boundaries. Verification passed `git diff --check`, source scans proving the
+targeted `dxb_storage_npages2bytes(storage, NUM_METAS)` conversions and direct
+`dxb_storage_page_prefix_io(storage, NUM_METAS, ...)` call sites outside the
+helper are gone, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.132` batch, `1.167` crud, `0.995` iterate, `0.999`
+get, and `1.075` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
