@@ -2961,6 +2961,19 @@ injection, `cmake --build @cmake-asan-build`, and focused ASAN
 forced/default ratios of `1.123` batch, `1.178` crud, `1.045` iterate, `1.021`
 get, and `1.094` delete.
 
+A later data-sync range wrapper cleanup removed the env-shaped
+`dxb_sync_data_range()` adapter. `dxb_sync_locked()` and the pre-writer
+`env_sync()` path now build explicit `dxb_sync_range_t` values at their policy
+sites, keep the no-WRITEMAP invariants and pgop accounting there, and submit
+the range directly through `dxb_storage_sync_range()`. This leaves data sync
+range submission behind storage without preserving a separate environment
+forwarder. Verification for this checkpoint should cover stale sync-wrapper
+scans, stale data-file mmap symbol scans, `mdbx_migration_smoke` default and
+forced tiny-cache runs, Ninja build plus focused CTest, public migration CTest,
+fault injection, ASAN build plus focused ASAN CTest, and the paired lazy
+benchmark gate. The lazy gate passed with forced/default ratios of `1.255`
+batch, `1.338` crud, `0.834` iterate, `1.205` get, and `1.152` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

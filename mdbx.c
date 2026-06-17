@@ -1618,8 +1618,6 @@ static int dxb_storage_fetch_filesize_if_current_lacks(dxb_storage_t *storage, s
 MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno_t used_pgno, const pgno_t size_pgno,
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
-MDBX_INTERNAL int dxb_sync_data_range(const MDBX_env *env, dxb_sync_range_t range,
-                                      enum osal_syncmode_bits mode_bits, unsigned flags);
 MDBX_INTERNAL int dxb_sync_meta_written(const MDBX_env *env, enum osal_syncmode_bits mode_bits);
 static int dxb_storage_read(const dxb_storage_t *storage, void *buf, size_t bytes, uint64_t offset);
 static int dxb_storage_write_bytes(const dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
@@ -21044,15 +21042,6 @@ static inline void dxb_note_fsync_pgop(const MDBX_env *env, enum osal_syncmode_b
     env->lck->pgops.fsync.weak += (mode_bits > MDBX_SYNC_NONE);
 }
 
-int dxb_sync_data_range(const MDBX_env *env, dxb_sync_range_t range, enum osal_syncmode_bits mode_bits,
-                        unsigned flags) {
-  eASSERT0(env, range.begin <= range.end);
-  eASSERT0(env, ((flags ^ env->flags) & MDBX_WRITEMAP) == 0);
-  eASSERT0(env, (flags & MDBX_WRITEMAP) == 0);
-  dxb_note_fsync_pgop(env, mode_bits);
-  return dxb_storage_sync_range(&env->dxb_storage, range, mode_bits);
-}
-
 int dxb_sync_meta_written(const MDBX_env *env, enum osal_syncmode_bits mode_bits) {
   if (!dxb_storage_meta_write_uses_data_sync(&env->dxb_storage))
     return MDBX_SUCCESS;
@@ -22330,7 +22319,10 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
     } else if (unlikely(env->incore))
       goto skip_incore_sync;
 
-    rc = dxb_sync_data_range(env, dxb_sync_range_all(pending->geometry.first_unallocated), mode_bits, flags);
+    const dxb_sync_range_t sync_range = dxb_sync_range_all(pending->geometry.first_unallocated);
+    eASSERT0(env, sync_range.begin <= sync_range.end);
+    dxb_note_fsync_pgop(env, mode_bits);
+    rc = dxb_storage_sync_range(&env->dxb_storage, sync_range, mode_bits);
     if (unlikely(rc != MDBX_SUCCESS))
       goto fail;
     rc = (flags & MDBX_SAFE_NOSYNC) ? MDBX_RESULT_TRUE /* carry non-steady */
@@ -22590,8 +22582,11 @@ retry:;
       /* pre-sync to avoid latency for writer */
       if (unsynced_pages > /* FIXME: define threshold */ 42 && (flags & MDBX_SAFE_NOSYNC) == 0) {
         eASSERT0(env, ((flags ^ env->flags) & MDBX_WRITEMAP) == 0);
-        err = dxb_sync_data_range(env, dxb_sync_range_all(head.ptr_c->geometry.first_unallocated), MDBX_SYNC_DATA,
-                                  flags);
+        eASSERT0(env, (flags & MDBX_WRITEMAP) == 0);
+        const dxb_sync_range_t sync_range = dxb_sync_range_all(head.ptr_c->geometry.first_unallocated);
+        eASSERT0(env, sync_range.begin <= sync_range.end);
+        dxb_note_fsync_pgop(env, MDBX_SYNC_DATA);
+        err = dxb_storage_sync_range(&env->dxb_storage, sync_range, MDBX_SYNC_DATA);
 
         if (unlikely(err != MDBX_SUCCESS))
           return err;
