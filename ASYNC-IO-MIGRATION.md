@@ -136,7 +136,10 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   checked `dxb_page_io_t` descriptor for `(pgno, npages)` to `(offset, bytes)`
   conversion, giving a later async backend one storage-owned page request shape
   for reads, queued writes, prefetch, writev offsets, cache invalidation, and
-  file-range copies.
+  file-range copies. Explicit page-cache entries now store that descriptor
+  directly, so cache lifetime, eviction accounting, overlap invalidation, and
+  overflow materialization use the same checked page-I/O geometry as the
+  storage operations that fill or invalidate them.
   Readahead plus data-file tail discard paths now
   use fd-backed advice/discard through storage; an earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
@@ -424,10 +427,11 @@ The exact representation can differ, but the contract must be explicit:
    retain-before-release and release-all helper paths, and nested transaction
    cursor backups retain and release their saved stacks. The branch now also has
    a real page-cache owner/refcount scaffold: cache entries have owner, page,
-   span, byte, and pin counters; cursor refs can point at those entries; env
-   reset releases the cache; and page validation can recognize cached read
-   pages without a mapped-file address range. Overflow value reads now retain their page result
-   in `MDBX_cursor.value_ref`, which gives non-stack `MDBX_val` data the same
+   page-I/O descriptor, and pin counters; cursor refs can point at those
+   entries; env reset releases the cache; and page validation can recognize
+   cached read pages without a mapped-file address range. Overflow value reads
+   now retain their page result in `MDBX_cursor.value_ref`, which gives
+   non-stack `MDBX_val` data the same
    future pin lifetime hook as cursor stack pages. Short-lived `pgr_t` users now
    have explicit release/consume handling after stack/value transfer or
    transient use, including temporary rebalance clone cleanup. The branch now
@@ -463,8 +467,11 @@ The exact representation can differ, but the contract must be explicit:
    64 MiB. Writer reads normally use private cache entries that are freed when
    their last pin drops, avoiding cache-list scans and mutex traffic on the
    write path. Checking and page-validation paths can opt into tracking private
-   entries so ownership checks still work. Fast key/value cache hits now
-   materialize through the explicit page cache. The remaining read-cache work is
+   entries so ownership checks still work. Cache entries store the same
+   `dxb_page_io_t` descriptor used by storage reads/writes, so overlap
+   invalidation and large-page expansion no longer maintain separate
+   pgno/span/byte fields. Fast key/value cache hits now materialize through the
+   explicit page cache. The remaining read-cache work is
    stronger eviction/invalidation policy, reducing over-retention in cursorless
    public reads, and moving more value lifetime decisions to stable cache-owned
    references that can be pinned before returning.
@@ -3600,6 +3607,22 @@ tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
 focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.139`
 batch, `1.149` crud, `0.952` iterate, `0.989` get, and `1.080` delete.
+
+A later page-cache descriptor cleanup stored `dxb_page_io_t` directly in
+`page_cache_entry_t`. Single-page cache misses now obtain their descriptor from
+`dxb_storage_page_io()` before allocation, large-page materialization copies the
+same descriptor into either the expanded tracked entry or the detached private
+entry, and cache accounting/invalidation now uses descriptor `npages`, `bytes`,
+and `end_pgno` instead of maintaining parallel scalar fields. Verification
+passed stale page-cache scalar-field scans, stale data-file mmap and removed
+sync-adapter scans across the shipped core sources, `git diff --check`, `make
+-f GNUmakefile mdbx_migration_smoke`, `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the
+six focused ASAN `migration_smoke` CTest entries. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.116`
+batch, `1.151` crud, `0.833` iterate, `1.052` get, and `1.082` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
