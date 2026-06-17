@@ -5202,6 +5202,24 @@ focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
 The paired benchmark gate passed with forced/default ratios of `1.116` batch,
 `1.183` crud, `0.974` iterate, `1.053` get, and `1.081` delete.
 
+A later page-write submission cleanup added `dxb_storage_write_page_span()` for
+callers that already hold a checked `dxb_page_io_t` and immediately submit a
+write. Defrag page moves, initial meta-triplet creation, explicit meta-page
+override, and non-frozen debug page-kill writes now hand their page descriptors
+to storage directly instead of deriving throwaway local `dxb_write_io_t`
+objects. Dirty-page queue setup/enqueue and writev page-kill paths still keep
+their write descriptors because queue sizing, coalescing, and scatter/gather
+submission consume them directly. Verification passed `git diff --check`,
+source scans proving the simple immediate writes now use
+`dxb_storage_write_page_span()` while queue/writev descriptor uses remain, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.144` batch,
+`1.168` crud, `1.234` iterate, `0.973` get, and `1.082` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
