@@ -3106,6 +3106,22 @@ CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.121` batch, `1.134` crud, `1.018` iterate, `0.965`
 get, and `1.058` delete.
 
+A later single-page cache-miss cleanup moved cache entry allocation, explicit
+page read, and cache-list registration into `dxb_storage_read_cached_page()`.
+`page_cache_read()` still derives the transaction policy inputs (`snapshot`,
+`reusable`, and private tracking) and passes page geometry explicitly, but the
+miss path now has one storage-owned helper that future async backends can
+replace or queue behind. Verification passed stale read-cache helper scans,
+stale data-file mmap and removed sync-adapter scans across the shipped core
+sources, `git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.127` batch, `1.134` crud, `1.223` iterate, `1.016`
+get, and `1.064` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
