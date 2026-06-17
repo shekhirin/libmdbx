@@ -3495,6 +3495,24 @@ six focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.141`
 batch, `1.170` crud, `1.014` iterate, `0.910` get, and `1.078` delete.
 
+A later locking cleanup routed data-file lock operations through bound storage
+handles while leaving the lock-file mmap untouched. POSIX locking helpers now
+bind storage in `check_fstat()`, `lck_seize()`, `lck_downgrade()`,
+`lck_upgrade()`, `lck_destroy()`, and SYSV `lck_init()` setup, while Windows
+locking helpers bind storage in `flock_dxb()`, `lck_txn_unlock()`,
+`lck_unlock()`, and the Windows `lck_seize()` unlock path. `lck_setup()` also
+uses a local storage handle for its data-file-open assertion and read-only
+filesystem check. Verification passed stale locking storage-call scans, stale
+data-file mmap and removed sync-adapter scans across the shipped core sources,
+`git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.084` batch, `1.181` crud, `0.968` iterate, `1.004`
+get, and `1.084` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

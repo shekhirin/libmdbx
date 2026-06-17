@@ -26834,10 +26834,11 @@ int lck_ipclock_destroy(osal_ipclock_t *ipc) {
 #endif /* MDBX_LOCKING > MDBX_LOCKING_SYSV */
 
 static int check_fstat(MDBX_env *env) {
+  const dxb_storage_t *const storage = &env->dxb_storage;
   struct stat st;
 
   int rc = MDBX_SUCCESS;
-  rc = dxb_storage_stat(&env->dxb_storage, &st);
+  rc = dxb_storage_stat(storage, &st);
   if (unlikely(rc != MDBX_SUCCESS)) {
     ERROR("fstat(%s), err %d", "DXB", rc);
     return rc;
@@ -26887,7 +26888,8 @@ static int check_fstat(MDBX_env *env) {
 }
 
 __cold int lck_seize(MDBX_env *env) {
-  ASSERT(dxb_storage_is_opened(&env->dxb_storage));
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  ASSERT(dxb_storage_is_opened(storage));
   if (unlikely(osal_getpid() != env->pid))
     return MDBX_PANIC;
 
@@ -26910,8 +26912,7 @@ __cold int lck_seize(MDBX_env *env) {
 
   if (env->lck_mmap.fd == INVALID_HANDLE_VALUE) {
     /* LY: without-lck mode (e.g. exclusive or on read-only filesystem) */
-    rc = dxb_storage_setlk_with3retries(&env->dxb_storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, 0,
-                                        OFF_T_MAX);
+    rc = dxb_storage_setlk_with3retries(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, 0, OFF_T_MAX);
     if (rc != MDBX_SUCCESS) {
       ERROR("%s, err %u", "without-lck", rc);
       eASSERT0(env, MDBX_IS_ERROR(rc));
@@ -26938,8 +26939,7 @@ retry:
       return rc;
 
   continue_dxb_exclusive:
-    rc = dxb_storage_setlk_with3retries(&env->dxb_storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, 0,
-                                        OFF_T_MAX);
+    rc = dxb_storage_setlk_with3retries(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, 0, OFF_T_MAX);
     if (rc == MDBX_SUCCESS)
       return MDBX_RESULT_TRUE /* Done: return with exclusive locking. */;
 
@@ -26998,8 +26998,7 @@ retry:
   }
 
   /* Lock against another process operating in without-lck or exclusive mode. */
-  rc = dxb_storage_setlk_with3retries(&env->dxb_storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, env->pid,
-                                      1);
+  rc = dxb_storage_setlk_with3retries(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, env->pid, 1);
   if (rc != MDBX_SUCCESS) {
     ERROR("%s, err %u", "lock-against-without-lck", rc);
     eASSERT0(env, MDBX_IS_ERROR(rc));
@@ -27012,15 +27011,16 @@ retry:
 
 int lck_downgrade(MDBX_env *env) {
   ASSERT(env->lck_mmap.fd != INVALID_HANDLE_VALUE);
-  ASSERT(dxb_storage_is_opened(&env->dxb_storage));
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  ASSERT(dxb_storage_is_opened(storage));
   if (unlikely(osal_getpid() != env->pid))
     return MDBX_PANIC;
 
   int rc = MDBX_SUCCESS;
   if ((env->flags & MDBX_EXCLUSIVE) == 0) {
-    rc = dxb_storage_lock_op(&env->dxb_storage, op_setlk, F_UNLCK, 0, env->pid);
+    rc = dxb_storage_lock_op(storage, op_setlk, F_UNLCK, 0, env->pid);
     if (rc == MDBX_SUCCESS)
-      rc = dxb_storage_lock_op(&env->dxb_storage, op_setlk, F_UNLCK, env->pid + 1, OFF_T_MAX - env->pid - 1);
+      rc = dxb_storage_lock_op(storage, op_setlk, F_UNLCK, env->pid + 1, OFF_T_MAX - env->pid - 1);
   }
   if (rc == MDBX_SUCCESS)
     rc = lck_setlk_with3retries(env->lck_mmap.fd, F_RDLCK, 0, 1);
@@ -27033,18 +27033,18 @@ int lck_downgrade(MDBX_env *env) {
 
 int lck_upgrade(MDBX_env *env, bool dont_wait) {
   ASSERT(env->lck_mmap.fd != INVALID_HANDLE_VALUE);
-  ASSERT(dxb_storage_is_opened(&env->dxb_storage));
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  ASSERT(dxb_storage_is_opened(storage));
   if (unlikely(osal_getpid() != env->pid))
     return MDBX_PANIC;
 
   const int cmd = dont_wait ? op_setlk : op_setlkw;
   int rc = lck_op(env->lck_mmap.fd, cmd, F_WRLCK, 0, 1);
   if (rc == MDBX_SUCCESS && (env->flags & MDBX_EXCLUSIVE) == 0) {
-    rc = (env->pid > 1) ? dxb_storage_lock_op(&env->dxb_storage, cmd, F_WRLCK, 0, env->pid - 1) : MDBX_SUCCESS;
+    rc = (env->pid > 1) ? dxb_storage_lock_op(storage, cmd, F_WRLCK, 0, env->pid - 1) : MDBX_SUCCESS;
     if (rc == MDBX_SUCCESS) {
-      rc = dxb_storage_lock_op(&env->dxb_storage, cmd, F_WRLCK, env->pid + 1, OFF_T_MAX - env->pid - 1);
-      if (rc != MDBX_SUCCESS && env->pid > 1 &&
-          dxb_storage_lock_op(&env->dxb_storage, op_setlk, F_UNLCK, 0, env->pid - 1))
+      rc = dxb_storage_lock_op(storage, cmd, F_WRLCK, env->pid + 1, OFF_T_MAX - env->pid - 1);
+      if (rc != MDBX_SUCCESS && env->pid > 1 && dxb_storage_lock_op(storage, op_setlk, F_UNLCK, 0, env->pid - 1))
         rc = MDBX_PANIC;
     }
     if (rc != MDBX_SUCCESS && lck_setlk_with3retries(env->lck_mmap.fd, F_RDLCK, 0, 1))
@@ -27059,6 +27059,7 @@ int lck_upgrade(MDBX_env *env, bool dont_wait) {
 
 __cold int lck_destroy(MDBX_env *env, MDBX_env *inprocess_neighbor, const mdbx_pid_t current_pid) {
   eASSERT0(env, osal_getpid() == current_pid);
+  dxb_storage_t *const storage = &env->dxb_storage;
   int rc = MDBX_SUCCESS;
   struct stat lck_info;
   lck_t *lck = env->lck;
@@ -27067,8 +27068,7 @@ __cold int lck_destroy(MDBX_env *env, MDBX_env *inprocess_neighbor, const mdbx_p
       lck_op(env->lck_mmap.fd, op_setlk, F_WRLCK, 0, OFF_T_MAX) == 0 &&
       /* if LCK was not removed */
       fstat(env->lck_mmap.fd, &lck_info) == 0 && lck_info.st_nlink > 0 &&
-      dxb_storage_lock_op(&env->dxb_storage, op_setlk, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, 0,
-                          OFF_T_MAX) == 0) {
+      dxb_storage_lock_op(storage, op_setlk, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, 0, OFF_T_MAX) == 0) {
 
     VERBOSE("%p got exclusive, drown ipc-locks", __Wpedantic_format_voidptr(env));
     eASSERT0(env, current_pid == env->pid);
@@ -27112,17 +27112,18 @@ __cold int lck_destroy(MDBX_env *env, MDBX_env *inprocess_neighbor, const mdbx_p
 
   /* close dxb and restore lock */
   bool had_dxb_handle = false;
-  const int close_dxb_rc = dxb_storage_close_handles(&env->dxb_storage, &had_dxb_handle);
+  const int close_dxb_rc = dxb_storage_close_handles(storage, &had_dxb_handle);
   if (unlikely(close_dxb_rc != MDBX_SUCCESS) && rc == MDBX_SUCCESS)
     rc = close_dxb_rc;
   if (had_dxb_handle && op_setlk == F_SETLK && inprocess_neighbor && rc == MDBX_SUCCESS) {
+    const dxb_storage_t *const neighbor_storage = &inprocess_neighbor->dxb_storage;
     /* restore file-lock */
-    rc = dxb_storage_lock_op(&inprocess_neighbor->dxb_storage, F_SETLKW,
+    rc = dxb_storage_lock_op(neighbor_storage, F_SETLKW,
                              (inprocess_neighbor->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK,
                              (inprocess_neighbor->flags & MDBX_EXCLUSIVE) ? 0 : inprocess_neighbor->pid,
                              (inprocess_neighbor->flags & MDBX_EXCLUSIVE) ? OFF_T_MAX : 1);
   }
-  dxb_storage_reset(&env->dxb_storage, (env->flags & ENV_ACTIVE) != 0);
+  dxb_storage_reset(storage, (env->flags & ENV_ACTIVE) != 0);
 
   /* close clk and restore locks */
   if (env->lck_mmap.fd != INVALID_HANDLE_VALUE) {
@@ -27150,8 +27151,9 @@ __cold int lck_init(MDBX_env *env, MDBX_env *inprocess_neighbor, int global_uniq
   /* don't initialize semaphores twice */
   (void)inprocess_neighbor;
   if (global_uniqueness_flag == MDBX_RESULT_TRUE) {
+    const dxb_storage_t *const storage = &env->dxb_storage;
     struct stat st;
-    int err = dxb_storage_stat(&env->dxb_storage, &st);
+    int err = dxb_storage_stat(storage, &st);
     if (err)
       return err;
   sysv_retry_create:
@@ -27546,7 +27548,8 @@ static int flock_lck(const MDBX_env *env, unsigned flags, size_t offset, size_t 
 }
 
 static int flock_dxb(const MDBX_env *env, unsigned flags, size_t offset, size_t bytes) {
-  return flock_ex(dxb_storage_lock_fd(&env->dxb_storage), env->dxb_lock_event, flags, offset, bytes, 0);
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  return flock_ex(dxb_storage_lock_fd(storage), env->dxb_lock_event, flags, offset, bytes, 0);
 }
 
 static int funlock(mdbx_filehandle_t fd, size_t offset, size_t bytes) {
@@ -27604,7 +27607,8 @@ int lck_txn_lock(MDBX_env *env, bool dontwait) {
 void lck_txn_unlock(MDBX_env *env) {
   eASSERT1(env, !env->basal_txn || env->basal_txn->owner == osal_thread_self());
   if ((env->flags & MDBX_EXCLUSIVE) == 0) {
-    int err = funlock(dxb_storage_lock_fd(&env->dxb_storage), DXB_BODY);
+    const dxb_storage_t *const storage = &env->dxb_storage;
+    int err = funlock(dxb_storage_lock_fd(storage), DXB_BODY);
     if (err != MDBX_SUCCESS)
       panic_fmt(env, "lck/%s-unlock error %d", "txn", err);
   }
@@ -27840,7 +27844,8 @@ static void lck_unlock(MDBX_env *env) {
     SetLastError(ERROR_SUCCESS);
   }
 
-  const HANDLE fd4data = dxb_storage_lock_fd(&env->dxb_storage);
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  const HANDLE fd4data = dxb_storage_lock_fd(storage);
   if (fd4data != INVALID_HANDLE_VALUE) {
     /* explicitly unlock to avoid latency for other processes (windows kernel
      * releases such locks via deferred queues) */
@@ -27911,6 +27916,7 @@ static int internal_seize_lck(MDBX_env *env) {
 }
 
 int lck_seize(MDBX_env *env) {
+  const dxb_storage_t *const storage = &env->dxb_storage;
   if (env->flags & MDBX_EXCLUSIVE)
     return MDBX_RESULT_TRUE /* nope since files were must be opened
                                non-shareable */
@@ -27942,7 +27948,7 @@ int lck_seize(MDBX_env *env) {
       return err;
     }
     jitter4testing(false);
-    err = funlock(dxb_storage_lock_fd(&env->dxb_storage), DXB_WHOLE);
+    err = funlock(dxb_storage_lock_fd(storage), DXB_WHOLE);
     if (err != MDBX_SUCCESS)
       panic_fmt(env, "dxb/%s-unlock error %u", "lock-against-without-lck", err);
   }
@@ -28226,7 +28232,8 @@ __cold static int lck_setup_locked(MDBX_env *env) {
 }
 
 __cold int lck_setup(MDBX_env *env, mdbx_mode_t mode) {
-  eASSERT0(env, dxb_storage_is_opened(&env->dxb_storage));
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  eASSERT0(env, dxb_storage_is_opened(storage));
   eASSERT0(env, env->lck_mmap.fd == INVALID_HANDLE_VALUE);
 
   int err = osal_openfile(MDBX_OPEN_LCK, env, env->pathname.lck, &env->lck_mmap.fd, mode);
@@ -28241,7 +28248,7 @@ __cold int lck_setup(MDBX_env *env, mdbx_mode_t mode) {
     case MDBX_EROFS:
       if (env->flags & MDBX_RDONLY) {
         /* ENSURE the file system is read-only */
-        int err_rofs = dxb_storage_check_readonly(&env->dxb_storage, env->pathname.lck, err);
+        int err_rofs = dxb_storage_check_readonly(storage, env->pathname.lck, err);
         if (err_rofs == MDBX_SUCCESS ||
             /* ignore ERROR_NOT_SUPPORTED for exclusive mode */
             (err_rofs == MDBX_ENOSYS && (env->flags & MDBX_EXCLUSIVE)))
