@@ -4261,6 +4261,24 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.134` batch, `1.141`
 crud, `1.026` iterate, `1.004` get, and `1.082` delete.
 
+A later same-file copy descriptor cleanup added `dxb_copy_io_t` so
+`copy_file_range()` page moves carry source and destination page/byte spans as
+one checked request. Defrag overflow-tail same-file copy now builds that copy
+descriptor before crossing the storage boundary, and
+`dxb_storage_copy_pages()` validates both page-derived byte spans before calling
+the synchronous `copy_file_range()` backend. Destination cache invalidation
+continues through the write descriptor path. Verification passed
+`git diff --check`, source scans proving the old separate source/destination
+`dxb_page_io_t` copy call shape is gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.118` batch, `1.177` crud, `1.260` iterate, `0.938`
+get, and `1.076` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
