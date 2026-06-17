@@ -147,7 +147,9 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   so cache hits, miss fills, and future async submission share the same
   storage-owned request object. Committed-page lookup now constructs the
   descriptor before entering the cache, and the fast key/value cache fallback
-  does the same before materializing a cached offset.
+  does the same before materializing a cached offset. Dirty/spilled transaction
+  checks run before committed-page request construction, so only reads that
+  actually fall through to storage/cache create a page-I/O request.
   Readahead plus data-file tail discard paths now
   use fd-backed advice/discard through storage; an earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
@@ -483,7 +485,8 @@ The exact representation can differ, but the contract must be explicit:
    overflow-span materialization submit reads through descriptors. Committed
    page lookup and fast key/value cache materialization now build the descriptor
    before calling into the read cache. Fast key/value cache hits now materialize
-   through the explicit page cache. The
+   through the explicit page cache. Dirty/spilled transaction-page checks remain
+   ahead of committed-page request construction. The
    remaining read-cache work is
    stronger eviction/invalidation policy, reducing over-retention in cursorless
    public reads, and moving more value lifetime decisions to stable cache-owned
@@ -3685,6 +3688,22 @@ forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the
 six focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.094`
 batch, `1.153` crud, `1.132` iterate, `1.030` get, and `1.064` delete.
+
+A later unchecked-read descriptor cleanup moved committed-page request
+construction out to the caller that has already checked transaction-owned dirty
+and spilled pages. `page_get_unchecked_ex()` now builds the checked
+`dxb_page_io_t` only after dirty-list and parent-spill lookup fall through, then
+hands that request into `page_get_committed()`. This keeps explicit storage
+requests limited to pages that actually need committed storage/cache lookup.
+Verification passed stale raw-pgno committed/cache-read scans, stale data-file
+mmap scans across the shipped core sources, `git diff --check`, `make -f
+GNUmakefile mdbx_migration_smoke`, `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the
+six focused ASAN `migration_smoke` CTest entries. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.108`
+batch, `1.149` crud, `0.850` iterate, `0.813` get, and `1.082` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.

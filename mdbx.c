@@ -33818,13 +33818,10 @@ __cold static __noinline pgr_t check_page_complete(const uint16_t ILL, pgr_t r, 
   return r;
 }
 
-static inline pgr_t page_get_committed(MDBX_txn *txn, const pgno_t pgno, const bool track_private) {
+static inline pgr_t page_get_committed(MDBX_txn *txn, const dxb_page_io_t *request, const bool track_private) {
   tASSERT0(txn, (txn->flags & MDBX_WRITEMAP) == 0);
-  dxb_page_io_t request;
-  int err = dxb_storage_page_io(&txn->env->dxb_storage, pgno, 1, &request);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-  return page_cache_read(txn, &request, track_private);
+  tASSERT0(txn, request->npages == 1);
+  return page_cache_read(txn, request, track_private);
 }
 
 static __hot pgr_t page_get_unchecked_ex(MDBX_txn *const txn, const pgno_t pgno, const txnid_t front,
@@ -33868,7 +33865,12 @@ static __hot pgr_t page_get_unchecked_ex(MDBX_txn *const txn, const pgno_t pgno,
     } while (unlikely(spiller));
   }
 
-  pgr_t r = page_get_committed(txn, pgno, track_private);
+  dxb_page_io_t request;
+  int err = dxb_storage_page_io(&txn->env->dxb_storage, pgno, 1, &request);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  pgr_t r = page_get_committed(txn, &request, track_private);
   if (unlikely(r.err != MDBX_SUCCESS))
     return r;
 
