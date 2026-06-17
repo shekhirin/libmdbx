@@ -1878,6 +1878,15 @@ static inline int dxb_storage_coverage_io_from_page(const dxb_storage_t *storage
   return dxb_storage_byte_io_from_page(&io->pages, &io->bytes);
 }
 
+static inline int dxb_storage_coverage_io_from_page_prefix(const dxb_storage_t *storage, pgno_t end_pgno,
+                                                           dxb_coverage_io_t *io) {
+  dxb_page_io_t pages;
+  int rc = dxb_storage_page_prefix_io(storage, end_pgno, &pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_coverage_io_from_page(storage, &pages, io);
+}
+
 static inline int dxb_storage_coverage_io_validate(const dxb_storage_t *storage, const dxb_coverage_io_t *io) {
   dxb_coverage_io_t checked;
   int rc = dxb_storage_coverage_io_from_bytes(storage, &io->bytes, &checked);
@@ -1902,6 +1911,15 @@ static inline int dxb_storage_sync_io_from_page(const dxb_storage_t *storage, co
     return rc;
   io->mode_bits = mode_bits;
   return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_sync_io_from_page_prefix(const dxb_storage_t *storage, pgno_t end_pgno,
+                                                       enum osal_syncmode_bits mode_bits, dxb_sync_io_t *io) {
+  dxb_page_io_t pages;
+  int rc = dxb_storage_page_prefix_io(storage, end_pgno, &pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_sync_io_from_page(storage, &pages, mode_bits, io);
 }
 
 static inline int dxb_storage_sync_io_validate(const dxb_storage_t *storage, const dxb_sync_io_t *io) {
@@ -15420,12 +15438,8 @@ __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *t
   txn->canary = head.ptr_c->canary;
 
   dxb_storage_t *const storage = &txn->env->dxb_storage;
-  dxb_page_io_t required_pages;
-  int err = dxb_storage_page_prefix_io(storage, txn->geo.first_unallocated, &required_pages);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
   dxb_coverage_io_t required;
-  err = dxb_storage_coverage_io_from_page(storage, &required_pages, &required);
+  int err = dxb_storage_coverage_io_from_page_prefix(storage, txn->geo.first_unallocated, &required);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
   const size_t required_bytes = required.bytes.bytes;
@@ -23539,12 +23553,8 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
     } else if (unlikely(env->incore))
       goto skip_incore_sync;
 
-    dxb_page_io_t sync_pages;
-    rc = dxb_storage_page_prefix_io(storage, pending->geometry.first_unallocated, &sync_pages);
-    if (unlikely(rc != MDBX_SUCCESS))
-      goto fail;
     dxb_sync_io_t sync_range;
-    rc = dxb_storage_sync_io_from_page(storage, &sync_pages, mode_bits, &sync_range);
+    rc = dxb_storage_sync_io_from_page_prefix(storage, pending->geometry.first_unallocated, mode_bits, &sync_range);
     if (unlikely(rc != MDBX_SUCCESS))
       goto fail;
     dxb_note_fsync_pgop(env, sync_range.mode_bits);
@@ -23813,12 +23823,9 @@ retry:;
       if (unsynced_pages > /* FIXME: define threshold */ 42 && (flags & MDBX_SAFE_NOSYNC) == 0) {
         eASSERT0(env, ((flags ^ env->flags) & MDBX_WRITEMAP) == 0);
         eASSERT0(env, (flags & MDBX_WRITEMAP) == 0);
-        dxb_page_io_t sync_pages;
-        err = dxb_storage_page_prefix_io(storage, head.ptr_c->geometry.first_unallocated, &sync_pages);
-        if (unlikely(err != MDBX_SUCCESS))
-          return err;
         dxb_sync_io_t sync_range;
-        err = dxb_storage_sync_io_from_page(storage, &sync_pages, MDBX_SYNC_DATA, &sync_range);
+        err = dxb_storage_sync_io_from_page_prefix(storage, head.ptr_c->geometry.first_unallocated, MDBX_SYNC_DATA,
+                                                   &sync_range);
         if (unlikely(err != MDBX_SUCCESS))
           return err;
         dxb_note_fsync_pgop(env, sync_range.mode_bits);

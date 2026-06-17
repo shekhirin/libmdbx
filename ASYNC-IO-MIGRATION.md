@@ -5106,6 +5106,22 @@ CTest suite, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.118` batch, `1.160` crud, `0.774` iterate, `1.011`
 get, and `1.085` delete.
 
+A later page-prefix descriptor cleanup added
+`dxb_storage_coverage_io_from_page_prefix()` and
+`dxb_storage_sync_io_from_page_prefix()` so storage-bound coverage/sync callers
+can request a checked `0..end_pgno` descriptor directly. `coherency_fetch_head()`,
+`dxb_sync_locked()`, and the `env_sync()` pre-sync path no longer build a
+temporary prefix page descriptor and then wrap it locally. Verification passed
+`git diff --check`, a source scan proving the targeted prefix-plus-wrap sites
+now use the prefix constructors, the GNUmake `mdbx_migration_smoke` target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.104` batch, `1.157`
+crud, `0.811` iterate, `1.091` get, and `1.066` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
