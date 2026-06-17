@@ -139,7 +139,10 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   file-range copies. Explicit page-cache entries now store that descriptor
   directly, so cache lifetime, eviction accounting, overlap invalidation, and
   overflow materialization use the same checked page-I/O geometry as the
-  storage operations that fill or invalidate them.
+  storage operations that fill or invalidate them. Cache miss fills and
+  overflow-span materialization now pass the stored descriptor directly into
+  the storage read helper, so the cache entry's descriptor is also the actual
+  read request shape rather than a parallel bookkeeping copy.
   Readahead plus data-file tail discard paths now
   use fd-backed advice/discard through storage; an earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
@@ -470,8 +473,9 @@ The exact representation can differ, but the contract must be explicit:
    entries so ownership checks still work. Cache entries store the same
    `dxb_page_io_t` descriptor used by storage reads/writes, so overlap
    invalidation and large-page expansion no longer maintain separate
-   pgno/span/byte fields. Fast key/value cache hits now materialize through the
-   explicit page cache. The remaining read-cache work is
+   pgno/span/byte fields. Cache miss fills and overflow-span materialization
+   submit reads through that descriptor. Fast key/value cache hits now
+   materialize through the explicit page cache. The remaining read-cache work is
    stronger eviction/invalidation policy, reducing over-retention in cursorless
    public reads, and moving more value lifetime decisions to stable cache-owned
    references that can be pinned before returning.
@@ -3623,6 +3627,23 @@ forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the
 six focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.116`
 batch, `1.151` crud, `0.833` iterate, `1.052` get, and `1.082` delete.
+
+A later cache-read descriptor handoff cleanup made the cache entry descriptor
+the actual storage read request for cache misses and overflow-span
+materialization. `dxb_storage_read_cached_page()` and
+`dxb_storage_materialize_cached_large_page()` now pass their existing
+`dxb_page_io_t` into `dxb_storage_read_io()`, and cached result construction is
+centralized around the entry descriptor. This removes another duplicate
+page-to-byte conversion before the future async read submission point.
+Verification passed stale duplicate cache-read scans, stale data-file mmap
+scans across the shipped core sources, `git diff --check`, `make -f
+GNUmakefile mdbx_migration_smoke`, `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the
+six focused ASAN `migration_smoke` CTest entries. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.103`
+batch, `1.151` crud, `0.995` iterate, `0.993` get, and `1.076` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.

@@ -1717,6 +1717,7 @@ MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
 static int dxb_storage_read(const dxb_storage_t *storage, void *buf, size_t bytes, uint64_t offset);
+static int dxb_storage_read_io(const dxb_storage_t *storage, const dxb_page_io_t *io, void *buf);
 static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
                                    size_t bytes, uint64_t offset);
 static int dxb_storage_write_pages(dxb_storage_t *storage, enum dxb_io_channel channel, pgno_t pgno,
@@ -20481,6 +20482,12 @@ static inline bool page_cache_entry_can_reuse(const page_cache_entry_t *entry, c
   return entry->io.npages > 1 || !is_largepage(entry->page);
 }
 
+static inline pgr_t dxb_storage_make_cached_pgr(page_cache_entry_t *entry) {
+  pgr_t ret = pgr_make(entry->page, MDBX_SUCCESS, entry->io.pgno, entry->io.npages, PAGE_REF_CACHE);
+  ret.ref.cache = entry;
+  return ret;
+}
+
 static pgr_t dxb_storage_lookup_cached_page(dxb_storage_t *storage, const pgno_t pgno, const txnid_t snapshot,
                                             const bool reusable) {
   if (!reusable)
@@ -20491,8 +20498,7 @@ static pgr_t dxb_storage_lookup_cached_page(dxb_storage_t *storage, const pgno_t
     if (page_cache_entry_can_reuse(entry, pgno, snapshot)) {
       entry->pins += 1;
       entry->owner->pinned += 1;
-      pgr_t ret = pgr_make(entry->page, MDBX_SUCCESS, pgno, entry->io.npages, PAGE_REF_CACHE);
-      ret.ref.cache = entry;
+      pgr_t ret = dxb_storage_make_cached_pgr(entry);
       page_cache_unlock(storage);
       return ret;
     }
@@ -20522,7 +20528,7 @@ static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, const pgno_t p
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
-  err = dxb_storage_read_pages(storage, pgno, entry->page, 1);
+  err = dxb_storage_read_io(storage, &entry->io, entry->page);
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
@@ -20539,9 +20545,7 @@ static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, const pgno_t p
     page_cache_unlock(storage);
   }
 
-  pgr_t ret = pgr_make(entry->page, MDBX_SUCCESS, entry->io.pgno, entry->io.npages, PAGE_REF_CACHE);
-  ret.ref.cache = entry;
-  return ret;
+  return dxb_storage_make_cached_pgr(entry);
 
 bailout:
   if (entry->page)
@@ -20603,7 +20607,7 @@ static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  err = dxb_storage_read_pages(storage, pgr->ref.pgno, large, npages);
+  err = dxb_storage_read_io(storage, &io, large);
   if (unlikely(err != MDBX_SUCCESS)) {
     osal_memalign_free(large);
     return err;
