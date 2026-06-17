@@ -4471,6 +4471,26 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.114` batch, `1.168`
 crud, `0.740` iterate, `1.069` get, and `1.070` delete.
 
+A later page request validation cleanup added
+`dxb_storage_page_io_validate()` so page-number requests are rebuilt and checked
+against the storage page size before they enter page-cache lookup/fill,
+metadata shadow copies, cache invalidation, sync, read, write, vector-write,
+queued-write preparation/insertion, and same-file copy paths. The page-derived
+read/write/copy descriptor helpers now take `dxb_storage_t`, validate their
+source `dxb_page_io_t`, and then derive the byte request, so `pgno`, `end_pgno`,
+`npages`, `offset`, and `bytes` remain one checked request shape across the
+page-cache, dirty-write queue, and storage submission boundaries. Verification
+passed `git diff --check`, source scans proving page descriptor construction
+and page consumers call `dxb_storage_page_io_validate()`, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.010` batch, `0.987` crud, `0.979` iterate, `0.976`
+get, and `0.998` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

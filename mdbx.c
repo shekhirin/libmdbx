@@ -1512,11 +1512,26 @@ static inline int dxb_storage_page_io(const dxb_storage_t *storage, pgno_t pgno,
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_page_io_validate(const dxb_storage_t *storage, const dxb_page_io_t *io) {
+  dxb_page_io_t checked;
+  int rc = dxb_storage_page_io(storage, io->pgno, io->npages, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.pgno != io->pgno || checked.end_pgno != io->end_pgno ||
+               checked.npages != io->npages || checked.offset != io->offset || checked.bytes != io->bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_byte_io_from_page(const dxb_page_io_t *pages, dxb_byte_io_t *io) {
   return dxb_storage_byte_io(pages->offset, pages->bytes, io);
 }
 
-static inline int dxb_storage_read_io_from_page(const dxb_page_io_t *pages, dxb_read_io_t *io) {
+static inline int dxb_storage_read_io_from_page(const dxb_storage_t *storage, const dxb_page_io_t *pages,
+                                                dxb_read_io_t *io) {
+  int rc = dxb_storage_page_io_validate(storage, pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   io->pages = *pages;
   return dxb_storage_byte_io_from_page(&io->pages, &io->bytes);
 }
@@ -1528,11 +1543,14 @@ static inline int dxb_storage_read_io(const dxb_storage_t *storage, pgno_t pgno,
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  return dxb_storage_read_io_from_page(&pages, io);
+  return dxb_storage_read_io_from_page(storage, &pages, io);
 }
 
-static inline int dxb_storage_write_io_from_page(enum dxb_io_channel channel, const dxb_page_io_t *pages,
-                                                 dxb_write_io_t *io) {
+static inline int dxb_storage_write_io_from_page(const dxb_storage_t *storage, enum dxb_io_channel channel,
+                                                 const dxb_page_io_t *pages, dxb_write_io_t *io) {
+  int rc = dxb_storage_page_io_validate(storage, pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   io->channel = channel;
   io->pages = *pages;
   return dxb_storage_byte_io_from_page(&io->pages, &io->bytes);
@@ -1545,17 +1563,23 @@ static inline int dxb_storage_write_io(const dxb_storage_t *storage, enum dxb_io
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  return dxb_storage_write_io_from_page(channel, &pages, io);
+  return dxb_storage_write_io_from_page(storage, channel, &pages, io);
 }
 
-static inline int dxb_storage_copy_io_from_pages(const dxb_page_io_t *src, const dxb_page_io_t *dst,
-                                                 dxb_copy_io_t *io) {
+static inline int dxb_storage_copy_io_from_pages(const dxb_storage_t *storage, const dxb_page_io_t *src,
+                                                 const dxb_page_io_t *dst, dxb_copy_io_t *io) {
+  int rc = dxb_storage_page_io_validate(storage, src);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_page_io_validate(storage, dst);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   if (unlikely(src->bytes != dst->bytes || src->npages != dst->npages))
     return MDBX_EINVAL;
 
   io->src_pages = *src;
   io->dst_pages = *dst;
-  int rc = dxb_storage_byte_io_from_page(&io->src_pages, &io->src_bytes);
+  rc = dxb_storage_byte_io_from_page(&io->src_pages, &io->src_bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   rc = dxb_storage_byte_io_from_page(&io->dst_pages, &io->dst_bytes);
@@ -1574,7 +1598,7 @@ static inline int dxb_storage_copy_io(const dxb_storage_t *storage, pgno_t src_p
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  return dxb_storage_copy_io_from_pages(&src, &dst, io);
+  return dxb_storage_copy_io_from_pages(storage, &src, &dst, io);
 }
 
 static inline uint64_t dxb_storage_bytes2pgno(const dxb_storage_t *storage, uint64_t bytes) {
@@ -4165,9 +4189,13 @@ int meta_shadow_refresh(MDBX_env *env) {
 
 void meta_shadow_copy_page(const MDBX_env *env, const dxb_page_io_t *io, const page_t *page) {
   if (likely(env->meta_shadow)) {
+    const dxb_storage_t *const storage = &env->dxb_storage;
     eASSERT0(env, io->npages == 1 && io->pgno < NUM_METAS);
+    int err = dxb_storage_page_io_validate(storage, io);
+    eASSERT0(env, err == MDBX_SUCCESS);
     dxb_byte_io_t page_io;
-    const int err = dxb_storage_byte_io_from_page(io, &page_io);
+    if (likely(err == MDBX_SUCCESS))
+      err = dxb_storage_byte_io_from_page(io, &page_io);
     eASSERT0(env, err == MDBX_SUCCESS);
     if (likely(err == MDBX_SUCCESS))
       memcpy(meta_shadow_bytes_ptr(env, &page_io), page, io->bytes);
@@ -20885,6 +20913,10 @@ static void page_cache_release_all(dxb_storage_t *storage, bool env_active) {
 
 static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_page_io_t *io,
                                              bool include_reusable) {
+  const int rc = dxb_storage_page_io_validate(storage, io);
+  ASSERT(rc == MDBX_SUCCESS);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return;
   if (io->npages == 0)
     return;
 
@@ -20973,7 +21005,7 @@ static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, const dxb_page
     goto bailout;
 
   dxb_read_io_t read;
-  err = dxb_storage_read_io_from_page(&entry->io, &read);
+  err = dxb_storage_read_io_from_page(storage, &entry->io, &read);
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
   err = dxb_storage_read_pages(storage, &read, entry->page);
@@ -21031,6 +21063,10 @@ static pgr_t page_cache_read(MDBX_txn *txn, const dxb_page_io_t *request, const 
   ASSERT(request->npages == 1);
   MDBX_env *const env = txn->env;
   dxb_storage_t *const storage = &env->dxb_storage;
+  int err = dxb_storage_page_io_validate(storage, request);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
   const bool reusable = page_cache_can_reuse(txn);
   const txnid_t snapshot = reusable ? txn_basis_snapshot(txn) : 0;
 
@@ -21058,7 +21094,7 @@ static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr
     return err;
 
   dxb_read_io_t read;
-  err = dxb_storage_read_io_from_page(&io, &read);
+  err = dxb_storage_read_io_from_page(storage, &io, &read);
   if (unlikely(err != MDBX_SUCCESS)) {
     osal_memalign_free(large);
     return err;
@@ -21396,6 +21432,15 @@ static inline int dxb_storage_prepare_write_queue(dxb_storage_t *storage, size_t
 }
 
 static inline int dxb_storage_prepare_write_queue_io(dxb_storage_t *storage, size_t items, const dxb_write_io_t *io) {
+  int rc = dxb_storage_page_io_validate(storage, &io->pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_byte_io_t checked;
+  rc = dxb_storage_byte_io_from_page(&io->pages, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.offset != io->bytes.offset || checked.bytes != io->bytes.bytes))
+    return MDBX_EINVAL;
   return dxb_storage_prepare_write_queue(storage, items, ceil_powerof2(io->bytes.bytes, globals.sys_pagesize));
 }
 
@@ -21413,8 +21458,11 @@ static inline int dxb_storage_add_queued_bytes(dxb_storage_t *storage, const dxb
 }
 
 static inline int dxb_storage_add_queued_io(dxb_storage_t *storage, const dxb_write_io_t *io, void *data) {
+  int rc = dxb_storage_page_io_validate(storage, &io->pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   dxb_byte_io_t checked;
-  int rc = dxb_storage_byte_io_from_page(&io->pages, &checked);
+  rc = dxb_storage_byte_io_from_page(&io->pages, &checked);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (unlikely(checked.offset != io->bytes.offset || checked.bytes != io->bytes.bytes))
@@ -21893,8 +21941,11 @@ static int dxb_storage_sync(const dxb_storage_t *storage, enum osal_syncmode_bit
 }
 
 static int dxb_storage_sync_range(const dxb_storage_t *storage, const dxb_sync_io_t *io) {
+  int rc = dxb_storage_page_io_validate(storage, &io->pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   dxb_byte_io_t checked;
-  int rc = dxb_storage_byte_io_from_page(&io->pages, &checked);
+  rc = dxb_storage_byte_io_from_page(&io->pages, &checked);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (unlikely(checked.offset != io->bytes.offset || checked.bytes != io->bytes.bytes))
@@ -21917,8 +21968,11 @@ static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_i
 }
 
 static int dxb_storage_read_pages(const dxb_storage_t *storage, const dxb_read_io_t *io, void *buf) {
+  int rc = dxb_storage_page_io_validate(storage, &io->pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   dxb_byte_io_t checked;
-  int rc = dxb_storage_byte_io_from_page(&io->pages, &checked);
+  rc = dxb_storage_byte_io_from_page(&io->pages, &checked);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (unlikely(checked.offset != io->bytes.offset || checked.bytes != io->bytes.bytes))
@@ -21963,8 +22017,11 @@ static void dxb_storage_invalidate_written_io(dxb_storage_t *storage, const dxb_
 }
 
 static int dxb_storage_write_pages(dxb_storage_t *storage, const dxb_write_io_t *io, const void *buf) {
+  int rc = dxb_storage_page_io_validate(storage, &io->pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   dxb_byte_io_t checked;
-  int rc = dxb_storage_byte_io_from_page(&io->pages, &checked);
+  rc = dxb_storage_byte_io_from_page(&io->pages, &checked);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (unlikely(checked.offset != io->bytes.offset || checked.bytes != io->bytes.bytes))
@@ -22015,8 +22072,11 @@ static int dxb_storage_writev_bytes(const dxb_storage_t *storage, enum dxb_io_ch
 
 static int dxb_storage_writev_pages(dxb_storage_t *storage, const dxb_write_io_t *io, struct iovec *iov,
                                     size_t sgvcnt) {
+  int rc = dxb_storage_page_io_validate(storage, &io->pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   size_t bytes;
-  int rc = dxb_storage_iov_bytes(iov, sgvcnt, &bytes);
+  rc = dxb_storage_iov_bytes(iov, sgvcnt, &bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (unlikely(bytes != io->bytes.bytes))
@@ -22179,7 +22239,7 @@ static int dxb_storage_copy_bytes(const dxb_storage_t *storage, const dxb_byte_i
 
 static int dxb_storage_copy_pages(dxb_storage_t *storage, const dxb_copy_io_t *io) {
   dxb_copy_io_t checked;
-  int rc = dxb_storage_copy_io_from_pages(&io->src_pages, &io->dst_pages, &checked);
+  int rc = dxb_storage_copy_io_from_pages(storage, &io->src_pages, &io->dst_pages, &checked);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (unlikely(checked.src_bytes.offset != io->src_bytes.offset || checked.src_bytes.bytes != io->src_bytes.bytes ||
@@ -22191,7 +22251,7 @@ static int dxb_storage_copy_pages(dxb_storage_t *storage, const dxb_copy_io_t *i
     return rc;
 
   dxb_write_io_t written;
-  rc = dxb_storage_write_io_from_page(dxb_io_data, &io->dst_pages, &written);
+  rc = dxb_storage_write_io_from_page(storage, dxb_io_data, &io->dst_pages, &written);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   dxb_storage_invalidate_written_io(storage, &written);
