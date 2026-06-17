@@ -20365,13 +20365,11 @@ static inline bool page_cache_entry_can_reuse(const page_cache_entry_t *entry, c
   return entry->npages > 1 || !is_largepage(entry->page);
 }
 
-static pgr_t page_cache_lookup(MDBX_txn *txn, const pgno_t pgno) {
-  MDBX_env *const env = txn->env;
-  if (!page_cache_can_reuse(txn))
+static pgr_t dxb_storage_lookup_cached_page(dxb_storage_t *storage, const pgno_t pgno, const txnid_t snapshot,
+                                            const bool reusable) {
+  if (!reusable)
     return pgr_error(MDBX_RESULT_TRUE);
 
-  const txnid_t snapshot = txn_basis_snapshot(txn);
-  dxb_storage_t *const storage = &env->dxb_storage;
   page_cache_lock(storage);
   for (page_cache_entry_t *entry = storage->page_cache.entries; entry; entry = entry->next) {
     if (page_cache_entry_can_reuse(entry, pgno, snapshot)) {
@@ -20389,20 +20387,21 @@ static pgr_t page_cache_lookup(MDBX_txn *txn, const pgno_t pgno) {
 
 static pgr_t page_cache_read(MDBX_txn *txn, const pgno_t pgno, const bool track_private) {
   MDBX_env *const env = txn->env;
-  pgr_t cached = page_cache_lookup(txn, pgno);
+  dxb_storage_t *const storage = &env->dxb_storage;
+  const bool reusable = page_cache_can_reuse(txn);
+  const txnid_t snapshot = reusable ? txn_basis_snapshot(txn) : 0;
+  pgr_t cached = dxb_storage_lookup_cached_page(storage, pgno, snapshot, reusable);
   if (cached.err == MDBX_SUCCESS)
     return cached;
 
-  const bool reusable = page_cache_can_reuse(txn);
   const bool tracked = reusable || track_private || CHECKS0_ENABLED();
   page_cache_entry_t *entry = osal_calloc(1, sizeof(*entry));
   if (unlikely(!entry))
     return pgr_error(MDBX_ENOMEM);
 
-  dxb_storage_t *const storage = &env->dxb_storage;
   entry->owner = tracked ? &storage->page_cache : nullptr;
   entry->storage = storage;
-  entry->snapshot_txnid = reusable ? txn_basis_snapshot(txn) : 0;
+  entry->snapshot_txnid = snapshot;
   entry->pgno = pgno;
   entry->npages = 1;
   entry->bytes = env->ps;
@@ -20446,22 +20445,22 @@ static int page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
     return MDBX_SUCCESS;
 
   MDBX_env *const env = txn->env;
+  dxb_storage_t *const storage = entry->storage;
   const size_t npages = pgr->page->pages;
   tASSERT0(txn, npages > 1 && (size_t)pgr->page->pgno + npages <= txn->geo.first_unallocated);
   page_t *large = nullptr;
-  const size_t bytes = pgno2bytes(env, npages);
+  const size_t bytes = npages << env->ps2ln;
   int err = osal_memalign_alloc(globals.sys_pagesize, bytes, (void **)&large);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  err = dxb_storage_read_pages(&env->dxb_storage, env->ps2ln, pgr->ref.pgno, large, npages);
+  err = dxb_storage_read_pages(storage, env->ps2ln, pgr->ref.pgno, large, npages);
   if (unlikely(err != MDBX_SUCCESS)) {
     osal_memalign_free(large);
     return err;
   }
 
   if (entry->owner) {
-    dxb_storage_t *const storage = entry->storage;
     page_cache_lock(storage);
     osal_memalign_free(entry->page);
     entry->page = large;
