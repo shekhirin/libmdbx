@@ -1772,16 +1772,6 @@ static inline int dxb_storage_outbound_io_from_page_span(const dxb_storage_t *st
   return dxb_storage_outbound_io_from_bytes(storage, &src, dst_fd, dst_offset, has_dst_offset, io);
 }
 
-static inline int dxb_storage_outbound_io(const dxb_storage_t *storage, uint64_t begin, uint64_t end,
-                                          mdbx_filehandle_t dst_fd, uint64_t dst_offset, bool has_dst_offset,
-                                          dxb_outbound_io_t *io) {
-  dxb_byte_io_t src;
-  int rc = dxb_storage_byte_span_io(begin, end, &src);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_outbound_io_from_bytes(storage, &src, dst_fd, dst_offset, has_dst_offset, io);
-}
-
 static inline int dxb_storage_outbound_io_validate(const dxb_storage_t *storage, const dxb_outbound_io_t *io) {
   dxb_outbound_io_t checked;
   const uint64_t dst_offset = io->has_dst_offset ? (uint64_t)io->dst_offset : 0;
@@ -1867,13 +1857,12 @@ static inline int dxb_storage_coverage_io_from_bytes(const dxb_storage_t *storag
   return dxb_storage_page_io_from_bytes(storage, &io->bytes, &io->pages);
 }
 
-static inline int dxb_storage_coverage_io(const dxb_storage_t *storage, uint64_t begin, uint64_t end,
-                                          dxb_coverage_io_t *io) {
-  dxb_byte_io_t bytes;
-  int rc = dxb_storage_byte_span_io(begin, end, &bytes);
+static inline int dxb_storage_coverage_io_from_page_prefix(const dxb_storage_t *storage, pgno_t end_pgno,
+                                                           dxb_coverage_io_t *io) {
+  int rc = dxb_storage_page_prefix_io(storage, end_pgno, &io->pages);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return dxb_storage_coverage_io_from_bytes(storage, &bytes, io);
+  return dxb_storage_byte_io_from_page(&io->pages, &io->bytes);
 }
 
 static inline int dxb_storage_coverage_io_validate(const dxb_storage_t *storage, const dxb_coverage_io_t *io) {
@@ -15341,16 +15330,12 @@ __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *t
   txn->canary = head.ptr_c->canary;
 
   dxb_storage_t *const storage = &txn->env->dxb_storage;
-  dxb_page_io_t required_pages;
-  int err = dxb_storage_page_prefix_io(storage, txn->geo.first_unallocated, &required_pages);
+  dxb_coverage_io_t required;
+  int err = dxb_storage_coverage_io_from_page_prefix(storage, txn->geo.first_unallocated, &required);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  const size_t required_bytes = required_pages.bytes;
+  const size_t required_bytes = required.bytes.bytes;
   if (unlikely(required_bytes > dxb_storage_current_size(storage))) {
-    dxb_coverage_io_t required;
-    err = dxb_storage_coverage_io(storage, 0, required_bytes, &required);
-    if (unlikely(err != MDBX_SUCCESS))
-      return err;
     err = dxb_storage_fetch_filesize_if_current_lacks(storage, &required);
     if (unlikely(err != MDBX_SUCCESS))
       return err;

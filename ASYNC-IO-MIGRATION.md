@@ -4727,6 +4727,24 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.144` batch, `1.172`
 crud, `1.158` iterate, `0.991` get, and `1.074` delete.
 
+A later coverage-descriptor cleanup added
+`dxb_storage_coverage_io_from_page_prefix()` so coherency snapshot coverage
+checks carry the validated `0..first_unallocated` page-prefix descriptor into
+the file-size refresh path instead of rebuilding the same range as loose
+`0..required_bytes` byte endpoints. The now-unused loose outbound-copy
+constructor and loose coverage constructor are gone, leaving accelerated
+outbound copies page-span based and coverage requests either byte-descriptor or
+page-prefix based. Verification passed `git diff --check`, source scans
+proving the removed loose constructors are absent, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.128` batch, `1.155` crud, `1.009` iterate, `1.027`
+get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
