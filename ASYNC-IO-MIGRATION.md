@@ -5336,6 +5336,24 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.121` batch, `1.161` crud, `0.803` iterate, `1.049`
 get, and `1.072` delete.
 
+A later outbound-copy cleanup removed the `dxb_outbound_io_t` wrapper from the C
+source. `copy_asis()` now submits page-span subranges directly to
+`dxb_storage_sendfile_page_span_to_fd()` and
+`dxb_storage_copy_page_span_to_fd()`, which derive the byte subrange internally
+before calling the existing `sendfile()` or `copy_file_range()` paths. The fd
+copy helpers now carry destination fd/offset arguments directly, with progress
+still reported through the existing `advanced` output. Verification passed
+`git diff --check`, source scans proving the outbound wrapper, constructors,
+validator, and old fd-copy helpers are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.095` batch, `1.154` crud, `0.798` iterate, `0.966`
+get, and `1.084` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
