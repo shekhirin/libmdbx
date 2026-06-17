@@ -1342,6 +1342,18 @@ static inline size_t dxb_storage_pagesize(const dxb_storage_t *storage) {
   return (size_t)1 << dxb_storage_pagesize_ln(storage);
 }
 
+static inline uint64_t dxb_storage_pgno2bytes(const dxb_storage_t *storage, uint64_t pgno) {
+  return pgno << dxb_storage_pagesize_ln(storage);
+}
+
+static inline uint64_t dxb_storage_npages2bytes(const dxb_storage_t *storage, uint64_t npages) {
+  return npages << dxb_storage_pagesize_ln(storage);
+}
+
+static inline uint64_t dxb_storage_bytes2pgno(const dxb_storage_t *storage, uint64_t bytes) {
+  return bytes >> dxb_storage_pagesize_ln(storage);
+}
+
 static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, uint64_t offset, size_t bytes) {
   const uint64_t current = dxb_storage_current_size(storage);
   return offset <= current && bytes <= current - offset;
@@ -13739,9 +13751,11 @@ __cold static int env_chk(MDBX_chk_scope_t *const scope) {
   err = chk_scope_begin(chk, 1, MDBX_chk_meta, nullptr, &usr->result.problems_meta, "Peek the meta-pages...");
   if (likely(!err)) {
     MDBX_chk_scope_t *const inner = usr->scope;
-    const uint64_t dxbfile_pages = dxb_storage_filesize(&env->dxb_storage) >> env->ps2ln;
+    const uint64_t dxbfile_pages = dxb_storage_bytes2pgno(&env->dxb_storage,
+                                                          dxb_storage_filesize(&env->dxb_storage));
     usr->result.alloc_pages = txn->geo.first_unallocated;
-    usr->result.backed_pages = bytes2pgno(env, dxb_storage_current_size(&env->dxb_storage));
+    usr->result.backed_pages =
+        (size_t)dxb_storage_bytes2pgno(&env->dxb_storage, dxb_storage_current_size(&env->dxb_storage));
     if (unlikely(usr->result.backed_pages > dxbfile_pages))
       chk_scope_issue(inner, "backed-pages %zu > file-pages %" PRIu64, usr->result.backed_pages, dxbfile_pages);
     if (unlikely(dxbfile_pages < NUM_METAS))
@@ -20353,16 +20367,15 @@ static void dxb_storage_invalidate_cached_bytes(dxb_storage_t *storage, uint64_t
   if (bytes == 0)
     return;
 
-  const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
-  const uint64_t begin = offset >> pagesize_ln;
+  const uint64_t begin = dxb_storage_bytes2pgno(storage, offset);
   uint64_t end_bytes = offset + bytes;
   const uint64_t max_pgno = (uint64_t)MAX_PAGENO + 1u;
-  const uint64_t max_bytes = max_pgno << pagesize_ln;
+  const uint64_t max_bytes = dxb_storage_pgno2bytes(storage, max_pgno);
   if (end_bytes < offset || end_bytes > max_bytes)
     end_bytes = max_bytes;
 
   const size_t pagesize = dxb_storage_pagesize(storage);
-  const uint64_t end = (end_bytes + pagesize - 1) >> pagesize_ln;
+  const uint64_t end = dxb_storage_bytes2pgno(storage, end_bytes + pagesize - 1);
   if (begin <= MAX_PAGENO)
     dxb_storage_invalidate_cached_pages(storage, (pgno_t)begin, (pgno_t)((end > max_pgno) ? max_pgno : end),
                                         include_reusable);
@@ -20773,8 +20786,9 @@ static inline int dxb_storage_prepare_write_queue(dxb_storage_t *storage, size_t
 }
 
 static inline int dxb_storage_prepare_write_queue_pages(dxb_storage_t *storage, size_t items, size_t npages) {
-  const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
-  return dxb_storage_prepare_write_queue(storage, items, ceil_powerof2(npages << pagesize_ln, globals.sys_pagesize));
+  return dxb_storage_prepare_write_queue(storage, items,
+                                         ceil_powerof2((size_t)dxb_storage_npages2bytes(storage, npages),
+                                                       globals.sys_pagesize));
 }
 
 static inline void dxb_storage_reset_write_queue(dxb_storage_t *storage) {
@@ -20786,8 +20800,8 @@ static inline int dxb_storage_add_queued_write(dxb_storage_t *storage, size_t of
 }
 
 static inline int dxb_storage_add_queued_pages(dxb_storage_t *storage, pgno_t pgno, void *data, size_t npages) {
-  const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
-  return dxb_storage_add_queued_write(storage, (size_t)pgno << pagesize_ln, data, npages << pagesize_ln);
+  return dxb_storage_add_queued_write(storage, (size_t)dxb_storage_pgno2bytes(storage, pgno), data,
+                                      (size_t)dxb_storage_npages2bytes(storage, npages));
 }
 
 static inline void dxb_storage_walk_write_queue(dxb_storage_t *storage, iov_ctx_t *ctx,
@@ -20985,9 +20999,8 @@ static int dxb_storage_prefetch_pages(const dxb_storage_t *storage, pgno_t pgno,
   if (npages == 0)
     return MDBX_SUCCESS;
 
-  const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
-  const size_t offset = (size_t)pgno << pagesize_ln;
-  const size_t length = npages << pagesize_ln;
+  const size_t offset = (size_t)dxb_storage_pgno2bytes(storage, pgno);
+  const size_t length = (size_t)dxb_storage_npages2bytes(storage, npages);
   return dxb_storage_advise_range(storage, offset, length, dxb_advice_willneed);
 }
 
@@ -21230,9 +21243,8 @@ static int dxb_storage_read(const dxb_storage_t *storage, void *buf, size_t byte
 }
 
 static int dxb_storage_read_pages(const dxb_storage_t *storage, pgno_t pgno, void *buf, size_t npages) {
-  const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
-  const size_t bytes = npages << pagesize_ln;
-  const uint64_t offset = (uint64_t)pgno << pagesize_ln;
+  const size_t bytes = (size_t)dxb_storage_npages2bytes(storage, npages);
+  const uint64_t offset = dxb_storage_pgno2bytes(storage, pgno);
   return dxb_storage_read(storage, buf, bytes, offset);
 }
 
@@ -21272,9 +21284,8 @@ static void dxb_storage_invalidate_written_pages(dxb_storage_t *storage, enum dx
 
 static int dxb_storage_write_pages(dxb_storage_t *storage, enum dxb_io_channel channel, pgno_t pgno, const void *buf,
                                    size_t npages) {
-  const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
-  const size_t bytes = npages << pagesize_ln;
-  const uint64_t offset = (uint64_t)pgno << pagesize_ln;
+  const size_t bytes = (size_t)dxb_storage_npages2bytes(storage, npages);
+  const uint64_t offset = dxb_storage_pgno2bytes(storage, pgno);
   int rc = dxb_storage_write(storage, channel, buf, bytes, offset);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
@@ -21300,8 +21311,7 @@ static int dxb_storage_writev(const dxb_storage_t *storage, enum dxb_io_channel 
 
 static int dxb_storage_writev_pages(dxb_storage_t *storage, enum dxb_io_channel channel, pgno_t pgno,
                                     struct iovec *iov, size_t sgvcnt) {
-  const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
-  const uint64_t offset = (uint64_t)pgno << pagesize_ln;
+  const uint64_t offset = dxb_storage_pgno2bytes(storage, pgno);
   int rc = dxb_storage_writev(storage, channel, iov, sgvcnt, offset);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
@@ -21315,10 +21325,10 @@ static int dxb_storage_writev_pages(dxb_storage_t *storage, enum dxb_io_channel 
       }
       bytes += iov[i].iov_len;
     }
-    const size_t page_bytes = (size_t)1 << pagesize_ln;
+    const size_t page_bytes = dxb_storage_pagesize(storage);
     const size_t npages = (bytes == SIZE_MAX || bytes > SIZE_MAX - (page_bytes - 1))
                               ? SIZE_MAX
-                              : (bytes + page_bytes - 1) >> pagesize_ln;
+                              : (size_t)dxb_storage_bytes2pgno(storage, bytes + page_bytes - 1);
     dxb_storage_invalidate_written_pages(storage, channel, pgno, npages);
   }
   return MDBX_SUCCESS;
@@ -21416,9 +21426,9 @@ static int dxb_storage_copy_pages(dxb_storage_t *storage, pgno_t src_pgno, pgno_
   if (unlikely(npages > ((size_t)SSIZE_MAX >> pagesize_ln)))
     return MDBX_EINVAL;
 
-  off_t src_offset = (off_t)((size_t)src_pgno << pagesize_ln);
-  off_t dst_offset = (off_t)((size_t)dst_pgno << pagesize_ln);
-  const ssize_t bytes = (ssize_t)(npages << pagesize_ln);
+  off_t src_offset = (off_t)dxb_storage_pgno2bytes(storage, src_pgno);
+  off_t dst_offset = (off_t)dxb_storage_pgno2bytes(storage, dst_pgno);
+  const ssize_t bytes = (ssize_t)dxb_storage_npages2bytes(storage, npages);
   int rc = dxb_storage_copy_bytes(storage, &src_offset, &dst_offset, bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;

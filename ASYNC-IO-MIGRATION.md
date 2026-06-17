@@ -3203,6 +3203,22 @@ CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.081` batch, `1.153` crud, `1.048` iterate, `0.943`
 get, and `1.129` delete.
 
+A later storage conversion helper cleanup centralized storage-owned page/byte
+math behind `dxb_storage_pgno2bytes()`, `dxb_storage_npages2bytes()`, and
+`dxb_storage_bytes2pgno()`. Page-cache invalidation, page I/O offset/length
+calculation, write-queue reservations, copy-file-range offsets, writev
+invalidation accounting, and `mdbx_chk` file/backed page accounting now use the
+storage-owned conversion helpers instead of open-coded shifts. Verification
+passed stale storage conversion scans, stale data-file mmap and removed
+sync-adapter scans across the shipped core sources, `git diff --check`,
+`make -f GNUmakefile mdbx_migration_smoke`, `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the
+six focused ASAN `migration_smoke` CTest entries. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.116`
+batch, `1.154` crud, `0.793` iterate, `1.032` get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
