@@ -2394,9 +2394,10 @@ A later sync/filesize storage facade cleanup split raw `fsync` and file-size
 extension/truncation into `dxb_storage_fsync()` and
 `dxb_storage_fsetsize()`, then made storage-shaped `dxb_storage_sync()` and
 `dxb_storage_set_filesize_on_disk()` own the related fault-injection sequence.
-`dxb_fsync()` now keeps only the environment pgop statistic update before
-delegating to storage sync, while `dxb_set_filesize()` keeps cached filesize
-state and page-cache invalidation around the storage-level resize operation.
+At that checkpoint, `dxb_fsync()` kept only the environment pgop statistic
+update before delegating to storage sync, while `dxb_set_filesize()` kept cached
+filesize state and page-cache invalidation around the storage-level resize
+operation.
 This moves durable-sync and geometry-changing file operations closer to the same
 storage facade boundary as byte read/write submission. Verification passed
 `git diff --check`, stale data-file mmap symbol scans, storage sync/filesize
@@ -2762,6 +2763,21 @@ fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
 `migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
 forced/default ratios of `1.140` batch, `1.165` crud, `0.835` iterate, `1.075`
 get, and `1.070` delete.
+
+A later filesize-set bookkeeping cleanup added `dxb_storage_set_filesize_bytes()`.
+The env-shaped `dxb_set_filesize()` now only adapts environment page geometry,
+while storage owns the cached old-size read, `setsize` fault-injected
+file-size change, truncated-cache invalidation, and cached filesize update.
+This puts explicit file-size mutation bookkeeping beside storage-owned
+file-size fetch and resize fault boundaries. Verification passed `git diff
+--check`, stale data-file mmap symbol scans, filesize-set routing scans, `make
+-f GNUmakefile mdbx_migration_smoke`, direct default and forced tiny-cache smoke
+runs, `cmake --build @cmake-ninja-build`, the six focused `migration_smoke`
+CTest entries, the full 15-test public CTest suite including migration tool
+roundtrip coverage, deterministic forced tiny-cache fault injection, `cmake
+--build @cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.100`
+batch, `1.172` crud, `0.726` iterate, `1.064` get, and `1.077` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
