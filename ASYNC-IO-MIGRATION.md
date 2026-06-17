@@ -159,7 +159,11 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   environment-copy chunks, coherency root-txnid probes, and startup meta-header
   double-reads before page size is known, now build checked `dxb_byte_io_t`
   requests and submit them through `dxb_storage_read_bytes()`. The old raw
-  `dxb_storage_read()` helper is gone from the C source.
+  `dxb_storage_read()` helper is gone from the C source. Byte-addressed meta
+  writes now use the same checked `dxb_byte_io_t` request shape before
+  submission through `dxb_storage_write_bytes()`, and page writes adapt their
+  checked `dxb_page_io_t` through that byte-write submission point. The old raw
+  `dxb_storage_write()` helper is also gone from the C source.
   Readahead plus data-file tail discard paths now
   use fd-backed advice/discard through storage; an earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
@@ -330,8 +334,10 @@ int dxb_storage_read_bytes(dxb_storage_t *storage, const dxb_byte_io_t *request,
                            void *dst);
 int dxb_storage_read_page_io(dxb_storage_t *storage,
                              const dxb_page_io_t *request, page_t *dst);
-int dxb_storage_write(dxb_storage_t *storage, const page_t *src, pgno_t pgno,
-                      size_t npages);
+int dxb_storage_write_bytes(dxb_storage_t *storage,
+                            const dxb_byte_io_t *request, const void *src);
+int dxb_storage_write_page_io(dxb_storage_t *storage,
+                              const dxb_page_io_t *request, const page_t *src);
 int dxb_storage_prefetch_pages(dxb_storage_t *storage, pgno_t pgno,
                                size_t npages);
 int dxb_storage_sync(dxb_storage_t *storage, enum osal_syncmode_bits mode);
@@ -3783,6 +3789,25 @@ focused ASAN `migration_smoke` CTest entries, and
 `mdbx_migration_bench_lazy`. The paired benchmark gate passed with
 forced/default ratios of `1.108` batch, `1.193` crud, `1.032` iterate, `1.025`
 get, and `1.107` delete.
+
+A later byte-write descriptor cleanup reused `dxb_byte_io_t` for
+byte-addressed write requests. Commit metadata payload writes, metadata undo
+rewrites, and steady-meta sign wiping now build a checked byte descriptor before
+calling `dxb_storage_write_bytes()`, while page-addressed writes adapt their
+checked `dxb_page_io_t` through the same byte-write submission helper. The old
+raw `dxb_storage_write()` helper is gone from the C source, leaving storage
+writes described by explicit byte or page request objects before raw pwrite is
+reached. Verification passed `git diff --check`, source scans proving raw
+`dxb_storage_write()` calls are gone, stale data-file mmap and removed
+sync-adapter scans across the shipped core sources, `make -f GNUmakefile
+mdbx_migration_smoke`, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.113` batch, `1.170` crud, `1.164` iterate, `0.927`
+get, and `1.080` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
