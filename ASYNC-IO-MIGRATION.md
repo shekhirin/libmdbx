@@ -4412,6 +4412,24 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.131` batch, `1.167` crud, `0.973` iterate,
 `0.991` get, and `1.078` delete.
 
+A later storage-size state mutation cleanup routed storage current/limit
+updates through validated size descriptors too. `dxb_storage_set_size()` now
+accepts a `dxb_size_io_t`, validates it at the mutation point, and returns an
+error instead of installing loose current/limit values. The known-filesize,
+limit-from-filesize, and observed-filesize update helpers now build or forward
+that descriptor and propagate failures through filesize refresh, setup, resize,
+and transaction-start filesize reconciliation paths. Verification passed
+`git diff --check`, source scans proving storage size state setters no longer
+take loose current/limit pairs and all callers handle their status, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.162` batch, `1.170` crud, `0.801` iterate, `1.093`
+get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -21210,33 +21210,48 @@ static inline void dxb_storage_set_current(dxb_storage_t *storage, size_t bytes)
   storage->current = bytes;
 }
 
-static inline void dxb_storage_set_size(dxb_storage_t *storage, size_t current, size_t limit,
-                                        const dxb_filesize_io_t *filesize) {
-  storage->current = current;
-  storage->limit = limit;
+static inline int dxb_storage_set_size(dxb_storage_t *storage, const dxb_size_io_t *size,
+                                       const dxb_filesize_io_t *filesize) {
+  int rc = dxb_storage_size_io_validate(size);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  storage->current = size->current;
+  storage->limit = size->limit;
   storage->filesize = filesize->bytes;
+  return MDBX_SUCCESS;
 }
 
 static inline size_t dxb_storage_current_from_filesize(uint64_t filesize, size_t limit) {
   return (filesize > limit) ? limit : (size_t)filesize;
 }
 
-static inline void dxb_storage_set_size_with_known_filesize(dxb_storage_t *storage, size_t current, size_t limit) {
+static inline int dxb_storage_set_size_with_known_filesize(dxb_storage_t *storage, const dxb_size_io_t *size) {
   const dxb_filesize_io_t filesize = {dxb_storage_filesize(storage)};
-  dxb_storage_set_size(storage, current, limit, &filesize);
+  return dxb_storage_set_size(storage, size, &filesize);
 }
 
-static inline void dxb_storage_set_limit_from_filesize(dxb_storage_t *storage, size_t limit) {
+static inline int dxb_storage_set_limit_from_filesize(dxb_storage_t *storage, size_t limit) {
   const dxb_filesize_io_t filesize = {dxb_storage_filesize(storage)};
-  dxb_storage_set_size(storage, dxb_storage_current_from_filesize(filesize.bytes, limit), limit, &filesize);
+  dxb_size_io_t size;
+  int rc = dxb_storage_size_io(dxb_storage_current_from_filesize(filesize.bytes, limit), limit, &size);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_set_size(storage, &size, &filesize);
 }
 
-static inline void dxb_storage_note_filesize(dxb_storage_t *storage, const dxb_filesize_io_t *filesize) {
+static inline int dxb_storage_note_filesize(dxb_storage_t *storage, const dxb_filesize_io_t *filesize) {
   const size_t limit = dxb_storage_limit_size(storage);
-  if (limit)
-    dxb_storage_set_size(storage, dxb_storage_current_from_filesize(filesize->bytes, limit), limit, filesize);
-  else
+  if (limit) {
+    dxb_size_io_t size;
+    int rc = dxb_storage_size_io(dxb_storage_current_from_filesize(filesize->bytes, limit), limit, &size);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+    return dxb_storage_set_size(storage, &size, filesize);
+  } else {
     dxb_storage_set_filesize(storage, filesize);
+    return MDBX_SUCCESS;
+  }
 }
 
 static inline bool dxb_storage_current_within_limit(const dxb_storage_t *storage) {
@@ -21992,8 +22007,7 @@ static int dxb_storage_fetch_filesize(dxb_storage_t *storage) {
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  dxb_storage_note_filesize(storage, &filesize);
-  return MDBX_SUCCESS;
+  return dxb_storage_note_filesize(storage, &filesize);
 }
 
 static int dxb_storage_fetch_filesize_if_current_lacks(dxb_storage_t *storage, const dxb_coverage_io_t *io) {
@@ -22143,12 +22157,16 @@ static int dxb_storage_setup_size(dxb_storage_t *storage, const dxb_size_io_t *t
     rc = dxb_storage_set_filesize_io(storage, &filesize);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    dxb_storage_set_size_with_known_filesize(storage, target->current, target->limit);
+    rc = dxb_storage_set_size_with_known_filesize(storage, target);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
   } else {
     rc = dxb_storage_fetch_filesize(storage);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    dxb_storage_set_limit_from_filesize(storage, target->limit);
+    rc = dxb_storage_set_limit_from_filesize(storage, target->limit);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
   }
   return MDBX_SUCCESS;
 }
@@ -22168,7 +22186,9 @@ static int dxb_storage_resize_size(dxb_storage_t *storage, const dxb_size_io_t *
       rc = MDBX_UNABLE_EXTEND_MAPSIZE;
     else if (target->current < filesize && filesize > target->limit)
       rc = MDBX_EPERM;
-    dxb_storage_set_limit_from_filesize(storage, target->limit);
+    const int err = dxb_storage_set_limit_from_filesize(storage, target->limit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
     return rc;
   }
 
@@ -22185,8 +22205,7 @@ static int dxb_storage_resize_size(dxb_storage_t *storage, const dxb_size_io_t *
     }
   }
 
-  dxb_storage_set_size_with_known_filesize(storage, target->current, target->limit);
-  return MDBX_SUCCESS;
+  return dxb_storage_set_size_with_known_filesize(storage, target);
 }
 
 __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive, const mdbx_mode_t mode_bits) {
@@ -42829,7 +42848,7 @@ int txn_setup_primal(MDBX_txn *txn) {
     if (likely(err == MDBX_SUCCESS)) {
       eASSERT0(env, dxb_storage_filesize_covers(storage, required_bytes));
       if (dxb_storage_current_size(storage) > dxb_storage_filesize(storage))
-        dxb_storage_set_limit_from_filesize(storage, dxb_storage_limit_size(storage));
+        err = dxb_storage_set_limit_from_filesize(storage, dxb_storage_limit_size(storage));
     }
 #if defined(_WIN32) || defined(_WIN64)
     imports.srwl_ReleaseShared(&env->remap_lock);
