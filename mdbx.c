@@ -21487,32 +21487,37 @@ static int dxb_setup_storage(MDBX_env *env, const size_t size, const size_t limi
   return MDBX_SUCCESS;
 }
 
-static int dxb_storage_resize(MDBX_env *env, const size_t size, const size_t limit, const unsigned flags) {
-  int rc = dxb_fetch_filesize(env);
+static int dxb_storage_resize_bytes(dxb_storage_t *storage, const size_t size, const size_t limit, const unsigned flags,
+                                    size_t pagesize, uint8_t pagesize_ln) {
+  int rc = dxb_storage_fetch_filesize(storage);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
   if (flags & MDBX_RDONLY) {
-    const uint64_t filesize = dxb_storage_filesize(&env->dxb_storage);
+    const uint64_t filesize = dxb_storage_filesize(storage);
     if (size > filesize)
       rc = MDBX_UNABLE_EXTEND_MAPSIZE;
     else if (size < filesize && filesize > limit)
       rc = MDBX_EPERM;
-    dxb_storage_set_limit_from_filesize(&env->dxb_storage, limit);
+    dxb_storage_set_limit_from_filesize(storage, limit);
     return rc;
   }
 
-  const uint64_t filesize = dxb_storage_filesize(&env->dxb_storage);
+  const uint64_t filesize = dxb_storage_filesize(storage);
   if (filesize != size) {
     if (size > filesize || (flags & txn_shrink_allowed)) {
-      rc = dxb_set_filesize(env, size);
+      rc = dxb_storage_set_filesize_bytes(storage, size, pagesize, pagesize_ln);
       if (unlikely(rc != MDBX_SUCCESS))
         return rc;
     }
   }
 
-  dxb_storage_set_size_with_known_filesize(&env->dxb_storage, size, limit);
+  dxb_storage_set_size_with_known_filesize(storage, size, limit);
   return MDBX_SUCCESS;
+}
+
+static int dxb_storage_resize(MDBX_env *env, const size_t size, const size_t limit, const unsigned flags) {
+  return dxb_storage_resize_bytes(&env->dxb_storage, size, limit, flags, env->ps, env->ps2ln);
 }
 
 int dxb_advise_range(const MDBX_env *env, size_t offset, size_t length, enum dxb_advice advice) {
