@@ -197,7 +197,8 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   Single-use wrappers for coverage-prefix and meta payload/sign-field requests
   are also gone; coherency head acceptance now constructs the page-prefix
   coverage descriptor in place, and meta commit/wipe paths call
-  `dxb_storage_meta_io()` directly.
+  `dxb_storage_write_meta()` with logical meta number, payload offset, and
+  length so storage derives the byte descriptor internally.
   Non-compacting environment-copy `sendfile()` and `copy_file_range()` fast
   paths now also build source `dxb_byte_io_t` requests before entering storage,
   and the in-file page-copy helper converts its source/destination page
@@ -5353,6 +5354,23 @@ focused ASAN `migration_smoke` CTest entries, and
 `mdbx_migration_bench_lazy`. The paired benchmark gate passed with
 forced/default ratios of `1.095` batch, `1.154` crud, `0.798` iterate, `0.966`
 get, and `1.084` delete.
+
+A later meta-subrange cleanup removed the `dxb_meta_io_t` wrapper from the C
+source. Meta commit writes and steady-signature wipes now pass meta number,
+payload offset, and payload length directly to `dxb_storage_write_meta()`, which
+derives the exact byte range at the storage boundary. Shadow-buffer updates now
+derive the same byte ranges internally through `meta_shadow_copy_payload()` and
+`meta_shadow_copy_bytes()`, keeping explicit metadata I/O without carrying a
+separate wrapper object. Verification passed `git diff --check`, source scans
+proving the meta wrapper, constructor, validator, and old wrapped call sites are
+gone from `mdbx.c`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.111` batch, `1.168` crud,
+`0.954` iterate, `1.000` get, and `1.083` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
