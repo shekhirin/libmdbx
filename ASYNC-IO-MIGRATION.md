@@ -4745,6 +4745,24 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.128` batch, `1.155` crud, `1.009` iterate, `1.027`
 get, and `1.068` delete.
 
+A later warmup read-range cleanup added `dxb_storage_byte_subrange_io()` so a
+validated byte-range descriptor can produce checked child read requests.
+`mdbx_env_warmup()` now builds a single `warmup_range` descriptor for the
+selected used range, and `warmup_force_read()` validates/clamps that descriptor
+against the current storage size before deriving each forced-read chunk as a
+checked subrange instead of rebuilding raw `offset..offset+bytes` spans inside
+the loop. The migration smoke harness explicitly covers default warmup,
+forced/OOM-safe warmup, and no-data-mmap lock-warmup behavior. Verification
+passed `git diff --check`, source scans proving the targeted warmup
+`offset + bytes` request is gone, the GNUmake `mdbx_migration_smoke` target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.114` batch, `1.167`
+crud, `0.918` iterate, `1.016` get, and `1.088` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

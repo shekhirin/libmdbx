@@ -1454,6 +1454,19 @@ static inline int dxb_storage_byte_span_io(uint64_t begin, uint64_t end, dxb_byt
   return dxb_storage_byte_io(begin, (size_t)(end - begin), io);
 }
 
+static inline int dxb_storage_byte_subrange_io(const dxb_byte_io_t *range, size_t offset, size_t bytes,
+                                               dxb_byte_io_t *io) {
+  int rc = dxb_storage_byte_io_validate(range);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(offset > range->bytes || bytes > range->bytes - offset))
+    return MDBX_EINVAL;
+  if (unlikely((uint64_t)offset > UINT64_MAX - range->offset))
+    return MDBX_EINVAL;
+
+  return dxb_storage_byte_io(range->offset + offset, bytes, io);
+}
+
 static inline int dxb_storage_lock_io(uint64_t offset, uint64_t bytes, dxb_lock_io_t *io) {
   if (unlikely(bytes > UINT64_MAX - offset || offset > (uint64_t)OFF_T_MAX || bytes > (uint64_t)OFF_T_MAX))
     return MDBX_EINVAL;
@@ -5372,12 +5385,22 @@ static size_t estimate_rss(size_t database_bytes) {
   return database_bytes + database_bytes / 64 + (512 + MDBX_WORDBITS * 16) * MEGABYTE;
 }
 
-static int warmup_force_read(const dxb_storage_t *storage, size_t used_range, uint64_t timeout_monotime) {
+static int warmup_force_read(const dxb_storage_t *storage, const dxb_byte_io_t *range, uint64_t timeout_monotime) {
+  dxb_byte_io_t scan;
+  int rc = dxb_storage_byte_io_validate(range);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
   const size_t current_size = dxb_storage_current_size(storage);
-  if (used_range > current_size)
-    used_range = current_size;
+  if (range->offset >= current_size)
+    return MDBX_SUCCESS;
+  const size_t current_available = current_size - (size_t)range->offset;
+  const size_t used_range = (range->bytes > current_available) ? current_available : range->bytes;
   if (used_range == 0)
     return MDBX_SUCCESS;
+  rc = dxb_storage_byte_io(range->offset, used_range, &scan);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
 
   size_t chunk = used_range < MEGABYTE ? used_range : MEGABYTE;
   chunk = ceil_powerof2(chunk, globals.sys_pagesize);
@@ -5385,14 +5408,14 @@ static int warmup_force_read(const dxb_storage_t *storage, size_t used_range, ui
     chunk = used_range;
 
   void *buffer = nullptr;
-  int rc = osal_memalign_alloc(globals.sys_pagesize, chunk, &buffer);
+  rc = osal_memalign_alloc(globals.sys_pagesize, chunk, &buffer);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
   for (size_t offset = 0; offset < used_range;) {
     const size_t bytes = (used_range - offset < chunk) ? used_range - offset : chunk;
     dxb_byte_io_t request;
-    rc = dxb_storage_byte_span_io(offset, offset + bytes, &request);
+    rc = dxb_storage_byte_subrange_io(&scan, offset, bytes, &request);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     rc = dxb_storage_read_bytes(storage, &request, buffer);
@@ -5448,10 +5471,14 @@ __cold int mdbx_env_warmup(const MDBX_env *env, const MDBX_txn *txn, MDBX_warmup
     used_pgno = meta_recent_shadow(env, &troika).ptr_v->geometry.first_unallocated;
   }
   const size_t used_range = dxb_storage_pgno_ceil2os_bytes(storage, used_pgno);
+  dxb_byte_io_t warmup_range;
+  int err = dxb_storage_byte_io(0, used_range, &warmup_range);
+  if (unlikely(err != MDBX_SUCCESS))
+    return LOG_IFERR(err);
 
   int rc = MDBX_SUCCESS;
   if (flags & MDBX_warmup_touchlimit) {
-    const size_t estimated_rss = estimate_rss(used_range);
+    const size_t estimated_rss = estimate_rss(warmup_range.bytes);
 #if defined(_WIN32) || defined(_WIN64)
     SIZE_T current_ws_lower, current_ws_upper;
     if (GetProcessWorkingSetSize(GetCurrentProcess(), &current_ws_lower, &current_ws_upper) &&
@@ -5480,13 +5507,12 @@ __cold int mdbx_env_warmup(const MDBX_env *env, const MDBX_txn *txn, MDBX_warmup
     (void)estimated_rss;
   }
 
-  int err = MDBX_ENOSYS;
   err = dxb_set_readahead(env, used_pgno, true, true);
   if (err != MDBX_SUCCESS && rc == MDBX_SUCCESS)
     rc = err;
 
   if ((flags & MDBX_warmup_force) != 0 && (rc == MDBX_SUCCESS || rc == MDBX_ENOSYS))
-    rc = warmup_force_read(storage, used_range, timeout_monotime);
+    rc = warmup_force_read(storage, &warmup_range, timeout_monotime);
   if ((flags & MDBX_warmup_lock) != 0 && (rc == MDBX_SUCCESS || rc == MDBX_ENOSYS))
     rc = MDBX_ENOSYS;
 
