@@ -33781,21 +33781,22 @@ static bool iov_empty(const iov_ctx_t *ctx) {
 
 static void iov_callback4dirtypages(iov_ctx_t *ctx, size_t offset, void *data, size_t bytes) {
   MDBX_env *const env = ctx->env;
+  const dxb_storage_t *const storage = &env->dxb_storage;
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
 
   page_t *wp = (page_t *)data;
-  eASSERT0(env, wp->pgno == bytes2pgno(env, offset));
-  eASSERT0(env, bytes2pgno(env, bytes) >= (is_largepage(wp) ? wp->pages : 1u));
+  eASSERT0(env, wp->pgno == dxb_storage_bytes2pgno(storage, offset));
+  eASSERT0(env, dxb_storage_bytes2pgno(storage, bytes) >= (is_largepage(wp) ? wp->pages : 1u));
   eASSERT0(env, (wp->flags & P_ILL_BITS) == 0);
 
-  if (likely(bytes == env->ps))
+  if (likely(bytes == dxb_storage_pagesize(storage)))
     page_shadow_release(env, wp, 1);
   else {
     do {
-      eASSERT0(env, wp->pgno == bytes2pgno(env, offset));
+      eASSERT0(env, wp->pgno == dxb_storage_bytes2pgno(storage, offset));
       eASSERT0(env, (wp->flags & P_ILL_BITS) == 0);
       size_t npages = is_largepage(wp) ? wp->pages : 1u;
-      size_t chunk = pgno2bytes(env, npages);
+      size_t chunk = (size_t)dxb_storage_npages2bytes(storage, npages);
       eASSERT0(env, bytes >= chunk);
       page_t *next = ptr_disp(wp, chunk);
       page_shadow_release(env, wp, npages);
@@ -34206,28 +34207,29 @@ void page_shadow_release(MDBX_env *env, page_t *dp, size_t npages) {
 
 __cold static void page_kill(MDBX_txn *txn, page_t *mp, pgno_t pgno, size_t npages) {
   MDBX_env *const env = txn->env;
+  dxb_storage_t *const storage = &env->dxb_storage;
   DEBUG("kill %zu page(s) %" PRIaPGNO, npages, pgno);
   eASSERT0(env, pgno >= NUM_METAS && npages);
   if (!is_frozen(txn, mp)) {
-    const size_t bytes = pgno2bytes(env, npages);
+    const size_t bytes = (size_t)dxb_storage_npages2bytes(storage, npages);
     memset(mp, -1, bytes);
     mp->pgno = pgno;
-    dxb_storage_write_pages(&env->dxb_storage, dxb_io_data, pgno, mp, npages);
+    dxb_storage_write_pages(storage, dxb_io_data, pgno, mp, npages);
   } else {
     struct iovec iov[MDBX_AUXILARY_IOV_MAX];
-    iov[0].iov_len = env->ps;
-    iov[0].iov_base = ptr_disp(env->page_auxbuf, env->ps);
-    size_t iov_off = pgno2bytes(env, pgno), n = 1;
+    iov[0].iov_len = dxb_storage_pagesize(storage);
+    iov[0].iov_base = ptr_disp(env->page_auxbuf, iov[0].iov_len);
+    pgno_t iov_pgno = pgno;
+    size_t n = 1;
     while (--npages) {
       iov[n] = iov[0];
       if (++n == MDBX_AUXILARY_IOV_MAX) {
-        dxb_storage_writev_pages(&env->dxb_storage, dxb_io_data, bytes2pgno(env, iov_off), iov,
-                                 MDBX_AUXILARY_IOV_MAX);
-        iov_off += pgno2bytes(env, MDBX_AUXILARY_IOV_MAX);
+        dxb_storage_writev_pages(storage, dxb_io_data, iov_pgno, iov, MDBX_AUXILARY_IOV_MAX);
+        iov_pgno += MDBX_AUXILARY_IOV_MAX;
         n = 0;
       }
     }
-    dxb_storage_writev_pages(&env->dxb_storage, dxb_io_data, bytes2pgno(env, iov_off), iov, n);
+    dxb_storage_writev_pages(storage, dxb_io_data, iov_pgno, iov, n);
   }
 }
 
