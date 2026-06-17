@@ -5461,6 +5461,22 @@ focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
 The paired benchmark gate passed with forced/default ratios of `1.120` batch,
 `1.156` crud, `1.103` iterate, `1.149` get, and `1.066` delete.
 
+A later defrag copy cleanup removed the same-file
+`dxb_storage_copy_page_span()` wrapper from the C source. `defrag_move()` now
+builds checked source and destination page spans, derives exact byte descriptors
+for the remaining moved run at the defrag/storage boundary, calls
+`dxb_storage_copy_bytes()` directly, and invalidates the destination cache span
+after a successful copy. Verification passed `git diff --check`, source scans
+proving `dxb_storage_copy_page_span()` is gone from `mdbx.c` and the defrag
+copy path now submits byte descriptors directly, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.098` batch,
+`1.158` crud, `0.983` iterate, `0.995` get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

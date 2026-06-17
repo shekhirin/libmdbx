@@ -1991,8 +1991,11 @@ static int dxb_storage_write_page_span(dxb_storage_t *storage, enum dxb_io_chann
                                        const dxb_page_io_t *io, const void *buf);
 static int dxb_storage_writev_page_span(dxb_storage_t *storage, enum dxb_io_channel channel,
                                         const dxb_page_io_t *io, struct iovec *iov, size_t sgvcnt);
+static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_page_io_t *io,
+                                             bool include_reusable);
 #if MDBX_USE_COPYFILERANGE
-static int dxb_storage_copy_page_span(dxb_storage_t *storage, const dxb_page_io_t *src, const dxb_page_io_t *dst);
+static int dxb_storage_copy_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *src,
+                                  const dxb_byte_io_t *dst);
 static int dxb_storage_copy_bytes_to_fd(const dxb_storage_t *storage, const dxb_byte_io_t *src,
                                         mdbx_filehandle_t dst_fd, uint64_t dst_offset, size_t *advanced,
                                         bool *copied, bool *unavailable, bool *not_same_filesystem);
@@ -19344,9 +19347,19 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
       err = dxb_storage_page_io(storage, arc->mapped + i, npages - i, &dst_pages);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
-      err = dxb_storage_copy_page_span(storage, &src_pages, &dst_pages);
+      if (unlikely(src_pages.bytes != dst_pages.bytes || src_pages.npages != dst_pages.npages))
+        return MDBX_EINVAL;
+      dxb_byte_io_t src_bytes, dst_bytes;
+      err = dxb_storage_byte_io_from_page(&src_pages, &src_bytes);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
+      err = dxb_storage_byte_io_from_page(&dst_pages, &dst_bytes);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+      err = dxb_storage_copy_bytes(storage, &src_bytes, &dst_bytes);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+      dxb_storage_invalidate_cached_io(storage, &dst_pages, false);
       break;
 #else
       const pgno_t src_pgno = arc->key_or_pgno + i;
@@ -22149,31 +22162,6 @@ static int dxb_storage_copy_bytes(const dxb_storage_t *storage, const dxb_byte_i
   return dxb_fault_inject("copy-complete");
 }
 
-static int dxb_storage_copy_page_span(dxb_storage_t *storage, const dxb_page_io_t *src, const dxb_page_io_t *dst) {
-  int rc = dxb_storage_page_io_validate(storage, src);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_page_io_validate(storage, dst);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(src->bytes != dst->bytes || src->npages != dst->npages))
-    return MDBX_EINVAL;
-
-  dxb_byte_io_t src_bytes, dst_bytes;
-  rc = dxb_storage_byte_io_from_page(src, &src_bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_byte_io_from_page(dst, &dst_bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  rc = dxb_storage_copy_bytes(storage, &src_bytes, &dst_bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_storage_invalidate_cached_io(storage, dst, false);
-  return MDBX_SUCCESS;
-}
 #endif /* MDBX_USE_COPYFILERANGE */
 
 #if MDBX_USE_SENDFILE
