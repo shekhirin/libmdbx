@@ -4918,6 +4918,27 @@ focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
 The paired benchmark gate passed with forced/default ratios of `1.112` batch,
 `1.163` crud, `1.197` iterate, `0.926` get, and `1.082` delete.
 
+A later descriptor subrange cleanup added
+`dxb_storage_page_subrange_bytes_io()` so callers that already hold a checked
+`dxb_page_io_t` can derive byte subranges from that descriptor instead of
+rebuilding the same page span from `(pgno, npages)`. Non-compacting environment
+copy fallback reads and outbound copy/sendfile request construction now keep
+the existing used-page descriptor authoritative through byte-range derivation.
+Dirty-write queue walking now derives callback requests with
+`dxb_storage_byte_subrange_io(&item->io, ...)`, so each callback range is
+validated as a subrange of the queued item's stored byte descriptor instead of
+reconstructing an absolute `offset..offset+bytes` span. Verification passed
+`git diff --check`, source scans proving `osal_ioring_walk_bytes()` no longer
+builds raw absolute byte spans and descriptor-owning copy paths use the
+page-subrange helper, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.097` batch, `1.165` crud, `0.959` iterate,
+`0.977` get, and `1.062` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
