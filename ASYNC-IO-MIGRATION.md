@@ -5527,6 +5527,23 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.126` batch, `1.162` crud, `1.064` iterate, `1.048`
 get, and `1.088` delete.
 
+A later data-write wrapper cleanup removed the
+`dxb_storage_write_page_span()` and `dxb_storage_writev_page_span()` helpers
+from the C source. Defrag single-page fallback reads and writes now derive
+explicit byte descriptors at the defrag/storage boundary, and debug page-kill
+writes submit byte descriptors directly to `dxb_storage_write_bytes()` or
+`dxb_storage_writev_bytes()`. Verification passed `git diff --check`, source
+scans proving the page-span write helpers and the unused
+`dxb_storage_meta_pages_io()` helper are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.134` batch, `1.170` crud, `0.978` iterate, `0.987`
+get, and `1.060` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
