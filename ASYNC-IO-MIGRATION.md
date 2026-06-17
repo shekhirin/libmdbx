@@ -135,7 +135,8 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   page number is already known. Those page-addressed helpers now share a
   checked `dxb_page_io_t` descriptor for `(pgno, npages)` to `(offset, bytes)`
   conversion, giving a later async backend one storage-owned page request shape
-  for reads, queued writes, prefetch, writev offsets, and file-range copies.
+  for reads, queued writes, prefetch, writev offsets, cache invalidation, and
+  file-range copies.
   Readahead plus data-file tail discard paths now
   use fd-backed advice/discard through storage; an earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
@@ -3582,6 +3583,23 @@ tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
 focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.099`
 batch, `1.169` crud, `1.001` iterate, `0.965` get, and `1.080` delete.
+
+A later page-I/O helper cleanup made the descriptor the operation handoff
+inside the storage facade. `dxb_page_io_t` now carries `end_pgno`, and
+descriptor-taking helpers handle queued writes, prefetch, reads, writes, and
+write invalidation before raw byte I/O is reached. Page writes and same-file
+page copies now invalidate cache entries from the same descriptor used for the
+I/O request, while writev page invalidation uses a descriptor when its iovec
+span maps cleanly to pages and keeps the defensive clamp fallback for overflow.
+Verification passed stale data-file mmap and removed sync-adapter scans across
+the shipped core sources, `git diff --check`, `make -f GNUmakefile
+mdbx_migration_smoke`, `mdbx_migration_smoke` default and forced tiny-cache
+runs, `cmake --build @cmake-ninja-build`, the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` CTest entries. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.139`
+batch, `1.149` crud, `0.952` iterate, `0.989` get, and `1.080` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.

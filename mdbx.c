@@ -1309,6 +1309,7 @@ typedef struct dxb_storage {
 
 typedef struct dxb_page_io {
   pgno_t pgno;
+  pgno_t end_pgno;
   size_t npages;
   uint64_t offset;
   size_t bytes;
@@ -1365,6 +1366,7 @@ static inline int dxb_storage_page_io(const dxb_storage_t *storage, pgno_t pgno,
     return MDBX_EINVAL;
 
   io->pgno = pgno;
+  io->end_pgno = (pgno_t)(start + npages);
   io->npages = npages;
   io->offset = start << pagesize_ln;
   io->bytes = npages << pagesize_ln;
@@ -20915,14 +20917,18 @@ static inline int dxb_storage_add_queued_write(dxb_storage_t *storage, size_t of
   return osal_ioring_add(dxb_storage_write_queue(storage), offset, data, bytes);
 }
 
+static inline int dxb_storage_add_queued_io(dxb_storage_t *storage, const dxb_page_io_t *io, void *data) {
+  if (unlikely(io->offset > SIZE_MAX))
+    return MDBX_EINVAL;
+  return dxb_storage_add_queued_write(storage, (size_t)io->offset, data, io->bytes);
+}
+
 static inline int dxb_storage_add_queued_pages(dxb_storage_t *storage, pgno_t pgno, void *data, size_t npages) {
   dxb_page_io_t io;
   int rc = dxb_storage_page_io(storage, pgno, npages, &io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  if (unlikely(io.offset > SIZE_MAX))
-    return MDBX_EINVAL;
-  return dxb_storage_add_queued_write(storage, (size_t)io.offset, data, io.bytes);
+  return dxb_storage_add_queued_io(storage, &io, data);
 }
 
 static inline void dxb_storage_walk_write_queue(dxb_storage_t *storage, iov_ctx_t *ctx,
@@ -21116,17 +21122,21 @@ static int dxb_storage_advise_range(const dxb_storage_t *storage, size_t offset,
 #endif /* POSIX_FADV_* */
 }
 
+static int dxb_storage_prefetch_io(const dxb_storage_t *storage, const dxb_page_io_t *io) {
+  if (io->npages == 0)
+    return MDBX_SUCCESS;
+  if (unlikely(io->offset > SIZE_MAX))
+    return MDBX_EINVAL;
+  return dxb_storage_advise_range(storage, (size_t)io->offset, io->bytes, dxb_advice_willneed);
+}
+
 static int dxb_storage_prefetch_pages(const dxb_storage_t *storage, pgno_t pgno, size_t npages) {
   if (npages == 0)
     return MDBX_SUCCESS;
 
   dxb_page_io_t io;
   int rc = dxb_storage_page_io(storage, pgno, npages, &io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io.offset > SIZE_MAX))
-    return MDBX_EINVAL;
-  return dxb_storage_advise_range(storage, (size_t)io.offset, io.bytes, dxb_advice_willneed);
+  return unlikely(rc != MDBX_SUCCESS) ? rc : dxb_storage_prefetch_io(storage, &io);
 }
 
 static int dxb_storage_discard_clean_range(const dxb_storage_t *storage, size_t offset, size_t length) {
@@ -21367,12 +21377,16 @@ static int dxb_storage_read(const dxb_storage_t *storage, void *buf, size_t byte
   return dxb_fault_inject("read-complete");
 }
 
+static int dxb_storage_read_io(const dxb_storage_t *storage, const dxb_page_io_t *io, void *buf) {
+  return dxb_storage_read(storage, buf, io->bytes, io->offset);
+}
+
 static int dxb_storage_read_pages(const dxb_storage_t *storage, pgno_t pgno, void *buf, size_t npages) {
   dxb_page_io_t io;
   int rc = dxb_storage_page_io(storage, pgno, npages, &io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return dxb_storage_read(storage, buf, io.bytes, io.offset);
+  return dxb_storage_read_io(storage, &io, buf);
 }
 
 static int dxb_storage_write(const dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf, size_t bytes,
@@ -21396,10 +21410,24 @@ static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel c
   return MDBX_SUCCESS;
 }
 
-static void dxb_storage_invalidate_written_pages(dxb_storage_t *storage, enum dxb_io_channel channel,
-                                                 pgno_t pgno, size_t npages) {
+static void dxb_storage_invalidate_written_io(dxb_storage_t *storage, enum dxb_io_channel channel,
+                                              const dxb_page_io_t *io) {
   if (!dxb_io_channel_is_data(channel))
     return;
+
+  dxb_storage_invalidate_cached_pages(storage, io->pgno, io->end_pgno, false);
+}
+
+static void dxb_storage_invalidate_written_pages(dxb_storage_t *storage, enum dxb_io_channel channel, pgno_t pgno,
+                                                 size_t npages) {
+  if (!dxb_io_channel_is_data(channel))
+    return;
+
+  dxb_page_io_t io;
+  if (dxb_storage_page_io(storage, pgno, npages, &io) == MDBX_SUCCESS) {
+    dxb_storage_invalidate_written_io(storage, channel, &io);
+    return;
+  }
 
   const uint64_t max_pgno = (uint64_t)MAX_PAGENO + 1u;
   uint64_t end = (uint64_t)pgno + npages;
@@ -21409,18 +21437,23 @@ static void dxb_storage_invalidate_written_pages(dxb_storage_t *storage, enum dx
     dxb_storage_invalidate_cached_pages(storage, pgno, (pgno_t)end, false);
 }
 
+static int dxb_storage_write_io(dxb_storage_t *storage, enum dxb_io_channel channel, const dxb_page_io_t *io,
+                                const void *buf) {
+  int rc = dxb_storage_write(storage, channel, buf, io->bytes, io->offset);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_storage_invalidate_written_io(storage, channel, io);
+  return MDBX_SUCCESS;
+}
+
 static int dxb_storage_write_pages(dxb_storage_t *storage, enum dxb_io_channel channel, pgno_t pgno, const void *buf,
                                    size_t npages) {
   dxb_page_io_t io;
   int rc = dxb_storage_page_io(storage, pgno, npages, &io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  rc = dxb_storage_write(storage, channel, buf, io.bytes, io.offset);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_storage_invalidate_written_pages(storage, channel, pgno, npages);
-  return MDBX_SUCCESS;
+  return dxb_storage_write_io(storage, channel, &io, buf);
 }
 
 static int dxb_storage_writev(const dxb_storage_t *storage, enum dxb_io_channel channel, struct iovec *iov,
@@ -21461,7 +21494,11 @@ static int dxb_storage_writev_pages(dxb_storage_t *storage, enum dxb_io_channel 
     const size_t npages = (bytes == SIZE_MAX || bytes > SIZE_MAX - (page_bytes - 1))
                               ? SIZE_MAX
                               : (size_t)dxb_storage_bytes2pgno(storage, bytes + page_bytes - 1);
-    dxb_storage_invalidate_written_pages(storage, channel, pgno, npages);
+    dxb_page_io_t written;
+    if (npages != SIZE_MAX && dxb_storage_page_io(storage, pgno, npages, &written) == MDBX_SUCCESS)
+      dxb_storage_invalidate_written_io(storage, channel, &written);
+    else
+      dxb_storage_invalidate_written_pages(storage, channel, pgno, npages);
   }
   return MDBX_SUCCESS;
 }
@@ -21570,7 +21607,7 @@ static int dxb_storage_copy_pages(dxb_storage_t *storage, pgno_t src_pgno, pgno_
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  dxb_storage_invalidate_written_pages(storage, dxb_io_data, dst_pgno, npages);
+  dxb_storage_invalidate_written_io(storage, dxb_io_data, &dst);
   return MDBX_SUCCESS;
 }
 #endif /* MDBX_USE_COPYFILERANGE */
