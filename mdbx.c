@@ -21748,8 +21748,8 @@ static inline ssize_t dxb_storage_sendfile_to_fd_raw(const dxb_storage_t *storag
 
 static int dxb_fault_inject(const char *operation);
 static int dxb_storage_sync(const dxb_storage_t *storage, enum osal_syncmode_bits mode_bits);
-static int dxb_storage_sync_page_span(const dxb_storage_t *storage, const dxb_page_io_t *io,
-                                      enum osal_syncmode_bits mode_bits);
+static int dxb_storage_sync_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *io,
+                                  enum osal_syncmode_bits mode_bits);
 
 static inline void dxb_note_fsync_pgop(const MDBX_env *env, enum osal_syncmode_bits mode_bits) {
   if (MDBX_ENABLE_PGOP_STAT)
@@ -21903,13 +21903,9 @@ static int dxb_storage_sync(const dxb_storage_t *storage, enum osal_syncmode_bit
   return dxb_fault_inject("sync-complete");
 }
 
-static int dxb_storage_sync_page_span(const dxb_storage_t *storage, const dxb_page_io_t *io,
-                                      enum osal_syncmode_bits mode_bits) {
-  int rc = dxb_storage_page_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_byte_io_t bytes;
-  rc = dxb_storage_byte_io_from_page(io, &bytes);
+static int dxb_storage_sync_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *io,
+                                  enum osal_syncmode_bits mode_bits) {
+  int rc = dxb_storage_byte_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   return dxb_storage_sync(storage, mode_bits);
@@ -23140,8 +23136,12 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
     rc = dxb_storage_page_prefix_io(storage, pending->geometry.first_unallocated, &sync_range);
     if (unlikely(rc != MDBX_SUCCESS))
       goto fail;
+    dxb_byte_io_t sync_bytes;
+    rc = dxb_storage_byte_io_from_page(&sync_range, &sync_bytes);
+    if (unlikely(rc != MDBX_SUCCESS))
+      goto fail;
     dxb_note_fsync_pgop(env, mode_bits);
-    rc = dxb_storage_sync_page_span(storage, &sync_range, mode_bits);
+    rc = dxb_storage_sync_bytes(storage, &sync_bytes, mode_bits);
     if (unlikely(rc != MDBX_SUCCESS))
       goto fail;
     rc = (flags & MDBX_SAFE_NOSYNC) ? MDBX_RESULT_TRUE /* carry non-steady */
@@ -23420,8 +23420,12 @@ retry:;
         err = dxb_storage_page_prefix_io(storage, head.ptr_c->geometry.first_unallocated, &sync_range);
         if (unlikely(err != MDBX_SUCCESS))
           return err;
+        dxb_byte_io_t sync_bytes;
+        err = dxb_storage_byte_io_from_page(&sync_range, &sync_bytes);
+        if (unlikely(err != MDBX_SUCCESS))
+          return err;
         dxb_note_fsync_pgop(env, MDBX_SYNC_DATA);
-        err = dxb_storage_sync_page_span(storage, &sync_range, MDBX_SYNC_DATA);
+        err = dxb_storage_sync_bytes(storage, &sync_bytes, MDBX_SYNC_DATA);
 
         if (unlikely(err != MDBX_SUCCESS))
           return err;

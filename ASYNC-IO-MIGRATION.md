@@ -5477,6 +5477,22 @@ focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
 The paired benchmark gate passed with forced/default ratios of `1.098` batch,
 `1.158` crud, `0.983` iterate, `0.995` get, and `1.073` delete.
 
+A later sync submission cleanup removed the `dxb_storage_sync_page_span()`
+wrapper from the C source. Data-sync callers still build checked page-prefix
+coverage from transaction geometry, but now derive `dxb_byte_io_t` explicitly at
+the sync boundary and submit that descriptor through `dxb_storage_sync_bytes()`;
+the helper validates the byte request before preserving the existing whole-file
+fsync behavior. Verification passed `git diff --check`, source scans proving
+the old page-span sync helper is gone from `mdbx.c` and sync coverage callers
+derive byte descriptors explicitly, the GNUmake `mdbx_migration_smoke` target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.129` batch,
+`1.160` crud, `0.943` iterate, `0.980` get, and `1.093` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
