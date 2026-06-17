@@ -2891,6 +2891,25 @@ fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
 forced/default ratios of `1.121` batch, `1.188` crud, `1.050` iterate, `1.006`
 get, and `1.087` delete.
 
+A later write-routing cleanup removed the env-shaped `dxb_write()`,
+`dxb_write_pages()`, `dxb_writev_pages()`, and `dxb_copy_pages()` adapters.
+Defrag page moves/copies, new-database meta triplet writes, commit meta writes
+and undo rewrites, steady-meta wiping, meta override writes, and killed-page
+poison writes now call `dxb_storage_write_bytes()`,
+`dxb_storage_write_pages()`, `dxb_storage_writev_pages()`, or
+`dxb_storage_copy_pages()` directly with explicit storage and page geometry.
+This leaves direct explicit writes/copies behind storage-owned helpers instead
+of keeping extra environment adapters for byte/page write calls. Verification
+passed `git diff --check`, stale data-file mmap symbol scans,
+write-routing scans, `make -f GNUmakefile mdbx_migration_smoke`, direct default
+and forced tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite
+including migration tool roundtrip coverage, deterministic forced tiny-cache
+fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.122` batch, `1.176` crud, `1.017` iterate, `1.012`
+get, and `1.085` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

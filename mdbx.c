@@ -1628,14 +1628,15 @@ MDBX_INTERNAL int dxb_advise_range(const MDBX_env *env, size_t offset, size_t le
 MDBX_INTERNAL int dxb_prefetch(const MDBX_env *env, pgno_t pgno, size_t npages);
 MDBX_INTERNAL int dxb_discard_range(const MDBX_env *env, size_t offset, size_t length, enum dxb_discard_mode mode);
 static int dxb_storage_read(const dxb_storage_t *storage, void *buf, size_t bytes, uint64_t offset);
-MDBX_INTERNAL int dxb_write(const MDBX_env *env, enum dxb_io_channel channel, const void *buf, size_t bytes,
-                            uint64_t offset);
-MDBX_INTERNAL int dxb_writev_pages(const MDBX_env *env, enum dxb_io_channel channel, pgno_t pgno, struct iovec *iov,
-                                   size_t sgvcnt);
-MDBX_INTERNAL int dxb_write_pages(const MDBX_env *env, enum dxb_io_channel channel, pgno_t pgno, const void *buf,
-                                  size_t npages);
+static int dxb_storage_write_bytes(const dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
+                                   size_t bytes, uint64_t offset, size_t pagesize, uint8_t pagesize_ln);
+static int dxb_storage_write_pages(const dxb_storage_t *storage, uint8_t pagesize_ln, enum dxb_io_channel channel,
+                                   pgno_t pgno, const void *buf, size_t npages);
+static int dxb_storage_writev_pages(const dxb_storage_t *storage, uint8_t pagesize_ln, enum dxb_io_channel channel,
+                                    pgno_t pgno, struct iovec *iov, size_t sgvcnt);
 #if MDBX_USE_COPYFILERANGE
-MDBX_INTERNAL int dxb_copy_pages(const MDBX_env *env, pgno_t src_pgno, pgno_t dst_pgno, size_t npages);
+static int dxb_storage_copy_pages(const dxb_storage_t *storage, uint8_t pagesize_ln, pgno_t src_pgno, pgno_t dst_pgno,
+                                  size_t npages);
 static int dxb_storage_copy_to_fd(const dxb_storage_t *storage, mdbx_filehandle_t dst_fd, off_t *src_offset,
                                   off_t *dst_offset, size_t bytes, bool *copied, bool *unavailable,
                                   bool *not_same_filesystem);
@@ -18802,7 +18803,7 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
 #if MDBX_CHECKING > 1
   ASSERT(pnl_contains(dfc->repnl_clone, arc->mapped));
 #endif /* MDBX_CHECKING > 1 */
-  err = dxb_write_pages(txn->env, dxb_io_data, arc->mapped, dst, 1);
+  err = dxb_storage_write_pages(&txn->env->dxb_storage, txn->env->ps2ln, dxb_io_data, arc->mapped, dst, 1);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
@@ -18811,7 +18812,8 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
   if (unlikely(npages > 1)) {
     for (pgno_t i = 1; i < npages; ++i) {
 #if MDBX_USE_COPYFILERANGE
-      err = dxb_copy_pages(txn->env, arc->key_or_pgno + i, arc->mapped + i, npages - i);
+      err = dxb_storage_copy_pages(&txn->env->dxb_storage, txn->env->ps2ln, arc->key_or_pgno + i, arc->mapped + i,
+                                   npages - i);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
       break;
@@ -18828,7 +18830,7 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
 #if MDBX_CHECKING > 1
       ASSERT(pnl_contains(dfc->repnl_clone, dst_pgno));
 #endif /* MDBX_CHECKING > 1 */
-      err = dxb_write_pages(txn->env, dxb_io_data, dst_pgno, txn->env->page_auxbuf, 1);
+      err = dxb_storage_write_pages(&env->dxb_storage, env->ps2ln, dxb_io_data, dst_pgno, txn->env->page_auxbuf, 1);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
 #endif /* MDBX_USE_COPYFILERANGE */
@@ -21447,24 +21449,6 @@ static int dxb_storage_sendfile_to_fd(const dxb_storage_t *storage, mdbx_filehan
 }
 #endif /* MDBX_USE_SENDFILE */
 
-int dxb_write(const MDBX_env *env, enum dxb_io_channel channel, const void *buf, size_t bytes, uint64_t offset) {
-  return dxb_storage_write_bytes(&env->dxb_storage, channel, buf, bytes, offset, env->ps, env->ps2ln);
-}
-
-int dxb_writev_pages(const MDBX_env *env, enum dxb_io_channel channel, pgno_t pgno, struct iovec *iov, size_t sgvcnt) {
-  return dxb_storage_writev_pages(&env->dxb_storage, env->ps2ln, channel, pgno, iov, sgvcnt);
-}
-
-int dxb_write_pages(const MDBX_env *env, enum dxb_io_channel channel, pgno_t pgno, const void *buf, size_t npages) {
-  return dxb_storage_write_pages(&env->dxb_storage, env->ps2ln, channel, pgno, buf, npages);
-}
-
-#if MDBX_USE_COPYFILERANGE
-int dxb_copy_pages(const MDBX_env *env, pgno_t src_pgno, pgno_t dst_pgno, size_t npages) {
-  return dxb_storage_copy_pages(&env->dxb_storage, env->ps2ln, src_pgno, dst_pgno, npages);
-}
-#endif /* MDBX_USE_COPYFILERANGE */
-
 static int dxb_storage_setup_bytes(dxb_storage_t *storage, const size_t size, const size_t limit, const unsigned flags,
                                    const unsigned options, size_t pagesize, uint8_t pagesize_ln) {
   int rc;
@@ -21839,7 +21823,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
       return err;
 
     header = *meta_init_triplet(env, env->page_auxbuf);
-    err = dxb_write_pages(env, dxb_io_data, 0, env->page_auxbuf, NUM_METAS);
+    err = dxb_storage_write_pages(&env->dxb_storage, env->ps2ln, dxb_io_data, 0, env->page_auxbuf, NUM_METAS);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
@@ -22454,13 +22438,15 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
   const meta_t undo_meta = *target;
   eASSERT0(env, pending->trees.gc.flags == MDBX_INTEGERKEY);
   eASSERT0(env, check_table_flags(pending->trees.main.flags));
-  rc = dxb_write(env, dxb_io_meta, pending, sizeof(meta_t), meta_payload_dxb_offset(env, target_number));
+  rc = dxb_storage_write_bytes(&env->dxb_storage, dxb_io_meta, pending, sizeof(meta_t),
+                               meta_payload_dxb_offset(env, target_number), env->ps, env->ps2ln);
   if (unlikely(rc != MDBX_SUCCESS)) {
   undo:
     DEBUG("%s", "write failed, disk error?");
     /* On a failure, the pagecache still contains the new data.
      * Try write some old data back, to prevent it from being used. */
-    dxb_write(env, dxb_io_meta, &undo_meta, sizeof(meta_t), meta_payload_dxb_offset(env, target_number));
+    dxb_storage_write_bytes(&env->dxb_storage, dxb_io_meta, &undo_meta, sizeof(meta_t),
+                            meta_payload_dxb_offset(env, target_number), env->ps, env->ps2ln);
     goto fail;
   }
   /* sync meta-pages */
@@ -28767,7 +28753,7 @@ static int meta_unsteady(MDBX_env *env, const txnid_t inclusive_upto, const pgno
 
   if (MDBX_ENABLE_PGOP_STAT)
     env->lck->pgops.wops.weak += 1;
-  int err = dxb_write(env, dxb_io_meta, ptr, bytes, offset);
+  int err = dxb_storage_write_bytes(&env->dxb_storage, dxb_io_meta, ptr, bytes, offset, env->ps, env->ps2ln);
   if (likely(err == MDBX_SUCCESS)) {
     meta_shadow_copy_field(env, pgno, offsetof(meta_t, sign), &wipe, sizeof(meta->sign));
     return MDBX_RESULT_TRUE;
@@ -28927,7 +28913,7 @@ __cold int __must_check_result meta_override(MDBX_env *env, size_t target, txnid
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
   if (MDBX_ENABLE_PGOP_STAT)
     env->lck->pgops.wops.weak += 1;
-  rc = dxb_write_pages(env, dxb_io_meta, (pgno_t)target, page, 1);
+  rc = dxb_storage_write_pages(&env->dxb_storage, env->ps2ln, dxb_io_meta, (pgno_t)target, page, 1);
   if (rc == MDBX_SUCCESS)
     rc = dxb_sync_meta_written(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
   eASSERT0(env,
@@ -34185,7 +34171,7 @@ __cold static void page_kill(MDBX_txn *txn, page_t *mp, pgno_t pgno, size_t npag
     const size_t bytes = pgno2bytes(env, npages);
     memset(mp, -1, bytes);
     mp->pgno = pgno;
-    dxb_write_pages(env, dxb_io_data, pgno, mp, npages);
+    dxb_storage_write_pages(&env->dxb_storage, env->ps2ln, dxb_io_data, pgno, mp, npages);
   } else {
     struct iovec iov[MDBX_AUXILARY_IOV_MAX];
     iov[0].iov_len = env->ps;
@@ -34194,12 +34180,13 @@ __cold static void page_kill(MDBX_txn *txn, page_t *mp, pgno_t pgno, size_t npag
     while (--npages) {
       iov[n] = iov[0];
       if (++n == MDBX_AUXILARY_IOV_MAX) {
-        dxb_writev_pages(env, dxb_io_data, bytes2pgno(env, iov_off), iov, MDBX_AUXILARY_IOV_MAX);
+        dxb_storage_writev_pages(&env->dxb_storage, env->ps2ln, dxb_io_data, bytes2pgno(env, iov_off), iov,
+                                 MDBX_AUXILARY_IOV_MAX);
         iov_off += pgno2bytes(env, MDBX_AUXILARY_IOV_MAX);
         n = 0;
       }
     }
-    dxb_writev_pages(env, dxb_io_data, bytes2pgno(env, iov_off), iov, n);
+    dxb_storage_writev_pages(&env->dxb_storage, env->ps2ln, dxb_io_data, bytes2pgno(env, iov_off), iov, n);
   }
 }
 
