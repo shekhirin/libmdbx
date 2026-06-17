@@ -2519,10 +2519,6 @@ MDBX_MAYBE_UNUSED MDBX_CONST_FUNCTION static inline int ignore_enosys_and_eremot
 
 #endif /* defined(_WIN32) || defined(_WIN64) */
 
-static inline mdbx_filehandle_t env_dxb_fd(const MDBX_env *env) {
-  return dxb_storage_data_fd(&env->dxb_storage);
-}
-
 static inline bool env_is_active(const MDBX_env *env) {
   return (env->flags & ENV_ACTIVE) != 0 && dxb_storage_is_opened(&env->dxb_storage);
 }
@@ -4826,7 +4822,7 @@ __cold int mdbx_env_get_fd(const MDBX_env *env, mdbx_filehandle_t *arg) {
   if (unlikely(!arg))
     return LOG_IFERR(MDBX_EINVAL);
 
-  *arg = env_dxb_fd(env);
+  *arg = dxb_storage_data_fd(&env->dxb_storage);
   return MDBX_SUCCESS;
 }
 

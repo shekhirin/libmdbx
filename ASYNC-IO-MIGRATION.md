@@ -243,10 +243,10 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   storage descriptor state, and releases explicit page-cache state through the
   storage abstraction. POSIX data-file stat probes now enter through
   `dxb_storage_t`, while lock and restore operations still take the DXB fd
-  through `env_dxb_fd()` where fcntl locking requires a descriptor. `lck_destroy()`
+  through storage descriptor helpers where fcntl locking requires a descriptor. `lck_destroy()`
   still uses its direct close sequence because it must preserve the existing
   fcntl lock restoration order, but the fds it closes are taken from
-  `dxb_storage_t`/`env_dxb_fd()` before resetting the storage state.
+  `dxb_storage_t` before resetting the storage state.
 - Data-page sync now routes directly through storage-fd sync;
   the data-file `dxb_msync()` wrapper and its `osal_msync()` mapping branch
   have been removed.
@@ -1310,11 +1310,11 @@ thresholds.
 A later 2026-06-17 POSIX locking cleanup routed `check_fstat()`,
 `lck_seize()`, `lck_downgrade()`, `lck_upgrade()`, SysV lock initialization,
 and, at that checkpoint, `lck_setup()` read-only-filesystem probing through
-`env_dxb_fd()` instead of the then-legacy `lazy_fd` alias. POSIX `lck_destroy()`
-still closes descriptors
-manually in the existing order so fcntl lock restoration semantics stay
-unchanged, but it now chooses those descriptors from `dxb_storage_t`/`env_dxb_fd()`
-before resetting storage state. Focused forced no-data-mmap tiny-cache smoke,
+the storage descriptor helpers instead of the then-legacy `lazy_fd` alias.
+POSIX `lck_destroy()` still closes descriptors manually in the existing order so
+fcntl lock restoration semantics stay unchanged, but it now chooses those
+descriptors from `dxb_storage_t` before resetting storage state. Focused forced
+no-data-mmap tiny-cache smoke,
 deterministic no-map tiny-cache fault injection, and the six registered
 `migration_smoke` CTest entries passed. A paired `mdbx_migration_bench_lazy`
 run reported no-map/mapped ratios of `1.115` batch, `1.139` crud, `0.862`
@@ -1530,9 +1530,9 @@ only lock-file mmap setup/teardown references.
 
 A later 2026-06-17 descriptor-ownership cleanup removed the legacy `lazy_fd`
 macro that stored the data-file descriptor in `env->dxb_mmap.fd`. At that
-checkpoint, `MDBX_env` carried an explicit `data_fd`, `env_dxb_fd()` returned
-that field directly, and `dxb_storage_bind()` mirrored it into the explicit
-storage facade. Open,
+checkpoint, `MDBX_env` carried an explicit `data_fd`, the environment DXB
+descriptor helper returned that field directly, and `dxb_storage_bind()`
+mirrored it into the explicit storage facade. Open,
 probe, close/reset, POSIX fstat/incore checks, Windows DXB locking, spill writes,
 and commit write-context selection now refer to `data_fd` instead of the mapping
 shell. Hygiene scans found no `lazy_fd`, no `dxb_mmap.fd`, no data-file mmap
@@ -2509,9 +2509,9 @@ whether a data handle was present before restoring the in-process neighbor's
 fcntl lock. This preserves the required order, close dsync first, close DXB
 second, restore the neighbor lock after the current DXB handle is closed, then
 reset storage, without pulling DXB/dsync descriptors apart in the lock teardown
-code. The now-unused `dxb_storage_dsync_fd()` accessor was removed. The public
-`mdbx_env_get_fd()` contract remains the only `env_dxb_fd()` consumer outside the
-helper itself. Verification passed `git diff --check`, stale data-file mmap
+code. The now-unused `dxb_storage_dsync_fd()` accessor was removed, and
+`mdbx_env_get_fd()` remained the only environment-level DXB descriptor bridge at
+that checkpoint. Verification passed `git diff --check`, stale data-file mmap
 symbol scans, DXB close/lock routing scans, `make -f GNUmakefile
 mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
 --build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
@@ -2580,9 +2580,9 @@ The paired `mdbx_migration_bench_lazy` gate reported forced/default ratios of
 A later storage open-state cleanup added `dxb_storage_is_opened()` and removed
 the internal `env_dxb_is_opened()` helper. Environment active checks,
 pre-open guards, and DXB lock/setup assertions now ask `dxb_storage_t` whether
-the data file is open, while `env_dxb_fd()` remains only as the public
-`mdbx_env_get_fd()` descriptor bridge. This keeps open-state ownership with the
-storage facade and leaves the environment-level descriptor accessor out of
+the data file is open, while the remaining public descriptor getter stays out of
+normal internal control flow. This keeps open-state ownership with the storage
+facade and leaves environment-level descriptor access out of
 normal control flow. Verification passed `git diff --check`, stale data-file
 mmap symbol scans, storage open-state scans, `make -f GNUmakefile
 mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
@@ -3007,6 +3007,21 @@ injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
 `migration_smoke` CTest entries. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.113` batch, `1.179` crud, `1.265`
 iterate, `0.987` get, and `1.071` delete.
+
+A later public DXB descriptor bridge cleanup removed the last environment DXB
+descriptor helper. `mdbx_env_get_fd()` now returns the data descriptor directly
+from `dxb_storage_t` through `dxb_storage_data_fd()`, so even the public
+descriptor getter no longer preserves a separate environment-shaped forwarding
+layer over storage. Verification passed stale descriptor-bridge scans, stale
+data-file mmap and removed sync-adapter scans across the shipped core sources,
+`make -f GNUmakefile mdbx_migration_smoke`, `mdbx_migration_smoke` default and
+forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the
+six focused ASAN `migration_smoke` CTest entries. The first paired
+`mdbx_migration_bench_lazy` attempt had a noisy batch miss at `0.581` versus the
+`0.600` gate; the repeat passed with forced/default ratios of `1.381` batch,
+`1.192` crud, `0.969` iterate, `0.947` get, and `1.048` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
