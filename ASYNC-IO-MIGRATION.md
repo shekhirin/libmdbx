@@ -4959,6 +4959,27 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.131` batch, `1.149`
 crud, `1.263` iterate, `0.940` get, and `1.081` delete.
 
+A later large-page page-ref descriptor cleanup added
+`dxb_storage_page_ref_span_io()`. Large overflow materialization now validates
+the pinned cache ref against its owning cache-entry descriptor and derives the
+expanded read request from that descriptor's start page, instead of rebuilding
+from `pgr->ref.pgno` directly. The first attempt over-constrained cache refs by
+requiring `ref->npages == cache->io.npages`; direct migration smoke caught this
+in the defrag page walker, where overflow validation may set `ref->npages` from
+the page header before cache materialization expands `cache->io`. The final
+helper keeps the cache descriptor authoritative for storage identity while
+allowing the caller-selected span to drive overflow expansion. Verification
+passed `git diff --check`, source scans proving the raw `pgr->ref.pgno`
+materialization call is gone and the over-strict comparison is absent, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs after the crash fix, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.079` batch, `1.152` crud, `1.187` iterate,
+`1.014` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

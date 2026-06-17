@@ -1588,21 +1588,26 @@ static inline int dxb_storage_page_subrange_bytes_io(const dxb_storage_t *storag
   return dxb_storage_byte_subrange_io(&page_bytes, page_offset, bytes, io);
 }
 
-static inline int dxb_storage_page_ref_io(const dxb_storage_t *storage, const page_ref_t *ref, dxb_page_io_t *io) {
+static inline int dxb_storage_page_ref_span_io(const dxb_storage_t *storage, const page_ref_t *ref, size_t npages,
+                                               dxb_page_io_t *io) {
   if (unlikely(!ref->page))
     return MDBX_NOTFOUND;
+  pgno_t pgno = ref->pgno;
   if (ref->flags & PAGE_REF_CACHE) {
     if (unlikely(!ref->cache || ref->cache->storage != storage || ref->cache->page != ref->page))
       return MDBX_EINVAL;
     int rc = dxb_storage_page_io_validate(storage, &ref->cache->io);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    if (unlikely(ref->pgno != ref->cache->io.pgno || ref->npages != ref->cache->io.npages))
+    if (unlikely(ref->pgno != ref->cache->io.pgno))
       return MDBX_EINVAL;
-    *io = ref->cache->io;
-    return MDBX_SUCCESS;
+    pgno = ref->cache->io.pgno;
   }
-  return dxb_storage_page_io(storage, ref->pgno, ref->npages ? ref->npages : 1, io);
+  return dxb_storage_page_io(storage, pgno, npages ? npages : 1, io);
+}
+
+static inline int dxb_storage_page_ref_io(const dxb_storage_t *storage, const page_ref_t *ref, dxb_page_io_t *io) {
+  return dxb_storage_page_ref_span_io(storage, ref, ref->npages ? ref->npages : 1, io);
 }
 
 static inline int dxb_storage_page_ref_bytes_io(const dxb_storage_t *storage, const page_ref_t *ref,
@@ -21362,7 +21367,7 @@ static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr
   const size_t npages = pgr->page->pages;
   const uint8_t pagesize_ln = entry->pagesize_ln;
   dxb_page_io_t io;
-  int err = dxb_storage_page_io(storage, pgr->ref.pgno, npages, &io);
+  int err = dxb_storage_page_ref_span_io(storage, &pgr->ref, npages, &io);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
