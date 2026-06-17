@@ -1703,7 +1703,6 @@ MDBX_INTERNAL void dxb_storage_park_data(const dxb_storage_t *storage, uint64_t 
 MDBX_INTERNAL void dxb_storage_park_dsync(const dxb_storage_t *storage, uint64_t offset);
 MDBX_INTERNAL int dxb_storage_close(dxb_storage_t *storage, bool env_active);
 MDBX_INTERNAL int dxb_storage_deinit(dxb_storage_t *storage, bool env_active);
-static int dxb_storage_read_pages(const dxb_storage_t *storage, pgno_t pgno, void *buf, size_t npages);
 #if !defined(_WIN32) && !defined(_WIN64)
 static int dxb_storage_stat(const dxb_storage_t *storage, struct stat *st);
 #endif /* !Windows */
@@ -18905,7 +18904,11 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
 #if MDBX_CHECKING > 1
     ASSERT(!pnl_contains(dfc->repnl_clone, arc->key_or_pgno));
 #endif /* MDBX_CHECKING > 1 */
-    err = dxb_storage_read_pages(storage, arc->key_or_pgno, dst, 1);
+    dxb_page_io_t request;
+    err = dxb_storage_page_io(storage, arc->key_or_pgno, 1, &request);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = dxb_storage_read_io(storage, &request, dst);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
@@ -18936,7 +18939,11 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
 #if MDBX_CHECKING > 1
       ASSERT(!pnl_contains(dfc->repnl_clone, src_pgno));
 #endif /* MDBX_CHECKING > 1 */
-      err = dxb_storage_read_pages(storage, src_pgno, env->page_auxbuf, 1);
+      dxb_page_io_t request;
+      err = dxb_storage_page_io(storage, src_pgno, 1, &request);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+      err = dxb_storage_read_io(storage, &request, env->page_auxbuf);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
 #if MDBX_CHECKING > 1
@@ -21393,14 +21400,6 @@ static int dxb_storage_read(const dxb_storage_t *storage, void *buf, size_t byte
 
 static int dxb_storage_read_io(const dxb_storage_t *storage, const dxb_page_io_t *io, void *buf) {
   return dxb_storage_read(storage, buf, io->bytes, io->offset);
-}
-
-static int dxb_storage_read_pages(const dxb_storage_t *storage, pgno_t pgno, void *buf, size_t npages) {
-  dxb_page_io_t io;
-  int rc = dxb_storage_page_io(storage, pgno, npages, &io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_read_io(storage, &io, buf);
 }
 
 static int dxb_storage_write(const dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf, size_t bytes,

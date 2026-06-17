@@ -151,7 +151,10 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   descriptor before entering the cache, and the fast key/value cache fallback
   does the same before materializing a cached offset. Dirty/spilled transaction
   checks run before committed-page request construction, so only reads that
-  actually fall through to storage/cache create a page-I/O request.
+  actually fall through to storage/cache create a page-I/O request. Defrag
+  fallback page reads now also build one-page `dxb_page_io_t` requests and
+  submit them through `dxb_storage_read_io()`, leaving no helper-local
+  page-read conversion layer between page-number callers and storage reads.
   Readahead plus data-file tail discard paths now
   use fd-backed advice/discard through storage; an earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
@@ -2914,11 +2917,13 @@ forced/default ratios of `1.123` batch, `1.177` crud, `0.933` iterate, `1.120`
 get, and `1.099` delete.
 
 A later read-routing cleanup removed the env-shaped `dxb_read()` and
-`dxb_read_pages()` wrappers. Warmup reads, environment copy fallback reads,
-root-txnid probes, defrag page reads, and meta-page probing now call
-`dxb_storage_read()` or `dxb_storage_read_pages()` directly with the environment
-storage handle and page geometry. This leaves explicit data-file reads behind
-storage helpers instead of preserving extra env adapters for byte/page reads.
+`dxb_read_pages()` wrappers. At that point, warmup reads, environment copy
+fallback reads, root-txnid probes, defrag page reads, and meta-page probing
+called `dxb_storage_read()` or `dxb_storage_read_pages()` directly with the
+environment storage handle and page geometry. Later descriptor cleanups removed
+the page-read helper layer for committed-page, metadata-shadow, and defrag page
+reads, leaving explicit data-file reads behind storage helpers instead of
+preserving extra env adapters for byte/page reads.
 Verification passed `git diff --check`, stale data-file mmap symbol scans,
 read-routing scans, `make -f GNUmakefile mdbx_migration_smoke`, direct default
 and forced tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six
@@ -3729,6 +3734,25 @@ focused ASAN `migration_smoke` CTest entries, and
 `mdbx_migration_bench_lazy`. The paired benchmark gate passed with
 forced/default ratios of `1.111` batch, `1.161` crud, `0.980` iterate, `1.010`
 get, and `1.070` delete.
+
+A later defrag descriptor-read cleanup removed the remaining
+`dxb_storage_read_pages()` helper from the C source. `defrag_move()` now builds
+one-page `dxb_page_io_t` requests for its fallback source-page reads and submits
+those descriptors through `dxb_storage_read_io()` before writing the moved
+destination pages. This leaves direct page-addressed storage reads on the same
+checked descriptor handoff used by metadata refresh and committed-page cache
+fills, without preserving a helper-local page-to-byte conversion layer.
+Verification passed `git diff --check`, source scans proving
+`dxb_storage_read_pages()` is gone from the shipped core sources, stale
+data-file mmap and removed sync-adapter scans across the shipped core sources,
+`make -f GNUmakefile mdbx_migration_smoke`, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public migration
+CTest suite including no-mmap tool roundtrip/defrag coverage, forced tiny-cache
+fault injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.112` batch, `1.154`
+crud, `0.824` iterate, `1.041` get, and `1.080` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
