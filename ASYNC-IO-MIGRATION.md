@@ -4671,6 +4671,24 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.007` batch, `0.983` crud, `1.031` iterate, `1.005`
 get, and `0.990` delete.
 
+A later cache materialization request cleanup added
+`dxb_storage_byte_start_page_io()` so a checked byte request can produce the
+first page-cache read descriptor plus the byte offset inside that page. Fast
+public cache-hit materialization now validates its stored value byte range
+against a checked transaction-used page span, reads the starting page through
+that descriptor, and validates post-overflow materialization with
+`dxb_storage_page_span_bytes_io()` instead of open-coding `bytes2pgno()`,
+`pgno2bytes()`, and large-page span arithmetic. Verification passed
+`git diff --check`, source scans proving the targeted cache-materialization
+raw conversions are gone, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.124` batch, `1.166` crud, `1.041` iterate,
+`0.977` get, and `1.067` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

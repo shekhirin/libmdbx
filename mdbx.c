@@ -1715,6 +1715,26 @@ static inline int dxb_storage_page_field_io(const dxb_storage_t *storage, pgno_t
   return dxb_storage_page_span_bytes_io(storage, pgno, 1, field_offset, bytes, io);
 }
 
+static inline int dxb_storage_byte_start_page_io(const dxb_storage_t *storage, const dxb_byte_io_t *bytes,
+                                                 dxb_page_io_t *page, size_t *page_offset) {
+  int rc = dxb_storage_byte_io_validate(bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  const uint64_t pgno64 = dxb_storage_bytes2pgno(storage, bytes->offset);
+  if (unlikely(pgno64 > MAX_PAGENO))
+    return MDBX_EINVAL;
+  rc = dxb_storage_page_io(storage, (pgno_t)pgno64, 1, page);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  const uint64_t offset_in_page = bytes->offset - page->offset;
+  if (unlikely(offset_in_page > page->bytes))
+    return MDBX_EINVAL;
+  *page_offset = (size_t)offset_in_page;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_outbound_io_from_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *src,
                                                      mdbx_filehandle_t dst_fd, uint64_t dst_offset,
                                                      bool has_dst_offset, dxb_outbound_io_t *io) {
@@ -9833,26 +9853,27 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  const uint64_t used_bytes = dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated);
-  if (value_io.offset >= used_bytes || value_io.bytes > used_bytes - value_io.offset)
-    return MDBX_INVALID;
-
-  const pgno_t pgno = (pgno_t)dxb_storage_bytes2pgno(storage, value_io.offset);
-  if (pgno < NUM_METAS || pgno >= txn->geo.first_unallocated)
-    return MDBX_INVALID;
-
-  const size_t page_offset = (size_t)(value_io.offset - dxb_storage_pgno2bytes(storage, pgno));
-  dxb_page_io_t request;
-  err = dxb_storage_page_io(storage, pgno, 1, &request);
+  dxb_page_io_t used_pages;
+  err = dxb_storage_page_io(storage, 0, txn->geo.first_unallocated, &used_pages);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
+  if (value_io.offset >= used_pages.bytes || value_io.bytes > used_pages.bytes - value_io.offset)
+    return MDBX_INVALID;
+
+  dxb_page_io_t request;
+  size_t page_offset;
+  err = dxb_storage_byte_start_page_io(storage, &value_io, &request, &page_offset);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (request.pgno < NUM_METAS || request.pgno >= txn->geo.first_unallocated)
+    return MDBX_INVALID;
 
   pgr_t pgr = page_cache_read((MDBX_txn *)txn, &request, false);
   if (unlikely(pgr.err != MDBX_SUCCESS))
     return pgr.err;
 
   err = MDBX_SUCCESS;
-  if (unlikely(pgr.page->pgno != pgno || (pgr.page->flags & P_ILL_BITS) != 0 ||
+  if (unlikely(pgr.page->pgno != request.pgno || (pgr.page->flags & P_ILL_BITS) != 0 ||
                pgr.page->txnid > txn_basis_snapshot(txn))) {
     err = MDBX_INVALID;
     goto bailout;
@@ -9864,8 +9885,11 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
       goto bailout;
   }
 
-  const size_t span = (size_t)dxb_storage_npages2bytes(storage, pgr.ref.npages ? pgr.ref.npages : 1);
-  if (unlikely(page_offset > span || value_io.bytes > span - page_offset)) {
+  dxb_byte_io_t materialized_value;
+  err = dxb_storage_page_span_bytes_io(storage, pgr.ref.pgno, pgr.ref.npages ? pgr.ref.npages : 1, page_offset,
+                                       value_io.bytes, &materialized_value);
+  if (unlikely(err != MDBX_SUCCESS || materialized_value.offset != value_io.offset ||
+               materialized_value.bytes != value_io.bytes)) {
     err = MDBX_INVALID;
     goto bailout;
   }
