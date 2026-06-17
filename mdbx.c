@@ -1593,13 +1593,16 @@ static inline dxb_sync_range_t dxb_sync_range_all(pgno_t end_pgno) {
 }
 MDBX_INTERNAL int dxb_storage_init(dxb_storage_t *storage);
 MDBX_INTERNAL void dxb_storage_reset(dxb_storage_t *storage, bool env_active);
-MDBX_INTERNAL int dxb_storage_open_data(MDBX_env *env, enum osal_openfile_purpose purpose, mdbx_mode_t mode_bits);
+MDBX_INTERNAL int dxb_storage_open_data(dxb_storage_t *storage, const MDBX_env *env, const pathchar_t *pathname,
+                                        enum osal_openfile_purpose purpose, mdbx_mode_t mode_bits);
 #if defined(_WIN32) || defined(_WIN64)
 MDBX_INTERNAL void dxb_storage_mark_overlapped_closed(dxb_storage_t *storage);
-MDBX_INTERNAL int dxb_storage_open_overlapped(MDBX_env *env);
+MDBX_INTERNAL int dxb_storage_open_overlapped(dxb_storage_t *storage, const MDBX_env *env,
+                                              const pathchar_t *pathname);
 MDBX_INTERNAL void dxb_storage_park_overlapped(const dxb_storage_t *storage, uint64_t offset);
 #endif /* Windows */
-MDBX_INTERNAL int dxb_storage_open_dsync(MDBX_env *env, bool meta_sync);
+MDBX_INTERNAL int dxb_storage_open_dsync(dxb_storage_t *storage, const MDBX_env *env, const pathchar_t *pathname,
+                                         bool meta_sync);
 MDBX_INTERNAL void dxb_storage_park_data(const dxb_storage_t *storage, uint64_t offset);
 MDBX_INTERNAL void dxb_storage_park_dsync(const dxb_storage_t *storage, uint64_t offset);
 MDBX_INTERNAL int dxb_storage_close(dxb_storage_t *storage, bool env_active);
@@ -8206,7 +8209,7 @@ __cold int mdbx_preopen_snapinfoW(const wchar_t *pathname, MDBX_envinfo *out, si
   int err, rc = env_handle_pathname(&env, pathname, 0);
   if (unlikely(rc != MDBX_SUCCESS))
     goto bailout;
-  rc = dxb_storage_open_data(&env, MDBX_OPEN_DXB_READ, 0);
+  rc = dxb_storage_open_data(&env.dxb_storage, &env, env.pathname.dxb, MDBX_OPEN_DXB_READ, 0);
   if (unlikely(rc != MDBX_SUCCESS))
     goto bailout;
 
@@ -20533,19 +20536,18 @@ static inline void dxb_storage_park_fd(mdbx_filehandle_t fd, uint64_t offset) {
     osal_fseek(fd, offset);
 }
 
-int dxb_storage_open_data(MDBX_env *env, enum osal_openfile_purpose purpose, mdbx_mode_t mode_bits) {
-  dxb_storage_t *const storage = &env->dxb_storage;
-  const int rc = osal_openfile(purpose, env, env->pathname.dxb, &storage->data_fd, mode_bits);
+int dxb_storage_open_data(dxb_storage_t *storage, const MDBX_env *env, const pathchar_t *pathname,
+                          enum osal_openfile_purpose purpose, mdbx_mode_t mode_bits) {
+  const int rc = osal_openfile(purpose, env, pathname, &storage->data_fd, mode_bits);
   if (likely(rc == MDBX_SUCCESS))
     storage->meta_fd = storage->data_fd;
   return rc;
 }
 
 #if defined(_WIN32) || defined(_WIN64)
-int dxb_storage_open_overlapped(MDBX_env *env) {
-  dxb_storage_t *const storage = &env->dxb_storage;
+int dxb_storage_open_overlapped(dxb_storage_t *storage, const MDBX_env *env, const pathchar_t *pathname) {
   eASSERT0(env, storage->ioring.overlapped_fd == 0);
-  return osal_openfile(MDBX_OPEN_DXB_OVERLAPPED, env, env->pathname.dxb, &storage->ioring.overlapped_fd, 0);
+  return osal_openfile(MDBX_OPEN_DXB_OVERLAPPED, env, pathname, &storage->ioring.overlapped_fd, 0);
 }
 
 void dxb_storage_park_overlapped(const dxb_storage_t *storage, uint64_t offset) {
@@ -20553,10 +20555,9 @@ void dxb_storage_park_overlapped(const dxb_storage_t *storage, uint64_t offset) 
 }
 #endif /* Windows */
 
-int dxb_storage_open_dsync(MDBX_env *env, bool meta_sync) {
-  dxb_storage_t *const storage = &env->dxb_storage;
+int dxb_storage_open_dsync(dxb_storage_t *storage, const MDBX_env *env, const pathchar_t *pathname, bool meta_sync) {
   eASSERT0(env, storage->dsync_fd == INVALID_HANDLE_VALUE);
-  const int rc = osal_openfile(MDBX_OPEN_DXB_DSYNC, env, env->pathname.dxb, &storage->dsync_fd, 0);
+  const int rc = osal_openfile(MDBX_OPEN_DXB_DSYNC, env, pathname, &storage->dsync_fd, 0);
   if (unlikely(MDBX_IS_ERROR(rc)))
     return rc;
   if (storage->dsync_fd != INVALID_HANDLE_VALUE && meta_sync)
@@ -22707,8 +22708,8 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
    */
 
   env->pid = osal_getpid();
-  int rc =
-      dxb_storage_open_data(env, (env->flags & MDBX_RDONLY) ? MDBX_OPEN_DXB_READ : MDBX_OPEN_DXB_LAZY, mode);
+  int rc = dxb_storage_open_data(&env->dxb_storage, env, env->pathname.dxb,
+                                 (env->flags & MDBX_RDONLY) ? MDBX_OPEN_DXB_READ : MDBX_OPEN_DXB_LAZY, mode);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
@@ -22730,7 +22731,7 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   if (unlikely(!env->lck_lock_event))
     return (int)GetLastError();
   if (!(env->flags & (MDBX_RDONLY | MDBX_SAFE_NOSYNC | MDBX_NOMETASYNC | MDBX_EXCLUSIVE))) {
-    rc = dxb_storage_open_overlapped(env);
+    rc = dxb_storage_open_overlapped(&env->dxb_storage, env, env->pathname.dxb);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
     dxb_storage_park_overlapped(&env->dxb_storage, safe_parking_lot_offset);
@@ -22760,7 +22761,7 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
                       | MDBX_EXCLUSIVE
 #endif /* !Windows */
                       ))) {
-    rc = dxb_storage_open_dsync(env, (env->flags & MDBX_NOMETASYNC) == 0);
+    rc = dxb_storage_open_dsync(&env->dxb_storage, env, env->pathname.dxb, (env->flags & MDBX_NOMETASYNC) == 0);
     if (unlikely(MDBX_IS_ERROR(rc)))
       return rc;
     dxb_storage_park_dsync(&env->dxb_storage, safe_parking_lot_offset);

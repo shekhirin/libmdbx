@@ -3023,6 +3023,23 @@ six focused ASAN `migration_smoke` CTest entries. The first paired
 `0.600` gate; the repeat passed with forced/default ratios of `1.381` batch,
 `1.192` crud, `0.969` iterate, `0.947` get, and `1.048` delete.
 
+A later descriptor-open target cleanup made descriptor creation mutate explicit
+`dxb_storage_t` targets. `dxb_storage_open_data()`,
+`dxb_storage_open_dsync()`, and Windows-only
+`dxb_storage_open_overlapped()` now receive the storage object, environment
+open-policy context, and DXB pathname separately, so descriptor mutation is
+visibly storage-owned while OSAL still receives the environment/path context it
+needs for platform-specific open rules. Verification passed explicit open-helper
+target scans, stale data-file mmap and removed sync-adapter scans across the
+shipped core sources, `git diff --check`, `make -f GNUmakefile
+mdbx_migration_smoke`, `mdbx_migration_smoke` default and forced tiny-cache
+runs, `cmake --build @cmake-ninja-build`, the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` CTest entries. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.102`
+batch, `1.144` crud, `0.991` iterate, `1.011` get, and `1.087` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
