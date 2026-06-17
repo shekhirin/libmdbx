@@ -1533,6 +1533,16 @@ static inline int dxb_storage_page_io_validate(const dxb_storage_t *storage, con
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_page_prefix_io(const dxb_storage_t *storage, pgno_t end_pgno, dxb_page_io_t *io) {
+  return dxb_storage_page_io(storage, 0, end_pgno, io);
+}
+
+static inline bool dxb_storage_current_covers_page_prefix(const dxb_storage_t *storage, pgno_t end_pgno) {
+  dxb_page_io_t prefix;
+  return dxb_storage_page_prefix_io(storage, end_pgno, &prefix) == MDBX_SUCCESS &&
+         prefix.bytes <= dxb_storage_current_size(storage);
+}
+
 static inline int dxb_storage_byte_io_from_page(const dxb_page_io_t *pages, dxb_byte_io_t *io) {
   return dxb_storage_byte_io(pages->offset, pages->bytes, io);
 }
@@ -6206,11 +6216,19 @@ __cold static int copy_with_compacting(MDBX_env *env, MDBX_txn *txn, mdbx_fileha
 
   /* Extend file if required */
   if (meta->geometry.now != meta->geometry.first_unallocated) {
-    const size_t whole_size = (size_t)dxb_storage_pgno2bytes(storage, meta->geometry.now);
+    dxb_page_io_t whole_pages;
+    int rc = dxb_storage_page_prefix_io(storage, meta->geometry.now, &whole_pages);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+    const size_t whole_size = whole_pages.bytes;
     if (!dest_is_pipe)
       return osal_fsetsize(fd, whole_size);
 
-    const size_t used_size = (size_t)dxb_storage_pgno2bytes(storage, meta->geometry.first_unallocated);
+    dxb_page_io_t used_pages;
+    rc = dxb_storage_page_prefix_io(storage, meta->geometry.first_unallocated, &used_pages);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+    const size_t used_size = used_pages.bytes;
     memset(data_buffer, 0, (size_t)MDBX_ENVCOPY_WRITEBUF);
     for (size_t offset = used_size; offset < whole_size;) {
       const size_t chunk =
@@ -6280,7 +6298,7 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
   /* Copy the data */
   const size_t whole_size = dxb_storage_pgno_ceil2os_bytes(storage, txn->geo.end_pgno);
   dxb_page_io_t used_pages;
-  rc = dxb_storage_page_io(storage, 0, txn->geo.first_unallocated, &used_pages);
+  rc = dxb_storage_page_prefix_io(storage, txn->geo.first_unallocated, &used_pages);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   const size_t used_size = used_pages.bytes;
@@ -9874,7 +9892,7 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
     return err;
 
   dxb_page_io_t used_pages;
-  err = dxb_storage_page_io(storage, 0, txn->geo.first_unallocated, &used_pages);
+  err = dxb_storage_page_prefix_io(storage, txn->geo.first_unallocated, &used_pages);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
   if (value_io.offset >= used_pages.bytes || value_io.bytes > used_pages.bytes - value_io.offset)
@@ -15323,10 +15341,14 @@ __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *t
   txn->canary = head.ptr_c->canary;
 
   dxb_storage_t *const storage = &txn->env->dxb_storage;
-  const size_t required_bytes = (size_t)dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated);
+  dxb_page_io_t required_pages;
+  int err = dxb_storage_page_prefix_io(storage, txn->geo.first_unallocated, &required_pages);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  const size_t required_bytes = required_pages.bytes;
   if (unlikely(required_bytes > dxb_storage_current_size(storage))) {
     dxb_coverage_io_t required;
-    int err = dxb_storage_coverage_io(storage, 0, required_bytes, &required);
+    err = dxb_storage_coverage_io(storage, 0, required_bytes, &required);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
     err = dxb_storage_fetch_filesize_if_current_lacks(storage, &required);
@@ -22892,7 +22914,11 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   }
 
   size_t expected_filesize = 0;
-  const size_t allocated_bytes = (size_t)dxb_storage_pgno2bytes(storage, header.geometry.first_unallocated);
+  dxb_page_io_t allocated_pages;
+  err = dxb_storage_page_prefix_io(storage, header.geometry.first_unallocated, &allocated_pages);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  const size_t allocated_bytes = allocated_pages.bytes;
   const size_t allocated_aligned2os_bytes = dxb_storage_bytes_ceil2allocation_bytes(storage, allocated_bytes);
   if ((env->flags & MDBX_RDONLY)    /* readonly */
       || lck_rc != MDBX_RESULT_TRUE /* not exclusive */
@@ -23266,7 +23292,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
 #endif /* POSIX_FADV_DONTNEED */
   }
 
-  err = dxb_set_readahead(env, (pgno_t)dxb_storage_bytes2pgno(storage, allocated_bytes), readahead, true);
+  err = dxb_set_readahead(env, allocated_pages.end_pgno, readahead, true);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
@@ -41355,7 +41381,7 @@ static int basal_start_locked(MDBX_txn *txn, unsigned flags) {
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  eASSERT0(env, dxb_storage_current_covers(storage, dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated)));
+  eASSERT0(env, dxb_storage_current_covers_page_prefix(storage, txn->geo.first_unallocated));
   eASSERT0(env, dxb_storage_current_within_limit(storage));
 
   if (env->options.need_dp_limit_adjust)
@@ -42632,10 +42658,14 @@ int txn_ro_start(MDBX_txn *txn, bool prepare_only) {
     return err;
   }
 
-  eASSERT0(env, dxb_storage_current_covers(storage, dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated)));
+  eASSERT0(env, dxb_storage_current_covers_page_prefix(storage, txn->geo.first_unallocated));
   eASSERT0(env, dxb_storage_current_within_limit(storage));
 #if defined(_WIN32) || defined(_WIN64)
-  const size_t used_bytes = (size_t)dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated);
+  dxb_page_io_t used_pages;
+  err = dxb_storage_page_prefix_io(storage, txn->geo.first_unallocated, &used_pages);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  const size_t used_bytes = used_pages.bytes;
   if (((used_bytes > env->geo_in_bytes.lower && env->geo_in_bytes.shrink) ||
        (globals.running_under_Wine &&
         /* under Wine acquisition of remap_lock is always required,
@@ -43127,19 +43157,26 @@ int txn_setup_primal(MDBX_txn *txn) {
     return MDBX_PANIC;
   }
 
-  const size_t size_bytes = (size_t)dxb_storage_pgno2bytes(storage, txn->geo.end_pgno);
-  const size_t used_bytes = (size_t)dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated);
+  dxb_page_io_t size_pages;
+  int err = dxb_storage_page_prefix_io(storage, txn->geo.end_pgno, &size_pages);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  dxb_page_io_t used_pages;
+  err = dxb_storage_page_prefix_io(storage, txn->geo.first_unallocated, &used_pages);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  const size_t size_bytes = size_pages.bytes;
+  const size_t used_bytes = used_pages.bytes;
   const size_t required_bytes = (txn->flags & txn_ro_flat) ? used_bytes : size_bytes;
   eASSERT0(env, dxb_storage_current_within_limit(storage));
-  int err = MDBX_SUCCESS;
   const size_t current_size = dxb_storage_current_size(storage);
   if (unlikely(required_bytes > current_size)) {
     /* Размер БД (для пишущих транзакций) или используемых данных (для
      * читающих транзакций) больше предыдущего/текущего размера внутри
      * процесса, увеличиваем. Сюда также попадает случай увеличения верхней
      * границы размера БД. */
-    if (txn->geo.upper > MAX_PAGENO + 1 ||
-        dxb_storage_bytes2pgno(storage, dxb_storage_pgno2bytes(storage, txn->geo.upper)) != txn->geo.upper)
+    err = dxb_storage_page_prefix_io(storage, txn->geo.upper, &size_pages);
+    if (unlikely(err != MDBX_SUCCESS))
       return MDBX_UNABLE_EXTEND_MAPSIZE;
     err = dxb_resize(env, txn->geo.first_unallocated, txn->geo.end_pgno, txn->geo.upper, implicit_grow);
     eASSERT0(env, err != MDBX_SUCCESS || dxb_storage_current_within_limit(storage));

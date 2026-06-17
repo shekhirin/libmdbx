@@ -4707,6 +4707,26 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.106` batch, `1.159` crud, `1.003` iterate, `0.994`
 get, and `1.070` delete.
 
+A later transaction/setup page-prefix cleanup added
+`dxb_storage_page_prefix_io()` and
+`dxb_storage_current_covers_page_prefix()` so storage-bound uses of
+`0..end_pgno` ranges validate the page descriptor before consuming the derived
+byte size. Compaction-copy output extension, non-compacting copy used-page
+setup, public-cache materialization bounds, coherency snapshot file-coverage
+checks, open/setup allocated-range handling, read/write transaction coverage
+assertions, Windows read-transaction shrink checks, and `txn_setup_primal()`
+now use the checked prefix descriptor instead of open-coding
+`pgno2bytes()`/round-trip validation for those page-prefix decisions.
+Verification passed `git diff --check`, source scans proving the targeted raw
+page-prefix conversions are gone, the GNUmake `mdbx_migration_smoke` target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.144` batch, `1.172`
+crud, `1.158` iterate, `0.991` get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
