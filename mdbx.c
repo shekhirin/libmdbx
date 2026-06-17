@@ -1696,6 +1696,25 @@ static inline int dxb_storage_page_io_from_bytes(const dxb_storage_t *storage, c
   return dxb_storage_page_io(storage, (pgno_t)begin, (size_t)(end - begin), io);
 }
 
+static inline int dxb_storage_page_span_bytes_io(const dxb_storage_t *storage, pgno_t pgno, size_t npages,
+                                                 size_t page_offset, size_t bytes, dxb_byte_io_t *io) {
+  dxb_page_io_t pages;
+  int rc = dxb_storage_page_io(storage, pgno, npages, &pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(page_offset > pages.bytes || bytes > pages.bytes - page_offset))
+    return MDBX_EINVAL;
+  if (unlikely(page_offset > UINT64_MAX - pages.offset))
+    return MDBX_EINVAL;
+
+  return dxb_storage_byte_io(pages.offset + page_offset, bytes, io);
+}
+
+static inline int dxb_storage_page_field_io(const dxb_storage_t *storage, pgno_t pgno, size_t field_offset,
+                                            size_t bytes, dxb_byte_io_t *io) {
+  return dxb_storage_page_span_bytes_io(storage, pgno, 1, field_offset, bytes, io);
+}
+
 static inline int dxb_storage_outbound_io_from_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *src,
                                                      mdbx_filehandle_t dst_fd, uint64_t dst_offset,
                                                      bool has_dst_offset, dxb_outbound_io_t *io) {
@@ -1849,11 +1868,6 @@ static inline int dxb_storage_sync_io_validate(const dxb_storage_t *storage, con
                checked.pages.bytes != io->pages.bytes || checked.mode_bits != io->mode_bits))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
-}
-
-static inline uint64_t dxb_storage_page_field_offset(const dxb_storage_t *storage, pgno_t pgno,
-                                                     size_t field_offset) {
-  return dxb_storage_pgno2bytes(storage, pgno) + field_offset;
 }
 
 static inline size_t dxb_storage_os_alignment_unit(void) {
@@ -9782,11 +9796,8 @@ static inline int cache_value_io_from_ref(const dxb_storage_t *storage, const pa
   if (inside < 0)
     return MDBX_NOTFOUND;
 
-  const size_t span = (size_t)dxb_storage_npages2bytes(storage, ref->npages ? ref->npages : 1);
-  if ((size_t)inside > span || data->iov_len > span - (size_t)inside)
-    return MDBX_NOTFOUND;
-
-  return dxb_storage_byte_io(dxb_storage_pgno2bytes(storage, ref->pgno) + (size_t)inside, data->iov_len, io);
+  return dxb_storage_page_span_bytes_io(storage, ref->pgno, ref->npages ? ref->npages : 1, (size_t)inside,
+                                        data->iov_len, io);
 }
 
 static int cache_value_io(const MDBX_cursor *mc, const MDBX_val *data, dxb_byte_io_t *io) {
@@ -15134,9 +15145,8 @@ static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, co
   probe->present = true;
 
   const dxb_storage_t *const storage = &env->dxb_storage;
-  const uint64_t offset = dxb_storage_page_field_offset(storage, root_pgno, offsetof(page_t, txnid));
   dxb_byte_io_t bytes;
-  int err = dxb_storage_byte_io(offset, sizeof(probe->txnid), &bytes);
+  int err = dxb_storage_page_field_io(storage, root_pgno, offsetof(page_t, txnid), sizeof(probe->txnid), &bytes);
   dxb_coverage_io_t request;
   if (likely(err == MDBX_SUCCESS))
     err = dxb_storage_coverage_io_from_bytes(storage, &bytes, &request);

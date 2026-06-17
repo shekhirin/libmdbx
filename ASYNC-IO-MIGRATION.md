@@ -4652,6 +4652,25 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.143` batch, `1.159` crud, `0.998` iterate, `1.002`
 get, and `1.078` delete.
 
+A later page-span byte request cleanup added
+`dxb_storage_page_span_bytes_io()` and `dxb_storage_page_field_io()` so callers
+that need a byte window inside a page or page span build it through checked
+page geometry before producing the final `dxb_byte_io_t`. The fast public cache
+value offset path now derives cache-entry byte windows from the retained page
+ref's checked `(pgno, npages)` span, and the root-txnid coherency probe reads
+`page_t.txnid` through the checked page-field helper instead of hand-building
+`pgno2bytes() + offset`. The old raw `dxb_storage_page_field_offset()` helper
+is gone. Verification passed `git diff --check`, source scans proving the old
+raw page-field helper and targeted hand-built offsets are gone, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.007` batch, `0.983` crud, `1.031` iterate, `1.005`
+get, and `0.990` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
