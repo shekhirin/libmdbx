@@ -2596,7 +2596,8 @@ MDBX_MAYBE_UNUSED MDBX_CONST_FUNCTION static inline int ignore_enosys_and_eremot
 #endif /* defined(_WIN32) || defined(_WIN64) */
 
 static inline bool env_is_active(const MDBX_env *env) {
-  return (env->flags & ENV_ACTIVE) != 0 && dxb_storage_is_opened(&env->dxb_storage);
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  return (env->flags & ENV_ACTIVE) != 0 && dxb_storage_is_opened(storage);
 }
 
 static inline int check_env(const MDBX_env *env, const bool wanna_active) {
@@ -2609,6 +2610,7 @@ static inline int check_env(const MDBX_env *env, const bool wanna_active) {
   if (unlikely(env->flags & ENV_FATAL_ERROR))
     return MDBX_PANIC;
 
+  const dxb_storage_t *const storage = &env->dxb_storage;
   if (wanna_active) {
 #if MDBX_ENV_CHECKPID
     if (unlikely(env->pid != osal_getpid()) && env->pid) {
@@ -2618,7 +2620,7 @@ static inline int check_env(const MDBX_env *env, const bool wanna_active) {
 #endif /* MDBX_ENV_CHECKPID */
     if (unlikely((env->flags & ENV_ACTIVE) == 0))
       return MDBX_EPERM;
-    eASSERT0(env, dxb_storage_is_opened(&env->dxb_storage));
+    eASSERT0(env, dxb_storage_is_opened(storage));
   }
 
   return MDBX_SUCCESS;
@@ -7624,7 +7626,8 @@ __cold int mdbx_env_create(MDBX_env **penv) {
   env_options_init(env);
   env_setup_pagesize(env, (globals.sys_pagesize < MDBX_MAX_PAGESIZE) ? globals.sys_pagesize : MDBX_MAX_PAGESIZE);
 
-  int rc = dxb_storage_init(&env->dxb_storage);
+  dxb_storage_t *const storage = &env->dxb_storage;
+  int rc = dxb_storage_init(storage);
   if (unlikely(rc != MDBX_SUCCESS))
     goto bailout;
 
@@ -7660,7 +7663,7 @@ __cold int mdbx_env_create(MDBX_env **penv) {
   return MDBX_SUCCESS;
 
 bailout:
-  dxb_storage_deinit(&env->dxb_storage, false);
+  dxb_storage_deinit(storage, false);
   osal_free(env);
   return LOG_IFERR(rc);
 }
@@ -7725,7 +7728,8 @@ __cold int mdbx_env_open_for_recoveryW(MDBX_env *env, const wchar_t *pathname, u
   int rc = check_env(env, false);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
-  if (unlikely(dxb_storage_is_opened(&env->dxb_storage) || (env->flags & ENV_ACTIVE) != 0))
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  if (unlikely(dxb_storage_is_opened(storage) || (env->flags & ENV_ACTIVE) != 0))
     return LOG_IFERR(MDBX_EPERM);
 
   env->stuck_meta = (int8_t)target_meta;
@@ -7848,7 +7852,8 @@ __cold int mdbx_env_openW(MDBX_env *env, const wchar_t *pathname, MDBX_env_flags
   if (unlikely(flags & ~ENV_USABLE_FLAGS))
     return LOG_IFERR(MDBX_EINVAL);
 
-  if (unlikely(dxb_storage_is_opened(&env->dxb_storage) || (env->flags & ENV_ACTIVE) != 0))
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  if (unlikely(dxb_storage_is_opened(storage) || (env->flags & ENV_ACTIVE) != 0))
     return LOG_IFERR(MDBX_EPERM);
 
   /* Pickup previously mdbx_env_set_flags(),
@@ -7976,6 +7981,8 @@ __cold int mdbx_env_close_ex(MDBX_env *env, bool dont_sync) {
   if (unlikely(env->signature.weak != env_signature))
     return LOG_IFERR(MDBX_EBADSIGN);
 
+  dxb_storage_t *const storage = &env->dxb_storage;
+
 #if MDBX_ENV_CHECKPID || !(defined(_WIN32) || defined(_WIN64))
   /* Check the PID even if MDBX_ENV_CHECKPID=0 on non-Windows
    * platforms (i.e. where fork() is available).
@@ -8004,7 +8011,7 @@ __cold int mdbx_env_close_ex(MDBX_env *env, bool dont_sync) {
     rc = (rc == MDBX_RESULT_TRUE) ? MDBX_SUCCESS : rc;
 #else
     struct stat st;
-    rc = dxb_storage_stat(&env->dxb_storage, &st);
+    rc = dxb_storage_stat(storage, &st);
     if (likely(rc == MDBX_SUCCESS) && st.st_nlink > 0 /* don't sync deleted files */) {
       rc = env_sync(env, true, true);
       rc = (rc == MDBX_BUSY || rc == EAGAIN || rc == EACCES || rc == EBUSY || rc == EWOULDBLOCK ||
@@ -8020,7 +8027,7 @@ __cold int mdbx_env_close_ex(MDBX_env *env, bool dont_sync) {
 
   eASSERT0(env, env->signature.weak == 0);
   rc = env_close(env, false) ? MDBX_PANIC : rc;
-  ENSURE_OBJ(env, dxb_storage_deinit(&env->dxb_storage, false) == MDBX_SUCCESS);
+  ENSURE_OBJ(env, dxb_storage_deinit(storage, false) == MDBX_SUCCESS);
   ENSURE_OBJ(env, osal_fastmutex_destroy(&env->dbi_lock) == MDBX_SUCCESS);
 #if defined(_WIN32) || defined(_WIN64)
   /* remap_lock don't have destructor (Slim Reader/Writer Lock) */
@@ -8052,6 +8059,7 @@ __cold int mdbx_env_close_ex(MDBX_env *env, bool dont_sync) {
 /*----------------------------------------------------------------------------*/
 
 __must_check_result static int env_info_sys(const MDBX_env *env, MDBX_envinfo *out) {
+  const dxb_storage_t *const storage = &env->dxb_storage;
   out->mi_bootid.current.x = globals.bootid.x;
   out->mi_bootid.current.y = globals.bootid.y;
   out->mi_sys_pagesize = globals.sys_pagesize;
@@ -8068,7 +8076,7 @@ __must_check_result static int env_info_sys(const MDBX_env *env, MDBX_envinfo *o
   out->mi_dxb_fsize = 0;
   out->mi_dxb_fallocated = 0;
   out->mi_sys_ioblk = 0;
-  return dxb_storage_fetch_sysinfo(&env->dxb_storage, out);
+  return dxb_storage_fetch_sysinfo(storage, out);
 }
 
 __must_check_result static int env_info_snap(const MDBX_env *env, const MDBX_txn *txn, MDBX_envinfo *out,
@@ -8079,6 +8087,8 @@ __must_check_result static int env_info_snap(const MDBX_env *env, const MDBX_txn
 
   if (unlikely(env->flags & ENV_FATAL_ERROR))
     return MDBX_PANIC;
+
+  const dxb_storage_t *const storage = &env->dxb_storage;
 
   /* is the environment open?
    * (https://libmdbx.dqdkfa.ru/dead-github/issues/171) */
@@ -8138,7 +8148,7 @@ __must_check_result static int env_info_snap(const MDBX_env *env, const MDBX_txn
   out->mi_geo.upper = pgno2bytes(env, txn_meta->geometry.upper);
   out->mi_geo.shrink = pgno2bytes(env, pv2pages(txn_meta->geometry.shrink_pv));
   out->mi_geo.grow = pgno2bytes(env, pv2pages(txn_meta->geometry.grow_pv));
-  out->mi_mapsize = dxb_storage_limit_size(&env->dxb_storage);
+  out->mi_mapsize = dxb_storage_limit_size(storage);
 
   const lck_t *const lck = env->lck;
   out->mi_maxreaders = env->max_readers;
@@ -10148,6 +10158,7 @@ __cold int mdbx_env_set_option(MDBX_env *env, const MDBX_option_t option, uint64
   if (unlikely(err != MDBX_SUCCESS))
     return LOG_IFERR(err);
 
+  const dxb_storage_t *const storage = &env->dxb_storage;
   const bool lock_needed = ((env->flags & ENV_ACTIVE) && env->basal_txn && !env_owned_wrtxn(env));
   bool should_unlock = false;
   switch (option) {
@@ -10198,7 +10209,7 @@ __cold int mdbx_env_set_option(MDBX_env *env, const MDBX_option_t option, uint64
       value = 42;
     if (unlikely(value > MDBX_MAX_DBI))
       return LOG_IFERR(MDBX_EINVAL);
-    if (unlikely(dxb_storage_is_opened(&env->dxb_storage) || (env->flags & ENV_ACTIVE) != 0))
+    if (unlikely(dxb_storage_is_opened(storage) || (env->flags & ENV_ACTIVE) != 0))
       return LOG_IFERR(MDBX_EPERM);
     env->max_dbi = (unsigned)value + CORE_DBS;
     break;
@@ -10208,7 +10219,7 @@ __cold int mdbx_env_set_option(MDBX_env *env, const MDBX_option_t option, uint64
       value = MDBX_READERS_LIMIT;
     if (unlikely(value < 1 || value > MDBX_READERS_LIMIT))
       return LOG_IFERR(MDBX_EINVAL);
-    if (unlikely(dxb_storage_is_opened(&env->dxb_storage) || (env->flags & ENV_ACTIVE) != 0))
+    if (unlikely(dxb_storage_is_opened(storage) || (env->flags & ENV_ACTIVE) != 0))
       return LOG_IFERR(MDBX_EPERM);
     env->max_readers = (unsigned)value;
     break;
@@ -22623,6 +22634,7 @@ __cold int env_sync(MDBX_env *env, bool force, bool nonblock) {
   if (unlikely(env->flags & MDBX_RDONLY))
     return MDBX_EACCESS;
 
+  dxb_storage_t *const storage = &env->dxb_storage;
   MDBX_txn *const txn_owned = env_owned_wrtxn(env);
   bool should_unlock = false;
   int rc = MDBX_RESULT_TRUE /* means "nothing to sync" */;
@@ -22678,7 +22690,7 @@ retry:;
         const dxb_sync_range_t sync_range = dxb_sync_range_all(head.ptr_c->geometry.first_unallocated);
         eASSERT0(env, sync_range.begin <= sync_range.end);
         dxb_note_fsync_pgop(env, MDBX_SYNC_DATA);
-        err = dxb_storage_sync_range(&env->dxb_storage, sync_range, MDBX_SYNC_DATA);
+        err = dxb_storage_sync_range(storage, sync_range, MDBX_SYNC_DATA);
 
         if (unlikely(err != MDBX_SUCCESS))
           return err;
