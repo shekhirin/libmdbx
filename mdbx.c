@@ -1447,6 +1447,13 @@ static inline int dxb_storage_byte_io_validate(const dxb_byte_io_t *io) {
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_byte_span_io(uint64_t begin, uint64_t end, dxb_byte_io_t *io) {
+  if (unlikely(end < begin || end - begin > SIZE_MAX))
+    return MDBX_EINVAL;
+
+  return dxb_storage_byte_io(begin, (size_t)(end - begin), io);
+}
+
 static inline int dxb_storage_byte_subrange_io(const dxb_byte_io_t *range, size_t offset, size_t bytes,
                                                dxb_byte_io_t *io) {
   int rc = dxb_storage_byte_io_validate(range);
@@ -5493,7 +5500,7 @@ __cold int mdbx_env_warmup(const MDBX_env *env, const MDBX_txn *txn, MDBX_warmup
   }
   const size_t used_range = dxb_storage_pgno_ceil2os_bytes(storage, used_pgno);
   dxb_byte_io_t warmup_range;
-  int err = dxb_storage_byte_io(0, used_range, &warmup_range);
+  int err = dxb_storage_byte_span_io(0, used_range, &warmup_range);
   if (unlikely(err != MDBX_SUCCESS))
     return LOG_IFERR(err);
 
@@ -22738,7 +22745,7 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
     NOTICE("resize-DONTNEED %u..%u", size_pgno, (pgno_t)dxb_storage_bytes2pgno(storage, prev_size));
     dxb_byte_io_t discard_bytes;
     dxb_discard_io_t discard;
-    rc = dxb_storage_byte_io(size_bytes, prev_size - size_bytes, &discard_bytes);
+    rc = dxb_storage_byte_span_io(size_bytes, prev_size, &discard_bytes);
     if (likely(rc == MDBX_SUCCESS))
       rc = dxb_storage_discard_io_from_bytes(storage, &discard_bytes, dxb_discard_clean, &discard);
     if (likely(rc == MDBX_SUCCESS))
@@ -23315,7 +23322,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
            (pgno_t)dxb_storage_bytes2pgno(storage, current_size));
     dxb_byte_io_t discard_bytes;
     dxb_discard_io_t discard;
-    err = dxb_storage_byte_io(allocated_aligned2os_bytes, current_size - allocated_aligned2os_bytes, &discard_bytes);
+    err = dxb_storage_byte_span_io(allocated_aligned2os_bytes, current_size, &discard_bytes);
     if (likely(err == MDBX_SUCCESS))
       err = dxb_storage_discard_io_from_bytes(storage, &discard_bytes, dxb_discard_clean, &discard);
     if (likely(err == MDBX_SUCCESS))
@@ -23390,8 +23397,7 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
           NOTICE("shrink-FADV_%s %zu..%zu", "DONTNEED", (size_t)discard_edge_pgno, prev_discarded_pgno);
           dxb_byte_io_t discard_bytes;
           dxb_discard_io_t discard;
-          int err =
-              dxb_storage_byte_io(discard_edge_bytes, prev_discarded_bytes - discard_edge_bytes, &discard_bytes);
+          int err = dxb_storage_byte_span_io(discard_edge_bytes, prev_discarded_bytes, &discard_bytes);
           if (likely(err == MDBX_SUCCESS))
             err = dxb_storage_discard_io_from_bytes(storage, &discard_bytes, dxb_discard_clean, &discard);
           if (likely(err == MDBX_SUCCESS))
@@ -23886,7 +23892,7 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
    * due to erroneous use of file descriptors in the application code. */
   const uint64_t safe_parking_lot_offset = UINT64_C(0x7fffFFFF80000000);
   dxb_byte_io_t safe_parking_lot;
-  rc = dxb_storage_byte_io(safe_parking_lot_offset, 0, &safe_parking_lot);
+  rc = dxb_storage_byte_span_io(safe_parking_lot_offset, safe_parking_lot_offset, &safe_parking_lot);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   dxb_storage_park_data(storage, &safe_parking_lot);

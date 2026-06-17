@@ -4857,6 +4857,21 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.131` batch, `1.142`
 crud, `0.871` iterate, `0.997` get, and `1.068` delete.
 
+A later byte-span call-site cleanup uses `dxb_storage_byte_span_io()` for
+callers that already reason in begin/end byte bounds. Warmup range setup,
+resize shrink discard, open-time tail discard, sync-time shrink discard, and
+the data-fd parking-lot request now derive their checked `dxb_byte_io_t`
+through that helper instead of rebuilding offset/length pairs locally.
+Verification passed `git diff --check`, source scans proving the targeted raw
+warmup/discard/parking-lot byte constructors are absent, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.121` batch,
+`1.157` crud, `1.052` iterate, `0.943` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
