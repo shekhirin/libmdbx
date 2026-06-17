@@ -40,9 +40,12 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   Unpinned entries are always reusable, and pinned entries are reusable when
   they are branch/leaf pages or already-expanded overflow spans. A pinned
   single-page overflow header remains private because `page_cache_read_large()`
-  can replace the entry buffer while materializing the full span. Normal writer
-  reads use private unlisted entries, while validation/checking builds can track
-  those private entries so `page_check()` can classify them.
+  can replace the entry buffer while materializing the full span; if an
+  expandable tracked entry ever has multiple pins at materialization time, the
+  expanding result detaches into a private unlisted cache ref instead of
+  replacing a shared buffer. Normal writer reads use private unlisted entries,
+  while validation/checking builds can track those private entries so
+  `page_check()` can classify them.
   `page_get_unchecked()` checks dirty/spilled transaction pages before falling
   back to committed-page lookup.
 - `pgr_t` now carries a named `page_ref_t` alongside the returned `page_t *`.
@@ -3541,6 +3544,23 @@ core sources, `git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
 CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.100` batch, `1.190` crud, `1.072` iterate, `0.922`
 get, and `1.100` delete.
+
+A later large-page materialization cleanup hardened page-cache pointer
+stability for the async-capable read path. When
+`page_cache_read_large()` expands a tracked overflow-header entry and discovers
+that the entry has more than one pin, it now leaves the shared header buffer
+untouched and returns the expanded span through a private unlisted cache ref.
+This preserves existing pinned `page_t *` values even if a future async read
+window allows an expandable entry to gain another pin before materialization.
+Verification passed stale data-file mmap and removed sync-adapter scans across
+the shipped core sources, `git diff --check`, `make -f GNUmakefile
+mdbx_migration_smoke`, `mdbx_migration_smoke` default and forced tiny-cache
+runs, `cmake --build @cmake-ninja-build`, the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` CTest entries. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.163`
+batch, `1.140` crud, `1.037` iterate, `1.025` get, and `1.071` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.

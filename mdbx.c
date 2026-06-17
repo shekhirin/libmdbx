@@ -20530,6 +20530,34 @@ bailout:
   return pgr_error(err);
 }
 
+static int dxb_storage_detach_materialized_large_page(dxb_storage_t *storage, pgr_t *pgr, page_t *large,
+                                                      const size_t npages, const uint8_t pagesize_ln,
+                                                      const size_t bytes) {
+  page_cache_entry_t *const detached = osal_calloc(1, sizeof(*detached));
+  if (unlikely(!detached)) {
+    osal_memalign_free(large);
+    return MDBX_ENOMEM;
+  }
+
+  page_ref_t old = pgr->ref;
+  ASSERT(old.cache != nullptr);
+  detached->storage = storage;
+  detached->page = large;
+  detached->snapshot_txnid = old.cache->snapshot_txnid;
+  detached->pgno = old.pgno;
+  detached->npages = npages;
+  detached->bytes = bytes;
+  detached->pins = 1;
+  detached->pagesize_ln = pagesize_ln;
+
+  pgr->page = large;
+  pgr->ref.page = large;
+  pgr->ref.cache = detached;
+  pgr->ref.npages = npages;
+  cursor_ref_release(nullptr, &old);
+  return MDBX_SUCCESS;
+}
+
 static pgr_t page_cache_read(MDBX_txn *txn, const pgno_t pgno, const bool track_private) {
   MDBX_env *const env = txn->env;
   dxb_storage_t *const storage = &env->dxb_storage;
@@ -20562,6 +20590,10 @@ static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr
 
   if (entry->owner) {
     page_cache_lock(storage);
+    if (entry->pins > 1) {
+      page_cache_unlock(storage);
+      return dxb_storage_detach_materialized_large_page(storage, pgr, large, npages, pagesize_ln, bytes);
+    }
     osal_memalign_free(entry->page);
     entry->page = large;
     storage->page_cache.pages += npages - entry->npages;
