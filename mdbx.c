@@ -1869,6 +1869,15 @@ static inline int dxb_storage_coverage_io_from_bytes(const dxb_storage_t *storag
   return dxb_storage_page_io_from_bytes(storage, &io->bytes, &io->pages);
 }
 
+static inline int dxb_storage_coverage_io_from_page(const dxb_storage_t *storage, const dxb_page_io_t *pages,
+                                                    dxb_coverage_io_t *io) {
+  int rc = dxb_storage_page_io_validate(storage, pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  io->pages = *pages;
+  return dxb_storage_byte_io_from_page(&io->pages, &io->bytes);
+}
+
 static inline int dxb_storage_coverage_io_validate(const dxb_storage_t *storage, const dxb_coverage_io_t *io) {
   dxb_coverage_io_t checked;
   int rc = dxb_storage_coverage_io_from_bytes(storage, &io->bytes, &checked);
@@ -15416,8 +15425,7 @@ __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *t
   if (unlikely(err != MDBX_SUCCESS))
     return err;
   dxb_coverage_io_t required;
-  required.pages = required_pages;
-  err = dxb_storage_byte_io_from_page(&required.pages, &required.bytes);
+  err = dxb_storage_coverage_io_from_page(storage, &required_pages, &required);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
   const size_t required_bytes = required.bytes.bytes;

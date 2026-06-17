@@ -5088,6 +5088,24 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.132` batch, `1.167` crud, `0.995` iterate, `0.999`
 get, and `1.075` delete.
 
+A later coverage descriptor cleanup added `dxb_storage_coverage_io_from_page()`
+so the coherency head-fetch path derives the required file coverage descriptor
+from a checked page span at the storage-helper layer. `coherency_fetch_head()`
+now asks storage to build the byte coverage for
+`txn->geo.first_unallocated` instead of hand-copying the page descriptor and
+calling `dxb_storage_byte_io_from_page()` locally before the current-size
+refresh check. Verification passed `git diff --check`, a source scan proving
+the targeted `required.pages = required_pages` and
+`dxb_storage_byte_io_from_page(&required.pages, ...)` manual assembly is gone,
+the GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public migration
+CTest suite, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.118` batch, `1.160` crud, `0.774` iterate, `1.011`
+get, and `1.085` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
