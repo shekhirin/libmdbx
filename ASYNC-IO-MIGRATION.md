@@ -3186,6 +3186,23 @@ six focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.105`
 batch, `1.167` crud, `0.995` iterate, `1.034` get, and `1.071` delete.
 
+A later page-numbered storage API cleanup removed the page-size shift parameter
+from explicit page read/write/writev/prefetch/copy and write-queue helpers.
+Those helpers now derive page offsets, byte counts, and queue reservation sizes
+from `dxb_storage_t`, leaving callers to pass only page numbers, page counts,
+and I/O channel intent. This moves the storage abstraction closer to the
+async-capable backend boundary where geometry is storage state instead of
+transaction call-site state. Verification passed stale page-I/O signature scans,
+stale data-file mmap and removed sync-adapter scans across the shipped core
+sources, `git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.081` batch, `1.153` crud, `1.048` iterate, `0.943`
+get, and `1.129` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
