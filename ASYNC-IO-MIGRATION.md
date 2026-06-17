@@ -4939,6 +4939,26 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.097` batch, `1.165` crud, `0.959` iterate,
 `0.977` get, and `1.062` delete.
 
+A later page-ref descriptor cleanup added `dxb_storage_page_ref_io()` and
+`dxb_storage_page_ref_bytes_io()`. Public-cache value-range reconstruction now
+derives byte requests from the page ref that backs the returned value; cache
+refs validate and use their owning `page_cache_entry_t` descriptor, while
+non-cache refs still rebuild through the ordinary page descriptor constructor.
+Cached entry materialization now validates the materialized value span through
+the same page-ref byte helper after any large-page expansion. This keeps
+returned-value byte ranges tied to the pinned page/cache descriptor instead of
+duplicating `(pgno, npages)` conversion in the public cache path. Verification
+passed `git diff --check`, source scans proving the targeted public-cache
+`dxb_storage_page_span_bytes_io()` callers are gone and the new page-ref helper
+is used for value span reconstruction, the GNUmake `mdbx_migration_smoke`
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.131` batch, `1.149`
+crud, `1.263` iterate, `0.940` get, and `1.081` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
