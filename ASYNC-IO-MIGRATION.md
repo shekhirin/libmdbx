@@ -3281,6 +3281,21 @@ CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.129` batch, `1.161` crud, `1.110` iterate, `0.945`
 get, and `1.085` delete.
 
+A later meta-offset geometry cleanup moved commit metadata payload offsets and
+steady-sign wipe offsets under `dxb_storage_t`. The old env-shaped
+`meta_*_dxb_offset()` helpers are gone; storage now owns the meta slot
+page/payload/field byte-offset calculations used by explicit meta writes, while
+the env shadow-page helpers remain memory-layout helpers. Verification passed
+stale meta-offset scans, stale data-file mmap and removed sync-adapter scans
+across the shipped core sources, `git diff --check`,
+`make -f GNUmakefile mdbx_migration_smoke`, `mdbx_migration_smoke` default and
+forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the
+six focused ASAN `migration_smoke` CTest entries. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.125`
+batch, `1.185` crud, `1.004` iterate, `0.984` get, and `1.082` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

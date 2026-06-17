@@ -1387,6 +1387,19 @@ static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, uint
   return offset <= current && bytes <= current - offset;
 }
 
+static inline uint64_t dxb_storage_meta_page_offset(const dxb_storage_t *storage, unsigned number) {
+  ASSERT(number < NUM_METAS);
+  return dxb_storage_pgno2bytes(storage, number);
+}
+
+static inline uint64_t dxb_storage_meta_payload_offset(const dxb_storage_t *storage, unsigned number) {
+  return dxb_storage_meta_page_offset(storage, number) + PAGEHDRSZ;
+}
+
+static inline uint64_t dxb_storage_meta_field_offset(const dxb_storage_t *storage, unsigned number, size_t field_offset) {
+  return dxb_storage_meta_payload_offset(storage, number) + field_offset;
+}
+
 /* The database environment. */
 struct MDBX_env {
   /* ----------------------------------------------------- mostly static part */
@@ -3709,19 +3722,6 @@ MDBX_INTERNAL int meta_sync(const MDBX_env *env, const meta_ptr_t head);
 
 MDBX_INTERNAL const char *durable_caption(const meta_t *const meta);
 MDBX_INTERNAL void meta_troika_dump(const MDBX_env *env, const troika_t *troika);
-
-static inline uint64_t meta_page_dxb_offset(const MDBX_env *env, unsigned number) {
-  eASSERT0(env, number < NUM_METAS);
-  return pgno2bytes(env, number);
-}
-
-static inline uint64_t meta_payload_dxb_offset(const MDBX_env *env, unsigned number) {
-  return meta_page_dxb_offset(env, number) + PAGEHDRSZ;
-}
-
-static inline uint64_t meta_field_dxb_offset(const MDBX_env *env, unsigned number, size_t field_offset) {
-  return meta_payload_dxb_offset(env, number) + field_offset;
-}
 
 static inline page_t *meta_shadow_page(const MDBX_env *env, unsigned n) {
   eASSERT0(env, n < NUM_METAS);
@@ -22476,14 +22476,14 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
   eASSERT0(env, pending->trees.gc.flags == MDBX_INTEGERKEY);
   eASSERT0(env, check_table_flags(pending->trees.main.flags));
   rc = dxb_storage_write_bytes(storage, dxb_io_meta, pending, sizeof(meta_t),
-                               meta_payload_dxb_offset(env, target_number));
+                               dxb_storage_meta_payload_offset(storage, target_number));
   if (unlikely(rc != MDBX_SUCCESS)) {
   undo:
     DEBUG("%s", "write failed, disk error?");
     /* On a failure, the pagecache still contains the new data.
      * Try write some old data back, to prevent it from being used. */
     dxb_storage_write_bytes(storage, dxb_io_meta, &undo_meta, sizeof(meta_t),
-                            meta_payload_dxb_offset(env, target_number));
+                            dxb_storage_meta_payload_offset(storage, target_number));
     goto fail;
   }
   /* sync meta-pages */
@@ -28782,6 +28782,7 @@ __cold void meta_troika_dump(const MDBX_env *env, const troika_t *troika) {
 
 static int meta_unsteady(MDBX_env *env, const txnid_t inclusive_upto, const pgno_t pgno) {
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
+  dxb_storage_t *const storage = &env->dxb_storage;
   meta_t *const meta = meta_shadow_ptr(env, pgno);
   const txnid_t txnid = constmeta_txnid(meta);
   if (!meta_is_steady(meta) || txnid > inclusive_upto)
@@ -28791,11 +28792,11 @@ static int meta_unsteady(MDBX_env *env, const txnid_t inclusive_upto, const pgno
   const uint64_t wipe = DATASIGN_NONE;
   const void *ptr = &wipe;
   size_t bytes = sizeof(meta->sign);
-  uint64_t offset = meta_field_dxb_offset(env, pgno, offsetof(meta_t, sign));
+  uint64_t offset = dxb_storage_meta_field_offset(storage, pgno, offsetof(meta_t, sign));
 
   if (MDBX_ENABLE_PGOP_STAT)
     env->lck->pgops.wops.weak += 1;
-  int err = dxb_storage_write_bytes(&env->dxb_storage, dxb_io_meta, ptr, bytes, offset);
+  int err = dxb_storage_write_bytes(storage, dxb_io_meta, ptr, bytes, offset);
   if (likely(err == MDBX_SUCCESS)) {
     meta_shadow_copy_field(env, pgno, offsetof(meta_t, sign), &wipe, sizeof(meta->sign));
     return MDBX_RESULT_TRUE;
