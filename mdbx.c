@@ -1390,6 +1390,13 @@ static inline int dxb_storage_byte_io(uint64_t offset, size_t bytes, dxb_byte_io
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_byte_span_io(uint64_t begin, uint64_t end, dxb_byte_io_t *io) {
+  if (unlikely(end < begin || end - begin > SIZE_MAX))
+    return MDBX_EINVAL;
+
+  return dxb_storage_byte_io(begin, (size_t)(end - begin), io);
+}
+
 static inline int dxb_storage_lock_io(uint64_t offset, uint64_t bytes, dxb_lock_io_t *io) {
   if (unlikely(bytes > UINT64_MAX - offset || offset > (uint64_t)OFF_T_MAX || bytes > (uint64_t)OFF_T_MAX))
     return MDBX_EINVAL;
@@ -4930,7 +4937,7 @@ static int warmup_force_read(const dxb_storage_t *storage, size_t used_range, ui
   for (size_t offset = 0; offset < used_range;) {
     const size_t bytes = (used_range - offset < chunk) ? used_range - offset : chunk;
     dxb_byte_io_t request;
-    rc = dxb_storage_byte_io(offset, bytes, &request);
+    rc = dxb_storage_byte_span_io(offset, offset + bytes, &request);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     rc = dxb_storage_read_bytes(storage, &request, buffer);
@@ -5828,7 +5835,7 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
     static bool sendfile_unavailable;
     if (dest_is_pipe && likely(!sendfile_unavailable)) {
       dxb_byte_io_t request;
-      rc = dxb_storage_byte_io(offset, used_size - offset, &request);
+      rc = dxb_storage_byte_span_io(offset, used_size, &request);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
       size_t advanced = 0;
@@ -5850,7 +5857,7 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
 #if MDBX_USE_COPYFILERANGE
     if (!dest_is_pipe && !not_the_same_filesystem && likely(!copyfilerange_unavailable)) {
       dxb_byte_io_t request;
-      rc = dxb_storage_byte_io(offset, used_size - offset, &request);
+      rc = dxb_storage_byte_span_io(offset, used_size, &request);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
       off_t out_offset = offset;
@@ -5878,7 +5885,7 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
     const size_t chunk =
         ((size_t)MDBX_ENVCOPY_WRITEBUF < used_size - offset) ? (size_t)MDBX_ENVCOPY_WRITEBUF : used_size - offset;
     dxb_byte_io_t request;
-    rc = dxb_storage_byte_io(offset, chunk, &request);
+    rc = dxb_storage_byte_span_io(offset, offset + chunk, &request);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     rc = dxb_storage_read_bytes(storage, &request, data_buffer);
@@ -22052,7 +22059,7 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
   if (size_bytes < prev_size && mode > implicit_grow) {
     NOTICE("resize-DONTNEED %u..%u", size_pgno, (pgno_t)dxb_storage_bytes2pgno(storage, prev_size));
     dxb_byte_io_t discard;
-    rc = dxb_storage_byte_io(size_bytes, prev_size - size_bytes, &discard);
+    rc = dxb_storage_byte_span_io(size_bytes, prev_size, &discard);
     if (likely(rc == MDBX_SUCCESS))
       rc = dxb_storage_discard_range(storage, &discard, dxb_discard_clean);
     if (unlikely(MDBX_IS_ERROR(rc))) {
@@ -22626,7 +22633,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
     NOTICE("open-FADV_%s %u..%u", "DONTNEED", env->lck->discarded_tail.weak,
            (pgno_t)dxb_storage_bytes2pgno(storage, current_size));
     dxb_byte_io_t discard;
-    err = dxb_storage_byte_io(allocated_aligned2os_bytes, current_size - allocated_aligned2os_bytes, &discard);
+    err = dxb_storage_byte_span_io(allocated_aligned2os_bytes, current_size, &discard);
     if (likely(err == MDBX_SUCCESS))
       err = dxb_storage_discard_range(storage, &discard, dxb_discard_clean);
     if (unlikely(MDBX_IS_ERROR(err)))
@@ -22698,7 +22705,7 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
         if (prev_discarded_bytes > discard_edge_bytes) {
           NOTICE("shrink-FADV_%s %zu..%zu", "DONTNEED", (size_t)discard_edge_pgno, prev_discarded_pgno);
           dxb_byte_io_t discard;
-          int err = dxb_storage_byte_io(discard_edge_bytes, prev_discarded_bytes - discard_edge_bytes, &discard);
+          int err = dxb_storage_byte_span_io(discard_edge_bytes, prev_discarded_bytes, &discard);
           if (likely(err == MDBX_SUCCESS))
             err = dxb_storage_discard_range(storage, &discard, dxb_discard_clean);
           if (unlikely(MDBX_IS_ERROR(err))) {

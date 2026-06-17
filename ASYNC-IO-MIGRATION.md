@@ -4208,6 +4208,21 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.106` batch, `1.163` crud, `1.003` iterate, `0.991`
 get, and `1.076` delete.
 
+A later byte-span descriptor cleanup added `dxb_storage_byte_span_io()` for
+checked `[begin, end)` byte ranges. Warmup forced reads, env-copy fast paths
+and fallback, resize/open-tail discard, and commit shrink discard now build
+checked span descriptors instead of local `end - begin` byte-length arithmetic.
+The filesize stale-tail invalidation path keeps its capped range behavior.
+Verification passed `git diff --check`, source scans proving the targeted local
+span arithmetic was removed from `mdbx.c`, the GNUmake `mdbx_migration_smoke`
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.119` batch, `1.178`
+crud, `1.164` iterate, `0.937` get, and `1.089` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
