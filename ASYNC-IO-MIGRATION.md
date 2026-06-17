@@ -190,10 +190,11 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   Coherency root probes now build a byte descriptor before checking the current
   file view, and cache invalidation receives the same descriptor shape from
   writes, discard, and truncate-driven shrink paths.
-  Data-page sync callers now use explicit range sync through storage instead of
-  choosing `msync()` versus `fsync()` themselves, and explicit meta-write call
-  sites apply the existing `meta_fd == data_fd` sync rule before submitting
-  directly through storage.
+  Data-page sync callers now build checked `dxb_page_io_t` descriptors for the
+  committed data range and submit them through storage instead of choosing
+  `msync()` versus `fsync()` themselves, and explicit meta-write call sites
+  apply the existing `meta_fd == data_fd` sync rule before submitting directly
+  through storage.
 - `MDBX_env` now contains an env-owned `dxb_storage_t` block for the data, meta,
   and dsync fds, `filesize`, `current`, and `limit` state, the explicit page
   cache, and the dirty-write queue. DXB helper internals and non-pointer size
@@ -3976,6 +3977,24 @@ forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
 focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
 The paired benchmark gate passed with forced/default ratios of `1.116` batch,
 `1.164` crud, `1.004` iterate, `1.005` get, and `1.064` delete.
+
+A later data-sync descriptor cleanup removed the standalone `dxb_sync_range_t`
+page-bound pair from the C source. `dxb_sync_locked()` and the pre-writer
+`env_sync()` path now build checked `dxb_page_io_t` descriptors from the
+committed data range before calling `dxb_storage_sync_range()`, so the sync
+boundary receives the same page request shape used by read, prefetch, write,
+and cache ownership paths. The current backend still performs the same
+whole-file sync underneath, but the storage API now carries validated page
+geometry that a future range-aware or async backend can consume. Verification
+passed `git diff --check`, source scans proving `dxb_sync_range_t` and
+`dxb_sync_range_all()` are gone from the C source, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.090` batch,
+`1.165` crud, `0.817` iterate, `1.054` get, and `1.095` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.

@@ -1688,14 +1688,6 @@ enum resize_mode { implicit_grow, impilict_shrink, explicit_resize };
 enum dxb_io_channel { dxb_io_data, dxb_io_data_dsync, dxb_io_meta };
 enum dxb_advice { dxb_advice_normal, dxb_advice_willneed, dxb_advice_random };
 enum dxb_discard_mode { dxb_discard_clean, dxb_discard_remove, dxb_discard_remove_or_clean };
-typedef struct dxb_sync_range {
-  pgno_t begin;
-  pgno_t end;
-} dxb_sync_range_t;
-static inline dxb_sync_range_t dxb_sync_range_all(pgno_t end_pgno) {
-  const dxb_sync_range_t range = {0, end_pgno};
-  return range;
-}
 MDBX_INTERNAL int dxb_storage_init(dxb_storage_t *storage);
 MDBX_INTERNAL void dxb_storage_reset(dxb_storage_t *storage, bool env_active);
 MDBX_INTERNAL int dxb_storage_open_data(dxb_storage_t *storage, const MDBX_env *env, const pathchar_t *pathname,
@@ -21271,7 +21263,7 @@ static inline ssize_t dxb_storage_sendfile_to_fd_raw(const dxb_storage_t *storag
 
 static int dxb_fault_inject(const char *operation);
 static int dxb_storage_sync(const dxb_storage_t *storage, enum osal_syncmode_bits mode_bits);
-static int dxb_storage_sync_range(const dxb_storage_t *storage, dxb_sync_range_t range,
+static int dxb_storage_sync_range(const dxb_storage_t *storage, const dxb_page_io_t *range,
                                   enum osal_syncmode_bits mode_bits);
 
 static inline void dxb_note_fsync_pgop(const MDBX_env *env, enum osal_syncmode_bits mode_bits) {
@@ -21423,7 +21415,7 @@ static int dxb_storage_sync(const dxb_storage_t *storage, enum osal_syncmode_bit
   return dxb_fault_inject("sync-complete");
 }
 
-static int dxb_storage_sync_range(const dxb_storage_t *storage, dxb_sync_range_t range,
+static int dxb_storage_sync_range(const dxb_storage_t *storage, const dxb_page_io_t *range,
                                   enum osal_syncmode_bits mode_bits) {
   (void)range;
   return dxb_storage_sync(storage, mode_bits);
@@ -22640,10 +22632,12 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
     } else if (unlikely(env->incore))
       goto skip_incore_sync;
 
-    const dxb_sync_range_t sync_range = dxb_sync_range_all(pending->geometry.first_unallocated);
-    eASSERT0(env, sync_range.begin <= sync_range.end);
+    dxb_page_io_t sync_range;
+    rc = dxb_storage_page_io(storage, 0, pending->geometry.first_unallocated, &sync_range);
+    if (unlikely(rc != MDBX_SUCCESS))
+      goto fail;
     dxb_note_fsync_pgop(env, mode_bits);
-    rc = dxb_storage_sync_range(storage, sync_range, mode_bits);
+    rc = dxb_storage_sync_range(storage, &sync_range, mode_bits);
     if (unlikely(rc != MDBX_SUCCESS))
       goto fail;
     rc = (flags & MDBX_SAFE_NOSYNC) ? MDBX_RESULT_TRUE /* carry non-steady */
@@ -22908,10 +22902,12 @@ retry:;
       if (unsynced_pages > /* FIXME: define threshold */ 42 && (flags & MDBX_SAFE_NOSYNC) == 0) {
         eASSERT0(env, ((flags ^ env->flags) & MDBX_WRITEMAP) == 0);
         eASSERT0(env, (flags & MDBX_WRITEMAP) == 0);
-        const dxb_sync_range_t sync_range = dxb_sync_range_all(head.ptr_c->geometry.first_unallocated);
-        eASSERT0(env, sync_range.begin <= sync_range.end);
+        dxb_page_io_t sync_range;
+        err = dxb_storage_page_io(storage, 0, head.ptr_c->geometry.first_unallocated, &sync_range);
+        if (unlikely(err != MDBX_SUCCESS))
+          return err;
         dxb_note_fsync_pgop(env, MDBX_SYNC_DATA);
-        err = dxb_storage_sync_range(storage, sync_range, MDBX_SYNC_DATA);
+        err = dxb_storage_sync_range(storage, &sync_range, MDBX_SYNC_DATA);
 
         if (unlikely(err != MDBX_SUCCESS))
           return err;
