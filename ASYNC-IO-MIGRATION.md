@@ -4430,6 +4430,28 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.162` batch, `1.170` crud, `0.801` iterate, `1.093`
 get, and `1.074` delete.
 
+A later filesize descriptor validation cleanup added
+`dxb_storage_filesize_io_validate()` so filesize observations, file-length
+changes, and in-memory filesize/current updates rebuild and validate
+`dxb_filesize_io_t` before crossing storage state or filesystem boundaries.
+`dxb_storage_set_filesize()` and `dxb_storage_set_current()` now return status,
+the current-size setter consumes the same filesize descriptor instead of a
+loose `size_t`, and the combined size/filesize setter validates both
+descriptors before mutating storage geometry state. Filesize reads now build
+their descriptor through `dxb_storage_filesize_io()`, known-filesize geometry
+helpers rebuild descriptors through the same constructor path, and checker plus
+filesize refresh paths propagate descriptor failures. Verification passed
+`git diff --check`, source scans proving loose current-size setters and raw
+filesize reads are gone from the targeted storage boundary, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.116` batch, `1.156` crud, `0.873` iterate, `1.041`
+get, and `1.079` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
