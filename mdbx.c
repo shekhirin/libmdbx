@@ -21242,6 +21242,16 @@ static int dxb_storage_write(const dxb_storage_t *storage, enum dxb_io_channel c
   return dxb_fault_inject("write-complete");
 }
 
+static int dxb_storage_write_bytes(const dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
+                                   size_t bytes, uint64_t offset, size_t pagesize, uint8_t pagesize_ln) {
+  int rc = dxb_storage_write(storage, channel, buf, bytes, offset);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (dxb_io_channel_is_data(channel))
+    dxb_storage_invalidate_cached_bytes(storage, offset, bytes, pagesize, pagesize_ln, false);
+  return MDBX_SUCCESS;
+}
+
 static void dxb_storage_invalidate_written_pages(const dxb_storage_t *storage, enum dxb_io_channel channel,
                                                  pgno_t pgno, size_t npages) {
   if (!dxb_io_channel_is_data(channel))
@@ -21432,12 +21442,7 @@ int dxb_read_pages(const MDBX_env *env, pgno_t pgno, void *buf, size_t npages) {
 }
 
 int dxb_write(const MDBX_env *env, enum dxb_io_channel channel, const void *buf, size_t bytes, uint64_t offset) {
-  int rc = dxb_storage_write(&env->dxb_storage, channel, buf, bytes, offset);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (dxb_io_channel_is_data(channel))
-    dxb_storage_invalidate_cached_bytes(&env->dxb_storage, offset, bytes, env->ps, env->ps2ln, false);
-  return MDBX_SUCCESS;
+  return dxb_storage_write_bytes(&env->dxb_storage, channel, buf, bytes, offset, env->ps, env->ps2ln);
 }
 
 int dxb_writev_pages(const MDBX_env *env, enum dxb_io_channel channel, pgno_t pgno, struct iovec *iov, size_t sgvcnt) {

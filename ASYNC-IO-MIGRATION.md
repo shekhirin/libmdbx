@@ -2779,6 +2779,22 @@ roundtrip coverage, deterministic forced tiny-cache fault injection, `cmake
 `mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.100`
 batch, `1.172` crud, `0.726` iterate, `1.064` get, and `1.077` delete.
 
+A later byte-write cache invalidation cleanup added `dxb_storage_write_bytes()`.
+The env-shaped `dxb_write()` now only adapts environment page geometry, while
+storage owns the byte-addressed write operation and the data-cache invalidation
+that follows successful data-channel writes. Page-addressed writes still use the
+page helper invalidation path, but single-buffer byte writes now match the
+storage-owned cache-coherency boundary used by page writes, copies, discards,
+and file truncation. Verification passed `git diff --check`, stale data-file
+mmap symbol scans, byte-write routing scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public CTest suite including migration tool roundtrip coverage,
+deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.144`
+batch, `1.184` crud, `0.997` iterate, `0.972` get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
