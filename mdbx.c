@@ -3786,7 +3786,14 @@ __cold static int meta_shadow_alloc(MDBX_env *env) {
 int meta_shadow_refresh(MDBX_env *env) {
   const dxb_storage_t *const storage = &env->dxb_storage;
   int err = meta_shadow_alloc(env);
-  return unlikely(err != MDBX_SUCCESS) ? err : dxb_storage_read_pages(storage, 0, env->meta_shadow, NUM_METAS);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  dxb_page_io_t request;
+  err = dxb_storage_page_io(storage, 0, NUM_METAS, &request);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  return dxb_storage_read_io(storage, &request, env->meta_shadow);
 }
 
 void meta_shadow_copy_page(const MDBX_env *env, unsigned n, const page_t *page) {

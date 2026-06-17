@@ -34,7 +34,8 @@ remaining page access on explicit storage plus pinned page-cache buffers:
 - `page_get_committed()` centralizes committed-page lookup. It now asserts that
   `MDBX_WRITEMAP` is absent, matching the open-time policy, instead of
   returning the old mapped page result. Normal reads flow through an explicit
-  page-cache entry filled by `dxb_storage_read_pages()`.
+  page-cache request built as a checked `dxb_page_io_t` and submitted through
+  `dxb_storage_read_io()`.
   Read-only transactions can reuse clean entries keyed by `(pgno,
   snapshot_txnid)`.
   Unpinned entries are always reusable, and pinned entries are reusable when
@@ -86,11 +87,12 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   sibling movement, root setup/collapse, compacting, defrag, overflow
   read/validate/delete paths, subtree cutoff, page retirement, page walking, and
   rebalance neighbor clones. For non-`MDBX_WRITEMAP` transactions,
-  `page_get_committed()` now allocates or reuses an explicit page-cache entry,
-  reads the page through `dxb_storage_read_pages()` on cache misses, and returns
-  it as a `PAGE_REF_CACHE` result; overflow-page requests can extend that entry
-  to the full large-page span after header validation. The remaining
-  `MDBX_WRITEMAP` branch is unreachable through accepted opens.
+  `page_get_committed()` now receives a checked `dxb_page_io_t`, allocates or
+  reuses an explicit page-cache entry, reads the page through
+  `dxb_storage_read_io()` on cache misses, and returns it as a `PAGE_REF_CACHE`
+  result; overflow-page requests can extend that entry to the full large-page
+  span after header validation. The remaining `MDBX_WRITEMAP` branch is
+  unreachable through accepted opens.
   `page_get_unchecked()` checks dirty pages before falling back to explicit
   committed-page reads, so uncommitted/new pages are not fetched from disk. The
   remaining `pg[]` search hits must stay limited to helper internals,
@@ -179,13 +181,15 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   meta slot number, and meta writes use slot-derived DXB file offsets instead
   of subtracting mapped addresses from an old data-file mapping.
 - `MDBX_env` now has an env-owned three-page meta shadow buffer. It is
-  refreshed with `dxb_storage_read_pages()` after the data file is opened and is
-  kept in step after successful meta-page/sign writes. Flat read-only and write
-  transaction starts now choose their initial meta head from refreshed shadow
-  snapshots, and `mdbx_env_info_ex()` builds its meta fields from refreshed
-  shadow pages. `env_sync()` also refreshes shadow metadata before selecting the
-  observed head or initializing the writer-txn troika, and `env_open()` seeds
-  `meta_sync_txnid` from a shadow-backed recent-committed-txnid read. Open-time
+  refreshed by building a checked `dxb_page_io_t` for the three meta pages and
+  submitting it through `dxb_storage_read_io()` after the data file is opened,
+  and is kept in step after successful meta-page/sign writes. Flat read-only
+  and write transaction starts now choose their initial meta head from
+  refreshed shadow snapshots, and `mdbx_env_info_ex()` builds its meta fields
+  from refreshed shadow pages. `env_sync()` also refreshes shadow metadata
+  before selecting the observed head or initializing the writer-txn troika, and
+  `env_open()` seeds `meta_sync_txnid` from a shadow-backed
+  recent-committed-txnid read. Open-time
   meta validation, automatic rollback decisions, meta geometry/signature upgrade
   checks, recovery meta turn-over, default meta-override DB identity selection,
   opened-environment geometry defaults/updates, and reader-list lag accounting
@@ -207,8 +211,9 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   shadow-backed
   snapshots. The shadow tap helper no longer samples mapped data-file meta
   pages as a freshness oracle; it rereads the three meta pages through
-  `dxb_storage_read_pages()` before selecting the current shadow troika. This
-  removes one more data-mmap dependency at the cost of extra point-lookup
+  the meta-shadow refresh descriptor path before selecting the current shadow
+  troika. This removes one more data-mmap dependency at the cost of extra
+  point-lookup
   overhead until an explicit generation/cache-refresh policy replaces the
   mapped oracle. A
   retry-protected cached tap helper now reuses the current shadow buffer for the
@@ -445,17 +450,18 @@ The exact representation can differ, but the contract must be explicit:
    future pin lifetime hook as cursor stack pages. Short-lived `pgr_t` users now
    have explicit release/consume handling after stack/value transfer or
    transient use, including temporary rebalance clone cleanup. The branch now
-   populates that cache from `page_get_committed()` via explicit
-   `dxb_storage_read_pages()` for non-writemap reads. Cursorless public reads
-   now retain stack-local result refs in the transaction. The branch now also
-   reuses clean committed pages for read-only transactions when the cached
-   entry's snapshot id matches the transaction basis. Unpinned entries are
-   always eligible, and pinned entries can be shared when they are branch/leaf
-   pages or already expanded overflow spans; pinned single-page overflow headers
-   stay unshared because materializing the full span can replace their buffer.
-   Writer reads stay private in normal builds to avoid taking the global cache
-   lock on the write path, but page-checking paths request tracked private
-   entries so validation can still recognize explicit-I/O page buffers. The next
+   populates that cache from `page_get_committed()` by handing a checked
+   `dxb_page_io_t` into the cache and submitting that descriptor through
+   `dxb_storage_read_io()` on misses. Cursorless public reads now retain
+   stack-local result refs in the transaction. The branch now also reuses clean
+   committed pages for read-only transactions when the cached entry's snapshot
+   id matches the transaction basis. Unpinned entries are always eligible, and
+   pinned entries can be shared when they are branch/leaf pages or already
+   expanded overflow spans; pinned single-page overflow headers stay unshared
+   because materializing the full span can replace their buffer. Writer reads
+   stay private in normal builds to avoid taking the global cache lock on the
+   write path, but page-checking paths request tracked private entries so
+   validation can still recognize explicit-I/O page buffers. The next
    page-pinning steps are to narrow
    transaction-retained refs to only pages that back returned values where
    possible, strengthen eviction and invalidation policy, and redesign the
@@ -2678,14 +2684,15 @@ gate reported forced/default ratios of `1.118` batch, `1.171` crud, `0.998`
 iterate, `0.934` get, and `1.047` delete.
 
 A later storage page-read helper cleanup added `dxb_storage_read_pages()` with
-an explicit page-size shift. `meta_shadow_refresh()`, page-cache single-page
-misses, and page-cache overflow-span materialization now enter storage through
-that page-addressed helper instead of the environment-shaped
-`dxb_read_pages()` wrapper. The public/internal wrapper remains for callers
-that still need environment-owned page conversion, but committed-page cache
-fills and metadata shadow refreshes now use a storage-owned page-read surface
-that future async backends can replace directly. Verification passed `git diff
---check`, stale data-file mmap symbol scans, storage page-read routing scans,
+an explicit page-size shift. At that point, `meta_shadow_refresh()`,
+page-cache single-page misses, and page-cache overflow-span materialization
+entered storage through that page-addressed helper instead of the
+environment-shaped `dxb_read_pages()` wrapper. The public/internal wrapper
+remains for callers that still need environment-owned page conversion, and
+later descriptor cleanups moved committed-page cache fills and metadata shadow
+refreshes onto checked `dxb_page_io_t` request handoff. Verification passed
+`git diff --check`, stale data-file mmap symbol scans, storage page-read
+routing scans,
 `make -f GNUmakefile mdbx_migration_smoke`, direct default and forced
 tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six focused
 `migration_smoke` CTest entries, the full 15-test public CTest suite including
@@ -3704,6 +3711,24 @@ forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the
 six focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.108`
 batch, `1.149` crud, `0.850` iterate, `0.813` get, and `1.082` delete.
+
+A later meta-shadow refresh descriptor cleanup removed the helper-local
+page-read conversion from metadata refresh. `meta_shadow_refresh()` now builds a
+checked `dxb_page_io_t` for `(0, NUM_METAS)` and submits that descriptor through
+`dxb_storage_read_io()` after ensuring the shadow buffer exists. Metadata
+rereads now use the same descriptor handoff shape as committed-page cache
+fills, leaving the next async-capable read submission point independent of raw
+page-number conversion at the caller. Verification passed the stale metadata
+read scan, stale data-file mmap and removed sync-adapter scans across the
+shipped core sources, `git diff --check`, `make -f GNUmakefile
+mdbx_migration_smoke`, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.111` batch, `1.161` crud, `0.980` iterate, `1.010`
+get, and `1.070` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
