@@ -5122,6 +5122,22 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.104` batch, `1.157`
 crud, `0.811` iterate, `1.091` get, and `1.066` delete.
 
+A later auxiliary meta-buffer descriptor cleanup moved `env_page_auxbuffer()`
+onto checked storage page descriptors. New-database setup now initializes the
+storage page size before allocating the auxiliary meta triplet, and
+`env_page_auxbuffer()` derives its allocation size, first-two-page poison span,
+and final zeroed page span from `dxb_page_io_t` descriptors instead of raw
+`env->ps * NUM_METAS` arithmetic. Verification passed `git diff --check`,
+source scans proving the targeted raw `env_page_auxbuffer()` sizing is gone,
+the GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public migration
+CTest suite, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.124` batch, `1.162` crud, `1.011` iterate, `1.015`
+get, and `1.088` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

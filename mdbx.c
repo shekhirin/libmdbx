@@ -22970,12 +22970,12 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
         return err;
     }
 
+    dxb_storage_set_pagesize_ln(storage, env->ps2ln);
     err = env_page_auxbuffer(env);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
     header = *meta_init_triplet(env, env->page_auxbuf);
-    dxb_storage_set_pagesize_ln(storage, env->ps2ln);
     dxb_page_io_t meta_pages;
     err = dxb_storage_meta_pages_io(storage, &meta_pages);
     if (unlikely(err != MDBX_SUCCESS))
@@ -23719,12 +23719,26 @@ MDBX_txn *env_owned_wrtxn(const MDBX_env *env) {
 }
 
 int env_page_auxbuffer(MDBX_env *env) {
-  const int err = env->page_auxbuf
-                      ? MDBX_SUCCESS
-                      : osal_memalign_alloc(globals.sys_pagesize, env->ps * (size_t)NUM_METAS, &env->page_auxbuf);
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  dxb_page_io_t meta_pages;
+  int err = dxb_storage_meta_pages_io(storage, &meta_pages);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  dxb_page_io_t poisoned_pages;
+  err = dxb_storage_page_prefix_io(storage, NUM_METAS - 1, &poisoned_pages);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  dxb_page_io_t zero_page;
+  err = dxb_storage_page_io(storage, NUM_METAS - 1, 1, &zero_page);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  eASSERT0(env, poisoned_pages.bytes + zero_page.bytes == meta_pages.bytes);
+
+  err = env->page_auxbuf ? MDBX_SUCCESS
+                         : osal_memalign_alloc(globals.sys_pagesize, meta_pages.bytes, &env->page_auxbuf);
   if (likely(err == MDBX_SUCCESS)) {
-    memset(env->page_auxbuf, -1, env->ps * (size_t)2);
-    memset(ptr_disp(env->page_auxbuf, env->ps * (size_t)2), 0, env->ps);
+    memset(env->page_auxbuf, -1, poisoned_pages.bytes);
+    memset(ptr_disp(env->page_auxbuf, (size_t)zero_page.offset), 0, zero_page.bytes);
   }
   return err;
 }
