@@ -168,7 +168,10 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   dirty writes now adapt their checked page request into a checked
   `dxb_byte_io_t` before insertion, and `osal_ioring_add()`/`osal_ioring_walk()`
   exchange that byte request shape with dirty-write completion instead of
-  loose offset/length pairs. The old raw `dxb_storage_read()`,
+  loose offset/length pairs. Queued write items now also store that
+  `dxb_byte_io_t` internally and use it for coalescing, walking, and POSIX
+  write submission; the old raw item offset and separate last-byte accounting
+  are gone. The old raw `dxb_storage_read()`,
   `dxb_storage_write()`, `dxb_storage_writev()`, and
   `dxb_storage_add_queued_write()` helpers are gone from the C source.
   Readahead plus data-file tail discard paths now
@@ -3855,6 +3858,22 @@ CTest suite, forced tiny-cache fault injection, `cmake --build
 `mdbx_migration_bench_lazy`. The paired benchmark gate passed with
 forced/default ratios of `1.094` batch, `1.167` crud, `1.171` iterate, `0.921`
 get, and `1.071` delete.
+
+A later queued-write item descriptor cleanup changed `ior_item_t` to store a
+`dxb_byte_io_t` instead of a raw offset. Queue coalescing now extends the stored
+request byte span, queue walking derives completion ranges from that request,
+and POSIX queued write submission uses `item->io.offset` for `pwrite()` and
+`pwritev()`. The separate `last_bytes` bookkeeping in `osal_ioring_t` is gone,
+leaving queued write geometry attached to the queued request item itself.
+Verification passed `git diff --check`, `make -f GNUmakefile
+mdbx_migration_smoke`, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.083` batch, `1.162` crud, `0.847` iterate, `0.968`
+get, and `1.081` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.

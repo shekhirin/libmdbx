@@ -1339,13 +1339,13 @@ typedef struct ior_item {
 #define ior_sgv_gap4terminator 1
 #define ior_sgv_element FILE_SEGMENT_ELEMENT
 #else
-  size_t offset;
 #if MDBX_HAVE_PWRITEV
   size_t sgvcnt;
 #define ior_sgv_gap4terminator 0
 #define ior_sgv_element struct iovec
 #endif /* MDBX_HAVE_PWRITEV */
 #endif /* !Windows */
+  dxb_byte_io_t io;
   union {
     MDBX_val single;
 #if defined(ior_sgv_element)
@@ -1362,7 +1362,6 @@ typedef struct osal_ioring {
   HANDLE overlapped_fd;
   unsigned pagesize;
   unsigned last_sgvcnt;
-  size_t last_bytes;
   uint8_t direct, state, pagesize_ln2;
   unsigned event_stack;
   HANDLE *event_pool;
@@ -1371,15 +1370,12 @@ typedef struct osal_ioring {
   HANDLE async_done;
 
 #define ior_last_sgvcnt(ior, item) (ior)->last_sgvcnt
-#define ior_last_bytes(ior, item) (ior)->last_bytes
 #elif MDBX_HAVE_PWRITEV
-  unsigned last_bytes;
 #define ior_last_sgvcnt(ior, item) (item)->sgvcnt
-#define ior_last_bytes(ior, item) (ior)->last_bytes
 #else
 #define ior_last_sgvcnt(ior, item) (1)
-#define ior_last_bytes(ior, item) (item)->single.iov_len
 #endif /* !Windows */
+#define ior_last_bytes(ior, item) (item)->io.bytes
   ior_item_t *last;
   ior_item_t *pool;
   char *boundary;
