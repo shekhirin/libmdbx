@@ -5390,6 +5390,24 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.091` batch, `1.176` crud,
 `1.045` iterate, `0.960` get, and `1.067` delete.
 
+A later data-write invalidation cleanup moved successful data-channel cache
+invalidation from page write helpers to the byte write submission boundary.
+`dxb_storage_write_bytes()` and `dxb_storage_writev_bytes()` now validate the
+written byte span into page coverage before submitting the syscall, and
+invalidate overlapping non-reusable cache entries only after the write and
+completion fault hook succeed. Page-span write helpers now only derive their
+byte request and submit it, so direct byte writes and page-derived writes share
+the same cache-coherency boundary. Verification passed `git diff --check`,
+source scans proving the old page-local `dxb_storage_invalidate_written_pages()`
+hook is gone from `mdbx.c`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.118` batch, `1.157` crud,
+`0.994` iterate, `1.019` get, and `1.080` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
