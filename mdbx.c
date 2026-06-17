@@ -21036,18 +21036,18 @@ static inline osal_ioring_write_result_t dxb_storage_write_queued(dxb_storage_t 
   return osal_ioring_write(dxb_storage_write_queue(storage), dxb_storage_iov_fd(storage, channel));
 }
 
-static inline int dxb_storage_pread(const dxb_storage_t *storage, void *buf, size_t bytes, uint64_t offset) {
-  return osal_pread(dxb_storage_data_fd(storage), buf, bytes, offset);
+static inline int dxb_storage_pread(const dxb_storage_t *storage, const dxb_byte_io_t *io, void *buf) {
+  return osal_pread(dxb_storage_data_fd(storage), buf, io->bytes, io->offset);
 }
 
-static inline int dxb_storage_pwrite(const dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
-                                     size_t bytes, uint64_t offset) {
-  return osal_pwrite(dxb_storage_fd(storage, channel), buf, bytes, offset);
+static inline int dxb_storage_pwrite(const dxb_storage_t *storage, enum dxb_io_channel channel,
+                                     const dxb_byte_io_t *io, const void *buf) {
+  return osal_pwrite(dxb_storage_fd(storage, channel), buf, io->bytes, io->offset);
 }
 
 static inline int dxb_storage_pwritev(const dxb_storage_t *storage, enum dxb_io_channel channel, struct iovec *iov,
-                                      size_t sgvcnt, uint64_t offset) {
-  return osal_pwritev(dxb_storage_fd(storage, channel), iov, sgvcnt, offset);
+                                      size_t sgvcnt, const dxb_byte_io_t *io) {
+  return osal_pwritev(dxb_storage_fd(storage, channel), iov, sgvcnt, io->offset);
 }
 
 static inline int dxb_storage_fsync(const dxb_storage_t *storage, enum osal_syncmode_bits mode_bits) {
@@ -21338,13 +21338,16 @@ __cold static int dxb_fault_inject(const char *operation) {
 }
 
 __cold static int dxb_fault_inject_after_partial_writev(const char *operation, mdbx_filehandle_t fd,
-                                                        const struct iovec *iov, size_t sgvcnt, uint64_t offset) {
+                                                        const struct iovec *iov, size_t sgvcnt,
+                                                        const dxb_byte_io_t *io) {
   int rc = dxb_fault_inject(operation);
   if (likely(rc == MDBX_SUCCESS))
     return MDBX_SUCCESS;
   /* Test-only corruption model: write a real queued prefix, then fail before meta advances. */
   if (sgvcnt > 0 && iov[0].iov_len > 0) {
-    const int write_rc = osal_pwrite(fd, iov[0].iov_base, iov[0].iov_len, offset);
+    if (unlikely(iov[0].iov_len > io->bytes))
+      return MDBX_EINVAL;
+    const int write_rc = osal_pwrite(fd, iov[0].iov_base, iov[0].iov_len, io->offset);
     if (unlikely(write_rc != MDBX_SUCCESS))
       return write_rc;
   }
@@ -21381,12 +21384,13 @@ static inline int dxb_fault_inject(const char *operation) {
 }
 
 static inline int dxb_fault_inject_after_partial_writev(const char *operation, mdbx_filehandle_t fd,
-                                                        const struct iovec *iov, size_t sgvcnt, uint64_t offset) {
+                                                        const struct iovec *iov, size_t sgvcnt,
+                                                        const dxb_byte_io_t *io) {
   (void)operation;
   (void)fd;
   (void)iov;
   (void)sgvcnt;
-  (void)offset;
+  (void)io;
   return MDBX_SUCCESS;
 }
 
@@ -21416,7 +21420,7 @@ static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_i
   int rc = dxb_fault_inject("read");
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  rc = dxb_storage_pread(storage, buf, io->bytes, io->offset);
+  rc = dxb_storage_pread(storage, io, buf);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   return dxb_fault_inject("read-complete");
@@ -21432,7 +21436,7 @@ static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel c
   int rc = dxb_fault_inject("write");
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  rc = dxb_storage_pwrite(storage, channel, buf, io->bytes, io->offset);
+  rc = dxb_storage_pwrite(storage, channel, io, buf);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   rc = dxb_fault_inject("write-complete");
@@ -21507,13 +21511,13 @@ static int dxb_storage_writev_bytes(const dxb_storage_t *storage, enum dxb_io_ch
     return MDBX_EINVAL;
 
   const mdbx_filehandle_t fd = dxb_storage_fd(storage, channel);
-  rc = dxb_fault_inject_after_partial_writev("writev-partial", fd, iov, sgvcnt, io->offset);
+  rc = dxb_fault_inject_after_partial_writev("writev-partial", fd, iov, sgvcnt, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   rc = dxb_fault_inject("writev");
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  rc = dxb_storage_pwritev(storage, channel, iov, sgvcnt, io->offset);
+  rc = dxb_storage_pwritev(storage, channel, iov, sgvcnt, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   return dxb_fault_inject("writev-complete");
@@ -30960,8 +30964,7 @@ static size_t osal_ioring_write_item(osal_ioring_write_result_t *result, ior_ite
     if (likely(result->err == MDBX_SUCCESS))
       result->err = dxb_fault_inject("write-complete");
   } else {
-    result->err =
-        dxb_fault_inject_after_partial_writev("writev-partial", fd, item->sgv, item->sgvcnt, item->io.offset);
+    result->err = dxb_fault_inject_after_partial_writev("writev-partial", fd, item->sgv, item->sgvcnt, &item->io);
     if (likely(result->err == MDBX_SUCCESS))
       result->err = dxb_fault_inject("writev");
     if (likely(result->err == MDBX_SUCCESS))

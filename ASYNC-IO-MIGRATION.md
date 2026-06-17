@@ -174,7 +174,10 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   descriptor before submission; the old raw item offset and separate last-byte
   accounting are gone. The old raw `dxb_storage_read()`,
   `dxb_storage_write()`, `dxb_storage_writev()`, and
-  `dxb_storage_add_queued_write()` helpers are gone from the C source.
+  `dxb_storage_add_queued_write()` helpers are gone from the C source. The
+  final storage adapters for `pread()`, `pwrite()`, and `pwritev()` now accept
+  the same `dxb_byte_io_t` request instead of loose byte/offset pairs, and the
+  async-style partial-writev fault hook consumes that descriptor too.
   Readahead plus data-file tail discard paths now
   use fd-backed advice/discard through storage; an earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
@@ -3891,6 +3894,25 @@ CTest suite, forced tiny-cache fault injection, `cmake --build
 `mdbx_migration_bench_lazy`. The paired benchmark gate passed with
 forced/default ratios of `0.733` batch, `1.132` crud, `1.003` iterate, `0.861`
 get, and `0.632` delete.
+
+A later raw-storage adapter descriptor handoff changed the storage-local
+`dxb_storage_pread()`, `dxb_storage_pwrite()`, and `dxb_storage_pwritev()`
+helpers to receive a `dxb_byte_io_t` instead of unpacked `bytes` and `offset`
+arguments. The adjacent async-style partial-writev fault-injection helper now
+receives the same descriptor and verifies that its real prefix write fits
+inside the request before issuing the test-only corruption write. This keeps the
+byte request authoritative down to the final OSAL syscall handoff without
+changing the OS abstraction itself. Verification passed `git diff --check`,
+source scans proving the storage adapters and partial-writev hook no longer
+receive loose byte/offset arguments, `make -f GNUmakefile
+mdbx_migration_smoke`, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.133` batch, `1.163` crud, `1.239` iterate, `0.972`
+get, and `1.067` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
