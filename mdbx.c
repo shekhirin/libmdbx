@@ -9155,37 +9155,37 @@ static inline MDBX_cache_result_t cache_error(int err) {
   return cache_result(err, MDBX_CACHE_ERROR);
 }
 
-static inline int cache_offset_from_ref(const MDBX_txn *txn, const page_ref_t *ref, const MDBX_val *data,
+static inline int cache_offset_from_ref(const dxb_storage_t *storage, const page_ref_t *ref, const MDBX_val *data,
                                         size_t *offset) {
   if (!ref->page || !data->iov_base)
     return MDBX_NOTFOUND;
 
-  const MDBX_env *const env = txn->env;
   const ptrdiff_t inside = ptr_dist(data->iov_base, ref->page);
   if (inside < 0)
     return MDBX_NOTFOUND;
 
-  const size_t span = pgno2bytes(env, ref->npages ? ref->npages : 1);
+  const size_t span = (size_t)dxb_storage_npages2bytes(storage, ref->npages ? ref->npages : 1);
   if ((size_t)inside > span || data->iov_len > span - (size_t)inside)
     return MDBX_NOTFOUND;
 
-  *offset = pgno2bytes(env, ref->pgno) + (size_t)inside;
+  *offset = (size_t)dxb_storage_pgno2bytes(storage, ref->pgno) + (size_t)inside;
   return MDBX_SUCCESS;
 }
 
 static int cache_value_offset(const MDBX_cursor *mc, const MDBX_val *data, size_t *offset) {
-  int err = cache_offset_from_ref(mc->txn, &mc->value_ref, data, offset);
+  const dxb_storage_t *const storage = &mc->txn->env->dxb_storage;
+  int err = cache_offset_from_ref(storage, &mc->value_ref, data, offset);
   if (err == MDBX_SUCCESS)
     return MDBX_SUCCESS;
 
   if (mc->top >= 0) {
-    err = cache_offset_from_ref(mc->txn, &mc->pgref[mc->top], data, offset);
+    err = cache_offset_from_ref(storage, &mc->pgref[mc->top], data, offset);
     if (err == MDBX_SUCCESS)
       return MDBX_SUCCESS;
   }
 
   for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i) {
-    err = cache_offset_from_ref(mc->txn, &mc->pgref[i], data, offset);
+    err = cache_offset_from_ref(storage, &mc->pgref[i], data, offset);
     if (err == MDBX_SUCCESS)
       return MDBX_SUCCESS;
   }
@@ -9199,16 +9199,16 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
     return MDBX_NOTFOUND;
   }
 
-  const MDBX_env *const env = txn->env;
-  const size_t used_bytes = pgno2bytes(env, txn->geo.first_unallocated);
+  const dxb_storage_t *const storage = &txn->env->dxb_storage;
+  const size_t used_bytes = (size_t)dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated);
   if (entry->offset >= used_bytes || entry->length > used_bytes - entry->offset)
     return MDBX_INVALID;
 
-  const pgno_t pgno = bytes2pgno(env, entry->offset);
+  const pgno_t pgno = (pgno_t)dxb_storage_bytes2pgno(storage, entry->offset);
   if (pgno < NUM_METAS || pgno >= txn->geo.first_unallocated)
     return MDBX_INVALID;
 
-  const size_t page_offset = entry->offset - pgno2bytes(env, pgno);
+  const size_t page_offset = entry->offset - (size_t)dxb_storage_pgno2bytes(storage, pgno);
   pgr_t pgr = page_cache_read((MDBX_txn *)txn, pgno, false);
   if (unlikely(pgr.err != MDBX_SUCCESS))
     return pgr.err;
@@ -9226,7 +9226,7 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
       goto bailout;
   }
 
-  const size_t span = pgno2bytes(env, pgr.ref.npages ? pgr.ref.npages : 1);
+  const size_t span = (size_t)dxb_storage_npages2bytes(storage, pgr.ref.npages ? pgr.ref.npages : 1);
   if (unlikely(page_offset > span || entry->length > span - page_offset)) {
     err = MDBX_INVALID;
     goto bailout;
