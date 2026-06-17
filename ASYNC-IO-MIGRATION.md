@@ -4577,6 +4577,27 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.132` batch, `1.163` crud, `0.976` iterate, `0.997`
 get, and `1.084` delete.
 
+A later descriptor boundary cleanup made three remaining byte/coverage request
+edges rebuild through the storage-owned constructors before use.
+`dxb_storage_contains_coverage()` now validates the complete
+`dxb_coverage_io_t` byte/page pair before comparing it with the current storage
+size, truncate-driven stale-tail cache invalidation builds its `dxb_byte_io_t`
+through `dxb_storage_byte_io()`, and `osal_ioring_walk()` constructs each dirty
+write completion callback span through the same byte-request constructor
+instead of open-coded aggregate initializers. This leaves only intentional
+zero-initialized output descriptors in the raw descriptor initializer scan and
+keeps queued-write walking aligned with the explicit async submission shape.
+Verification passed `git diff --check`, source scans proving raw
+`dxb_byte_io_t` aggregate initializers are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.131` batch, `1.170` crud, `0.931` iterate, `0.889`
+get, and `1.067` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
