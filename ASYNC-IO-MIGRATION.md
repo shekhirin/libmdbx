@@ -4872,6 +4872,21 @@ focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
 The paired benchmark gate passed with forced/default ratios of `1.121` batch,
 `1.157` crud, `1.052` iterate, `0.943` get, and `1.069` delete.
 
+A later byte-span helper reuse cleanup changed descriptor helpers that already
+derive byte begin/end bounds to finish through `dxb_storage_byte_span_io()`.
+Byte subranges, page-derived byte descriptors, page-span byte descriptors, and
+readahead edge windows now share the same span validation path instead of
+finishing with helper-local offset/length construction. Verification passed
+`git diff --check`, source scans proving the targeted helper-local raw byte
+constructors are absent, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.125` batch, `1.181` crud, `1.020` iterate,
+`0.953` get, and `1.062` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

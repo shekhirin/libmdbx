@@ -1464,7 +1464,8 @@ static inline int dxb_storage_byte_subrange_io(const dxb_byte_io_t *range, size_
   if (unlikely((uint64_t)offset > UINT64_MAX - range->offset))
     return MDBX_EINVAL;
 
-  return dxb_storage_byte_io(range->offset + offset, bytes, io);
+  const uint64_t begin = range->offset + offset;
+  return dxb_storage_byte_span_io(begin, begin + bytes, io);
 }
 
 static inline int dxb_storage_lock_io(uint64_t offset, uint64_t bytes, dxb_lock_io_t *io) {
@@ -1569,7 +1570,9 @@ static inline bool dxb_storage_current_covers_page_prefix(const dxb_storage_t *s
 }
 
 static inline int dxb_storage_byte_io_from_page(const dxb_page_io_t *pages, dxb_byte_io_t *io) {
-  return dxb_storage_byte_io(pages->offset, pages->bytes, io);
+  if (unlikely(pages->bytes > UINT64_MAX - pages->offset))
+    return MDBX_EINVAL;
+  return dxb_storage_byte_span_io(pages->offset, pages->offset + pages->bytes, io);
 }
 
 static inline bool dxb_storage_io_channel_valid(enum dxb_io_channel channel) {
@@ -1742,7 +1745,8 @@ static inline int dxb_storage_page_span_bytes_io(const dxb_storage_t *storage, p
   if (unlikely(page_offset > UINT64_MAX - pages.offset))
     return MDBX_EINVAL;
 
-  return dxb_storage_byte_io(pages.offset + page_offset, bytes, io);
+  const uint64_t begin = pages.offset + page_offset;
+  return dxb_storage_byte_span_io(begin, begin + bytes, io);
 }
 
 static inline int dxb_storage_page_field_io(const dxb_storage_t *storage, pgno_t pgno, size_t field_offset,
@@ -1960,7 +1964,7 @@ static inline int dxb_storage_readahead_window_bytes_io(const dxb_storage_t *sto
   if (unlikely(end < offset))
     return MDBX_EINVAL;
 
-  return dxb_storage_byte_io(offset, end - offset, io);
+  return dxb_storage_byte_span_io(offset, end, io);
 }
 
 static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
