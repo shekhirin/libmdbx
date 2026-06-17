@@ -1568,7 +1568,6 @@ enum osal_openfile_purpose {
   MDBX_OPEN_DXB_DSYNC,
 #if defined(_WIN32) || defined(_WIN64)
   MDBX_OPEN_DXB_OVERLAPPED,
-  MDBX_OPEN_DXB_OVERLAPPED_DIRECT,
 #endif /* Windows */
   MDBX_OPEN_LCK,
   MDBX_OPEN_DELETE,
@@ -1601,9 +1600,6 @@ MDBX_INTERNAL int osal_lockfile(mdbx_filehandle_t fd, bool wait);
 MDBX_INTERNAL int osal_mmap(const int flags, osal_mmap_t *map, size_t size, const size_t limit, const unsigned options,
                             const pathchar_t *pathname4logging);
 MDBX_INTERNAL void osal_munmap(osal_mmap_t *map);
-#define MDBX_MRESIZE_MAY_MOVE 0x00000100
-#define MDBX_MRESIZE_MAY_UNMAP 0x00000200
-MDBX_INTERNAL int osal_mresize(const int flags, osal_mmap_t *map, size_t size, size_t limit);
 #if defined(_WIN32) || defined(_WIN64)
 typedef struct {
   unsigned limit, count;
@@ -1791,19 +1787,6 @@ MDBX_MAYBE_UNUSED MDBX_NOTHROW_PURE_FUNCTION static inline uint32_t osal_bswap32
 #error MDBX_ENABLE_PGET_STAT must be defined as 0 or 1
 #endif /* MDBX_ENABLE_PGET_STAT */
 
-/** Controls using Unix' mincore() to determine whether DB-pages
- * are resident in memory. */
-#ifndef MDBX_USE_MINCORE
-#if defined(MINCORE_INCORE) || !(defined(_WIN32) || defined(_WIN64))
-#define MDBX_USE_MINCORE 1
-#else
-#define MDBX_USE_MINCORE 0
-#endif
-#define MDBX_USE_MINCORE_CONFIG "AUTO=" MDBX_STRINGIFY(MDBX_USE_MINCORE)
-#elif !(MDBX_USE_MINCORE == 0 || MDBX_USE_MINCORE == 1)
-#error MDBX_USE_MINCORE must be defined as 0 or 1
-#endif /* MDBX_USE_MINCORE */
-
 /** Enables chunking long list of retired pages during huge transactions commit
  * to avoid use sequences of pages. */
 #ifndef MDBX_ENABLE_BIGFOOT
@@ -1855,28 +1838,6 @@ MDBX_MAYBE_UNUSED MDBX_NOTHROW_PURE_FUNCTION static inline uint32_t osal_bswap32
 #error MDBX_DPL_CACHE_NPAGES must be defined as 0 or 1
 #endif /* MDBX_DPL_CACHE_NPAGES */
 
-/** Controls dirty pages tracking, spilling and persisting in `MDBX_WRITEMAP`.
- *
- * \details In other words, disables in-memory database updating with consequent
- * flush-to-disk/msync syscall.
- *
- * 0/OFF = Don't track dirty pages at all, don't spill ones, and use msync() to
- * persist data. This is by-default on Linux and other systems where kernel
- * provides properly LRU tracking and effective flushing on-demand.
- *
- * 1/ON = Tracking of dirty pages but with LRU labels for spilling and explicit
- * persist ones by write(). This may be reasonable for goofy systems (Windows)
- * which low performance of msync() and/or zany LRU tracking. */
-#ifndef MDBX_AVOID_MSYNC
-#if defined(_WIN32) || defined(_WIN64)
-#define MDBX_AVOID_MSYNC 1
-#else
-#define MDBX_AVOID_MSYNC 0
-#endif
-#elif !(MDBX_AVOID_MSYNC == 0 || MDBX_AVOID_MSYNC == 1)
-#error MDBX_AVOID_MSYNC must be defined as 0 or 1
-#endif /* MDBX_AVOID_MSYNC */
-
 /** Controls a supporting sparse sets of DBI-handles to reduce transaction startup and processing overhead. */
 #ifndef MDBX_ENABLE_DBI_SPARSE
 #define MDBX_ENABLE_DBI_SPARSE 1
@@ -1890,6 +1851,13 @@ MDBX_MAYBE_UNUSED MDBX_NOTHROW_PURE_FUNCTION static inline uint32_t osal_bswap32
 #elif !(MDBX_ENABLE_DBI_LOCKFREE == 0 || MDBX_ENABLE_DBI_LOCKFREE == 1)
 #error MDBX_ENABLE_DBI_LOCKFREE must be defined as 0 or 1
 #endif /* MDBX_ENABLE_DBI_LOCKFREE */
+
+/** Enables test-only fault injection at the explicit DXB I/O boundary. */
+#ifndef MDBX_ENABLE_DXB_FAULT_INJECTION
+#define MDBX_ENABLE_DXB_FAULT_INJECTION 0
+#elif !(MDBX_ENABLE_DXB_FAULT_INJECTION == 0 || MDBX_ENABLE_DXB_FAULT_INJECTION == 1)
+#error MDBX_ENABLE_DXB_FAULT_INJECTION must be defined as 0 or 1
+#endif /* MDBX_ENABLE_DXB_FAULT_INJECTION */
 
 /** Avoid dependence from MSVC CRT and use ntdll.dll instead. */
 #ifndef MDBX_WITHOUT_MSVC_CRT
@@ -2763,7 +2731,7 @@ typedef struct pgops {
   mdbx_atomic_uint64_t fsync;   /* Number of explicit fsync/flush-to-disk operations */
 
   mdbx_atomic_uint64_t prefault; /* Number of prefault write operations */
-  mdbx_atomic_uint64_t mincore;  /* Number of mincore() calls */
+  mdbx_atomic_uint64_t mincore;  /* Legacy counter for data-file mincore() calls */
 
   mdbx_atomic_uint32_t incoherence; /* number of https://libmdbx.dqdkfa.ru/dead-github/issues/269
                                        caught */
@@ -2895,7 +2863,6 @@ typedef struct shared_lck {
    * i.e. for sync-polling in the MDBX_NOMETASYNC mode. */
 #define MDBX_NOMETASYNC_LAZY_UNK (UINT32_MAX / 3)
 #define MDBX_NOMETASYNC_LAZY_FD (MDBX_NOMETASYNC_LAZY_UNK + UINT32_MAX / 8)
-#define MDBX_NOMETASYNC_LAZY_WRITEMAP (MDBX_NOMETASYNC_LAZY_UNK - UINT32_MAX / 8)
   mdbx_atomic_uint32_t meta_sync_txnid;
 
   /* Period for timed auto-sync feature, i.e. at the every steady checkpoint
@@ -2908,9 +2875,9 @@ typedef struct shared_lck {
   /* Marker to distinguish uniqueness of DB/CLK. */
   mdbx_atomic_uint64_t bait_uniqueness;
 
-  /* Paired counter of processes that have mlock()ed part of mmapped DB.
-   * The (mlcnt[0] - mlcnt[1]) > 0 means at least one process
-   * lock at least one page, so therefore madvise() could return EINVAL. */
+  /* Legacy paired counter for data-file mlock/madvise coordination. Kept in
+   * the lock-file layout for compatibility; explicit data-file I/O does not
+   * mlock mapped DB pages. */
   mdbx_atomic_uint32_t mlcnt[2];
 
   MDBX_ALIGNAS(MDBX_CACHELINE_SIZE) /* cacheline ----------------------------*/
@@ -2946,7 +2913,8 @@ typedef struct shared_lck {
   /* Shared anchor for tracking readahead edge and enabled/disabled status. */
   pgno_t readahead_anchor;
 
-  /* Shared cache for mincore() results */
+  /* Legacy shared cache for data-file mincore() results. Kept in the lock-file
+   * layout for compatibility; explicit data-file I/O does not use it. */
   struct {
     pgno_t begin[4];
     uint64_t mask[4];

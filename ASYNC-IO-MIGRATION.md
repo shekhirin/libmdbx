@@ -1,0 +1,2782 @@
+# Migrate Data-File Access To Explicit I/O
+
+This note records the current feasibility assessment and the migration work
+packages for replacing libmdbx data-file mmap access with an explicit,
+async-capable I/O layer. The intended first milestone is still synchronous from
+the public API: convert internal access from mmap pointer arithmetic to pinned
+page-cache buffers first, then add async submission/completion behind the same
+storage interface.
+
+## Scope
+
+- Remove data-file mmap from the DXB path.
+- Keep lock-file mmap for the first phase. Reader slots, writer locking, and
+  interprocess MVCC coordination continue to use `lck_mmap`.
+- Keep the public C API synchronous until explicit I/O correctness and
+  performance are proven.
+- Treat `MDBX_WRITEMAP` as unsupported for the explicit-I/O migration. It cannot
+  keep its old data-file mmap semantics, so the current branch rejects it at
+  open time.
+
+## Current Code Shape
+
+The data-file mmap used to be part of the core page addressing contract. The
+current branch has removed the accepted data-file mapping and is converging the
+remaining page access on explicit storage plus pinned page-cache buffers:
+
+- `MDBX_env` no longer stores an `osal_mmap_t` for the data file or legacy raw
+  DXB fd aliases. `dxb_storage_t` now owns the data/meta/dsync descriptors,
+  file-size/geometry state, the explicit page cache, and the dirty-write queue.
+  `osal_mmap_t lck_mmap` remains for the lock file.
+- The former generic `pgno2page(env, pgno)` and mapped helper fallbacks have
+  been removed from the core source. Normal committed-page reads go through
+  `page_get_committed()` and the explicit page-cache path.
+- `page_get_committed()` centralizes committed-page lookup. It now asserts that
+  `MDBX_WRITEMAP` is absent, matching the open-time policy, instead of
+  returning the old mapped page result. Normal reads flow through an explicit
+  page-cache entry filled by `dxb_storage_read_pages()`.
+  Read-only transactions can reuse clean entries keyed by `(pgno,
+  snapshot_txnid)`.
+  Unpinned entries are always reusable, and pinned entries are reusable when
+  they are branch/leaf pages or already-expanded overflow spans. A pinned
+  single-page overflow header remains private because `page_cache_read_large()`
+  can replace the entry buffer while materializing the full span. Normal writer
+  reads use private unlisted entries, while validation/checking builds can track
+  those private entries so `page_check()` can classify them.
+  `page_get_unchecked()` checks dirty/spilled transaction pages before falling
+  back to committed-page lookup.
+- `pgr_t` now carries a named `page_ref_t` alongside the returned `page_t *`.
+  Committed reads are cache refs, while dirty-list, newly allocated, loose, and
+  unspilled pages are transaction-dirty refs.
+  `MDBX_cursor` now has a parallel `pgref[]` stack; central push/pop,
+  reset/drown, clone/copy, tree search/deepen, cache fallback search, new-root
+  creation, page-split/root-split cursor adjustment, subtree cutoff, and
+  `page_touch()` page replacement paths retain and clear that metadata.
+  Compacting-copy cursor stacks now use synthetic refs for their writable page
+  copies, and rebalance neighbor setup installs left/right sibling pages through
+  the same helper path. Nested subcursor refresh/update paths now update
+  level-zero subcursor refs through helper calls, including newly allocated
+  subtree roots. Root-collapse stack shifts now route the new child root and
+  shifted stack entries through helper calls, and range/cutoff cursor copies now
+  preserve `pgref[]` metadata. Tree-drop stack restoration now saves and
+  restores `pgref[]` metadata with the saved page stack. Node
+  move/merge cursor redirection and post-merge stack restore now also use cursor
+  stack helpers. Cursor refs are now initialized, retained before replacement,
+  released on reset/drown/poor-state transitions, and explicitly retained across
+  nested-transaction cursor backups. Inner-cursor invalidation and root-split
+  debug clearing now release through the same helper layer. `dxb_storage_t` now
+  has a page-cache state block, `page_ref_t` can point at a cache entry, cursor
+  retain/release updates cache pin counts, env teardown frees cache entries, and
+  `page_check()` asserts that `MDBX_WRITEMAP` is absent while accepting
+  explicit-I/O cached, dirty, and txn-owned pages as valid non-mmap page
+  sources. The page cache has a storage-owned mutex, snapshot ids for reusable
+  read-only entries, private unlisted entries for normal writer reads, and a
+  default 64 MiB explicit-cache cap. Audit cursor validation now keeps explicitly
+  fetched branch-child pages pinned while their page contents are checked, so
+  overflow validation cannot reuse the child cache buffer mid-check.
+  `MDBX_cursor` also has a `value_ref` for the latest returned
+  non-stack value, and `node_read_bigdata()` now retains overflow-page refs
+  there so future cached large-value pages can outlive the local `pgr_t`. Local
+  `pgr_t` ownership now has explicit release/consume helpers, and short-lived
+  page results are released after they are retained by cursor/value stacks or
+  after transient validation/copy/retire use. This now covers tree descent,
+  sibling movement, root setup/collapse, compacting, defrag, overflow
+  read/validate/delete paths, subtree cutoff, page retirement, page walking, and
+  rebalance neighbor clones. For non-`MDBX_WRITEMAP` transactions,
+  `page_get_committed()` now allocates or reuses an explicit page-cache entry,
+  reads the page through `dxb_storage_read_pages()` on cache misses, and returns
+  it as a `PAGE_REF_CACHE` result; overflow-page requests can extend that entry
+  to the full large-page span after header validation. The remaining
+  `MDBX_WRITEMAP` branch is unreachable through accepted opens.
+  `page_get_unchecked()` checks dirty pages before falling back to explicit
+  committed-page reads, so uncommitted/new pages are not fetched from disk. The
+  remaining `pg[]` search hits must stay limited to helper internals,
+  comparisons, assertions, and comments.
+- `page_alloc_finalize()` now asserts that `MDBX_WRITEMAP` is absent. Accepted
+  write transactions allocate new pages only as transaction-owned dirty
+  buffers, and successful allocation results are tagged as
+  `PAGE_REF_TXN_DIRTY | PAGE_REF_OWNED`. The old mapped allocation and
+  prefault-write arm no longer exists in the accepted allocation path.
+- `MDBX_txn` now has a retained page-ref list for cursorless public read
+  results. `mdbx_get()`, `mdbx_get_ex()`, `mdbx_get_equal_or_great()`, and the
+  non-writemap `mdbx_cache_get*()` fallback retain cache-backed cursor/value
+  refs into the transaction before releasing their stack-local cursors. Those
+  retained refs are released on read-txn reset/free, basal write-txn end, and
+  nested txn finish/free. This preserves returned `MDBX_val` bytes without
+  leaking every stack-local cursor pin until environment close.
+- The mapped metadata helper island has been removed. The old
+  `MAPPED_METAPAGE()`, `meta_*_mapped()`, `mapped_pgno2page()`,
+  `mapped_ptr2page()`, and `meta_update_begin()`/`meta_update_end()` paths are
+  gone from the accepted metadata flow. Metadata selection now uses refreshed
+  env-owned shadow pages, and meta writes use logical slot offsets plus
+  explicit `dxb_write()`/`dxb_write_pages()` calls.
+- `dxb_setup()` reads candidate meta pages with `pread()` before open and now
+  always initializes accepted environments through the explicit storage path
+  without calling `osal_mmap()` for the data file. The temporary
+  `MDBX_COMPAT_DATA_MMAP=1` comparison backend has been removed from data-file
+  setup; `MDBX_WRITEMAP` remains rejected before backend selection can preserve
+  old mapped-write behavior.
+- Non-writemap commits already have a useful explicit write path:
+  `txn_basal_commit()` builds an `iov_ctx_t`, `txn_write()` iterates the dirty
+  page list, and `iov_page()`/`iov_write()` submit pages through the
+  storage-owned dirty-write queue.
+- This branch now has thin `dxb_read()`, `dxb_read_pages()`, `dxb_write()`,
+  `dxb_write_pages()`, `dxb_writev_pages()`, `dxb_copy_pages()`,
+  `dxb_fetch_filesize()`, `dxb_set_filesize()`,
+  `dxb_advise_range()`, `dxb_prefetch()`, `dxb_discard_range()`,
+  `dxb_sync_data()`, and `dxb_sync_meta_written()` helpers around the existing
+  OSAL file calls. They are intentionally behavior-neutral and are only a first
+  facade for open-time meta reads, explicit meta writes, data-file size checks
+  and growth, defrag page copies, copy fallback reads, page
+  cleanup, readahead/prefetch hints, tail discard/deallocation hints, data-page
+  sync selection, and meta-write sync follow-up. Explicit writes are now
+  channelized as data-file or meta-file
+  writes, so call sites no longer pass raw DXB file handles into the facade.
+  Full-page reads, writes, same-file page copies, and prefetch hints are routed
+  through page-addressed helpers where the page number is already known.
+  Readahead plus data-file tail discard paths now go through facades that use
+  fd-backed advice/discard for accepted environments; a later explicit-only
+  cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper branches.
+  Data-page sync callers now use `dxb_sync_data()` instead of choosing
+  `msync()` versus `fsync()` themselves, and explicit meta-write call sites use
+  `dxb_sync_meta_written()` for the existing `meta_fd == data_fd` sync rule.
+- `MDBX_env` now contains an env-owned `dxb_storage_t` block for the data, meta,
+  and dsync fds, `filesize`, `current`, and `limit` state, the explicit page
+  cache, and the dirty-write queue. DXB helper internals and non-pointer size
+  decisions now use the storage state instead of a mapped-file shell.
+  Generic opened-environment checks now use `ENV_ACTIVE` plus the storage data
+  fd instead of treating a mapped address as the open-state sentinel. This covers
+  public env/txn validation, environment info file-stat reads, close-time sync
+  and writer-owner checks, reader-slot binding, geometry setup routing, rejection
+  of recovery opens against an already-open environment, and post-open rejection
+  of fixed-size `max_db`/`max_readers` option changes. DXB close/reset now also
+  uses the storage descriptors as the authoritative teardown state before
+  synchronizing the legacy fd aliases back to invalid handles.
+- The non-compacting environment-copy path now seeds the destination meta from
+  the read transaction's actual geometry, GC tree, and main tree before writing
+  the copied meta pages. Its portable fallback reads source bytes through
+  `dxb_read()` instead of dereferencing a data-file mapping.
+- Meta selection no longer returns data-file mapped pointers for accepted
+  environments. `meta_ptr_t` carries the selected shadow pointer plus logical
+  meta slot number, and meta writes use slot-derived DXB file offsets instead
+  of subtracting mapped addresses from an old data-file mapping.
+- `MDBX_env` now has an env-owned three-page meta shadow buffer. It is
+  refreshed with `dxb_storage_read_pages()` after the data file is opened and is
+  kept in step after successful meta-page/sign writes. Flat read-only and write
+  transaction starts now choose their initial meta head from refreshed shadow
+  snapshots, and `mdbx_env_info_ex()` builds its meta fields from refreshed
+  shadow pages. `env_sync()` also refreshes shadow metadata before selecting the
+  observed head or initializing the writer-txn troika, and `env_open()` seeds
+  `meta_sync_txnid` from a shadow-backed recent-committed-txnid read. Open-time
+  meta validation, automatic rollback decisions, meta geometry/signature upgrade
+  checks, recovery meta turn-over, default meta-override DB identity selection,
+  opened-environment geometry defaults/updates, and reader-list lag accounting
+  now inspect source meta pages from the shadow buffer without a mapped
+  `pgno2page()` fallback. Non-writemap steady-meta wiping, commit metadata selection,
+  commit pending-meta construction, and GC steady-checkpoint decisions read the
+  shadow meta slots before issuing explicit writes. Environment warmup range
+  selection, active-writer `env_sync()` head selection, debug open logging,
+  read-only MVCC oldest/recent discovery, and write-side MVCC oldest/laggard
+  accounting now also use refreshed shadow meta snapshots instead of mapped
+  meta pages for non-writemap environments. Warmup
+  keeps its mapped touch/lock behavior when the data mapping exists, but the
+  no-data-mapping path can now satisfy forced warmup by reading the selected
+  range through `dxb_read()` into an aligned scratch buffer; lock warmup remains
+  mapped-only and returns `MDBX_ENOSYS` without a process address range to lock.
+  The former mmap tail-poisoning hook has been removed because accepted data
+  opens no longer create a data-file mapping. Retired-page mapped-payload
+  poisoning is skipped without a mapping. Meta-troika diagnostics can render
+  shadow-backed
+  snapshots. The shadow tap helper no longer samples mapped data-file meta
+  pages as a freshness oracle; it rereads the three meta pages through
+  `dxb_storage_read_pages()` before selecting the current shadow troika. This
+  removes one more data-mmap dependency at the cost of extra point-lookup
+  overhead until an explicit generation/cache-refresh policy replaces the
+  mapped oracle. A
+  retry-protected cached tap helper now reuses the current shadow buffer for the
+  first sample in read-transaction seize, read-only transaction observer, and
+  reader-list loops; those paths still force an explicit metadata reread through
+  `meta_shadow_should_retry()` before accepting the observed head, so a
+  cross-process commit can only cause a retry rather than a stale result.
+  `coherency_check()` now probes GC/Main root-page txnids by reading the root
+  page's `txnid` field through `dxb_read()` when the explicit storage view
+  covers that page. The mapped root-page fallback has been removed, and
+  transaction-head acceptance refreshes storage size before validation when the
+  accepted meta geometry extends beyond the current explicit storage view. This
+  keeps root `mod_txnid` validation from silently disappearing with the data
+  mapping.
+  Commit metadata sync now uses the explicit data/meta file path for accepted
+  opens; `MDBX_WRITEMAP` remains rejected before these paths are reachable.
+- Fast key/value cache entries now treat `MDBX_cache_entry_t.offset` as a
+  data-file offset. `mdbx_cache_get*()` refreshes stale entries with a normal
+  cursor search, stores the resulting data-file offset, retains any cache-backed
+  result pages in the transaction, and can serve later hits by reading/pinning
+  the referenced page or overflow extent through the explicit page cache. The
+  former mapped `MDBX_WRITEMAP` fast-cache path has been removed; cache access
+  now asserts the open-time invariant that accepted environments cannot carry
+  `MDBX_WRITEMAP`. Non-writemap stale entries and conservative not-found/ABA
+  cases still fall back to a normal cursor search.
+- `mdbx_is_dirty()` no longer requires a data-file mapping to classify public
+  value pointers. It recognizes explicit page-cache ranges as clean or dirty by
+  page txnid and recognizes dirty-list ranges in the current/parent write
+  transaction as dirty. Pointers outside known explicit-I/O buffers now assert
+  that `MDBX_WRITEMAP` is absent, return `MDBX_EINVAL` for read-only
+  transactions, and keep the documented conservative dirty answer for
+  write-transaction pointers.
+- Readahead and data-file tail discard helpers now use fd-backed advice for
+  accepted environments. Mapped `madvise()` and `MADV_REMOVE` data-file helper
+  branches have been removed, so ordinary runs exercise the same storage-fd
+  advisory path as forced no-data-mmap runs.
+- `env_is_page_incore()` now reports not-resident without probing data-file
+  mmap state, so callers fall back to explicit file I/O instead of invoking
+  `mincore()` on a data mapping. The old lock-file `mincore()` cache fields are
+  retained only as legacy layout. Defrag's move path now keeps
+  transaction-owned dirty buffers when a moved page is already dirty, otherwise
+  fixes the first moved page in `page_auxbuf` and writes it through
+  `dxb_write_pages()`. Multi-page overflow tails now use `dxb_copy_pages()` or
+  the explicit read/write fallback; there is no mapped destination copy branch
+  left in `defrag_move()`.
+- Dirty-page write completion and meta write/update paths no longer flush or
+  read back a data-file mapping. `iov_callback4dirtypages()` now only releases
+  explicit shadow buffers after write completion, `iov_init()` no longer carries
+  the mapped-coherency flag/timestamp, and the old
+  `osal_flush_incoherent_mmap()` helper has been removed.
+- Normal environment close now routes DXB descriptor teardown through
+  `dxb_storage_close()`, which closes the data/dsync descriptors, clears the
+  storage descriptor state, and releases explicit page-cache state through the
+  storage abstraction. POSIX data-file stat probes now enter through
+  `dxb_storage_t`, while lock and restore operations still take the DXB fd
+  through `env_dxb_fd()` where fcntl locking requires a descriptor. `lck_destroy()`
+  still uses its direct close sequence because it must preserve the existing
+  fcntl lock restoration order, but the fds it closes are taken from
+  `dxb_storage_t`/`env_dxb_fd()` before resetting the storage state.
+- Data-page sync now routes directly through `dxb_fsync()`/storage-fd sync;
+  the data-file `dxb_msync()` wrapper and its `osal_msync()` mapping branch
+  have been removed.
+- `dxb_resize()` now always uses `dxb_storage_resize()` for data-file
+  current/limit/filesize management. The OSAL data-file remap helper
+  `osal_mresize()` and its remap flags have been removed.
+- `dxb_setup()` now routes all accepted environments through the no-data-mapping
+  open path. `MDBX_WRITEMAP` is rejected at open time with `MDBX_INCOMPATIBLE`.
+  The old mmap-incoherent-file workaround no longer auto-adds `MDBX_WRITEMAP`
+  for accede-mode writable opens before this explicit-I/O rejection policy can
+  run.
+  The former `MDBX_COMPAT_DATA_MMAP=1` comparison mapping has been removed from
+  data-file setup, and `MDBX_FORCE_NO_DATA_MMAP=1` is now only a compatibility
+  test/profile selector for callers that still set it.
+  The legacy pre-0.9 `MDBX_MAPASYNC` bit is normalized to
+  `MDBX_SAFE_NOSYNC`/`MDBX_NOMETASYNC` instead of surviving as a mapped-write
+  compatibility flag in accepted explicit-I/O environments.
+  This keeps the lock-file mmap, opens the DXB file through the existing
+  descriptors, initializes storage current/limit/filesize state without
+  `osal_mmap()`, and skips mapped-only `madvise()`, sanitizer poisoning,
+  `munlock()`, and dirty-page mmap coherency checks. `mdbx_env_set_geometry()`
+  now treats `ENV_ACTIVE` plus the storage fd as the opened-env signal, so
+  no-map environments preserve the
+  current meta geometry instead of recomputing defaults. No-map readers also
+  refresh storage `current` from the fd size before accepting meta heads whose
+  root pages are beyond the previous local file view.
+- Remaining data-file mmap cleanup is now concentrated in unreachable
+  `MDBX_WRITEMAP` compatibility checks and comments/history around old mapped
+  behavior. Lock-file mmap remains intentionally live for phase 1.
+
+The practical conclusion is that writes are already closer to explicit I/O than
+reads. The hard part is replacing process-wide stable page addresses with
+transaction/cursor-owned pinned page buffers without changing public value
+lifetime semantics.
+
+## Target Internal Interfaces
+
+Introduce a data-file storage abstraction before changing page callers:
+
+```c
+typedef struct dxb_storage dxb_storage_t;
+
+int dxb_storage_open(MDBX_env *env, dxb_storage_t **out);
+int dxb_storage_read(dxb_storage_t *storage, pgno_t pgno, page_t *dst,
+                     size_t npages);
+int dxb_storage_write(dxb_storage_t *storage, const page_t *src, pgno_t pgno,
+                      size_t npages);
+int dxb_storage_prefetch_pages(dxb_storage_t *storage, pgno_t pgno,
+                               size_t npages);
+int dxb_storage_sync(dxb_storage_t *storage, enum osal_syncmode_bits mode);
+int dxb_storage_resize(dxb_storage_t *storage, size_t size_bytes,
+                       size_t limit_bytes);
+void dxb_storage_close(dxb_storage_t *storage, bool env_active);
+```
+
+The first backend should use `pread()`, `pwrite()`/`pwritev()`,
+`fsync()`/`fdatasync()`, and `posix_fadvise()` where available. An io_uring or
+platform async backend can then implement the same interface and block at
+existing synchronous API boundaries.
+
+Add an explicit page-cache/pin layer above storage:
+
+```c
+typedef struct page_ref {
+  page_t *page;
+  pgno_t pgno;
+  size_t npages;
+  unsigned flags;
+} page_ref_t;
+
+int page_pin(MDBX_txn *txn, pgno_t pgno, txnid_t visible_front,
+             unsigned intent, page_ref_t *out);
+void page_unpin(MDBX_txn *txn, page_ref_t *ref);
+```
+
+The exact representation can differ, but the contract must be explicit:
+
+- Read pages are immutable for the lifetime of the pin.
+- Dirty pages remain transaction-owned as they do today.
+- Cursor stacks pin pages when a page is pushed and unpin when popped, reset,
+  closed, cloned, or replaced by `page_touch()`.
+- `MDBX_val` returned from read APIs is backed by pinned cursor/transaction
+  pages until the same invalidation points that the public API already allows.
+- Clean page-cache eviction is allowed only for unpinned pages.
+- Dirty/spilled pages are never evicted through the clean read cache.
+
+## Migration Work Packages
+
+1. Storage skeleton
+
+   Split the data-file fd/current/limit/filesize state from `osal_mmap_t`.
+   Accepted opens now use the explicit storage path and no longer compile a
+   selectable data-file mmap backend. The current DXB helpers still delegate
+   directly to OSAL and still expose some mmap-era shell state. Explicit writes
+   no longer expose the selected file
+   handle at call sites; they use an internal data/meta channel. Full-page
+   operations are now expressed as page-numbered reads/writes. Readahead now
+   goes through `dxb_advise_range()`/`dxb_prefetch()`, and data-file tail
+   discard/deallocation hints go through `dxb_discard_range()` and use
+   fd-backed advice/discard for accepted environments. Data-page sync now
+   goes through `dxb_sync_data()`, and explicit meta writes use
+   `dxb_sync_meta_written()` for their follow-up sync decision. Defrag
+   file-range copies now go through `dxb_copy_pages()`, and the portable
+   non-compacting copy fallback reads through `dxb_read()`. `MDBX_env` now has a
+   `dxb_storage_t`
+   block for data/meta handle selection and file-size/current/limit state.
+   Route remaining mmap-era storage state, sync/advisory operations, explicit
+   reads/writes, and size changes through a complete `dxb_storage_t` facade
+   while behavior remains unchanged. Public env/txn validation,
+   environment info file-stat reads, close-time sync eligibility, reader-slot
+   binding, and geometry setup routing now use `ENV_ACTIVE` plus the storage
+   data fd as the generic opened-env signal instead of a mapped address.
+
+2. Meta buffers
+
+   Load the three meta pages into env-owned buffers and make metadata selection,
+   `meta_validate_copy()`, `meta_sync()`, and `meta_override()` operate on those
+   buffers plus explicit reads/writes. Meta refresh must preserve the current
+   retry logic and commit ordering. The current branch has started this by
+   carrying logical meta slot identity through `meta_ptr_t`, using slot-derived
+   offsets for explicit meta writes, and
+   maintaining an env-owned shadow copy of the three meta pages via explicit
+   DXB reads plus post-write shadow updates. Transaction start paths can now use
+   refreshed shadow snapshots for the selected meta head, env-info metadata is
+   assembled from refreshed shadow pages, and public read-only transaction
+   observer paths (`mdbx_txn_info()`, `mdbx_txn_straggler()`,
+   `mdbx_txn_refresh()`, and stale checks in `mdbx_txn_amend()`) now use the
+   refreshed shadow view where they can return errors. Open-time meta
+   validation/rollback, meta geometry/signature upgrade checks, recovery meta
+   turn-over, non-writemap steady-meta wiping, default `meta_override()` DB
+   identity selection without a mapped fallback, opened-environment
+   `mdbx_env_set_geometry()` defaults and
+   meta-copy setup, `mdbx_reader_list()` lag accounting, non-writemap
+   `dxb_sync_locked()` target/head/tail selection, `txn_basal_commit()`
+   pending-meta construction, GC steady-checkpoint selection, `env_sync()`
+   observed-head/writer-troika setup, active-writer `env_sync()` head
+   selection, `env_open()` meta-sync txnid seeding, environment warmup range
+   selection, debug open logging, read-only MVCC oldest/recent discovery, and
+   write-side MVCC oldest/laggard accounting now also have shadow-backed read
+   paths. The shadow-tap refresh
+   path now rereads the three meta pages through explicit I/O instead of using
+   the data-file mapping as a freshness oracle. The latest cleanup also routed
+   `dxb_sync_locked()`, `env_sync()`, GC/MVCC steady-checkpoint selection,
+   commit metadata selection, `meta_sync()`, and `meta_override()` through
+   shadow metadata plus explicit I/O, then removed the mapped metadata helper
+   functions entirely.
+
+3. Page pinning
+
+   Change `pgr_t`/`page_get_*()` to return or carry a pin token, then update
+   cursor stack ownership. This is the main API-lifetime risk. Do not remove
+   mmap yet; first make pinned pages valid while the source still happens to be
+   mmap-backed. The current branch has started this by adding `page_ref_t` to
+   `pgr_t` and tagging mapped committed reads, dirty-list overrides,
+   transaction allocations, loose-page reuse, and unspill copies with their
+   source/ownership class. Cursor stacks now carry parallel `pgref[]` metadata
+   and the central push/pop, reset/drown, clone/copy, search/deepen, cache
+   fallback search, new-root, page-split/root-split cursor adjustment, subtree
+   cutoff, compacting-copy stack pages, rebalance sibling setup, and
+   nested subcursor refresh/update, root-collapse stack shifts, plus
+   range/cutoff cursor copies, tree-drop stack restore, node move/merge cursor
+   redirection, post-merge stack restore, and `page_touch()` replacement paths
+   preserve it. Cursor stack set/copy/pop/reset/drown now go through explicit
+   retain-before-release and release-all helper paths, and nested transaction
+   cursor backups retain and release their saved stacks. The branch now also has
+   a real page-cache owner/refcount scaffold: cache entries have owner, page,
+   span, byte, and pin counters; cursor refs can point at those entries; env
+   reset releases the cache; and page validation can recognize cached read
+   pages without a mapped-file address range. Overflow value reads now retain their page result
+   in `MDBX_cursor.value_ref`, which gives non-stack `MDBX_val` data the same
+   future pin lifetime hook as cursor stack pages. Short-lived `pgr_t` users now
+   have explicit release/consume handling after stack/value transfer or
+   transient use, including temporary rebalance clone cleanup. The branch now
+   populates that cache from `page_get_committed()` via explicit
+   `dxb_storage_read_pages()` for non-writemap reads. Cursorless public reads
+   now retain stack-local result refs in the transaction. The branch now also
+   reuses clean committed pages for read-only transactions when the cached
+   entry's snapshot id matches the transaction basis. Unpinned entries are
+   always eligible, and pinned entries can be shared when they are branch/leaf
+   pages or already expanded overflow spans; pinned single-page overflow headers
+   stay unshared because materializing the full span can replace their buffer.
+   Writer reads stay private in normal builds to avoid taking the global cache
+   lock on the write path, but page-checking paths request tracked private
+   entries so validation can still recognize explicit-I/O page buffers. The next
+   page-pinning steps are to narrow
+   transaction-retained refs to only pages that back returned values where
+   possible, strengthen eviction and invalidation policy, and redesign the
+   legacy fast key/value cache for a no-mmap backend.
+
+4. Read cache
+
+   Non-writemap committed-page reads now flow through page-cache entries created
+   by `page_get_committed()`. Read-only transactions can reuse clean entries
+   when both pgno and `txn_basis_snapshot()` match; this keeps pgno reuse and
+   snapshot visibility conservative while avoiding repeated `pread()` calls
+   inside one snapshot generation. Unpinned entries are always reusable, and
+   pinned entries are reusable when they are branch/leaf pages or already
+   expanded overflow spans. Pinned single-page overflow headers stay unshared
+   because `page_cache_read_large()` can replace that entry buffer when it
+   expands the cached page to the full overflow span. The reusable cache is
+   protected by an environment fast mutex and capped by an env-owned runtime
+   limit initialized from `MDBX_EXPLICIT_PAGE_CACHE_LIMIT`, which defaults to
+   64 MiB. Writer reads normally use private cache entries that are freed when
+   their last pin drops, avoiding cache-list scans and mutex traffic on the
+   write path. Checking and page-validation paths can opt into tracking private
+   entries so ownership checks still work. Fast key/value cache hits now
+   materialize through the explicit page cache. The remaining read-cache work is
+   stronger eviction/invalidation policy, reducing over-retention in cursorless
+   public reads, and moving more value lifetime decisions to stable cache-owned
+   references that can be pinned before returning.
+
+5. Resize, readahead, and sync
+
+   Replace `osal_mresize()`, `dxb_msync()`, `madvise()` on mapped data, mincore
+   checks, and mmap coherency verification with file-size management,
+   page-cache invalidation, optional `posix_fadvise()`, and explicit sync state.
+   The current branch has explicit-only data-file sync and file-size resize,
+   fd-backed readahead and tail-discard hints, forced warmup reads, and
+   no-data-mapping incore checks. Any residual WRITEMAP-only checks should stay
+   unreachable behind the open-time incompatibility policy or be removed.
+   Geometry and oldest-reader rules must stay unchanged.
+
+6. Remove data-file mmap
+
+   Accepted data-file opens no longer call `osal_mmap()`, the data-file
+   `osal_munmap()`/`osal_mresize()`/`osal_msync()` paths are gone, and the
+   `MDBX_env` data-file mapping field has been removed. Keep OSAL mmap code for
+   `lck_mmap`.
+
+7. Async backend
+
+   Add async submission/completion behind `dxb_storage_t`. The public API still
+   blocks at transaction and cursor boundaries, but reads, spills, dirty writes,
+   prefetch, and fsync preparation can be batched internally.
+
+## Correctness Gates
+
+The public amalgamated source no longer contains the old full stochastic test
+suite, so it is not enough to rely on this repository alone before claiming the
+migration correct. Use the public gates continuously and run the private/full
+MDBX suite whenever it is available.
+
+Current public gates:
+
+- `make test`
+- `make test-assertion`, using `@cmake-assertion-build` for its CTest half so
+  the default CMake build cache stays at the baseline checking level
+- `c_api_nommap` and `c++_api_nommap`, registered in CTest with
+  `MDBX_FORCE_NO_DATA_MMAP=1` plus `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`.
+  The C and C++ example tests share a CTest resource lock because the examples
+  use fixed demonstration database names and `ctest --parallel` can otherwise
+  run the compatibility-mapped and forced-no-map variants concurrently.
+- `c++_api` and `pcrf_simulator_smoke`, now running the default no-data-mapping
+  path because the example workloads no longer request `MDBX_WRITEMAP`.
+- `migration_smoke_nommap`, registered in CTest and run with
+  `MDBX_FORCE_NO_DATA_MMAP=1`
+- `migration_smoke_nommap_tinycache`, registered in CTest and run with
+  `MDBX_FORCE_NO_DATA_MMAP=1` plus `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`
+- No-data-mmap warmup API coverage: default warmup and force/oomsafe warmup
+  must keep succeeding through explicit reads, while `MDBX_warmup_lock` is
+  expected to return `MDBX_ENOSYS` because there is no data-file mapping to
+  lock.
+- Manual sync API coverage: after post-copy write updates, the normal smoke
+  harness round-trips `mdbx_env_set/get_syncbytes()` and
+  `mdbx_env_set/get_syncperiod()`, runs `mdbx_env_sync_poll()` and forced
+  `mdbx_env_sync_ex()` in blocking and nonblocking forms, and verifies the
+  synced records through a fresh read transaction. The lck-less read-only case
+  also asserts that sync is rejected with `MDBX_EACCESS`.
+- Explicit-profile on-disk compatibility: the normal smoke harness now saves and
+  restores `MDBX_FORCE_NO_DATA_MMAP` and `MDBX_EXPLICIT_PAGE_CACHE_LIMIT`, creates
+  a database with the default explicit backend profile, reopens and updates it
+  with the forced/tiny-cache explicit profile, then verifies it again with the
+  default profile. It also runs the reverse direction: tiny-cache create, default
+  update, and tiny-cache verification.
+- Lck-less read-only no-map coverage: on POSIX, the normal smoke harness makes
+  the `MDBX_NOSUBDIR` `-lck` file inaccessible, opens the database with
+  `MDBX_RDONLY | MDBX_EXCLUSIVE` while forcing no-data-mmap and a 64K
+  explicit-cache cap, then verifies read-only transactions, env/txn observer
+  APIs, reader-list behavior without lock slots, and `mdbx_reader_check()`.
+- Top-level sanitizer/memcheck gates: `make test-asan`, `make test-ubsan`,
+  `make test-memcheck`, and `make test-leak` configure the public CTest suite
+  in isolated `@cmake-asan-build`, `@cmake-ubsan-build`,
+  `@cmake-memcheck-build`, and `@cmake-leak-build` directories, with ASAN,
+  UBSAN, ENABLE_MEMCHECK, and LeakSanitizer enabled separately. If the
+  historical `test/stochastic.sh` harness is present they also run it;
+  otherwise they fall back to the public CTest gates instead of failing on a
+  missing script.
+- Legacy top-level suite entries advertised by the thunk `Makefile` are wired
+  back to public gates in the amalgamated tree: `make test-long` runs repeated
+  CTest plus the stochastic/public fallback, `make test-long-assertion` runs
+  the same shape against `@cmake-assertion-build`, `make test-ci` chains public,
+  repeated, assertion, fault-enabled, ASAN, and UBSAN gates, `make test-ci-extra`
+  runs the full `mdbx_migration_check`, and the old smoke aliases route to the
+  migration smoke/fault/assertion/memcheck gates instead of failing with a
+  missing GNUmake rule.
+- Audit/checking gate: `make mdbx_migration_audit_ctest` configures
+  `@cmake-audit-build` with `MDBX_CHECKING=3`, runs the public CTest suite with
+  `MDBX_DBG_AUDIT=1`, and therefore covers the forced no-data-mmap CTest gates
+  under the strongest checking build currently wired into the public harness.
+- Memcheck build gate: `make mdbx_migration_memcheck_ctest` wraps
+  `make test-memcheck`, configures `@cmake-memcheck-build` with
+  `ENABLE_MEMCHECK=ON`, and runs the 15-test public CTest fallback when the
+  historical stochastic harness is absent.
+- Leak-check gate: `make mdbx_migration_leak_ctest` wraps `make test-leak`,
+  runs the 15-test public CTest suite with LeakSanitizer enabled, and covers the
+  forced no-data-mmap smoke, tiny-cache, stress, crash/restart, CLI roundtrip,
+  pcrf simulator, and C/C++ example gates.
+- Repeat gate: `make mdbx_migration_repeat_ctest` runs the 15-test public
+  CTest suite three times with randomized scheduling and `--repeat
+  until-fail:3`, giving the no-data-mmap cursor/cache lifetime tests a
+  short stability pass before the heavier sanitizer and audit wrappers run.
+- Extended stress gate:
+  `make mdbx_migration_extended_stress_nommap_tinycache` repeats the max-wave
+  randomized and crash/restart no-map stress binaries
+  `MIGRATION_EXTENDED_STRESS_REPEAT` times, defaulting to `3`, with
+  `MDBX_FORCE_NO_DATA_MMAP=1` and `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`.
+  `mdbx_migration_check` includes this repeat gate.
+- Assertion gate: `make mdbx_migration_assertion_ctest` configures
+  `@cmake-assertion-build` with `MDBX_CHECKING=2` and runs the 15-test public
+  CTest suite, so assertion coverage is isolated from the default public CTest
+  cache and can be repeated without changing the baseline build directory.
+- Focused ASAN build of `migration_smoke`
+- Focused UBSAN build of `migration_smoke`
+- Focused `MDBX_CHECKING=3` audit build of `migration_smoke` run with
+  `MDBX_DBG_AUDIT=1`
+- Tool roundtrip: `mdbx_load` seeds a NOSUBDIR database with printable,
+  escaped-newline, and generated overflow-size records, then `mdbx_chk`,
+  `mdbx_stat -e` and `mdbx_stat -a` with explicit nonzero overflow-page
+  assertions, a copied/dropped/`mdbx_defrag -1`/checked defrag subcase, a
+  populated overflow defrag subcase that copies the source, drops and reloads
+  the main DB to force CLI churn, verifies overflow pages before and after
+  `mdbx_defrag -3`, and compares dumps before and after that defrag,
+  `mdbx_dump`, reload via `mdbx_load`, dump comparison, regular `mdbx_copy`,
+  compact `mdbx_copy`, and `mdbx_chk` plus overflow-page `mdbx_stat` checks on
+  the reloaded, copied, and compact-copied databases run as the
+  `migration_tool_roundtrip` CTest/GNUmake gate. The same roundtrip also runs as
+  `migration_tool_roundtrip_nommap` with `MDBX_FORCE_NO_DATA_MMAP=1`, and as
+  `migration_tool_roundtrip_nommap_tinycache` with
+  `MDBX_FORCE_NO_DATA_MMAP=1` plus `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`.
+- Reduced `ioarena` smoke benchmark, with at least one warm-up run before
+  recording numbers. The `mdbx_migration_bench_lazy` GNUmake target automates
+  the current paired `lazy` run, invokes `ioarena` directly for the default
+  explicit backend profile and the forced explicit profile, writes separate logs,
+  and rejects missing `batch`/`crud`/`iterate`/`get`/`delete` summary rows or
+  cursor/restore/error diagnostics. It also parses the paired summaries and
+  fails when forced-profile throughput drops below default-profile throughput by
+  more than the configured threshold: `MIGRATION_BENCH_MIN_RATIO`, default
+  `0.60`, for batch/crud/delete and `MIGRATION_BENCH_READ_MIN_RATIO`, default
+  `0.70`, for iterate/get. The `mdbx_migration_bench_lazy_repeat` target reruns
+  that paired benchmark `MIGRATION_BENCH_REPEAT` times, defaulting to `3`, and
+  writes separate per-repeat default and forced-profile logs so read/write
+  throughput stability can be checked without rerunning the full correctness
+  aggregate.
+- Heavier no-data-mmap multiprocess stress:
+  `mdbx_migration_smoke_stress_nommap_tinycache` builds the smoke harness with
+  four readers, four writers, and eight commit waves, then runs it with
+  `MDBX_FORCE_NO_DATA_MMAP=1` and `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`. The
+  stress seed also creates a large-value overflow table; every writer wave
+  updates, deletes, and inserts overflow records while pinned readers verify the
+  old overflow snapshot and renewed readers verify the final one.
+- No-data-mmap multiprocess crash/restart stress:
+  `mdbx_migration_smoke_crash_stress_nommap_tinycache` builds the smoke harness
+  with four pinned reader processes and forced crash-stress coverage. For each
+  durable, `MDBX_NOMETASYNC`, `MDBX_SAFE_NOSYNC`, and `MDBX_UTTERLY_NOSYNC`
+  mode it keeps readers on an old snapshot while a child commits and exits
+  without environment cleanup, the parent reopens and verifies the committed
+  state, another child exits with an active dirty writer transaction, the parent
+  verifies abandoned dirty writes are absent and commits a recovery write, then
+  readers renew and verify the final snapshot under the 64 KiB explicit
+  page-cache cap.
+- Deterministic test-only DXB fault injection:
+  `mdbx_migration_fault_injection_nommap` and
+  `mdbx_migration_fault_injection_nommap_tinycache` link the smoke harness
+  against a private `MDBX_ENABLE_DXB_FAULT_INJECTION=1` static object, then
+  run with forced no-data-mmap mode; the tiny-cache variant also sets
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`. They inject `filesize:EIO`,
+  `filesize:EINTR`, `filesize-complete:EIO`,
+  `filesize-complete:CANCEL`, `read:EIO`, `read:SHORT`, `read:EINTR`,
+  `read-complete:EIO`, `read-complete:CANCEL`, delayed
+  `read-complete:EIO@1`, `setsize:ENOSPC`, `setsize-complete:EIO`,
+  `setsize-complete:CANCEL`, `copy-complete:EIO`,
+  `copy-complete:CANCEL`, `writev:EIO`, `writev:SHORT`,
+  delayed `writev:EIO@1`, delayed `writev:ENOSPC@1`, delayed
+  `writev:CANCEL@1`, `writev-partial:EIO`, delayed
+  `writev-partial:EIO@1`, delayed `writev-partial:ENOSPC@1`, delayed
+  `writev-partial:CANCEL@1`, POSIX reversed-order delayed
+  `writev:EIO@1`/`writev:ENOSPC@1`/`writev:CANCEL@1`, POSIX reversed-order delayed
+  `writev-partial:EIO@1`/`writev-partial:ENOSPC@1`/
+  `writev-partial:CANCEL@1`, POSIX outside-in delayed
+  `writev:EIO@1`/`writev:ENOSPC@1`/`writev:CANCEL@1`, POSIX outside-in
+  delayed `writev-partial:EIO@1`/`writev-partial:ENOSPC@1`/
+  `writev-partial:CANCEL@1`, `writev-complete:EIO`,
+  `writev-complete:CANCEL`, POSIX outside-in delayed
+  `writev-complete:EIO@1`/`writev-complete:CANCEL@1`,
+  `write-complete:EIO`, `write-complete:CANCEL`, `sync:EIO`,
+  `sync:CANCEL`, `sync-complete:EIO`, `sync-complete:CANCEL`,
+  `write:ENOSPC`, and `write:EINTR`, and verifies that failed commits leave
+  the previously committed seed snapshot readable.
+  Fault tokens `CANCEL`, `CANCELED`, and `CANCELLED` all map to `MDBX_EINTR`
+  for this test backend. The `filesize:*` operation fails before accepting a
+  data-file size probe, while `filesize-complete:*` reports an injected error
+  after the OS size probe succeeds but before the explicit storage view is
+  refreshed. The `read-complete:*` operation reports an injected
+  error after the explicit read syscall succeeds, covering async-style metadata
+  and data-page read completion failures before the page cache accepts a page.
+  The `setsize-complete:*` operation reports an injected error after the
+  storage-fd file-size syscall succeeds, covering async-style resize completion
+  failures before create-time geometry/open setup or runtime geometry growth is
+  accepted.
+  The `copy-complete:*` operation reports an injected error after an in-file
+  `copy_file_range()` succeeds during no-map overflow defrag, covering
+  async-style page-copy completion failures before moved pages and metadata are
+  accepted. This gate exposed a real bug: the defrag multi-page copy path had
+  assigned the `dxb_copy_pages()` result and then returned success after leaving
+  the copy loop; it now propagates the copy error immediately.
+  The `writev-partial:*` operation
+  writes the first segment of a queued scatter/gather item before returning the
+  injected error, so recovery sees a real prefix write without an advanced meta
+  page. The `writev-complete:*` and `write-complete:*` operations report the
+  injected error after the full write syscall succeeds, modelling an async
+  completion error that is observed before commit metadata advances. The
+  `write-complete:*` cases also cover the direct write/sync phase used outside
+  the queued scatter/gather batch. The `sync:*` operation fails before an
+  actual data/meta flush syscall, while `sync-complete:*` reports a test-only
+  completion error after that flush syscall succeeds. Together they cover
+  immediate and async-style failed flush completion before a transaction can be
+  accepted as committed. The `MDBX_TEST_DXB_WRITE_ORDER=reverse` hook submits
+  queued POSIX writes from the end of the batch first, so delayed failures can
+  leave a later queued write durable before an earlier queued operation fails.
+  The
+  `MDBX_TEST_DXB_WRITE_ORDER=outside-in` hook, also accepted as `outside_in`,
+  `outoforder`, or `out-of-order`, writes the newest queued item, then the
+  oldest, then alternates inward. This gives a second deterministic proxy for
+  async-style completion reordering. POSIX runs also fork a
+  child that hits delayed `writev` `EIO`/`ENOSPC`/`CANCEL`, `writev-partial`
+  `EIO`/`ENOSPC`/`CANCEL`, selected completion-after-full-write failures,
+  selected sync/flush failures, and selected reversed-order plus outside-in
+  delayed write failures during commit and exits without environment cleanup;
+  the parent then reopens, verifies the old snapshot, runs
+  `mdbx_reader_check()`, and commits a follow-up write. The `@N` suffix lets
+  `N` matching I/O operations complete before the injected failure, covering
+  delayed queued write and delayed completion-error failures.
+- Aggregate migration gate: `mdbx_migration_check` runs the GNUmake no-map
+  smoke gates, the heavier no-map stress gates, the crash/restart stress gate,
+  the extended repeated no-map stress gate, the public CTest gate, repeated
+  public CTest, assertion public CTest, direct fault injection with and without
+  the 64K explicit cache limit, the fault-enabled public CTest suite, ASAN,
+  UBSAN, ENABLE_MEMCHECK, LeakSanitizer, and `MDBX_CHECKING=3` audit public
+  CTest wrappers, all CLI tool roundtrips, and the repeated paired reduced
+  `ioarena` benchmark in sequence. It fails with an explicit `ioarena`
+  requirement message when performance coverage cannot be collected.
+
+The smoke harness includes a process-specific token in its relative database and
+copy target names so focused ASAN and UBSAN runs can share a working directory.
+Older fixed-name builds should be run sequentially; otherwise one run can delete
+another run's copy target and report a spurious `ENOENT` during copy
+verification.
+
+The top-level `test-asan`, `test-ubsan`, `test-memcheck`, `test-leak`,
+`test-long`, `test-long-assertion`, `test-ci`, `test-ci-extra`, and legacy smoke
+alias targets preserve or route into the historical `test/stochastic.sh` path
+when that harness is present. This source drop does not include it, so
+`build-stochastic` and `test-stochastic` now fall back to the public CTest
+gates. The fallback keeps those targets useful in the amalgamated tree, but it
+is still not a substitute for running the full stochastic harness whenever it is
+available.
+The fetched `origin/master`, `origin/devel`, `origin/stable`, `origin/lts/0.13`,
+and archive refs visible in this worktree also do not contain the historical
+`test/` directory.
+
+Latest public gate run for the aggregate migration-check checkpoint:
+
+- `cmake --build @cmake-ninja-build --target mdbx_migration_smoke`
+- `MDBX_FORCE_NO_DATA_MMAP=1 LD_LIBRARY_PATH=@cmake-ninja-build
+  @cmake-ninja-build/mdbx_migration_smoke`
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K
+  LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_migration_smoke`
+- `gmake -f GNUmakefile mdbx_migration_smoke_nommap`
+- `gmake -f GNUmakefile mdbx_migration_smoke_nommap_tinycache`
+- `gmake -f GNUmakefile mdbx_migration_smoke_stress_nommap_tinycache`
+- `gmake -f GNUmakefile mdbx_migration_smoke_randomized_stress_nommap_tinycache`
+- `gmake -f GNUmakefile mdbx_migration_smoke_crash_stress_nommap_tinycache`
+- `gmake -f GNUmakefile mdbx_migration_extended_stress_nommap_tinycache`,
+  which repeats the randomized and crash/restart no-map stress binaries with
+  the 64K explicit page-cache limit
+- `gmake -f GNUmakefile mdbx_migration_fault_injection_nommap`
+- `gmake -f GNUmakefile mdbx_migration_fault_injection_nommap_tinycache`
+- `gmake -f GNUmakefile mdbx_migration_public_ctest`, which runs the 15-test
+  public CTest set with default build settings
+- `gmake -f GNUmakefile mdbx_migration_repeat_ctest`, which reruns the 15-test
+  public CTest set three times with randomized scheduling
+- `gmake -f GNUmakefile mdbx_migration_assertion_ctest`, which configures
+  `@cmake-assertion-build` with `MDBX_CHECKING=2` and runs the 15-test public
+  CTest set without mutating the default public CTest cache
+- `gmake -f GNUmakefile mdbx_migration_fault_ctest`, which configures
+  `@cmake-fault-build` with `MDBX_ENABLE_DXB_FAULT_INJECTION=ON` and runs the
+  17-test fault-enabled public CTest set, including
+  `migration_fault_injection_nommap` and
+  `migration_fault_injection_nommap_tinycache`
+- `gmake -f GNUmakefile mdbx_migration_tool_roundtrip_nommap_tinycache`
+- `make test`, now including `migration_smoke_nommap`,
+  `migration_smoke_nommap_tinycache`,
+  `migration_smoke_stress_nommap_tinycache`, and
+  `migration_tool_roundtrip_nommap_tinycache`, plus `c_api_nommap` and
+  `c++_api_nommap`, in the CTest set
+- `make test-assertion`, now including the same CTest set in the isolated
+  `@cmake-assertion-build` directory
+- `make test-asan`, which now runs the 15-test CTest set in `@cmake-asan-build`
+  with ASAN enabled instead of failing on the missing stochastic harness
+- `make test-ubsan`, which now runs the 15-test CTest set in
+  `@cmake-ubsan-build` with UBSAN enabled instead of failing on the missing
+  stochastic harness
+- `make test-memcheck`, which now runs the 15-test CTest set in
+  `@cmake-memcheck-build` with `ENABLE_MEMCHECK=ON` instead of failing on the
+  missing stochastic harness
+- `make test-leak`, which now runs the 15-test CTest set in
+  `@cmake-leak-build` with LeakSanitizer enabled instead of failing on the
+  missing stochastic harness
+- `make mdbx_migration_audit_ctest`, which runs the 15-test CTest set in
+  `@cmake-audit-build` with `MDBX_CHECKING=3` and `MDBX_DBG_AUDIT=1`
+- `make mdbx_migration_memcheck_ctest`, which wraps `make test-memcheck` for
+  the aggregate migration gate
+- `make mdbx_migration_leak_ctest`, which wraps `make test-leak` for the
+  aggregate migration gate
+- `cmake --build @cmake-audit-build --target mdbx_migration_smoke`
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K
+  MDBX_DBG_AUDIT=1 LD_LIBRARY_PATH=@cmake-audit-build
+  @cmake-audit-build/mdbx_migration_smoke`
+- ASAN, UBSAN, and `MDBX_CHECKING=3` audit CMake builds of
+  `mdbx_migration_smoke`
+- focused ASAN, UBSAN, and audit runs of `mdbx_migration_smoke` with
+  `MDBX_FORCE_NO_DATA_MMAP=1` and `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`
+- ASAN, UBSAN, and `MDBX_CHECKING=3` audit CMake builds of the new
+  `migration_tool_roundtrip_nommap_tinycache` CTest gate
+- `MDBX_WRITEMAP` smoke coverage under the default no-data-mapping policy and
+  `MDBX_FORCE_NO_DATA_MMAP=1`, both of which now assert that `mdbx_env_open()`
+  returns exactly `MDBX_INCOMPATIBLE` before skipping the mapped-write exercise
+- default/forced explicit-profile on-disk compatibility smoke coverage in both
+  directions: default create, forced tiny-cache update, default verify; and
+  forced tiny-cache create, default update, forced tiny-cache verify
+- lck-less read-only no-map smoke coverage, proving that forced no-data-mmap
+  reads, observer APIs, `mdbx_reader_list()`, and `mdbx_reader_check()` work
+  when `MDBX_RDONLY | MDBX_EXCLUSIVE` opens without an LCK mapping
+- `make mdbx_migration_tool_roundtrip_nommap`
+- `make mdbx_migration_tool_roundtrip_nommap_tinycache`
+- `gmake -f GNUmakefile mdbx_migration_bench_lazy`, which performs paired
+  `NN=10000`/`BENCH_CRUD_MODE=lazy` default explicit and forced explicit
+  `ioarena` runs without depending on the shared `bench-mdbx_*.txt` stamp, then
+  scans both logs for missing summary rows and cursor/restore/error diagnostics,
+  and enforces the configured forced/default throughput ratio thresholds.
+- `gmake -f GNUmakefile mdbx_migration_bench_lazy_repeat`, which reruns the
+  paired benchmark gate three times by default with separate per-repeat default
+  and forced explicit logs.
+- `make mdbx_migration_check`, which now serializes the GNUmake migration
+  smoke, multiprocess stress, crash/restart stress, extended repeated no-map
+  stress, public CTest, repeated public CTest, assertion public CTest, direct
+  fault injection with and without the 64K explicit cache limit, fault-enabled
+  public CTest, ASAN, UBSAN, ENABLE_MEMCHECK, LeakSanitizer, and
+  `MDBX_CHECKING=3` audit public CTest wrappers, CLI roundtrip, and the repeated
+  paired benchmark gate as one command.
+- `make CMAKE_BUILD_DIR=@cmake-ninja-build
+  CTEST_OPT="--output-on-failure" ctest`, which passed the 15-test CTest set.
+- `make mdbx_migration_fault_ctest`, which passed the 17-test fault-enabled
+  public CTest set in `@cmake-fault-build`, including both normal forced
+  no-map and 64K-cache fault-injection entries.
+- `gmake -n -f GNUmakefile mdbx_migration_bench_lazy` plus before/after
+  `sha256sum` checks on both perf logs, confirming dry-run output no longer
+  rewrites the benchmark logs.
+  The default `BENCH_CRUD_MODE=nosync` is a negative-policy check for the forced
+  no-map backend because this `ioarena` MDBX driver maps `nosync` to
+  `MDBX_WRITEMAP | MDBX_UTTERLY_NOSYNC`.
+
+The CLI roundtrip is now automated, but it is still a focused public gate rather
+than a substitute for the full private MDBX test suite.
+
+The migration smoke test covers the minimum public surface that is especially
+likely to break during page-cache conversion:
+
+- stable read snapshots while a writer commits;
+- returned `MDBX_val` bytes remain valid inside the read transaction;
+- cursorless public get results from `mdbx_get()`, `mdbx_get_ex()`,
+  `mdbx_get_equal_or_great()`, `mdbx_cache_get()`, and
+  `mdbx_cache_get_SingleThreaded()` remain valid across later public gets in the
+  same read transaction;
+- `mdbx_cache_get()` refreshes an overflow-value cache entry and
+  `mdbx_cache_get_SingleThreaded()` then serves it as `MDBX_CACHE_HIT`; the
+  cache-hit `MDBX_val` is held while a read-only cursor scans the full
+  primary-table contents and is verified again afterward, which pressures
+  explicit-cache eviction under the tiny-cache no-map gate;
+- forced no-map tiny explicit page-cache cap
+  (`MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`) to pressure clean-page eviction while
+  retained and cursor-returned values remain pinned;
+- `mdbx_is_dirty()` reports clean for cursorless read values backed by explicit
+  page-cache pages and dirty for values read back from non-writemap dirty pages
+  in a write transaction;
+- the file-backed smoke matrix includes `MDBX_VALIDATION`, forcing normal cursor
+  work through full `page_check()` validation;
+- `mdbx_env_warmup()` public API coverage for default warmup and forced
+  OOM-safe warmup;
+- public manual sync API coverage after real writes:
+  `mdbx_env_set/get_syncbytes()`, `mdbx_env_set/get_syncperiod()`,
+  `mdbx_env_sync_poll()`, forced blocking `mdbx_env_sync_ex()`, forced
+  nonblocking `mdbx_env_sync_ex()`, and post-sync read verification; the
+  lck-less read-only subcase also verifies `mdbx_env_sync_ex()` returns
+  `MDBX_EACCESS`;
+- cursor-returned value bytes remain valid while independent read-only cursor
+  operations happen in the same transaction;
+- same-cursor invalidation churn across primary and dupsort cursors: repeated
+  `MDBX_SET_KEY`, `MDBX_FIRST`/`MDBX_NEXT`, `MDBX_SET_RANGE`,
+  `MDBX_LAST`/`MDBX_PREV`, `MDBX_GET_BOTH`, `MDBX_NEXT_DUP`,
+  `MDBX_PREV_DUP`, and `MDBX_NEXT_NODUP` movements over overflow values,
+  deleted-key boundaries, and hundreds of duplicate values, with each newly
+  current value verified after the previous returned value is invalidated;
+- write-side same-cursor invalidation and rebalance churn in non-writemap mode:
+  a write transaction updates an overflow value with `MDBX_CURRENT`, deletes and
+  reinserts two primary-table ranges through one cursor to force dirty-page
+  rebalance/split paths, deletes and reinserts individual dupsort values,
+  deletes all duplicates for a key with `MDBX_ALLDUPS`, reinserts a smaller
+  duplicate set, aborts the transaction, then verifies the committed primary
+  and dupsort contents were restored exactly. A separate permuted write-churn
+  pass holds clean primary-table, dirty in-transaction primary-table, and
+  dupsort returned values while independent cursors delete/reinsert a permuted
+  primary-table range, update several overflow values with `MDBX_CURRENT`,
+  delete/reinsert a permuted slice of key-44 duplicates, create and remove a
+  temporary key with `MDBX_ALLDUPS`, then aborts and verifies the original
+  primary and dupsort state;
+- write-transaction cursor-returned value bytes remain valid while independent
+  primary-table and dupsort cursors move through unrelated records; the same
+  check covers a dirty value read after an in-transaction update and a
+  duplicate-subcursor value while the write transaction is later aborted;
+- read-only cursor copy, reset, reposition, and renew preserve pinned stack/value
+  ownership across copied cursors and transaction renewal;
+- a DUPSORT/DUPFIXED/INTEGERDUP subdatabase with 768 duplicate values per key,
+  covering duplicate-subcursor reads, `MDBX_GET_BOTH`,
+  `MDBX_GET_BOTH_RANGE`, `MDBX_NEXT_DUP`, `MDBX_NEXT_NODUP`, cursor copy/value
+  retention, `MDBX_CURRENT` duplicate deletion, and `MDBX_ALLDUPS` key
+  deletion;
+- same-cursor write churn on the primary table, including `MDBX_CURRENT`
+  cursor update of an overflow value, `mdbx_cursor_del(MDBX_CURRENT)`, current
+  cursor reposition validation after deletion, deletion of a 200-key range
+  through the same cursor to force rebalance/GC pressure, reinsertion, and
+  copy verification of the resulting generations;
+- explicit overflow-table churn: `MDBX_RESERVE`, `mdbx_replace()` old-value
+  retrieval from a clean overflow page, delete/reinsert waves, aborted and
+  committed nested transactions with overflow values, `MDBX_stat`
+  `ms_overflow_pages` verification, `mdbx_env_defrag()`, and post-defrag
+  content verification;
+- deterministic randomized larger-overflow churn: a permuted 32-record table
+  with 8K-73K values, mixed reserve/put/replace/delete/insert waves, retained
+  pinned-reader visibility for a deleted overflow value across writer churn,
+  aborted and committed nested overflow writes, exact final record-count checks,
+  and `MDBX_stat` overflow-page verification;
+- multiprocess reader/writer MVCC: a child process holds a read transaction
+  across two parent writer commits and active geometry growth, then renews its
+  snapshot and observes the final metadata plus data;
+- multiprocess stress with two concurrent reader processes holding pinned
+  snapshots while two writer processes run multiple commit waves, active
+  geometry growth, primary-table inserts/updates/deletes, separate overflow
+  table insert/update/delete churn, reader-list checks before and after lag,
+  reader renewal, and a post-stress writer commit that covers both tables;
+- heavier no-data-mmap/tiny-cache multiprocess stress with four reader
+  processes, four writer processes, and eight commit waves per writer, using
+  the same pinned-snapshot, reader-list, renewal, and post-stress verification;
+- deterministic randomized no-data-mmap/tiny-cache multiprocess stress with the
+  same four-reader/four-writer/eight-wave shape, but each writer's committed
+  update/delete/insert keys are driven through a distinct permuted wave schedule
+  while final snapshot verification remains exact for both primary-table keys
+  and overflow-table large values;
+- no-data-mmap/tiny-cache multiprocess crash/restart stress that combines four
+  pinned readers, reader-list lag checks, reopen verification after a child
+  commits and exits without `mdbx_env_close()`, recovery after a second child
+  exits with an active dirty writer transaction, reader renewal, and post-release
+  writer verification across durable, `MDBX_NOMETASYNC`, `MDBX_SAFE_NOSYNC`, and
+  `MDBX_UTTERLY_NOSYNC` modes;
+- process-death/restart coverage for durable, `MDBX_NOMETASYNC`,
+  `MDBX_SAFE_NOSYNC`, and `MDBX_UTTERLY_NOSYNC` modes: a child commits and
+  exits without `mdbx_env_close()`, then another child exits with an active
+  writer transaction after dirty-page pressure; the parent reopens, runs
+  `mdbx_reader_check()`, verifies committed data remains visible, abandoned
+  writes are absent, and a new writer can commit. The same mode matrix now also
+  has parent-driven `SIGKILL` timing coverage: one child is killed after a
+  successful commit but before environment close, another is killed after
+  filling a spill-prone dirty transaction before commit, and restart checks
+  prove the committed key survives, the dirty range is absent, and a follow-up
+  writer can commit;
+- lck-less read-only no-map open coverage: a forced no-data-mmap `MDBX_NOSUBDIR`
+  database is created, its `-lck` file is made inaccessible on POSIX, and a
+  `MDBX_RDONLY | MDBX_EXCLUSIVE` reopen verifies public reads, env/txn observer
+  APIs, empty lock-slot enumeration through `mdbx_reader_list()`, and
+  `mdbx_reader_check()` without relying on a lock-file mapping;
+- large/overflow values;
+- `MDBX_RESERVE`;
+- forced dirty-page spilling in non-writemap mode;
+- nested transactions in non-writemap modes, including a forced
+  parent-spill-for-child path that verifies aborted child updates, committed
+  child updates, unspill accounting, and outer-abort preservation of the
+  original committed data;
+- permuted temporary-table nested spill churn in no-data-mmap/tiny-cache mode:
+  a 768-record parent update wave forces spill pressure, an aborted child mixes
+  deletes/updates/inserts, a committed child verifies `mdbx_replace()` old-value
+  bytes from spilled parent pages, checkpoints and restarts the same nested
+  handle, then applies a post-checkpoint commit wave with exact final count plus
+  spill/unspill counter verification;
+- explicit geometry growth and active geometry shrink after GC/reuse, including
+  post-shrink reads from the same environment;
+- delete/reinsert/update waves that exercise GC/reuse and COW behavior;
+- `mdbx_gc_info()`-backed GC retention/reuse coverage: a pinned reader keeps
+  deleted overflow-heavy table pages non-reclaimable, releasing the reader makes
+  them reclaimable, and a follow-up insert wave verifies bounded
+  `pages_allocated` growth while checking the reused records;
+- regular and compact public `mdbx_env_copy()` verification against copied
+  contents;
+- durable, validation, pure `MDBX_NOMETASYNC`, pure `MDBX_SAFE_NOSYNC`,
+  combined lazy, and `MDBX_UTTERLY_NOSYNC` file-write modes;
+- read-only transaction observer APIs: `mdbx_txn_info()`,
+  `mdbx_txn_straggler()`, `mdbx_txn_refresh()`, and stale
+  `mdbx_txn_amend()` rejection;
+- reader-list enumeration and lag accounting while a read transaction is current
+  and after it becomes stale;
+- deterministic no-map DXB/commit-queue fault injection, with and without the
+  64K explicit page-cache limit, for read `EIO`, short read, read `EINTR`,
+  size-probe `EIO`/`EINTR`, completion-after-size-probe
+  `EIO`/cancellation failures,
+  completion-after-read metadata and data-page
+  `EIO`/cancellation failures, delayed completion-after-read `EIO`,
+  create/resize `ENOSPC`, create-time and runtime-growth
+  completion-after-setsize `EIO`/cancellation failures, commit `writev` `EIO`,
+  short commit write, delayed partial queued `writev` `EIO`, delayed partial
+  queued `writev` `ENOSPC`, delayed queued `writev` cancellation, real prefix
+  `writev-partial` `EIO`/`ENOSPC`/cancellation failures, deterministic
+  reversed-order and outside-in delayed queued `writev`/`writev-partial`
+  `EIO`/`ENOSPC`/cancellation failures, completion-after-full-write queued
+  `writev` and direct `write` `EIO`/cancellation failures, outside-in delayed
+  queued completion failures, completion-after-defrag-copy
+  `EIO`/cancellation failures for no-map overflow defrag, crash/restart
+  coverage for selected completion failures, sync and sync-completion
+  `EIO`/cancellation failures with selected crash/restart coverage, commit
+  `ENOSPC`, commit `EINTR`, and post-failed-commit reopen/read verification of
+  the old snapshot;
+- exact `MDBX_INCOMPATIBLE` rejection for `MDBX_WRITEMAP` under the default
+  no-data-mapping policy, when the forced no-data-mmap backend is enabled, and
+  when `MDBX_COMPAT_DATA_MMAP=1` requests the comparison mapping.
+
+Additional gates needed before accepting the backend:
+
+- true crash-consistency/power-loss matrix for durable, `MDBX_NOMETASYNC`,
+  `MDBX_SAFE_NOSYNC`, and `MDBX_UTTERLY_NOSYNC`;
+- longer randomized multi-process stress with crash/restart interleavings,
+  additional process-kill timing variation, and run durations beyond the
+  deterministic/permuted 4-reader/4-writer/8-wave, repeated public stress,
+  process-kill, and crash-stress gates;
+- longer duration and randomly seeded cursor invalidation coverage, deeper
+  rebalance/root-shape diversity, and broader subcursor update/delete matrices
+  beyond the deterministic and permuted write-side churn gates;
+- longer duration and randomly seeded overflow churn with broader page-size,
+  geometry, and CLI defrag/copy/load matrices beyond the deterministic
+  populated-overflow and larger-overflow churn gates;
+- deeper GC refund tests and longer randomized GC reuse/reclaim stress;
+- longer duration and randomly seeded spill/unspill stress across broader
+  nested checkpoint/rollback/commit and geometry matrices;
+- broader fault injection for true async backend completion ordering/state
+  beyond deterministic completion-after-read, completion-after-write,
+  completion-after-sync, completion-after-setsize/resize, completion-after-copy,
+  and reversed/outside-in POSIX submission hooks, true async backend cancellation
+  state beyond deterministic queued-write
+  cancellation, arbitrary partial multi-operation batches beyond deterministic
+  queued-prefix and reordered writes, and broader crash/restart interleavings
+  while faults are active.
+
+## Performance Gates
+
+Record baselines before replacing mmap reads and compare every milestone:
+
+- `ioarena` `batch`, `crud`, `iterate`, `get`, and `delete`;
+- read-heavy cursor scans and point lookups, since these lose the mmap page
+  fault fast path;
+- write-heavy non-writemap commits, which should stay close because the dirty
+  write path is already explicit;
+- page-cache memory footprint, pin count, hit ratio, dirty page count, spill
+  count, and async queue depth once the new backend exists.
+
+For the current tree after adding the thin DXB I/O facade, copy-path routing,
+env-owned `dxb_storage_t` handle plus size state, the env-owned meta shadow
+buffer, refreshed shadow snapshots for transaction starts, and shadow-backed
+env-info plus read-only transaction observer metadata, open-time meta
+validation/rollback reads, env-sync/open recent-meta reads, geometry plus
+reader-list observer meta reads, and non-writemap commit/GC checkpoint meta
+reads, plus `page_ref_t`
+metadata on `pgr_t` page results and cursor stacks, and helper-routed
+page-split/root-split cursor adjustments plus compacting-copy and rebalance
+neighbor cursor-stack routing plus nested subcursor refresh/update and
+root-collapse stack routing plus range/cutoff cursor copy routing and tree-drop
+stack restore routing plus node move/merge cursor redirection, plus cursor ref
+retain/release scaffolding and the merge-restore fix caught by the delete phase,
+plus page-cache owner/refcount scaffolding, explicit non-writemap committed-page
+reads through snapshot-safe reusable read-only cache entries and private writer
+cache entries, cursor-held overflow value refs,
+transaction-retained refs for cursorless public get/cache results, non-writemap
+`mdbx_cache_get*()` data-file-offset refresh/materialization for cache hits,
+`mdbx_is_dirty()` explicit page-cache/dirty-list pointer classification,
+non-writemap mapped-pointer classification through explicit page-header reads,
+defrag non-writemap dirty-page moves that keep transaction-owned buffers instead
+of copying through the compatibility mapping,
+`page_check()` explicit-I/O ownership validation for non-mapped cached, dirty,
+and txn-owned buffers, retained audit-validation refs for branch-child pages
+fetched through the explicit page cache,
+explicit release/consume handling for short-lived `pgr_t` and transferred
+`page_ref_t` results, LeakSanitizer-validated cleanup for temporary DBI/open,
+stat, rename, public put/delete, and GC-info cursor stacks plus GC-row big-value
+refs, and the sibling-search temporary-pop ref fix caught by ASAN, plus
+shadow-backed environment warmup range selection, former sanitizer poison-tail
+boundary selection that later became removable, removal of retired-page mapped
+payload poisoning, and active-writer `env_sync()` head selection, debug open
+logging, and write-side MVCC oldest/laggard accounting, plus
+error-propagating read-only MVCC oldest/recent discovery, and removal of the
+mapped freshness oracle from `meta_shadow_tap()`, plus opened-env/txn/read-slot/
+info/geometry/fixed-option guards using `ENV_ACTIVE` and the storage data fd
+instead of `dxb_mmap.base` as a generic open-state sentinel, plus
+retry-protected cached initial shadow taps for read-transaction seize,
+read-only transaction observer,
+and reader-list loops, plus a no-data-mapping forced-warmup fallback that reads
+through the DXB facade instead of touching `dxb_mmap.base`, plus a
+`coherency_check()` root-txnid probe that first reads the GC/Main root page
+header field through `dxb_read()` for normal non-writemap snapshots when the
+explicit storage view covers the root page, with the later mapped root-page
+fallback removed so root validation is now explicit-storage-only,
+plus an
+`env_is_page_incore()` no-map/out-of-range fallback and defrag dirty-page move
+routing that keeps transaction-owned page buffers for normal non-writemap
+transactions, with later defrag move cleanup removing mapped destination copies
+entirely, plus
+close-time DXB descriptor teardown through `dxb_storage_close()`,
+plus explicit storage-fd sync and resize fallbacks that later became the only
+accepted data-file path, plus default no-data-mapping `dxb_setup()` selection
+for normal non-writemap environments, active no-map geometry handling, no-map
+sanitizer/munlock and dirty-write coherency guards, storage-current refresh for
+read transactions that observe writer-grown meta heads, and open-time rejection
+of `MDBX_WRITEMAP`, plus
+conservative
+snapshot-safe read-only cache reuse capped by an env-owned runtime
+`MDBX_EXPLICIT_PAGE_CACHE_LIMIT` setting, selective sharing of pinned clean
+read-only entries when their buffers cannot be replaced by overflow-span
+materialization, and private writer cache entries to avoid write-path lock/list
+overhead, defrag `dxb_copy_pages()` error propagation for in-file overflow page
+copies, paired reduced `NN=10000` `ioarena` runs with `BENCH_CRUD_MODE=lazy`
+produced:
+
+| Workload | compatibility-mapped | forced no-data-mmap |
+| --- | ---: | ---: |
+| batch | `974.872ops/s` | `1.115Kops/s` |
+| crud | `52.415Kops/s` | `59.656Kops/s` |
+| iterate | `27.877Mops/s` | `20.970Mops/s` |
+| get | `280.730Kops/s` | `282.176Kops/s` |
+| delete | `66.476Kops/s` | `68.886Kops/s` |
+
+The no-map/mapped ratios for this run were `1.144` batch, `1.138` crud,
+`0.752` iterate, `1.005` get, and `1.036` delete.
+
+The benchmark logs are saved as `perf-mdbx_10000_mapped-lazy.log` and
+`perf-mdbx_10000_nomap-lazy.log`. The latest 2026-06-17 checkpoint was produced
+by a direct `make -f GNUmakefile mdbx_migration_check` run: direct no-map smoke,
+stress, crash/restart, extended repeated stress, fault injection with and
+without the 64K explicit cache limit, public CTest, repeated public CTest,
+assertion public CTest, fault-enabled public CTest, ASAN, UBSAN,
+ENABLE_MEMCHECK, LeakSanitizer, `MDBX_CHECKING=3` audit public CTest wrappers,
+all CLI tool roundtrips, and the paired reduced benchmark all passed. The
+benchmark target invokes `ioarena` directly for both benchmark halves and scans
+both logs for missing summary rows plus cursor/restore/error diagnostics, then
+enforces no-map/mapped throughput ratios
+of at least `0.60` for batch/crud/delete and `0.70` for iterate/get unless
+overridden by make variables. An earlier cache-reuse
+attempt that put normal writer reads on the tracked cache list dropped `crud` to
+`1.093Kops/s`; keeping writer reads private recovered write throughput while
+preserving validation tracking under `page_check()`. The previous
+`BENCH_CRUD_MODE=nosync` numbers are no longer a valid forced no-map benchmark
+because this `ioarena` MDBX driver opens `nosync` workloads with
+`MDBX_WRITEMAP`, which the explicit-I/O backend now rejects with
+`MDBX_INCOMPATIBLE`. For the same policy reason, the C++ example no longer runs
+its `write_mapped_io` exercise; the file-I/O durability cases and the
+API/nested-transaction checks still run.
+
+A follow-up 2026-06-17 check isolated the historical `make test-assertion`
+target's CTest half in `@cmake-assertion-build`: `make test-assertion
+CTEST_OPT=--output-on-failure` passed its 15-test assertion CTest suite, a
+default `make mdbx_migration_smoke_nommap` rebuilt and passed the root GNUmake
+smoke with baseline flags, and `make mdbx_migration_public_ctest` reconfirmed
+the default `@cmake-ninja-build` cache at `MDBX_CHECKING=0` with 15/15 CTest
+passes.
+
+The legacy target restoration was checked on 2026-06-17 by probing
+`test-long`, `test-long-assertion`, `test-ci`, `test-ci-extra`,
+`smoke-assertion`, `smoke-memcheck`, `smoke-fault`, `smoke-singleprocess`,
+`test-singleprocess`, `memcheck`, and `mdbx_test` with GNUmake. Each now
+resolves to a real rule. `make test-long` then passed the repeated 15-test CTest
+gate and the public CTest fallback for the absent stochastic harness, both with
+the default `@cmake-ninja-build` cache at `MDBX_CHECKING=0`. A subsequent
+`make test-long-assertion` run passed the isolated 15-test assertion CTest gate
+and the repeated public CTest fallback in `@cmake-assertion-build` with
+`MDBX_CHECKING=2`. `make smoke-fault` also passed through the restored alias,
+linking the fault-injection object and running the forced no-data-mmap fault
+matrix. `make test-ci` then passed through the restored CI alias, covering the
+default public 15-test CTest suite, repeated public CTest, isolated assertion
+CTest, fault-enabled 16-test CTest including `migration_fault_injection_nommap`,
+ASAN public CTest, and UBSAN public CTest. `make test-ci-extra` also passed
+through the restored alias, covering the full `mdbx_migration_check` aggregate:
+direct no-map smoke/stress/crash/fault runs, extended repeated no-map stress,
+public/repeated/assertion/fault CTest gates, ASAN, UBSAN, audit, memcheck,
+leak, tool roundtrips, and the paired reduced benchmark gate.
+
+A follow-up 2026-06-17 focused smoke pass tightened the no-map compatibility
+policy check: `exercise_mode()` now asserts that an optional
+`MDBX_WRITEMAP` open returns exactly `MDBX_INCOMPATIBLE` when
+`MDBX_FORCE_NO_DATA_MMAP=1` is enabled. A later WRITEMAP removal checkpoint
+extended that exact rejection to default and compatibility-mapped opens as well.
+`make -f GNUmakefile mdbx_migration_smoke_nommap_tinycache` passed this forced
+no-map/tiny-cache path, and the later default `LD_LIBRARY_PATH=.
+./mdbx_migration_smoke` run passed with ordinary `MDBX_WRITEMAP` skipped after
+the exact rejection.
+
+A subsequent 2026-06-17 focused smoke update expanded the normal file-mode
+matrix with separate pure `MDBX_NOMETASYNC` and pure `MDBX_SAFE_NOSYNC` cases,
+in addition to the existing durable, validation, combined lazy, utterly-nosync,
+and optional writemap cases. `make -f GNUmakefile
+mdbx_migration_smoke_nommap_tinycache`, `LD_LIBRARY_PATH=.
+./mdbx_migration_smoke`, and `make -f GNUmakefile ctest
+CTEST_OPT="--output-on-failure -R migration_smoke"` all passed; the CTest regex
+rebuilt and ran the six registered migration smoke entries in
+`@cmake-ninja-build`.
+
+A later 2026-06-17 stress-gate update added
+`mdbx_migration_extended_stress_nommap_tinycache`, a configurable repeated gate
+over the max-wave randomized and crash/restart forced no-map stress binaries.
+With default `MIGRATION_EXTENDED_STRESS_REPEAT=3`, `make -f GNUmakefile
+mdbx_migration_extended_stress_nommap_tinycache` passed, covering three
+randomized and three crash-stress no-map runs under the 64K explicit page-cache
+limit. This does not replace true long stochastic/power-loss testing, but it
+gives `mdbx_migration_check` a public repeat-stress gate.
+
+A later 2026-06-17 fault-gate update added
+`mdbx_migration_fault_injection_nommap_tinycache`, so the deterministic
+DXB/commit-queue fault matrix also runs with
+`MDBX_FORCE_NO_DATA_MMAP=1` and `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`. The direct
+`make -f GNUmakefile mdbx_migration_fault_injection_nommap_tinycache` target
+passed, and `make -f GNUmakefile mdbx_migration_fault_ctest` rebuilt
+`@cmake-fault-build` and passed the 17-test CTest suite, including both
+`migration_fault_injection_nommap` and
+`migration_fault_injection_nommap_tinycache`.
+
+A later 2026-06-17 aggregate rerun of
+`make -f GNUmakefile mdbx_migration_check` passed end to end after adding the
+tiny-cache fault-injection gate. This covered direct forced no-map smoke,
+stress, crash/restart, extended repeated stress, direct fault injection with and
+without the 64K explicit cache limit, public/repeated/assertion/fault CTest
+wrappers, ASAN, UBSAN, audit, memcheck, leak, all CLI roundtrips, and the paired
+`ioarena` benchmark. The fault-enabled CTest suite passed 17/17, and the paired
+benchmark ratios were `1.144` batch, `1.138` crud, `0.752` iterate, `1.005`
+get, and `1.036` delete against configured thresholds of `0.60` for
+batch/crud/delete and `0.70` for iterate/get.
+
+A later 2026-06-17 performance-stability update added
+`mdbx_migration_bench_lazy_repeat`, which reruns the paired mapped/default and
+forced no-data-mmap lazy `ioarena` gate with separate per-repeat logs. With the
+default `MIGRATION_BENCH_REPEAT=3`, the `mdbx_migration_bench_lazy_repeat`
+GNUmake target passed all three samples. The observed no-map/mapped ratio
+ranges were `1.010`-`1.136` batch, `0.980`-`1.129` crud, `0.785`-`1.363`
+iterate, `0.909`-`1.002` get, and `0.959`-`1.053` delete; every sample cleared
+the configured `0.60` batch/crud/delete and `0.70` iterate/get thresholds.
+
+A later 2026-06-17 compatibility update added bidirectional mapped/no-map
+on-disk checks to the normal smoke harness. The test creates a mapped/default
+database and verifies plus updates it through forced no-data-mmap with
+`MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, then verifies the update again through the
+mapped/default backend. It then creates a forced no-data-mmap database, verifies
+plus updates it through the mapped/default backend, and verifies the update
+again through forced no-data-mmap. The
+`mdbx_migration_smoke_nommap_tinycache` GNUmake target and a default
+`./mdbx_migration_smoke` run both passed with this coverage included, followed
+by `make -f GNUmakefile ctest` with the `migration_smoke` regex, which rebuilt
+and passed the six registered migration-smoke CTest entries. The shared
+environment-helper change was also checked with the
+`mdbx_migration_fault_injection_nommap_tinycache` GNUmake target, which passed.
+
+A later 2026-06-17 lck-less read-only update added POSIX smoke coverage for the
+forced no-data-mmap path when the data file is readable but the lock file cannot
+be opened. The harness creates a forced no-map database, removes access to the
+`MDBX_NOSUBDIR` `-lck` file, then reopens with `MDBX_RDONLY | MDBX_EXCLUSIVE`
+and verifies read-only records, env/txn observer APIs, `mdbx_reader_list()`'s
+lock-free return path, and `mdbx_reader_check()`. The
+`mdbx_migration_smoke_nommap_tinycache` and
+`mdbx_migration_fault_injection_nommap_tinycache` GNUmake targets passed, a
+default `LD_LIBRARY_PATH=. ./mdbx_migration_smoke` run passed and logged
+`continue ./migration-smoke-...-lckless within without-lck mode`, and
+`make -f GNUmakefile ctest CTEST_OPT="--output-on-failure -R migration_smoke"`
+rebuilt and passed the six registered migration-smoke CTest entries.
+
+A later 2026-06-17 manual-sync update added public sync API coverage to the
+normal smoke harness. Each successful file-mode smoke now performs post-copy
+write updates, round-trips sync byte/period thresholds, calls poll sync and
+forced sync in blocking and nonblocking forms, then verifies the synced records
+through a fresh read transaction. The lck-less read-only no-map subcase also
+checks that manual sync is rejected with `MDBX_EACCESS`. The
+`mdbx_migration_smoke_nommap_tinycache` and
+`mdbx_migration_fault_injection_nommap_tinycache` GNUmake targets passed, and
+`make -f GNUmakefile ctest CTEST_OPT="--output-on-failure -R migration_smoke"`
+rebuilt and passed the six registered migration-smoke CTest entries.
+
+A later 2026-06-17 performance revalidation reran
+`make -f GNUmakefile mdbx_migration_bench_lazy_repeat` after the smoke-harness
+sync coverage update. The default three paired mapped/default and forced
+no-data-mmap lazy `ioarena` samples all passed. The saved per-repeat logs showed
+no-map/mapped ratio ranges of `1.010`-`1.141` batch, `0.964`-`1.155` crud,
+`0.746`-`0.985` iterate, `0.968`-`1.052` get, and `0.963`-`1.040` delete;
+each sample cleared the configured `0.60` batch/crud/delete and `0.70`
+iterate/get thresholds.
+
+A later 2026-06-17 aggregate revalidation reran
+`make -f GNUmakefile mdbx_migration_check` after the manual-sync and lck-less
+read-only smoke additions. The aggregate passed direct forced no-data-mmap smoke
+with the default and `64K` cache limits, heavy stress, randomized stress, crash
+stress, extended stress, direct fault injection, public/repeated/assertion/fault
+CTest gates, ASAN, UBSAN, audit, memcheck, leak checks, CLI tool roundtrips, and
+the paired lazy benchmark. The benchmark sample reported no-map/mapped ratios of
+`1.114` batch, `1.150` crud, `0.741` iterate, `1.036` get, and `1.050` delete,
+again clearing the configured migration performance thresholds.
+
+A later 2026-06-17 storage-teardown cleanup made `dxb_storage_t` the
+authoritative DXB descriptor source for close/reset while preserving the
+then-legacy `lazy_fd`/`fd4meta`/`dsync_fd` aliases for remaining compatibility
+code. After the change, focused forced no-data-mmap smoke with
+`MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, deterministic no-map tiny-cache fault
+injection, and the six registered `migration_smoke` CTest entries passed. A
+paired `mdbx_migration_bench_lazy` run reported no-map/mapped ratios of `1.138`
+batch, `1.144` crud, `1.042` iterate, `0.982` get, and `1.044` delete, clearing
+the migration performance thresholds.
+
+A later 2026-06-17 recovery-open sentinel cleanup replaced another
+`dxb_mmap.base` open-state check with the storage/active-state predicate. The
+smoke harness now calls `mdbx_env_open_for_recovery()` on an already-open
+environment, requires `MDBX_EPERM`, and then performs a normal write/read to
+prove the rejected call did not leave the no-map env in recovery mode. Focused
+forced no-data-mmap tiny-cache smoke, deterministic no-map tiny-cache fault
+injection, and the six registered `migration_smoke` CTest entries passed. A
+paired `mdbx_migration_bench_lazy` run reported no-map/mapped ratios of `1.128`
+batch, `1.140` crud, `0.872` iterate, `1.060` get, and `1.054` delete, clearing
+the migration performance thresholds.
+
+A later 2026-06-17 close-path sentinel cleanup removed the last data-map pointer
+fallback from the public close-time writer-owner check. `mdbx_env_close_ex()`
+now treats `ENV_ACTIVE` plus an open DXB storage descriptor as the generic signal
+that the environment is open, while `env_close()` still unmaps only when a real
+compatibility mapping exists. Focused forced no-data-mmap tiny-cache smoke,
+deterministic no-map tiny-cache fault injection, and the six registered
+`migration_smoke` CTest entries passed. A paired `mdbx_migration_bench_lazy`
+run reported no-map/mapped ratios of `1.136` batch, `1.162` crud, `0.938`
+iterate, `0.881` get, and `1.050` delete, clearing the migration performance
+thresholds.
+
+A later 2026-06-17 POSIX locking cleanup routed `check_fstat()`,
+`lck_seize()`, `lck_downgrade()`, `lck_upgrade()`, SysV lock initialization,
+and, at that checkpoint, `lck_setup()` read-only-filesystem probing through
+`env_dxb_fd()` instead of the then-legacy `lazy_fd` alias. POSIX `lck_destroy()`
+still closes descriptors
+manually in the existing order so fcntl lock restoration semantics stay
+unchanged, but it now chooses those descriptors from `dxb_storage_t`/`env_dxb_fd()`
+before resetting storage state. Focused forced no-data-mmap tiny-cache smoke,
+deterministic no-map tiny-cache fault injection, and the six registered
+`migration_smoke` CTest entries passed. A paired `mdbx_migration_bench_lazy`
+run reported no-map/mapped ratios of `1.115` batch, `1.139` crud, `0.862`
+iterate, `1.018` get, and `1.046` delete, clearing the migration performance
+thresholds.
+
+A later 2026-06-17 coherency checkpoint made GC/Main root-page `mod_txnid`
+validation prefer explicit storage reads even when the compatibility data
+mapping exists. The first narrow version made mapped non-writemap snapshots fail
+the default `migration_smoke` CTest when a root page was inside the mapped file
+view but beyond the storage-current size after shrink/remap behavior; the final
+version keeps the explicit read-first path when storage-current covers the root
+page and falls back to the mapped probe for WRITEMAP or mapped compatibility
+snapshots outside the explicit storage view. Focused forced no-data-mmap
+tiny-cache smoke, deterministic no-map tiny-cache fault injection, and the six
+registered `migration_smoke` CTest entries passed after the correction. A paired
+`mdbx_migration_bench_lazy` run reported no-map/mapped ratios of `1.126` batch,
+`1.177` crud, `0.727` iterate, `0.982` get, and `1.071` delete, clearing the
+migration performance thresholds.
+
+A later 2026-06-17 advisory/discard checkpoint restricted mapped `madvise()`
+and `MADV_REMOVE` use in `dxb_advise_range()`/`dxb_discard_range()` to
+`MDBX_WRITEMAP` compatibility. Normal non-writemap environments now take the
+storage-fd advice/discard path even when the default compatibility mapping
+exists, so mapped/default smoke runs no longer hide those helper paths behind
+process-address hints. The six registered `migration_smoke` CTest entries
+passed, including the default mapped smoke and forced no-data-mmap variants.
+Deterministic no-map tiny-cache fault injection also passed. A paired
+`mdbx_migration_bench_lazy` run reported no-map/mapped ratios of `1.133` batch,
+`1.167` crud, `0.901` iterate, `1.054` get, and `1.072` delete, clearing the
+migration performance thresholds.
+
+A later 2026-06-17 option open-state checkpoint replaced the remaining
+`dxb_mmap.base` sentinel in `mdbx_env_set_option()` for `MDBX_opt_max_db` and
+`MDBX_opt_max_readers` with the generic DXB-open/`ENV_ACTIVE` predicate. The
+smoke harness now checks that both fixed-size options return `MDBX_EPERM` after
+open, which catches the no-data-mmap case where no data mapping exists. Focused
+forced no-data-mmap tiny-cache smoke, deterministic no-map tiny-cache fault
+injection, and the six registered `migration_smoke` CTest entries passed. A
+paired `mdbx_migration_bench_lazy` run reported no-map/mapped ratios of `1.143`
+batch, `1.163` crud, `0.959` iterate, `1.034` get, and `1.073` delete, clearing
+the migration performance thresholds.
+
+A later 2026-06-17 sanitizer-retire checkpoint first guarded the retired
+dirty-page mapped payload poisoning in `page_retire_ex()` behind
+`dxb_mmap.base`. A subsequent cleanup removed that mapped poisoning block
+entirely. Forced no-data-mmap sanitizer/memcheck builds no longer call
+`pgno2page()` just to poison a retired mapped page; malloc-backed dirty-page
+cleanup remains handled by shadow-page release. Focused ASAN forced no-map
+smoke, forced no-data-mmap tiny-cache smoke, deterministic no-map tiny-cache
+fault injection, and the six registered `migration_smoke` CTest entries passed.
+A paired `mdbx_migration_bench_lazy` run reported no-map/mapped ratios of
+`1.114` batch, `1.165` crud, `1.008` iterate, `1.024` get, and `1.059` delete,
+clearing the migration performance thresholds.
+
+A later 2026-06-17 mapped-helper quarantine removed the generic
+`pgno2page()`/`ptr2page()` helper names from the code and replaced them with
+`mapped_pgno2page()`/`mapped_ptr2page()`, both of which assert that a data
+mapping exists. At that checkpoint, remaining mapped pointer arithmetic was
+visibly limited to WRITEMAP, mapped meta compatibility, mapped coherency
+fallback, defrag WRITEMAP shortcuts, and compatibility dirty-pointer
+classification. Focused forced
+no-data-mmap tiny-cache smoke, deterministic no-map tiny-cache fault injection,
+and the six registered `migration_smoke` CTest entries passed. A paired
+`mdbx_migration_bench_lazy` run reported no-map/mapped ratios of `1.129` batch,
+`1.166` crud, `1.092` iterate, `0.965` get, and `1.068` delete, clearing the
+migration performance thresholds.
+
+A later 2026-06-17 mapped-metadata helper checkpoint renamed the generic
+mapped metadata helpers to `MAPPED_METAPAGE()`, `meta_tap_mapped()`,
+`meta_recent_mapped()`, `meta_prefer_steady_mapped()`, `meta_tail_mapped()`,
+and `meta_ptr_mapped()`. The shared `meta_ptr_t` type remains neutral because
+both mapped and shadow metadata selectors use it, while normal non-writemap
+metadata selection continues through the shadow-buffer helpers. Focused forced
+no-data-mmap tiny-cache smoke, deterministic no-map tiny-cache fault injection,
+and the six registered `migration_smoke` CTest entries passed. A paired
+`mdbx_migration_bench_lazy` run reported no-map/mapped ratios of `1.106` batch,
+`1.160` crud, `0.998` iterate, `0.995` get, and `1.075` delete, clearing the
+migration performance thresholds.
+
+A later 2026-06-17 `mdbx_is_dirty()` mapped-pointer checkpoint routed normal
+non-writemap mapped compatibility pointers through an explicit `dxb_read()`
+page-header probe whenever storage-current covers the page. `MDBX_WRITEMAP`
+and mapped compatibility snapshots beyond the explicit storage view still copy
+the mapped header because dirty pages can be mmap-resident or outside the
+storage-current view. Focused forced no-data-mmap tiny-cache smoke,
+deterministic no-map tiny-cache fault injection, and the six registered
+`migration_smoke` CTest entries passed. A paired `mdbx_migration_bench_lazy` run
+reported no-map/mapped ratios of `1.135` batch, `1.170` crud, `0.740` iterate,
+`1.079` get, and `1.079` delete, clearing the migration performance thresholds.
+
+A later 2026-06-17 defrag dirty-page move checkpoint stopped copying
+already-dirty source pages into the data mapping for normal non-writemap
+transactions. Those moves now keep the transaction-owned dirty buffer in the DPL
+under the remapped page number; at that checkpoint, only `MDBX_WRITEMAP`
+compatibility still used a mapped destination copy. Focused forced
+no-data-mmap tiny-cache smoke,
+deterministic no-map tiny-cache fault injection, and the six registered
+`migration_smoke` CTest entries passed. A paired `mdbx_migration_bench_lazy` run
+reported no-map/mapped ratios of `1.114` batch, `1.179` crud, `1.338` iterate,
+`0.953` get, and `1.074` delete, clearing the migration performance thresholds.
+
+A later 2026-06-17 default no-data-mapping checkpoint made normal
+non-`MDBX_WRITEMAP` opens select the explicit storage path by default, while
+`MDBX_COMPAT_DATA_MMAP=1` keeps a temporary compatibility-mapped baseline for
+comparisons and `MDBX_FORCE_NO_DATA_MMAP=1` continues to reject `MDBX_WRITEMAP`.
+The default no-env smoke binary, focused forced no-data-mmap tiny-cache smoke,
+deterministic no-map tiny-cache fault injection, and the six registered
+`migration_smoke` CTest entries passed. A paired `mdbx_migration_bench_lazy` run,
+with the mapped half explicitly using `MDBX_COMPAT_DATA_MMAP=1`, reported
+no-map/mapped ratios of `1.132` batch, `1.160` crud, `1.141` iterate, `0.931`
+get, and `1.090` delete, clearing the migration performance thresholds.
+
+A later 2026-06-17 WRITEMAP removal checkpoint made `MDBX_WRITEMAP`
+incompatible even when `MDBX_COMPAT_DATA_MMAP=1`, leaving the compatibility data
+mapping only as a non-writemap comparison backend. The smoke harness now asserts
+exact `MDBX_INCOMPATIBLE` rejection for default, forced no-map, and
+compatibility-mapped WRITEMAP opens. The C++ example no longer runs
+`write_mapped_io`, and the PCRF simulator no longer adds `MDBX_WRITEMAP`, so
+their normal CTest entries exercise the default no-data-mapping path. Default
+no-env smoke, explicit compatibility-mapped smoke, focused forced
+no-data-mmap tiny-cache smoke, the six registered `migration_smoke` CTest
+entries, deterministic no-map tiny-cache fault injection, and the full 15-test
+public CTest suite passed. A paired `mdbx_migration_bench_lazy` run reported
+no-map/mapped ratios of `1.128` batch, `1.166` crud, `0.865` iterate, `1.109`
+get, and `1.078` delete, clearing the migration performance thresholds.
+
+A subsequent 2026-06-17 aggregate gate run passed
+`make -f GNUmakefile mdbx_migration_check` end to end with the WRITEMAP removal
+policy in place. This covered direct no-map smoke, tiny-cache smoke, stress,
+randomized stress, crash stress, extended stress, direct fault injection with and
+without the tiny-cache limit, public CTest, repeated CTest, assertion CTest,
+fault-enabled CTest, ASAN, UBSAN, audit CTest, memcheck-configured CTest,
+LeakSanitizer CTest, default/no-map/tiny-cache CLI tool roundtrips, and the
+paired lazy performance benchmark. The benchmark in that aggregate run reported
+no-map/mapped ratios of `1.112` batch, `1.162` crud, `0.955` iterate, `0.988`
+get, and `1.083` delete, clearing the configured migration thresholds.
+
+A follow-up repeated performance gate passed
+`make -f GNUmakefile mdbx_migration_bench_lazy_repeat` with the default three
+paired mapped/no-map runs. The observed no-map/mapped ratio ranges were
+`0.993..1.063` batch, `0.991..1.164` crud, `0.831..1.291` iterate,
+`0.934..1.103` get, and `0.997..1.080` delete; the averages were `1.028`,
+`1.052`, `1.012`, `1.037`, and `1.028`, respectively. The aggregate
+`mdbx_migration_check` target now invokes this repeated performance gate instead
+of a single benchmark sample.
+
+A later 2026-06-17 full aggregate run passed
+`make -f GNUmakefile mdbx_migration_check` after that target was wired to the
+repeated performance gate. The run completed direct no-map smoke, tiny-cache
+smoke, stress, randomized stress, crash stress, extended stress, fault
+injection, public/repeated/assertion/fault/sanitizer/audit/memcheck/leak CTest
+legs, CLI tool roundtrips, and the default three paired mapped/no-map benchmark
+repeats. The observed no-map/mapped ratio ranges were `0.994..1.120` batch,
+`0.988..1.168` crud, `0.762..1.319` iterate, `0.905..1.038` get, and
+`0.995..1.087` delete; the averages were `1.040`, `1.054`, `1.027`, `0.980`,
+and `1.028`, respectively.
+
+A later 2026-06-17 explicit-only setup checkpoint removed the
+`MDBX_COMPAT_DATA_MMAP=1` data-file backend selection path. `dxb_setup()` now
+always initializes the data file through the explicit storage path, so accepted
+opens no longer call `osal_mmap()` for the DXB file. The smoke harness now
+checks default/tiny-cache explicit profile compatibility instead of
+compatibility-mapped/no-map roundtrips, and the reduced `ioarena` migration
+benchmark now compares forced/default explicit profiles while preserving the log
+sanity and throughput-ratio gates. Default smoke, forced tiny-cache smoke, the
+six registered `migration_smoke` CTest entries, deterministic forced tiny-cache
+fault injection, and the full 15-test public CTest suite passed. The updated
+paired `mdbx_migration_bench_lazy` gate reported forced/default ratios of
+`1.123` batch, `1.182` crud, `0.966` iterate, `1.000` get, and `1.084` delete.
+
+A later 2026-06-17 explicit-only resize/sync/teardown checkpoint removed the
+remaining data-file remap/sync OSAL surface from active code. `dxb_sync_data()`
+now delegates to storage-fd sync, the data-file `dxb_msync()` wrapper is gone,
+`dxb_resize()` always manages geometry through `dxb_storage_resize()`, and the
+unused `osal_mresize()` implementation and remap flags have been deleted.
+Environment close, lock destruction, and after-fork cleanup no longer call
+`osal_munmap()` for `env->dxb_mmap`; lock-file mmap teardown remains unchanged.
+Focused default smoke, forced tiny-cache smoke, the six `migration_smoke` CTest
+entries, deterministic forced tiny-cache fault injection, and the full 15-test
+public CTest suite passed. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.123` batch, `1.169` crud, `0.917` iterate, `1.082`
+get, and `1.082` delete.
+
+A later 2026-06-17 mapped-tail sanitizer cleanup removed the data-file
+`dxb_sanitize_tail()` hook, its `poison_edge` environment state, the open-time
+poison-boundary initialization, and the commit-time mapped-tail ASAN/Valgrind
+poisoning block. Transaction start/end and read-only reset paths no longer call
+a sanitizer helper that depends on `env->dxb_mmap.base`; explicit page buffers
+remain covered by their normal allocation lifetime and sanitizer instrumentation.
+Focused default smoke, forced tiny-cache smoke, the six `migration_smoke` CTest
+entries, deterministic forced tiny-cache fault injection, the full 15-test
+public CTest suite, and the ASAN `test-asan` CTest fallback passed. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.148`
+batch, `1.174` crud, `0.789` iterate, `1.033` get, and `1.085` delete.
+
+A later 2026-06-17 mapped advice/locking cleanup removed data-file
+`madvise()`/`posix_madvise()`/`MADV_REMOVE` branches from `dxb_advise_range()`
+and `dxb_discard_range()`. Readahead, warmup, resize tail discard, open-time
+tail discard, and commit-time shrink discard now use storage-fd advice or
+explicit reads only. Data-file `MDBX_warmup_lock` now reports `MDBX_ENOSYS`
+without trying to `mlock()` a missing mapping, and the legacy data-file
+`mlocked_pgno`/`munlock_after()` accounting has been removed while the lock-file
+layout field is retained for compatibility. Verification for this checkpoint
+passed `mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs,
+the six focused `migration_smoke` CTest entries, deterministic forced tiny-cache
+fault injection, the full 15-test public CTest suite, and a focused ASAN
+`migration_smoke` CTest run. The paired `mdbx_migration_bench_lazy` gate
+reported forced/default ratios of `1.117` batch, `1.156` crud, `1.009` iterate,
+`0.978` get, and `1.075` delete. Hygiene scans found no whitespace issues, no
+removed mlock/mapped-advice helpers, no data-file mmap setup/teardown calls, and
+only lock-file mmap setup/teardown references.
+
+A later 2026-06-17 descriptor-ownership cleanup removed the legacy `lazy_fd`
+macro that stored the data-file descriptor in `env->dxb_mmap.fd`. At that
+checkpoint, `MDBX_env` carried an explicit `data_fd`, `env_dxb_fd()` returned
+that field directly, and `dxb_storage_bind()` mirrored it into the explicit
+storage facade. Open,
+probe, close/reset, POSIX fstat/incore checks, Windows DXB locking, spill writes,
+and commit write-context selection now refer to `data_fd` instead of the mapping
+shell. Hygiene scans found no `lazy_fd`, no `dxb_mmap.fd`, no data-file mmap
+setup/teardown/sync/resize calls, and no whitespace issues. Verification passed
+`mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, the full
+15-test public CTest suite, deterministic forced tiny-cache fault injection, and
+a focused ASAN `migration_smoke` CTest run. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.117`
+batch, `1.168` crud, `0.809` iterate, `1.051` get, and `1.089` delete.
+
+A later 2026-06-17 residency cleanup removed the remaining data-file
+`mincore()` probe path, including the local bitmap helper, `mincore_fetch()`,
+and the `MDBX_USE_MINCORE` CMake/config/version-reporting surface.
+`env_is_page_incore()` now explicitly reports not-resident, so accepted callers
+take their existing explicit-I/O fallback paths instead of probing a missing
+data mapping. The lock-file `pgops.mincore` statistic and
+`mincore_cache` layout fields remain as legacy compatibility fields only.
+Verification passed direct default and forced tiny-cache smoke runs, the six
+focused `migration_smoke` CTest entries, deterministic forced tiny-cache fault
+injection, the full 15-test public CTest suite, and a focused ASAN
+`migration_smoke` CTest run. The paired `mdbx_migration_bench_lazy` gate
+reported forced/default ratios of `0.998` batch, `0.991` crud, `0.882`
+iterate, `1.030` get, and `1.002` delete. Hygiene scans found no
+`MDBX_USE_MINCORE`, no live data-file `mincore()` calls, no `lazy_fd`, no
+`dxb_mmap.fd`, and no data-file mmap setup/teardown/sync/resize calls; the only
+residual `mincore` source references are legacy lock-file/stat comments.
+
+A later 2026-06-17 mapped-flush cleanup removed the remaining data-file
+`osal_flush_incoherent_mmap()` path and the dirty-page mapped readback/coherency
+state. Meta commit, meta wipe, and meta override paths no longer flush the old
+data mapping after explicit `dxb_write()`/`dxb_write_pages()` calls, and
+`iov_callback4dirtypages()` now releases written shadow buffers without trying
+to compare them against `env->dxb_mmap.base`. `iov_init()` no longer takes a
+mapped-coherency flag or stores a coherency timestamp; the remaining coherency
+protection is the explicit meta/root validation path. Verification passed
+direct default and forced tiny-cache smoke runs, the six focused
+`migration_smoke` CTest entries, deterministic forced tiny-cache fault
+injection, the full 15-test public CTest suite, and a focused ASAN
+`migration_smoke` CTest run. The paired `mdbx_migration_bench_lazy` gate
+reported forced/default ratios of `1.092` batch, `1.165` crud, `0.954`
+iterate, `0.959` get, and `1.076` delete. Hygiene scans found no
+`osal_flush_incoherent_mmap`, no mapped-coherency timestamp/flag, no
+`MDBX_FORCE_CHECK_MMAP_COHERENCY`, no `lazy_fd`, no `dxb_mmap.fd`, and no
+data-file mmap setup/teardown/sync/resize calls.
+
+A later 2026-06-17 root-coherency cleanup removed the mapped root-page fallback
+from `coherency_probe_root_txnid()`. Root `mod_txnid` validation now reads the
+root-page txnid only through the explicit DXB storage facade, and
+`coherency_fetch_head()` refreshes the storage size whenever the accepted meta
+geometry extends past the cached storage-current size instead of gating that
+refresh on `!env->dxb_mmap.base`. Verification passed direct default and forced
+tiny-cache smoke runs, the six focused `migration_smoke` CTest entries,
+deterministic forced tiny-cache fault injection, the full 15-test public CTest
+suite, and a focused ASAN `migration_smoke` CTest run. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.135`
+batch, `1.181` crud, `1.014` iterate, `1.010` get, and `1.059` delete. Hygiene
+scans found no mapped root-page coherency fallback and no data-file mmap
+setup/teardown/sync/resize calls.
+
+A later 2026-06-17 cache-WRITEMAP cleanup removed the legacy mapped fast-cache
+path. `cache_get()` no longer performs the WRITEMAP-only early-exit b-tree walk,
+`cache_materialize_entry()` no longer materializes cached values with
+`dxb_mmap.base + offset`, and `cache_value_offset()` no longer subtracts public
+value pointers from the mapped data-file base. The old mapped cache pointer
+helper functions were removed as well. Cache hits now use the explicit page
+cache/read path with transaction-retained pins, and `MDBX_WRITEMAP` cache
+access returns `MDBX_INCOMPATIBLE`, which matches the open-time rejection
+policy. Verification passed direct default and forced tiny-cache smoke runs, the
+six focused `migration_smoke` CTest entries, deterministic forced tiny-cache
+fault injection, the full 15-test public CTest suite, and a focused ASAN
+`migration_smoke` CTest run. The paired `mdbx_migration_bench_lazy` gate
+reported forced/default ratios of `1.115` batch, `1.179` crud, `0.847`
+iterate, `0.841` get, and `1.071` delete. Hygiene scans found no mapped cache
+helper symbols and no data-file mmap setup/teardown/sync/resize calls.
+
+A later 2026-06-17 defrag mapped-destination cleanup removed the remaining
+mapped copies from `defrag_move()`. Dirty moved pages now stay in their
+transaction-owned dirty buffers and are reinserted into the dirty-list under the
+new page number. Clean moved pages are fixed up in `page_auxbuf` and written
+through `dxb_write_pages()`, while overflow tails use `dxb_copy_pages()` or the
+explicit read/write fallback. Verification passed direct default and forced
+tiny-cache smoke runs, the six focused `migration_smoke` CTest entries,
+deterministic forced tiny-cache fault injection, the full 15-test public CTest
+suite, and a focused ASAN `migration_smoke` CTest run. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.133`
+batch, `1.198` crud, `1.020` iterate, `1.003` get, and `1.105` delete. Hygiene
+scans found no defrag references to `dxb_mmap.base`/`mapped_pgno2page()` and no
+data-file mmap setup/teardown/sync/resize calls.
+
+A later 2026-06-17 committed-page WRITEMAP cleanup removed the mapped read
+result from `page_get_committed()`. A WRITEMAP transaction now gets
+`MDBX_INCOMPATIBLE` instead of a `PAGE_REF_MAPPED` wrapper around
+`mapped_pgno2page()`, so committed-page reads can no longer manufacture a
+data-file mmap pointer. Verification passed direct default and forced
+tiny-cache smoke runs, the six focused `migration_smoke` CTest entries,
+deterministic forced tiny-cache fault injection, the full 15-test public CTest
+suite, and a focused ASAN `migration_smoke` CTest run. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.116`
+batch, `1.167` crud, `1.058` iterate, `0.963` get, and `1.065` delete. Hygiene
+scans found no `page_get_committed()`/committed-read mapped page return and no
+data-file mmap setup/teardown/sync/resize calls.
+
+A later 2026-06-17 allocation-WRITEMAP cleanup removed the mapped allocation
+arm from `page_alloc_finalize()`. A WRITEMAP allocation attempt now returns
+`MDBX_INCOMPATIBLE`, while accepted transactions allocate owned dirty page
+buffers and retag successful results as `PAGE_REF_TXN_DIRTY | PAGE_REF_OWNED`.
+This removes the allocation-time `mapped_pgno2page()` result and the legacy
+mapped-prefault write branch. Verification passed direct default and forced
+tiny-cache smoke runs, the six focused `migration_smoke` CTest entries,
+deterministic forced tiny-cache fault injection, the full 15-test public CTest
+suite, and a focused ASAN `migration_smoke` CTest run. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.131`
+batch, `1.181` crud, `1.273` iterate, `0.954` get, and `1.072` delete. Hygiene
+scans found no allocation-time mapped page return and no data-file mmap
+setup/teardown/sync/resize calls.
+
+A later 2026-06-17 retire-sanitizer removal deleted the remaining
+`page_retire_ex()` block that looked up the retired page with
+`mapped_pgno2page()` to poison a mapped payload after `page_kill()`. Dirty-page
+retirement now invalidates only the actual transaction-owned buffer before
+`page_wash()`; accepted explicit-I/O environments no longer carry a mapped
+sanitizer side path there. Verification passed direct default and forced
+tiny-cache smoke runs, the six focused `migration_smoke` CTest entries,
+deterministic forced tiny-cache fault injection, the full 15-test public CTest
+suite, and a focused ASAN `migration_smoke` CTest run. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.127`
+batch, `1.177` crud, `1.047` iterate, `0.977` get, and `1.079` delete. Hygiene
+scans found no `page_retire_ex()` mapped payload poisoning and no data-file mmap
+setup/teardown/sync/resize calls.
+
+The selective pinned-entry reuse checkpoint keeps the existing single-page
+overflow-header guard. Focused no-map tiny-cache smoke, deterministic fault
+injection, focused ASAN no-map tiny-cache smoke, and `mdbx_migration_check`
+passed at this checkpoint. The public CTest suite now also registers
+`c_api_nommap`, `c++_api_nommap`, and bounded `pcrf_simulator` mapped/no-map
+smoke cases with `MDBX_FORCE_NO_DATA_MMAP=1;MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`
+where appropriate, so `make test` exercises the C/C++ examples plus a bounded
+multi-DB insert/delete/stat workload against the forced no-data-mmap backend.
+The example CTest entries also share a resource lock to keep their fixed
+example database names from racing under parallel CTest runs.
+
+Earlier reduced measurements around the read-only MVCC shadow-meta checkpoint
+showed point lookup throughput dropping from `8.065Mops/s` to `1.783Mops/s`
+after every shadow tap began rereading metadata through explicit I/O, then
+recovering to `3.129Mops/s` with the retry-protected cached initial tap. The
+next meta-buffer milestone still needs both a stronger mmap-free freshness
+signal or refresh policy and larger benchmark runs with an explicit read
+throughput gate before making performance claims.
+
+The benchmark initially exposed a cursor stack restore regression in delete
+after helper-based stack clearing; `page_merge()` now retains the saved top ref
+across `cursor_pop()`/`tree_rebalance()` and restores from the saved page when
+the computed destination stack slot has been cleared.
+
+After explicit committed-page reads were enabled, ASAN exposed the sibling
+search undo-pop path: `sibling()` restored `mc->top` after `MDBX_NOTFOUND` but
+had already released the old child page's cache pin. `cursor_pop_keep_ref()` now
+preserves that temporary stack slot ref until the old position is restored or a
+new sibling child replaces it.
+
+The `page_check()` ownership checkpoint exposed an audit-only dangling explicit
+page-cache pointer: `cursor_validate()` fetched branch children with the legacy
+pointer-only `page_get()` wrapper, then `page_check()` could fetch an overflow
+page and release/reuse that unpinned child buffer. Audit validation now uses a
+retained `pgr_t` for those child pages and releases it only after the child
+`page_check()` completes.
+
+The explicit overflow/defrag smoke exposed two more mmap-era lifetime
+assumptions. First, `mdbx_replace()` returned old clean-page values directly
+through `old_data`; this was stable with mmap, but cache-backed no-map values
+could be released by the replacement cursor before the API returned. The replace
+path now retains the cursor's cache-backed stack/value refs into the transaction
+before updating, and releases the stack cursor on all exits. Second,
+`walk_pgno()` used the pointer-only `page_get()` wrapper before
+`mdbx_env_defrag()` walked the page, so ASAN caught a use-after-free in
+`walk_page_type()`. The walker now keeps a retained `pgr_t` until the current
+page traversal is complete.
+
+Deterministic `copy-complete:*` fault injection later exposed a defrag
+storage-error propagation bug in the no-map `copy_file_range()` path:
+`defrag_move()` copied the remaining pages of a moved overflow span through
+`dxb_copy_pages()`, left the loop, and then returned success even when the copy
+reported an error. The path now returns that error immediately, and the fault
+gate verifies that the previous overflow snapshot remains readable after the
+failed defrag.
+
+The reusable-cache checkpoint exposed two smaller ownership/sentinel traps.
+First, ASAN caught a null-page path after cache lookup used `MDBX_RESULT_FALSE`
+as an internal miss sentinel even though `MDBX_RESULT_FALSE` aliases
+`MDBX_SUCCESS`; cache miss now uses `MDBX_RESULT_TRUE`. Second, validation caught
+private writer cache pages that were invisible to `page_check()`; normal writer
+reads remain private, but `page_get_inline()` asks for tracked private entries
+when `z_pagecheck` is enabled.
+
+The permuted nested checkpoint/spill smoke exposed two spill-list ownership
+bugs. First, `nested_merge()` left the child `wr.spilled.list` pointing at a
+list that had been transferred to the parent or merged and freed, so a restarted
+nested checkpoint could reuse stale storage. Second, `nested_free()` did not
+free a still-owned spill list for aborted nested children. `nested_merge()` now
+clears child ownership after merge/transfer, and nested cleanup frees any
+remaining child spill list.
+
+A later storage-size/open-state sentinel cleanup removed two more hidden
+`dxb_mmap.base` dependencies. `dxb_fetch_filesize()` now refreshes
+the storage current, limit, and filesize values from the data fd whenever a
+storage limit is known, without treating the absence of a data mapping as a
+special mode. Nested resize-undo failure now marks the environment fatal
+unconditionally after breaking the parent transaction, instead of branching on
+whether the data file was mapped. Verification passed direct default and forced
+tiny-cache smoke runs, the six focused `migration_smoke` CTest entries,
+deterministic forced tiny-cache fault injection, the full 15-test public CTest
+suite, and a focused ASAN `migration_smoke` CTest run. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.130`
+batch, `1.188` crud, `0.870` iterate, `1.025` get, and `1.075` delete. Hygiene
+scans found no old `dxb_fetch_filesize()` data-map guard, no standalone
+`if (!env->dxb_mmap.base)` branch for this cleanup, and no data-file mmap
+setup/teardown/sync/resize calls.
+
+A later pointer-classifier cleanup removed the legacy mapped-address branches
+from `mdbx_is_dirty()` and `page_check()`. `mdbx_is_dirty()` now classifies
+only explicit page-cache pages and transaction dirty-list pages, falling back
+to the existing conservative dirty answer for unknown write-transaction
+pointers. `page_check()` no longer computes an address offset from
+`dxb_mmap.base`; audit validation now accepts subpages, shadowed pages,
+transaction-owned dirty/spilled pages, and explicit page-cache or dirty-list
+buffers. Verification passed direct default and forced tiny-cache smoke runs,
+the six focused `migration_smoke` CTest entries, the same six entries under
+`MDBX_CHECKING=3` with `MDBX_DBG_AUDIT=1`, deterministic forced tiny-cache
+fault injection, the full 15-test public CTest suite, and a focused ASAN
+`migration_smoke` CTest run. The paired `mdbx_migration_bench_lazy` gate
+reported forced/default ratios of `1.095` batch, `1.170` crud, `1.010`
+iterate, `0.971` get, and `1.074` delete. Hygiene scans found `dxb_mmap.base`
+only in the remaining mapped metadata/helper island and found no data-file mmap
+setup/teardown/sync/resize calls.
+
+A later mapped-metadata removal checkpoint collapsed that remaining metadata
+island onto the shadow/meta-I/O path. `dxb_sync_locked()`, `env_sync()`,
+defrag GC loading, GC allocation checkpoint selection, read/write-side MVCC
+oldest/laggard selection, `txn_basal_commit()`, `meta_unsteady()`,
+`meta_sync()`, and `meta_override()` now assert the accepted no-WRITEMAP policy
+and select shadow metadata only. Metadata writes go through explicit
+`dxb_write()`/`dxb_write_pages()` plus `dxb_sync_meta_written()`, and successful
+writes refresh the env-owned shadow pages. The cleanup removed
+`MAPPED_METAPAGE()`, `mapped_pgno2page()`, `mapped_ptr2page()`,
+`meta_tap_mapped()`, `meta_ptr_mapped()`, `meta_recent_mapped()`,
+`meta_prefer_steady_mapped()`, `meta_tail_mapped()`,
+`meta_update_begin()`, `meta_update_end()`, and the old
+`MDBX_NOMETASYNC_LAZY_WRITEMAP` constant. Verification passed
+`make -f GNUmakefile mdbx_migration_smoke`, direct default and forced
+tiny-cache smoke runs, the six focused `migration_smoke` CTest entries, the
+full 15-test public CTest suite, deterministic forced tiny-cache fault
+injection, focused ASAN `migration_smoke` CTest, and the same six focused
+entries under `MDBX_CHECKING=3` with `MDBX_DBG_AUDIT=1`. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.136`
+batch, `1.174` crud, `0.901` iterate, `1.236` get, and `1.086` delete. Hygiene
+scans found no `dxb_mmap.base`, mapped metadata helpers, legacy mapped page
+helpers, `MDBX_NOMETASYNC_LAZY_WRITEMAP`, data-file mmap setup/teardown, data
+msync/resize, mapped coherency flush, or `lazy_fd` references in the checked
+core files.
+
+A later data-file mmap shell removal checkpoint removed `osal_mmap_t dxb_mmap`
+from `MDBX_env` entirely. `dxb_storage_set_filesize()`,
+`dxb_storage_set_current()`, and `dxb_storage_set_size()` now update only the
+explicit storage state, and the unused `PAGE_REF_MAPPED` page-ref class was
+removed. The only remaining OSAL mmap calls in the checked core files are
+lock-file/reader-table operations and the OSAL mmap implementation itself.
+Verification passed `make -f GNUmakefile mdbx_migration_smoke`, direct default
+and forced tiny-cache smoke runs, the six focused `migration_smoke` CTest
+entries, the full 15-test public CTest suite, deterministic forced tiny-cache
+fault injection, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.163`
+batch, `1.176` crud, `0.934` iterate, `1.096` get, and `1.075` delete. Hygiene
+scans found no `dxb_mmap`, `PAGE_REF_MAPPED`, mapped metadata helpers, legacy
+mapped page helpers, data-file mmap setup/teardown/sync/resize calls, mapped
+coherency flush, or `lazy_fd` references in the checked core files.
+
+A later basal write-transaction WRITEMAP branch-removal checkpoint collapsed the
+root write transaction lifecycle onto the explicit dirty-list path. `txn_write()`
+now asserts that `MDBX_WRITEMAP` is absent. `basal_start_locked()` always
+allocates a dirty list and initializes dirty-room accounting, and
+`txn_basal_start()`/`txn_basal_end()` no longer propagate or preserve
+`MDBX_WRITEMAP` from environment flags. `txn_basal_commit()` now requires the
+dirty list, uses the dirty-list length for pure-commit detection, and always
+enters the existing `iov_init()`/`txn_write()` explicit page-write path instead
+of carrying the old no-dirtylist writemap accounting branch. Verification
+passed direct default and forced tiny-cache smoke runs, the six focused
+`migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.133` batch, `1.166` crud, `1.004` iterate, `1.007`
+get, and `1.078` delete. Hygiene scans found no `dxb_mmap`, `PAGE_REF_MAPPED`,
+mapped metadata helpers, legacy mapped page helpers, data-file mmap
+setup/teardown/sync/resize calls, mapped coherency flush, or `lazy_fd`
+references in the checked core files.
+
+A later writemap dirty-accounting cleanup removed the old
+`writemap_dirty_npages` and `writemap_spilled_npages` transaction counters.
+Write transactions now carry only explicit dirty-list and spilled-list state.
+`txn_spill()`, `spill_slowpath()`, `page_dirty()`, `page_wash()`,
+`refund_loose()`, and write-transaction info reporting now assert/use the dirty
+list instead of branching to no-dirtylist writemap accounting. The spill
+slowpath has only the explicit write-spilling route, and loose-page releases
+return explicit shadow buffers unconditionally. Verification passed direct
+default and forced tiny-cache smoke runs, the six focused `migration_smoke`
+CTest entries, the full 15-test public CTest suite, deterministic forced
+tiny-cache fault injection, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.112`
+batch, `1.160` crud, `1.138` iterate, `0.994` get, and `1.076` delete. Hygiene
+scans found no `writemap_dirty_npages`, no `writemap_spilled_npages`, no
+`dxb_mmap`, no `PAGE_REF_MAPPED`, no mapped metadata helpers, no legacy mapped
+page helpers, no data-file mmap setup/teardown/sync/resize calls, no mapped
+coherency flush, and no `lazy_fd` references in the checked core files.
+
+A later dirty-list/page-touch WRITEMAP cleanup removed the remaining
+`MDBX_AVOID_MSYNC` alternatives from the explicit dirty-page helpers.
+`txn_dpl_sort()`, `txn_dpl_search()`, `txn_dpl_exist()`,
+`txn_dpl_append()`, `txn_dpl_check()`, `txn_dpl_sift()`, and
+`txn_dpl_clear()` now assert that `MDBX_WRITEMAP` is absent and operate only
+on explicit dirty lists. `page_touch_modifable()` no longer re-dirties a page
+through the old writemap unspill branch; a modifiable page must already be in
+the dirty list. `gc_merge_loose()`, `page_retire_ex()`, `defrag_move()`, and
+`iov_page()` now follow the same explicit shadow-buffer invariant and release
+shadow pages unconditionally where the old code skipped releases for writemap.
+Verification passed `make -f GNUmakefile mdbx_migration_smoke`, direct default
+and forced tiny-cache smoke runs, the six focused `migration_smoke` CTest
+entries, the full 15-test public CTest suite, deterministic forced tiny-cache
+fault injection, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.164`
+batch, `1.155` crud, `1.004` iterate, `0.991` get, and `1.063` delete.
+Hygiene scans found no `writemap_dirty_npages`, no
+`writemap_spilled_npages`, no `dxb_mmap`, no `PAGE_REF_MAPPED`, no mapped
+metadata helpers, no legacy mapped page helpers, no data-file mmap
+setup/teardown/sync/resize calls, no mapped coherency flush, and no `lazy_fd`
+references in the checked core files. The only remaining `MDBX_AVOID_MSYNC`
+hits in `mdbx.c` are sync-policy/build-info references outside this dirty-page
+cleanup surface.
+
+A later `MDBX_AVOID_MSYNC` removal checkpoint deleted the now-dead
+configuration and sync-policy surface for data-file writemap/msync avoidance.
+The CMake option, generated config define, internal macro block, build-info
+field, and Windows durable-WRITEMAP direct-open probe were removed.
+`MDBX_OPEN_DXB_OVERLAPPED_DIRECT` was also removed because no data-file path can
+reach direct overlapped writes after `MDBX_WRITEMAP` is rejected by the
+explicit-I/O backend. Verification passed `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.127` batch, `1.163` crud, `0.992` iterate, `0.972`
+get, and `1.083` delete. Hygiene scans found no `MDBX_AVOID_MSYNC`, no
+`AVOID_MSYNC`, no `MDBX_OPEN_DXB_OVERLAPPED_DIRECT`, and no `ior_direct` in the
+checked core/build sources, plus no `dxb_mmap`, no `PAGE_REF_MAPPED`, no mapped
+metadata helpers, no legacy mapped page helpers, no data-file mmap
+setup/teardown/sync/resize calls, no mapped coherency flush, and no `lazy_fd`
+references in the checked core files.
+
+A later shared-envmode cleanup removed the remaining lock-file mode negotiation
+treatment for data-file `MDBX_WRITEMAP`. `env_open()` no longer includes
+`MDBX_WRITEMAP` in the shared `envmode` mask, accede mode can no longer inherit
+that bit from another process, and a live or stale lock-file `envmode` carrying
+`MDBX_WRITEMAP` is rejected as incompatible with the explicit-I/O storage
+backend. The old mixed-writemap lazy-durability compatibility comment was
+replaced with the current explicit-I/O invariant: writemap cannot reach this
+backend, and strict shared-writer compatibility is only about durability modes
+that affect steady checkpoints. `migration-smoke.c` now also asserts through
+the public `MDBX_envinfo.mi_mode` field that shared envmode does not advertise
+`MDBX_WRITEMAP` after normal explicit-I/O opens. Verification passed `make -f
+GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.106` batch, `1.144` crud, `0.997` iterate, `0.983`
+get, and `1.087` delete. Hygiene scans found no `MDBX_WRITEMAP` in the checked
+`mode_flags` assignment and no stale mixed-writemap envmode commentary, while
+the existing data-file mmap removal scans remain clean.
+
+A later transaction-WRITEMAP propagation cleanup removed the remaining internal
+transaction flag carry-through for data-file `MDBX_WRITEMAP`. Transaction begin
+assertions, read-transaction start/clone setup, nested transaction creation, and
+nested checkpoint flag preservation now all treat `MDBX_WRITEMAP` as impossible
+after open-time rejection. Committed page reads, unchecked page lookup,
+allocation finalization, cached-get, dirty-pointer classification, and
+non-frozen `page_kill()` writes now follow the explicit-I/O invariant directly
+instead of carrying active mapped-write alternatives. The default prefault-write
+hook no longer derives a true result from the environment writemap flag, and
+`txn_setup_primal()` no longer adjusts `front_txnid` for writemap mode. The
+remaining `MDBX_WRITEMAP` references in this surface are public flag
+normalization/rejection, lock-file mmap/OSAL support, legacy MAPASYNC
+normalization, and invariant assertions. Verification passed `make -f
+GNUmakefile mdbx_migration_smoke`, direct default and forced tiny-cache smoke
+runs, the six focused `migration_smoke` CTest entries, the full 15-test public
+CTest suite, deterministic forced tiny-cache fault injection, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.100` batch, `1.166` crud, `1.165` iterate, `0.987`
+get, and `1.087` delete.
+
+A later page-check WRITEMAP cleanup removed the last active `MDBX_WRITEMAP`
+branch from `page_check()`. The validator now asserts the open-time no-writemap
+invariant and always uses the explicit buffer ownership test for normal
+non-subpages, so accepted pages must come from shadowed transaction pages,
+transaction-owned dirty/spilled pages, subpages, page-cache buffers, or dirty
+lists. The nearby data-file open notes were also updated to describe future
+direct/no-buffering I/O as an explicit storage-backend policy rather than as a
+data-mmap/WRITEMAP coherency issue. Verification passed `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.133` batch, `1.183` crud, `0.927` iterate, `1.005`
+get, and `1.084` delete.
+
+A later open-policy WRITEMAP cleanup removed the mmap-era
+`MDBX_MMAP_INCOHERENT_FILE_WRITE` branch from `mdbx_env_open()`. Writable
+`MDBX_ACCEDE` opens now keep their requested explicit-I/O flags instead of
+being converted to `MDBX_WRITEMAP`, and direct `MDBX_WRITEMAP` requests still
+return the documented `MDBX_INCOMPATIBLE` result. `migration-smoke.c` now has a
+focused `MDBX_ACCEDE` open-policy check that opens a small writable environment
+and verifies public `MDBX_envinfo.mi_mode` does not advertise `MDBX_WRITEMAP`.
+Verification passed `make -f GNUmakefile mdbx_migration_smoke`, direct default
+and forced tiny-cache smoke runs, the six focused `migration_smoke` CTest
+entries, the full 15-test public CTest suite, deterministic forced tiny-cache
+fault injection, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.142`
+batch, `1.149` crud, `1.031` iterate, `1.003` get, and `1.076` delete.
+
+A later legacy-MAPASYNC cleanup changed `combine_durability_flags()` so the
+pre-0.9 `DEPRECATED_MAPASYNC` bit is converted to `MDBX_SAFE_NOSYNC` whenever
+the combined flags are not a real `MDBX_UTTERLY_NOSYNC`. The data-file setup
+path no longer treats `DEPRECATED_MAPASYNC` as a separate reason to skip the
+durable sync descriptor; accepted environments now carry the modern
+`MDBX_SAFE_NOSYNC`/`MDBX_NOMETASYNC` state instead. `migration-smoke.c` now
+checks both `mdbx_env_open()` and `mdbx_env_set_flags()` with the legacy numeric
+bit, verifying that the deprecated bit is cleared and the explicit-I/O lazy
+durability bits are present. Verification passed `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.125` batch, `1.160` crud, `0.949` iterate, `0.993`
+get, and `1.079` delete.
+
+A later public set-flags WRITEMAP cleanup made `mdbx_env_set_flags()` reject
+`MDBX_WRITEMAP` with the same explicit-I/O `MDBX_INCOMPATIBLE` policy used by
+`mdbx_env_open()`. This closes the inactive-env staging path where a caller
+could previously save `MDBX_WRITEMAP` on the environment and only fail later at
+open time. The active setter path also reports `MDBX_INCOMPATIBLE` for direct
+`MDBX_WRITEMAP` enable attempts before any writer lock is taken. The new smoke
+coverage verifies both inactive and active `mdbx_env_set_flags()` rejection,
+checks that `mdbx_env_get_flags()` keeps `MDBX_WRITEMAP` clear after rejection,
+and proves the same environment remains openable through the normal
+explicit-I/O path without advertising `MDBX_WRITEMAP` in
+`MDBX_envinfo.mi_mode`. Verification passed `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.127` batch, `1.178` crud, `0.825` iterate, `0.990`
+get, and `1.082` delete.
+
+A later public-header policy cleanup aligned `mdbx.h` with the explicit-I/O
+branch. `MDBX_WRITEMAP` is now documented as a legacy writable data-mapping
+mode that is rejected with `MDBX_INCOMPATIBLE` for writable explicit-I/O
+environments; read-only opens are documented as ignoring it. The stale
+`MDBX_MAPASYNC`/`MDBX_SAFE_NOSYNC` wording about asynchronous mmap flushes was
+removed, dirty-page options now describe the explicit malloc-backed dirty-page
+path, returned-value warnings no longer promise a SIGSEGV from read-only mapped
+pages, and public geometry/envinfo text now describes database file sizing
+rather than a data-file memory map. Lock-file mmap wording remains where it is
+still part of phase 1. Verification passed `git diff --check`, `make -f
+GNUmakefile mdbx_migration_smoke`, direct default and forced tiny-cache smoke
+runs, and the full 15-test public CTest suite. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.101`
+batch, `1.157` crud, `1.179` iterate, `0.949` get, and `1.058` delete. A
+targeted header scan now finds only intentional `MDBX_WRITEMAP` policy text,
+the deprecated `MDBX_MAPASYNC` alias note, and lock-file memory-mapping
+wording.
+
+A later dirty-write storage-channel cleanup moved the remaining
+`iov_ctx` setup for spilled and commit-time dirty page writes away from
+caller-selected file descriptors. `iov_ctx` now records a `dxb_io_channel`, the
+storage layer resolves the concrete descriptor through `dxb_storage_iov_fd()`,
+and durable POSIX dirty writes select the new `dxb_io_data_dsync` channel when
+the O_DSYNC descriptor is usable. Windows overlapped dirty writes remain behind
+the same storage helper. This keeps the synchronous `osal_ioring_*` batching
+intact while making the dirty-write path depend on storage-channel intent
+instead of raw `env->data_fd`/`env->dsync_fd` choices, which is a cleaner
+boundary for a later async backend behind `dxb_storage_t`. Verification passed
+`make -f GNUmakefile mdbx_migration_smoke`, direct default and forced
+tiny-cache smoke runs, the six focused `migration_smoke` CTest entries, the
+full 15-test public CTest suite, deterministic forced tiny-cache fault
+injection, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.146` batch, `1.162` crud, `0.780` iterate, `0.993`
+get, and `1.084` delete.
+
+A later storage sync range-intent cleanup introduced `dxb_sync_range_t` and
+`dxb_sync_data_range()` so data durability calls now carry an explicit page
+range through the storage boundary. The current backend still performs the same
+whole-file `fsync()` behavior, and `dxb_sync_locked()` intentionally keeps using
+the full committed data range because the shared `unsynced_pages` state may
+include earlier lazy writes outside the just-written dirty-page extent. The
+dirty-write `iov_ctx.flush_begin`/`flush_end` tracking is now documented as
+future range-sync input rather than a safe immediate narrowing signal.
+Verification passed `git diff --check`, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, focused ASAN
+`migration_smoke` CTest, and the stale data-file mmap symbol scan. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.117`
+batch, `1.174` crud, `1.029` iterate, `1.012` get, and `1.080` delete.
+
+A later page-cache write-invalidation cleanup added explicit page-cache
+invalidation hooks for storage mutations. Ordinary data writes, vectored
+writes, and file-range copies retire only private/non-reusable cache entries
+while preserving snapshot-keyed reusable read-cache entries, because MVCC keeps
+those pages immutable for the reader snapshot. Destructive truncate/remove
+operations invalidate overlapping reusable entries too. This gives future async
+write completions a cache-coherency boundary without sacrificing snapshot
+read-cache performance. Verification passed the six focused
+`migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.132` batch, `1.174` crud, `2.951` iterate,
+`1.044` get, and `0.987` delete.
+
+A later storage descriptor ownership cleanup removed the legacy
+`MDBX_env.data_fd`/`dsync_fd`/`fd4meta` aliases. The data, durable-sync, and
+meta descriptors now live directly in `dxb_storage_t`; open/setup, read-only
+info probing, meta writes, sync decisions, close-after-fork handling, and
+Windows lock helpers all select handles from the storage facade instead of
+shadow environment fields. This keeps file-handle ownership in the same place
+future async backends will hang their queues/completions. Verification passed
+`make -f GNUmakefile mdbx_migration_smoke`, direct default and forced
+tiny-cache smoke runs, the six focused `migration_smoke` CTest entries, the
+full 15-test public CTest suite, deterministic forced tiny-cache fault
+injection, focused ASAN `migration_smoke` CTest, `git diff --check`, the stale
+data-file mmap symbol scan, and a legacy descriptor-alias scan. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.090`
+batch, `1.164` crud, `1.144` iterate, `0.925` get, and `1.075` delete.
+
+A later storage I/O-queue ownership cleanup moved the dirty-write
+`osal_ioring_t` from `MDBX_env` into `dxb_storage_t`. Dirty page batching,
+Windows overlapped data writes, and Windows DXB lock helper selection now use
+the storage-owned queue/overlapped handle, while the existing close ordering
+still destroys the queue before closing descriptors. This places queued write
+state beside the data/meta/dsync handles so future async backends can attach
+submission/completion state to the storage facade instead of the environment
+root. Verification passed `make -f GNUmakefile mdbx_migration_smoke`, direct
+default and forced tiny-cache smoke runs, the six focused `migration_smoke`
+CTest entries, the full 15-test public CTest suite, deterministic forced
+tiny-cache fault injection, focused ASAN `migration_smoke` CTest,
+`git diff --check`, the stale data-file mmap symbol scan, and a legacy
+environment `ioring` scan. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.134` batch, `1.167` crud, `1.038` iterate, `1.009`
+get, and `1.080` delete.
+
+A later storage page-cache ownership cleanup moved `page_cache_t`, the explicit
+cache limit, and the page-cache mutex from `MDBX_env` into `dxb_storage_t`.
+Reusable read-only cache entries, private tracked writer read entries, pointer
+classification, range invalidation, prune/release, and env teardown now reach
+cache state through the storage facade. This completes the first ownership pass
+that places descriptors, file size, cached clean pages, and queued dirty writes
+inside the same storage object for future async backends. Verification passed
+`make -f GNUmakefile mdbx_migration_smoke`, direct default and forced
+tiny-cache smoke runs, the six focused `migration_smoke` CTest entries, the
+full 15-test public CTest suite, deterministic forced tiny-cache fault
+injection, focused ASAN `migration_smoke` CTest, `git diff --check`, the stale
+data-file mmap symbol scan, and a legacy root page-cache field scan. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.118`
+batch, `1.146` crud, `0.939` iterate, `1.090` get, and `1.068` delete.
+
+A later storage-owned page-cache helper cleanup gave tracked cache entries a
+storage back-pointer and changed cache lock/unlock/prune/list traversal helpers
+to operate on `dxb_storage_t` instead of root `MDBX_env`. Page-size and assertion
+context still use the environment where needed, but cache ownership and
+synchronization now flow through the storage facade. This narrows the boundary
+future async backends must implement around cached clean pages and cache
+invalidation. Verification passed `make -f GNUmakefile mdbx_migration_smoke`,
+direct default and forced tiny-cache smoke runs, the six focused
+`migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, focused ASAN
+`migration_smoke` CTest, `git diff --check`, the stale data-file mmap symbol
+scan, and a legacy root cache-lock helper scan. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.122`
+batch, `1.165` crud, `1.050` iterate, `0.962` get, and `1.077` delete.
+
+A later storage-only page-cache invalidation cleanup removed the unused
+`MDBX_env *` back-pointer from `page_cache_entry_t` and made
+the page-cache range invalidator accept `dxb_storage_t` directly. Byte-range
+invalidation still uses the environment for page-size conversion, but
+destructive and write-completion invalidation now enter the cache list through
+storage-owned state. This removes another cache-entry dependency on the
+environment root and leaves environment usage in the page-cache layer limited to
+page geometry/assertion context. Verification passed `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, focused ASAN
+`migration_smoke` CTest, `git diff --check`, the stale data-file mmap symbol
+scan, and stale page-cache env-owner/invalidation scans. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.122`
+batch, `1.161` crud, `1.045` iterate, `0.933` get, and `1.097` delete.
+
+A later storage descriptor-helper cleanup changed the descriptor routing helpers
+to operate on `dxb_storage_t` instead of root `MDBX_env`: data/meta/dsync
+channel selection, Windows overlapped data-handle detection, Windows DXB lock
+handle selection, and dirty-write ioring fd selection now receive storage
+directly. Higher-level callers still use the environment for page-size
+conversion, lock events, stats, and policy assertions, but raw descriptor choice
+no longer reaches through the environment root. Verification passed `make -f
+GNUmakefile mdbx_migration_smoke`, direct default and forced tiny-cache smoke
+runs, the six focused `migration_smoke` CTest entries, the full 15-test public
+CTest suite, deterministic forced tiny-cache fault injection, focused ASAN
+`migration_smoke` CTest, `git diff --check`, the stale data-file mmap symbol
+scan, and a descriptor-helper env-argument scan. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.132`
+batch, `1.150` crud, `0.831` iterate, `0.988` get, and `1.068` delete.
+
+A later storage geometry-state setter cleanup changed the `filesize`,
+`current`, and `limit` update helpers to operate on `dxb_storage_t` instead of
+root `MDBX_env`. Fetch, resize, setup, checker, and remap-lock paths still use
+the environment for page geometry, policy, and cache invalidation context, but
+the actual storage size state is now mutated through the storage facade. This
+keeps the file-size/current/limit ownership with the same object that owns DXB
+descriptors, page cache state, and dirty-write queue state. Verification passed
+`make -f GNUmakefile mdbx_migration_smoke`, direct default and forced
+tiny-cache smoke runs, the six focused `migration_smoke` CTest entries, the
+full 15-test public CTest suite, deterministic forced tiny-cache fault
+injection, focused ASAN `migration_smoke` CTest, `git diff --check`, the stale
+data-file mmap symbol scan, and a storage-setter env-argument scan. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.089`
+batch, `1.159` crud, `0.997` iterate, `0.991` get, and `1.083` delete.
+
+A later storage teardown ownership cleanup changed `dxb_storage_reset()`,
+`dxb_storage_close()`, and full page-cache release to operate on
+`dxb_storage_t` instead of root `MDBX_env`. Callers now pass the storage object
+and an explicit active-environment bit for the pinned-cache teardown assertion,
+while descriptor reset, file-size/current/limit clearing, and cached-page
+release no longer reach through the environment root. This keeps close/reset
+state transitions inside the same storage facade that will eventually own async
+queue teardown and cache lifetime. Verification passed `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, focused ASAN
+`migration_smoke` CTest, `git diff --check`, the stale data-file mmap symbol
+scan, and storage-teardown env-argument scans. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.119`
+batch, `1.159` crud, `1.005` iterate, `0.968` get, and `1.070` delete.
+
+A later storage byte-I/O helper cleanup added `dxb_storage_read()`,
+`dxb_storage_write()`, `dxb_storage_writev()`, and
+`dxb_storage_copy_bytes()`. At that checkpoint, the env-shaped `dxb_read()`,
+`dxb_write()`, page-write, page-writev, and `dxb_copy_pages()` wrappers still
+kept environment-owned conversion, page-cache invalidation, and copy-page
+policy, but raw DXB descriptor I/O entered through `dxb_storage_t`. At this
+checkpoint,
+the external export/copy path that copies from DXB to a caller-provided output fd
+remained outside this in-file storage helper because it has two different
+endpoints. This narrows the
+future async backend surface to storage-owned byte operations without changing
+public synchronous API boundaries. Verification passed `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, focused ASAN
+`migration_smoke` CTest, `git diff --check`, the stale data-file mmap symbol
+scan, and the storage byte-I/O routing scan. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.125`
+batch, `1.180` crud, `0.982` iterate, `1.080` get, and `1.078` delete.
+
+A later storage sync/size/advice helper cleanup added `dxb_storage_sync()`,
+`dxb_storage_fetch_filesize()`, `dxb_storage_set_filesize_on_disk()`,
+`dxb_storage_advise_range()`, `dxb_storage_discard_clean_range()`, and
+`dxb_storage_set_readahead()`. At that checkpoint, the env-shaped wrappers still
+owned pgop statistics, fault injection, page-cache invalidation, page-number
+conversion, and lock-file readahead state, but the raw data-fd `fsync()`,
+filesize, file-size update, `posix_fadvise()`/`F_RDADVISE`, and `F_RDAHEAD`
+calls entered through `dxb_storage_t`. At this checkpoint, the remaining direct
+`sendfile()` and `copy_file_range()` uses read from DXB into a caller-provided
+external copy fd and stayed outside the in-file storage helpers. Verification
+passed `make -f GNUmakefile mdbx_migration_smoke`, direct default and forced
+tiny-cache smoke runs, the six focused `migration_smoke` CTest entries, the full 15-test public
+CTest suite, deterministic forced tiny-cache fault injection, focused ASAN
+`migration_smoke` CTest, `git diff --check`, the stale data-file mmap symbol
+scan, and storage sync/size/advice routing scans. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.100`
+batch, `1.159` crud, `1.272` iterate, `0.956` get, and `1.078` delete.
+
+A later storage lifecycle cleanup added `dxb_storage_init()` and
+`dxb_storage_deinit()` so the explicit page-cache limit, page-cache mutex, and
+cache teardown/reset sequencing are initialized and destroyed through
+`dxb_storage_t` instead of root environment setup code. Environment creation and
+close still own the surrounding DBI/remap/lock primitives, but storage-owned
+cache state now has a single lifecycle entry/exit point that can later grow
+async queue initialization and teardown. Verification passed `make -f
+GNUmakefile mdbx_migration_smoke`, direct default and forced tiny-cache smoke
+runs, the six focused `migration_smoke` CTest entries, the full 15-test public
+CTest suite, deterministic forced tiny-cache fault injection, focused ASAN
+`migration_smoke` CTest, `git diff --check`, the stale data-file mmap symbol
+scan, and storage lifecycle ownership scans. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.010`
+batch, `0.978` crud, `0.977` iterate, `0.968` get, and `1.008` delete.
+
+A later dirty-write queue storage cleanup added `dxb_storage_write_queue()`,
+`dxb_storage_create_write_queue()`, `dxb_storage_destroy_write_queue()`,
+`dxb_storage_iov_channel_is_primary_data()`, `dxb_storage_has_dsync_fd()`, and
+`dxb_storage_can_lazy_meta_sync_with_data()`. The existing `iov_*` and commit
+code still choose channels and update sync accounting at their current policy
+layer, but dirty-write queue access, queue lifecycle, primary-data
+classification, dsync availability, and Windows overlapped lazy-meta-sync
+eligibility now enter through `dxb_storage_t`. The remaining direct
+`ioring.overlapped_fd` and `dsync_fd` touches are Windows/open-time descriptor
+setup assertions and assignments. Verification passed `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, focused ASAN
+`migration_smoke` CTest, `git diff --check`, the stale data-file mmap symbol
+scan, and dirty-write queue routing scans. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.124`
+batch, `1.162` crud, `0.827` iterate, `1.065` get, and `1.069` delete.
+
+A later external-copy/source-descriptor cleanup added
+`dxb_storage_data_fd()`, `dxb_storage_current_size()`,
+`dxb_storage_copy_to_fd()`, and `dxb_storage_sendfile_to_fd()`.
+`mdbx_env_get_fd()`, warmup range clipping, storage-owned
+read/write/sync/filesize/advice helpers, and env-copy `sendfile()`/
+`copy_file_range()` fast paths now ask `dxb_storage_t` for the DXB source
+descriptor instead of reaching through the raw storage data-fd member. The
+remaining direct `data_fd` touches are storage lifecycle internals and
+open/setup/incore checks. Verification passed `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite
+including migration-tool copy roundtrips, deterministic forced tiny-cache fault
+injection, focused ASAN `migration_smoke` CTest, `git diff --check`, stale
+data-file mmap symbol scans, and source-descriptor routing scans. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.108`
+batch, `1.168` crud, `0.820` iterate, `1.103` get, and `1.085` delete.
+
+A later storage geometry observer cleanup added `dxb_storage_limit_size()`,
+`dxb_storage_filesize()`, and `dxb_storage_contains_range()`. Public
+`env_info`, `mdbx_chk` bookkeeping/printing, and coherency root probing now
+read current size, limit size, file size, and range containment through
+`dxb_storage_t` helpers instead of peeking at storage geometry fields. Resize,
+open/setup, and commit growth paths still own the remaining direct geometry
+state mutations and assertions. Verification passed `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, focused ASAN
+`migration_smoke` CTest, `git diff --check`, stale data-file mmap symbol scans,
+and storage geometry observer routing scans. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.062`
+batch, `1.176` crud, `0.875` iterate, `1.093` get, and `1.082` delete.
+
+A later storage filesize-refresh cleanup added
+`dxb_storage_current_from_filesize()`,
+`dxb_storage_set_size_with_known_filesize()`,
+`dxb_storage_set_limit_from_filesize()`, and
+`dxb_storage_note_filesize()`. `dxb_fetch_filesize()`,
+`dxb_setup_storage()`, and `dxb_storage_resize()` now delegate the
+filesize/current/limit refresh calculation to `dxb_storage_t` helpers, and
+header/meta validation now reads the cached DXB filesize through
+`dxb_storage_filesize()`. Remaining direct geometry field accesses are resize,
+open/setup, and commit invariants/mutations that still own policy decisions.
+Verification passed `make -f GNUmakefile mdbx_migration_smoke`, direct default
+and forced tiny-cache smoke runs, the six focused `migration_smoke` CTest
+entries, the full 15-test public CTest suite, deterministic forced tiny-cache
+fault injection, focused ASAN `migration_smoke` CTest, `git diff --check`,
+stale data-file mmap symbol scans, and storage filesize-refresh routing scans.
+The paired `mdbx_migration_bench_lazy` gate was rerun after a noisy first
+attempt and then reported forced/default ratios of `1.090` batch, `1.039` crud,
+`1.895` iterate, `1.625` get, and `1.019` delete.
+
+A later storage invariant helper cleanup added
+`dxb_storage_current_within_limit()`, `dxb_storage_current_is()`,
+`dxb_storage_current_covers()`, `dxb_storage_limit_is()`,
+`dxb_storage_filesize_is()`, and `dxb_storage_filesize_covers()`. Resize,
+readahead, open-time tail discard, write/read transaction start assertions, and
+map-resize checks now validate current/limit/filesize relationships through
+`dxb_storage_t` instead of reading the raw current, limit, or filesize members
+directly. Direct current/limit/filesize field access is now confined to
+storage helper internals. Verification passed `make -f GNUmakefile
+mdbx_migration_smoke`,
+direct default and forced tiny-cache smoke runs, the six focused
+`migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, focused ASAN
+`migration_smoke` CTest, `git diff --check`, stale data-file mmap symbol scans,
+and storage invariant/direct-field routing scans. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.149`
+batch, `1.159` crud, `1.180` iterate, `0.923` get, and `1.072` delete.
+
+A later descriptor lifecycle helper cleanup added `dxb_storage_open_data()`,
+`dxb_storage_open_dsync()`, Windows-only `dxb_storage_open_overlapped()`, and
+parking helpers for the storage-owned data, dsync, and overlapped descriptors.
+Preopen snap-info, normal environment open, dsync-meta descriptor selection,
+Windows overlapped open setup, close-time overlapped assertions, and POSIX
+fork-recovery dsync close handling now go through `dxb_storage_t` helpers instead
+of reaching into raw descriptor members. Direct descriptor-member access is now
+confined to storage helper internals and documented lock-file mmap paths.
+Verification passed `make -f GNUmakefile mdbx_migration_smoke`, direct default
+and forced tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, focused ASAN `migration_smoke` CTest, `git diff --check`,
+stale data-file mmap symbol scans, and descriptor-field routing scans. The
+paired `mdbx_migration_bench_lazy` gate reported forced/default ratios of
+`1.142` batch, `1.169` crud, `1.181` iterate, `0.995` get, and `1.080` delete.
+
+A later cache invalidation facade cleanup added
+`dxb_storage_invalidate_cached_pages()` and
+`dxb_storage_invalidate_cached_bytes()`. Explicit write, writev,
+`copy_file_range()` page moves, file truncation, and destructive discard
+callers now invalidate cached pages through `dxb_storage_t` instead of passing
+through an `MDBX_env`-shaped helper or casting from `const MDBX_env` back to
+storage. Verification passed `make -f GNUmakefile mdbx_migration_smoke`, direct
+default and forced tiny-cache smoke runs, `cmake --build @cmake-ninja-build`,
+the six focused `migration_smoke` CTest entries, the full 15-test public CTest
+suite, deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, focused ASAN `migration_smoke` CTest, `git diff --check`,
+stale data-file mmap symbol scans, and cache invalidation routing scans. The
+paired `mdbx_migration_bench_lazy` gate reported forced/default ratios of
+`1.135` batch, `1.149` crud, `1.263` iterate, `0.945` get, and `1.052` delete.
+
+A later page-cache pointer-classification cleanup replaced the remaining
+env-shaped cached-page pointer helpers with
+`dxb_storage_cached_page_from_ptr()` and
+`dxb_storage_cached_page_contains()`. Cached-page scans now take
+`dxb_storage_t` plus explicit page geometry, while dirty-list pointer
+classification keeps using transaction-owned dirty buffers and page-size
+geometry from the owning transaction environment. This confines the last
+`const MDBX_env`-to-storage casts in pointer classification to storage-shaped
+helpers and keeps the page-cache list behind the storage facade. Verification
+passed `git diff --check`, stale data-file mmap symbol scans, cache pointer
+routing scans, `make -f GNUmakefile mdbx_migration_smoke`, direct default and
+forced tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.123`
+batch, `1.168` crud, `0.964` iterate, `0.964` get, and `1.070` delete.
+
+A later byte-I/O storage facade cleanup split the raw OS byte operations into
+`dxb_storage_pread()`, `dxb_storage_pwrite()`, and
+`dxb_storage_pwritev()`, then made `dxb_storage_read()`,
+`dxb_storage_write()`, and `dxb_storage_writev()` own the fault-injected
+storage operations. The env-shaped `dxb_read()` and `dxb_write*()` wrappers now
+only supply page geometry and cache invalidation policy around storage-level
+byte I/O. This keeps raw descriptor selection, raw byte submission, and
+test-fault sequencing closer to the `dxb_storage_t` facade that an async backend
+will replace. Verification passed `git diff --check`, stale data-file mmap
+symbol scans, storage byte-I/O routing scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public CTest suite, deterministic forced tiny-cache
+fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.135` batch, `1.174` crud, `0.957` iterate, `0.981`
+get, and `1.083` delete.
+
+A later sync/filesize storage facade cleanup split raw `fsync` and file-size
+extension/truncation into `dxb_storage_fsync()` and
+`dxb_storage_fsetsize()`, then made storage-shaped `dxb_storage_sync()` and
+`dxb_storage_set_filesize_on_disk()` own the related fault-injection sequence.
+`dxb_fsync()` now keeps only the environment pgop statistic update before
+delegating to storage sync, while `dxb_set_filesize()` keeps cached filesize
+state and page-cache invalidation around the storage-level resize operation.
+This moves durable-sync and geometry-changing file operations closer to the same
+storage facade boundary as byte read/write submission. Verification passed
+`git diff --check`, stale data-file mmap symbol scans, storage sync/filesize
+routing scans, `make -f GNUmakefile mdbx_migration_smoke`, direct default and forced
+tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public CTest suite,
+deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.140`
+batch, `1.158` crud, `1.104` iterate, `0.958` get, and `1.087` delete.
+
+A later copy-range storage facade cleanup split same-file
+`copy_file_range()` page moves into a raw `dxb_storage_copy_file_range()` call
+and a storage-shaped `dxb_storage_copy_bytes()` operation that owns `copy` and
+`copy-complete` fault injection plus short-copy normalization. At that
+checkpoint, `dxb_copy_pages()` still converted page numbers to byte offsets,
+delegated the copy to storage, and invalidated the destination cache range. The
+fault-injection smoke table now
+also covers pre-copy `copy:EIO` and `copy:CANCEL` defrag failures alongside the
+existing post-copy cases. Verification passed `git diff --check`, stale
+data-file mmap symbol scans, storage copy routing scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public CTest suite, deterministic forced tiny-cache
+fault injection with the expanded copy cases, `cmake --build @cmake-asan-build`,
+and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.126`
+batch, `1.169` crud, `1.013` iterate, `0.973` get, and `1.078` delete.
+
+A later env-copy storage facade cleanup split external destination fast paths
+into raw `dxb_storage_copy_file_range_to_fd()` and
+`dxb_storage_sendfile_to_fd_raw()` helpers plus storage-shaped
+`dxb_storage_copy_to_fd()` and `dxb_storage_sendfile_to_fd()` classifiers. Those
+storage operations now normalize copied, unavailable, cross-device, EOF, and
+error outcomes from `copy_file_range()` and `sendfile()`. `copy_asis()` keeps
+the MVCC reader parking/unparking and portable fallback loop, but no longer
+decodes raw syscall results from the DXB source fast paths. Verification passed
+`git diff --check`, stale data-file mmap symbol scans, storage external-copy
+routing scans, `make -f GNUmakefile mdbx_migration_smoke`, direct default and
+forced tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite
+including migration tool roundtrip copy coverage, deterministic forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.063` batch, `1.154` crud, `0.987` iterate, `0.977`
+get, and `1.073` delete.
+
+A later storage probe cleanup added `dxb_storage_stat()` and
+`dxb_storage_check_incore()` so POSIX data-file liveness/mode probes and the
+in-core filesystem check enter through `dxb_storage_t`. Environment close,
+open-time lock-file mode inheritance, DXB/LCK validation, and SysV IPC
+permission setup no longer call `fstat()` directly on the DXB descriptor, and
+`env_open()` no longer calls `osal_check_fs_incore()` directly on the data-fd.
+Lock-file mmap and lock-range operations remain at their existing layer. This
+keeps descriptor probing and filesystem capability checks beside the storage
+facade that future explicit async backends must emulate. Verification passed
+`git diff --check`, stale data-file mmap symbol scans, storage probe routing
+scans, `make -f GNUmakefile mdbx_migration_smoke`, direct default and forced
+tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public CTest suite including
+migration tool roundtrip copy coverage, deterministic forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.136` batch, `1.176` crud, `0.829` iterate, `1.045`
+get, and `1.074` delete.
+
+A later storage file-info/capability cleanup added
+`dxb_storage_fetch_sysinfo()` and `dxb_storage_check_readonly()`. `env_info_sys()`
+now asks the storage facade for data-file size/allocation/I/O-block metadata
+instead of decoding the DXB descriptor directly, while `lck_setup()` checks
+read-only filesystem state through storage before deciding whether it can
+continue without a lock file. The public `mdbx_env_get_fd()` and lock-range
+code still expose/use the data fd where that is the contract or lock primitive,
+but data-file metadata and filesystem capability probes are now part of the
+storage boundary future async backends must emulate. Verification passed `git
+diff --check`, stale data-file mmap symbol scans, storage file-info/read-only
+routing scans, `make -f GNUmakefile mdbx_migration_smoke`, direct default and
+forced tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite
+including migration tool roundtrip copy coverage, deterministic forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.119` batch, `1.154` crud, `1.022` iterate, `0.998`
+get, and `1.080` delete.
+
+A later POSIX DXB lock-routing cleanup added `dxb_storage_lock_op()` and
+`dxb_storage_setlk_with3retries()` as storage-shaped wrappers over the existing
+fcntl lock helpers. DXB lock ranges in `lck_seize()`, `lck_downgrade()`,
+`lck_upgrade()`, and the DXB exclusive/restore checks in `lck_destroy()` now go
+through `dxb_storage_t` instead of carrying a local raw data-file descriptor.
+Lock-file mmap and lock-file descriptor locking remain unchanged for phase 1.
+At this checkpoint, the public `mdbx_env_get_fd()` contract and
+`lck_destroy()` close-order comparison still intentionally used the DXB fd
+directly. Verification passed `git diff --check`, stale data-file mmap symbol
+scans, storage DXB lock-routing scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public CTest suite including migration tool roundtrip copy
+coverage, deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.120` batch, `1.195` crud, `0.743` iterate, `0.942`
+get, and `1.071` delete.
+
+A later POSIX DXB close-teardown cleanup added `dxb_storage_close_handles()` so
+the special `lck_destroy()` close sequence is storage-owned too. Normal
+`dxb_storage_close()` now reuses the same helper, while `lck_destroy()` asks it
+whether a data handle was present before restoring the in-process neighbor's
+fcntl lock. This preserves the required order, close dsync first, close DXB
+second, restore the neighbor lock after the current DXB handle is closed, then
+reset storage, without pulling DXB/dsync descriptors apart in the lock teardown
+code. The now-unused `dxb_storage_dsync_fd()` accessor was removed. The public
+`mdbx_env_get_fd()` contract remains the only `env_dxb_fd()` consumer outside the
+helper itself. Verification passed `git diff --check`, stale data-file mmap
+symbol scans, DXB close/lock routing scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public CTest suite including migration tool roundtrip copy
+coverage, deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.092`
+batch, `1.173` crud, `0.823` iterate, `1.001` get, and `1.071` delete.
+
+A later dirty-write queue submission cleanup moved the queued write target
+selection behind `dxb_storage_t`. `iov_ctx` no longer carries a raw file
+descriptor; it stores the logical `dxb_io_channel`, validates readiness through
+`dxb_storage_iov_channel_is_ready()`, submits batches through
+`dxb_storage_write_queued()`, and uses
+`dxb_storage_iov_channel_is_primary_data()` for unsynced-page accounting. This
+keeps the existing `osal_ioring_*` batching and dirty-page completion behavior,
+but makes the storage facade responsible for choosing the data, dsync, or
+overlapped write handle. Verification passed `git diff --check`, stale
+data-file mmap symbol scans, dirty-write fd routing scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public CTest suite including migration tool roundtrip copy
+coverage, deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.136`
+batch, `1.186` crud, `1.258` iterate, `0.943` get, and `1.094` delete.
+
+A later dirty-write queue ownership cleanup moved queue prepare, empty, add,
+walk, and reset operations behind `dxb_storage_t`. `iov_ctx` no longer stores an
+`osal_ioring_t` pointer; it keeps only the environment, logical
+`dxb_io_channel`, error state, and optional dirty-write range. At that
+checkpoint, the `iov_*` implementation used
+`dxb_storage_prepare_write_queue()`, `dxb_storage_write_queue_is_empty()`,
+`dxb_storage_add_queued_write()`, `dxb_storage_walk_write_queue()`, and
+`dxb_storage_reset_write_queue()`. Direct `osal_ioring_*` calls for dirty-page
+writes are confined to storage wrappers and the OSAL implementation, leaving
+future async backends one storage-owned queue surface to replace. Verification
+passed `git diff --check`, stale data-file
+mmap symbol scans, dirty-write queue ownership scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public CTest suite including migration tool roundtrip copy
+coverage, deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.141`
+batch, `1.183` crud, `0.961` iterate, `0.964` get, and `1.079` delete.
+
+A later dirty-write channel policy cleanup added
+`dxb_storage_dirty_write_channel()`. `txn_basal_commit()` now passes policy
+inputs, the lazy-meta flush need, dirty-entry count, write-through threshold,
+and shared unsynced-page count, instead of inspecting storage descriptor
+availability directly. Windows behavior remains unchanged and always selects
+the primary data channel. POSIX behavior remains unchanged and uses the dsync
+channel only when no forced nometasync flush is pending, the dsync descriptor is
+available, the dirty-entry count is within the write-through threshold, and no
+previous unsynced pages are pending. Verification passed `git diff --check`,
+stale data-file mmap symbol scans, dirty-write channel policy scans, `make -f
+GNUmakefile mdbx_migration_smoke`, direct default and forced tiny-cache smoke
+runs, `cmake --build @cmake-ninja-build`, the six focused `migration_smoke`
+CTest entries, the full 15-test public CTest suite including migration tool
+roundtrip copy coverage, deterministic forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and focused ASAN `migration_smoke` CTest.
+The paired `mdbx_migration_bench_lazy` gate reported forced/default ratios of
+`1.114` batch, `1.184` crud, `1.038` iterate, `0.984` get, and `1.079` delete.
+
+A later storage open-state cleanup added `dxb_storage_is_opened()` and removed
+the internal `env_dxb_is_opened()` helper. Environment active checks,
+pre-open guards, and DXB lock/setup assertions now ask `dxb_storage_t` whether
+the data file is open, while `env_dxb_fd()` remains only as the public
+`mdbx_env_get_fd()` descriptor bridge. This keeps open-state ownership with the
+storage facade and leaves the environment-level descriptor accessor out of
+normal control flow. Verification passed `git diff --check`, stale data-file
+mmap symbol scans, storage open-state scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public CTest suite including migration tool roundtrip copy
+coverage, deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.139`
+batch, `1.181` crud, `0.988` iterate, `0.982` get, and `1.079` delete.
+
+A later metadata sync predicate cleanup replaced the descriptor-named
+`dxb_storage_meta_on_data_fd()` with storage-owned meta-write durability
+predicates. `dxb_storage_meta_write_uses_data_sync()` keeps the raw
+`meta_fd == data_fd` relationship inside the storage block, while
+`dxb_storage_meta_write_needs_sync()` folds in the in-core database exemption
+used by `dxb_sync_locked()`. The commit path now asks whether the meta write
+needs a follow-up sync instead of testing descriptor identity directly.
+Verification passed `git diff --check`, stale data-file mmap symbol scans,
+metadata-sync storage predicate scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public CTest suite including migration tool roundtrip copy
+coverage, deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.116`
+batch, `1.179` crud, `1.061` iterate, `1.105` get, and `1.096` delete.
+
+A later storage range-sync cleanup added `dxb_storage_sync_range()` behind
+`dxb_sync_data_range()`. Data sync callers already pass a page-range intent;
+that range now reaches the storage facade instead of being discarded in the
+environment wrapper. The current backend still performs the same whole-file
+sync and ignores the range inside storage, while `dxb_note_fsync_pgop()` keeps
+the existing environment pgop accounting out of the storage backend. This gives
+future async/range-capable implementations a storage-owned hook without
+changing durability behavior. Verification passed `git diff --check`, stale
+data-file mmap symbol scans, storage range-sync scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public CTest suite including migration tool roundtrip copy
+coverage, deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.139`
+batch, `1.159` crud, `0.968` iterate, `1.024` get, and `1.082` delete.
+
+A later storage filesize-refresh fault-boundary cleanup moved the cached-size
+refresh into `dxb_storage_fetch_filesize()`. The environment wrapper now only
+delegates, while storage owns the raw size probe, `filesize` pre-call fault
+injection, `filesize-complete` post-call fault injection, and acceptance of the
+new `current`/`limit`/`filesize` view. The migration smoke fault matrix now
+exercises open-time `filesize:EIO`, `filesize:EINTR`,
+`filesize-complete:EIO`, and `filesize-complete:CANCEL`, covering immediate and
+async-style size-probe completion failures before metadata validation accepts
+the storage view. Verification passed `git diff --check`, stale data-file mmap
+symbol scans, storage filesize-refresh fault scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public CTest suite including migration tool roundtrip copy
+coverage, deterministic forced tiny-cache fault injection, the 17-test
+fault-enabled public CTest suite, `cmake --build @cmake-asan-build`, and
+focused ASAN `migration_smoke` CTest. The paired `mdbx_migration_bench_lazy`
+gate reported forced/default ratios of `1.118` batch, `1.171` crud, `0.998`
+iterate, `0.934` get, and `1.047` delete.
+
+A later storage page-read helper cleanup added `dxb_storage_read_pages()` with
+an explicit page-size shift. `meta_shadow_refresh()`, page-cache single-page
+misses, and page-cache overflow-span materialization now enter storage through
+that page-addressed helper instead of the environment-shaped
+`dxb_read_pages()` wrapper. The public/internal wrapper remains for callers
+that still need environment-owned page conversion, but committed-page cache
+fills and metadata shadow refreshes now use a storage-owned page-read surface
+that future async backends can replace directly. Verification passed `git diff
+--check`, stale data-file mmap symbol scans, storage page-read routing scans,
+`make -f GNUmakefile mdbx_migration_smoke`, direct default and forced
+tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public CTest suite including
+migration tool roundtrip copy coverage, deterministic forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.144` batch, `1.164` crud, `0.986` iterate, `1.027`
+get, and `1.071` delete.
+
+A later storage page-write helper cleanup added `dxb_storage_write_pages()` and
+`dxb_storage_writev_pages()` with page-size shifts, page-number offsets, and
+storage-owned data-cache invalidation. The env-shaped `dxb_write_pages()` and
+`dxb_writev_pages()` wrappers now delegate directly to those helpers, while the
+unused env-level byte-vector `dxb_writev()` wrapper was removed. Byte-addressed
+single-buffer writes still use `dxb_write()` for callers that need exact byte
+offsets, but page-addressed writes now present the same storage-owned surface as
+page reads. Verification passed `git diff --check`, stale data-file mmap symbol
+scans, storage page-read/write routing scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public CTest suite including migration tool roundtrip copy
+coverage, deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.108`
+batch, `1.153` crud, `1.112` iterate, `1.074` get, and `1.068` delete.
+
+A later storage page-copy helper cleanup added `dxb_storage_copy_pages()` under
+`MDBX_USE_COPYFILERANGE`. Same-file page copies now have a storage-owned helper
+that performs page-to-offset conversion, delegates to `dxb_storage_copy_bytes()`,
+normalizes copy faults through the existing storage copy path, and invalidates
+the destination data-cache pages through `dxb_storage_invalidate_written_pages()`.
+The env-shaped `dxb_copy_pages()` wrapper now only supplies the environment page
+size shift. `defrag_move()` also passes page numbers directly to `dxb_copy_pages()`
+instead of round-tripping through `pgno2bytes()` and `bytes2pgno()`. Verification
+passed `git diff --check`, stale data-file mmap symbol scans, storage page-copy
+routing scans, `make -f GNUmakefile mdbx_migration_smoke`, direct default and
+forced tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite
+including `mdbx_defrag` overflow tool roundtrip coverage, deterministic forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.132` batch, `1.167` crud, `0.976` iterate, `0.990`
+get, and `1.081` delete.
+
+A later storage page-prefetch helper cleanup added `dxb_storage_prefetch_pages()`
+beside the byte-range advisory helper. `dxb_prefetch()` now supplies the
+environment page-size shift and delegates to storage for page-to-byte conversion
+and `dxb_advice_willneed` submission, while `dxb_advise_range()` remains the
+byte-range wrapper for callers that already operate in bytes and still owns the
+zero-length fast path. Verification passed `git diff --check`, stale data-file
+mmap symbol scans, storage prefetch routing scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public CTest suite including migration tool roundtrip coverage,
+deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.105`
+batch, `1.167` crud, `0.880` iterate, `0.798` get, and `1.077` delete.
+
+A later dirty-write queued-pages helper cleanup added
+`dxb_storage_add_queued_pages()` beside the byte-addressed queue helper.
+`iov_page()` now submits dirty pages by page number and page count, leaving
+page-to-offset and page-count-to-byte conversion inside the storage-owned queue
+surface. The byte-addressed `dxb_storage_add_queued_write()` remains available
+for lower-level queue internals, but dirty-page commit submission now matches
+the storage-owned page read, write, copy, and prefetch helpers. Verification
+passed `git diff --check`, stale data-file mmap symbol scans, dirty-write
+queued-page routing scans, `make -f GNUmakefile mdbx_migration_smoke`, direct
+default and forced tiny-cache smoke runs, `cmake --build @cmake-ninja-build`,
+the six focused `migration_smoke` CTest entries, the full 15-test public CTest
+suite including migration tool roundtrip coverage, deterministic forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.142` batch, `1.172` crud, `1.055` iterate, `1.078`
+get, and `1.076` delete.
+
+A later dirty-write queue preparation cleanup added
+`dxb_storage_prepare_write_queue_pages()`. `iov_init()` now passes dirty-page
+item count and page count to storage, and the storage helper performs the same
+page-count-to-byte conversion plus system-page rounding previously done with
+`pgno_ceil2sp_bytes()` in the transaction layer. Together with
+`dxb_storage_add_queued_pages()`, dirty-page queue capacity and submission are
+now page-addressed at the storage boundary. Verification passed `git diff --check`,
+stale data-file mmap symbol scans, dirty-write queue preparation routing scans,
+`make -f GNUmakefile mdbx_migration_smoke`, direct default and forced
+tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public CTest suite including
+migration tool roundtrip coverage, deterministic forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.103` batch, `1.166` crud, `1.034` iterate, `0.977`
+get, and `1.090` delete.
+
+A later discard-path cleanup added `dxb_storage_discard_range()` and
+`dxb_storage_discard_remove_range()`. The env-shaped `dxb_discard_range()` now
+only adapts environment page geometry, while storage owns the clean/remove mode
+dispatch and cache invalidation that follows a successful remove-style discard.
+That leaves file-space discard policy beside the storage-owned advisory and
+cache-invalidation helpers future async backends must replace. Verification
+passed `git diff --check`, stale data-file mmap symbol scans, storage discard
+routing scans, `make -f GNUmakefile mdbx_migration_smoke`, direct default and
+forced tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite
+including migration tool roundtrip coverage, deterministic forced tiny-cache
+fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.140` batch, `1.165` crud, `0.835` iterate, `1.075`
+get, and `1.070` delete.
+
+Use larger runs for final decisions; this reduced run is only a quick regression
+smoke.
+
+## Acceptance Criteria
+
+The migration is not complete until all of the following are true:
+
+- No data-file open/setup/resize/sync path requires `osal_mmap_t`, and
+  `MDBX_env` has no data-file mmap field.
+- Generic `pgno2page()` and mapped data-page helper fallbacks are removed, and
+  normal page reads go through pinned `page_get_*()`/page-cache results.
+- Meta page reads and writes use explicit buffers and explicit I/O.
+- `MDBX_WRITEMAP` is rejected by a documented policy.
+- Lock-file mmap remains working and unchanged for phase 1.
+- Public API value lifetime behavior matches the existing API.
+- Public gates pass, the full MDBX suite passes when available, and performance
+  regressions are measured against the stored baseline.

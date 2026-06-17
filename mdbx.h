@@ -735,7 +735,7 @@ void LIBMDBX_API NTAPI mdbx_module_handler(PVOID module, DWORD reason, PVOID res
 
 /** \brief Opaque structure for a database environment.
  * \details An environment supports multiple key-value tables (aka key-value
- * maps, spaces or sub-databases), all residing in the same shared-memory map.
+ * maps, spaces or sub-databases), all residing in the same database file.
  * \see mdbx_env_create() \see mdbx_env_close() */
 #ifndef __cplusplus
 typedef struct MDBX_env MDBX_env;
@@ -957,7 +957,7 @@ typedef enum MDBX_debug_flags {
   MDBX_DBG_JITTER = 4,
 
   /** Controls including of a database(s) meta-pages in coredump files.
-   * \note May affect performance in \ref MDBX_WRITEMAP mode */
+   * \note May affect performance while inspecting or dumping process memory. */
   MDBX_DBG_DUMP = 8,
 
   /** Allow multi-opening environment(s) */
@@ -1121,10 +1121,10 @@ typedef enum MDBX_env_flags {
    *      but NOT on a network share.
    *   2. environment MUST be opened only by LOCAL processes,
    *      but NOT over a network.
-   *   3. OS kernel (i.e. file system and memory mapping implementation) and
-   *      all processes that open the given environment MUST be running
-   *      in the physically single RAM with cache-coherency. The only
-   *      exception for cache-consistency requirement is Linux on MIPS
+   *   3. OS kernel (i.e. file system and lock-file memory mapping
+   *      implementation) and all processes that open the given environment
+   *      MUST be running in the physically single RAM with cache-coherency.
+   *      The only exception for cache-consistency requirement is Linux on MIPS
    *      architecture, but this case has not been tested for a long time).
    *
    * This flag affects only at environment opening but can't be changed after.
@@ -1146,34 +1146,18 @@ typedef enum MDBX_env_flags {
    * read-only mode. */
   MDBX_ACCEDE = UINT32_C(0x40000000),
 
-  /** Map data into memory with write permission.
+  /** Legacy writable data mapping mode.
    *
-   * Use a writeable memory map unless \ref MDBX_RDONLY is set. This uses fewer
-   * mallocs and requires much less work for tracking database pages, but
-   * loses protection from application bugs like wild pointer writes and other
-   * bad updates into the database. This may be slightly faster for DBs that
-   * fit entirely in RAM, but is slower for DBs larger than RAM. Also adds the
-   * possibility for stray application writes thru pointers to silently
-   * corrupt the database.
+   * `MDBX_WRITEMAP` used to map the data file with write permission and modify
+   * database pages directly in that mapping. The explicit-I/O backend does not
+   * provide writable data-file mmap semantics, so enabling this flag for a
+   * writable environment is rejected with \ref MDBX_INCOMPATIBLE by
+   * \ref mdbx_env_open() and \ref mdbx_env_set_flags().
    *
-   * - with `MDBX_WRITEMAP` = all data will be mapped into memory in the
-   *   read-write mode. This offers a significant performance benefit, since the
-   *   data will be modified directly in mapped memory and then flushed to disk
-   *   by single system call, without any memory management nor copying.
+   * Read-only opens silently ignore this flag together with other write-only
+   * options.
    *
-   * - without `MDBX_WRITEMAP` = data will be mapped into memory in the
-   *   read-only mode. This requires stocking all modified database pages in
-   *   memory and then writing them to disk through file operations.
-   *
-   * \warning On the other hand, `MDBX_WRITEMAP` adds the possibility for stray
-   * application writes thru pointers to silently corrupt the database.
-   *
-   * \note The `MDBX_WRITEMAP` mode is incompatible with nested transactions,
-   * since this is unreasonable. I.e. nested transactions requires mallocation
-   * of database pages and more work for tracking ones, which neuters a
-   * performance boost caused by the `MDBX_WRITEMAP` mode.
-   *
-   * This flag affects only at environment opening but can't be changed after.
+   * This flag cannot be enabled for writable explicit-I/O environments.
    */
   MDBX_WRITEMAP = UINT32_C(0x80000),
 
@@ -1265,11 +1249,9 @@ typedef enum MDBX_env_flags {
    * buffers. This initialization step has a modest performance cost so some
    * applications may want to disable it using this flag. This option can be a
    * problem for applications which handle sensitive data like passwords, and
-   * it makes memory checkers like Valgrind noisy. This flag is not needed
-   * with \ref MDBX_WRITEMAP, which writes directly to the mmap instead of using
-   * malloc for pages. The initialization is also skipped if \ref MDBX_RESERVE
-   * is used; the caller is expected to overwrite all of the memory that was
-   * reserved in that case.
+   * it makes memory checkers like Valgrind noisy. The initialization is skipped
+   * if \ref MDBX_RESERVE is used; the caller is expected to overwrite all of
+   * the memory that was reserved in that case.
    *
    * This flag may be changed at any time using `mdbx_env_set_flags()`. */
   MDBX_NOMEMINIT = UINT32_C(0x1000000),
@@ -1393,12 +1375,6 @@ typedef enum MDBX_env_flags {
    * huge difference in how are recycled the MVCC snapshots corresponding to
    * previous "steady" transactions (see below).
    *
-   * With \ref MDBX_WRITEMAP the `MDBX_SAFE_NOSYNC` instructs MDBX to use
-   * asynchronous mmap-flushes to disk. Asynchronous mmap-flushes means that
-   * actually all writes will scheduled and performed by operation system on it
-   * own manner, i.e. unordered. MDBX itself just notify operating system that
-   * it would be nice to write data to disk, but no more.
-   *
    * Depending on the platform and hardware, with `MDBX_SAFE_NOSYNC` you may get
    * a multiple increase of write performance, even 10 times or more.
    *
@@ -1439,9 +1415,10 @@ typedef enum MDBX_env_flags {
 
   /** \deprecated Please use \ref MDBX_SAFE_NOSYNC instead of `MDBX_MAPASYNC`.
    *
-   * Since version 0.9.x the `MDBX_MAPASYNC` is deprecated and has the same
-   * effect as \ref MDBX_SAFE_NOSYNC with \ref MDBX_WRITEMAP. This just API
-   * simplification is for convenience and clarity. */
+   * Since version 0.9.x the public `MDBX_MAPASYNC` name is deprecated and is
+   * an alias for \ref MDBX_SAFE_NOSYNC. It no longer implies writable data-file
+   * mmap, because \ref MDBX_WRITEMAP is unsupported by the explicit-I/O
+   * backend. */
   MDBX_MAPASYNC = MDBX_SAFE_NOSYNC,
 
   /** Don't sync anything and wipe previous steady commits.
@@ -1453,18 +1430,18 @@ typedef enum MDBX_env_flags {
    * even 100 times or more.
    *
    * If the filesystem preserves write order (which is rare and never provided
-   * unless explicitly noted) and the \ref MDBX_WRITEMAP and \ref
-   * MDBX_LIFORECLAIM flags are not used, then a system crash can't corrupt the
-   * database, but you can lose the last transactions, if at least one buffer is
-   * not yet flushed to disk. The risk is governed by how often the system
-   * flushes dirty buffers to disk and how often \ref mdbx_env_sync() is called.
-   * So, transactions exhibit ACI (atomicity, consistency, isolation) properties
-   * and only lose `D` (durability). I.e. database integrity is maintained, but
-   * a system crash may undo the final transactions.
+   * unless explicitly noted) and the \ref MDBX_LIFORECLAIM flag is not used,
+   * then a system crash can't corrupt the database, but you can lose the last
+   * transactions, if at least one buffer is not yet flushed to disk. The risk
+   * is governed by how often the system flushes dirty buffers to disk and how
+   * often \ref mdbx_env_sync() is called. So, transactions exhibit ACI
+   * (atomicity, consistency, isolation) properties and only lose `D`
+   * (durability). I.e. database integrity is maintained, but a system crash may
+   * undo the final transactions.
    *
    * Otherwise, if the filesystem not preserves write order (which is
-   * typically) or \ref MDBX_WRITEMAP or \ref MDBX_LIFORECLAIM flags are used,
-   * you should expect the corrupted database after a system crash.
+   * typically) or \ref MDBX_LIFORECLAIM flag is used, you should expect the
+   * corrupted database after a system crash.
    *
    * So, most important thing about `MDBX_UTTERLY_NOSYNC`:
    *  - a system crash immediately after commit the write transaction
@@ -2214,10 +2191,10 @@ typedef enum MDBX_option {
    *
    * \details A `dirty page` refers to a page that has been updated in memory
    * only, the changes to a dirty page are not yet stored on disk.
-   * Without \ref MDBX_WRITEMAP dirty pages are allocated from memory and
-   * released when a transaction is committed. To reduce overhead, it is
-   * reasonable to release not all ones, but to leave some allocations in
-   * reserve for reuse in the next transaction(s).
+   * Dirty pages are allocated from memory and released when a transaction is
+   * committed. To reduce overhead, it is reasonable to release not all ones,
+   * but to leave some allocations in reserve for reuse in the next
+   * transaction(s).
    *
    * The `MDBX_opt_dp_reserve_limit` allows you to set a limit for such reserve
    * inside the current process. Default is 1024. */
@@ -2228,10 +2205,9 @@ typedef enum MDBX_option {
    *
    * \details A `dirty page` refers to a page that has been updated in memory
    * only, the changes to a dirty page are not yet stored on disk.
-   * Without \ref MDBX_WRITEMAP dirty pages are allocated from memory and will
-   * be busy until are written to disk. Therefore for a large transactions is
-   * reasonable to limit dirty pages collecting above an some threshold but
-   * spill to disk instead.
+   * Dirty pages are allocated from memory and will be busy until are written to
+   * disk. Therefore for a large transactions is reasonable to limit dirty pages
+   * collecting above an some threshold but spill to disk instead.
    *
    * The `MDBX_opt_txn_dp_limit` controls described threshold for the current
    * process. Default is 1/42 of the sum of whole and currently available RAM
@@ -2332,14 +2308,13 @@ typedef enum MDBX_option {
    *    a write-and-flush approach will be used.
    *
    * \note MDBX_opt_writethrough_threshold affects only \ref MDBX_SYNC_DURABLE
-   * mode without \ref MDBX_WRITEMAP, and not supported on Windows.
+   * mode and is not supported on Windows.
    * On Windows a write-through is used always but \ref MDBX_NOMETASYNC could
    * be used for switching to write-and-flush. */
   MDBX_opt_writethrough_threshold,
 
   /** \brief Controls prevention of page-faults of reclaimed and allocated pages
-   * in the \ref MDBX_WRITEMAP mode by clearing ones through file handle before
-   * touching. */
+   * by clearing ones through file handle before touching. */
   MDBX_opt_prefault_write_enable,
 
   /** \brief Controls the in-process spending time limit of searching consecutive pages inside GC.
@@ -2511,6 +2486,10 @@ LIBMDBX_API int mdbx_env_get_option(const MDBX_env *env, const MDBX_option_t opt
  *       flags on the same environment.
  *       In such case \ref MDBX_INCOMPATIBLE will be returned.
  *
+ * \note The explicit-I/O backend rejects \ref MDBX_WRITEMAP for writable
+ *       environments with \ref MDBX_INCOMPATIBLE. Read-only opens ignore it as
+ *       an irrelevant write-only flag.
+ *
  * If the database is already exist and parameters specified early by
  * \ref mdbx_env_set_geometry() are incompatible (i.e. for instance, different
  * page size) then \ref mdbx_env_open() will return \ref MDBX_INCOMPATIBLE
@@ -2535,6 +2514,8 @@ LIBMDBX_API int mdbx_env_get_option(const MDBX_env *env, const MDBX_option_t opt
  * \retval MDBX_INCOMPATIBLE  Environment is already opened by another process,
  *                            but with different set of \ref MDBX_SAFE_NOSYNC,
  *                            \ref MDBX_UTTERLY_NOSYNC flags.
+ *                            Or \ref MDBX_WRITEMAP was requested for a
+ *                            writable explicit-I/O environment.
  *                            Or if the database is already exist and parameters
  *                            specified early by \ref mdbx_env_set_geometry()
  *                            are incompatible (i.e. different pagesize, etc).
@@ -2566,8 +2547,8 @@ typedef enum MDBX_env_delete_mode {
    * \note On POSIX systems, processes already working with the database will
    * continue to work without interference until it close the environment.
    * \note On Windows, the behavior of `MDBX_ENV_JUST_DELETE` is different
-   * because the system does not support deleting files that are currently
-   * memory mapped. */
+   * because the system does not support deleting files that still have mapped
+   * lock-file views. */
   MDBX_ENV_JUST_DELETE = 0,
   /** \brief Make sure that the environment is not being used by other
    * processes, or return an error otherwise. */
@@ -2589,7 +2570,7 @@ typedef enum MDBX_env_delete_mode {
  *                       above in the \ref MDBX_env_delete_mode_t section.
  *
  * \note The \ref MDBX_ENV_JUST_DELETE don't supported on Windows since system
- * unable to delete a memory-mapped files.
+ * unable to delete files that still have mapped lock-file views.
  *
  * \returns A non-zero error value on failure and 0 on success,
  *          some possible errors are:
@@ -2842,7 +2823,7 @@ struct MDBX_envinfo {
     uint64_t shrink;  /**< Shrink threshold for datafile */
     uint64_t grow;    /**< Growth step for datafile */
   } mi_geo;
-  uint64_t mi_mapsize;                  /**< Size of the database memory map */
+  uint64_t mi_mapsize;                  /**< Configured maximum database size, kept for ABI compatibility */
   uint64_t mi_dxb_fsize;                /**< Current database file size */
   uint64_t mi_dxb_fallocated;           /**< Space allocated for the database file in a filesystem */
   uint64_t mi_last_pgno;                /**< Number of the last used page */
@@ -3110,7 +3091,7 @@ LIBMDBX_INLINE_API(int, mdbx_env_get_syncperiod, (const MDBX_env *env, unsigned 
   return rc;
 }
 
-/** \brief Close the environment and release the memory map.
+/** \brief Close the environment and release associated resources.
  * \ingroup c_opening
  *
  * Only a single thread may call this function. All transactions, tables,
@@ -3184,9 +3165,9 @@ LIBMDBX_INLINE_API(int, mdbx_env_close, (MDBX_env * env)) { return mdbx_env_clos
  *
  * The \ref mdbx_env_resurrect_after_fork() function restores the transferred instance of the environment in the child
  * process after forking, namely: updates the system identifiers used, reopens file descriptors, acquires the necessary
- * locks associated with LCK and DXB database files, restores the memory mappings of the database file, reader tables
- * and auxiliary data to memory. However, transactions inherited from the parent process are not restored, and writing
- * and reading transactions are handled differently:
+ * locks associated with LCK and DXB database files, restores the lock-file mapping, and reinitializes auxiliary
+ * process-local state. However, transactions inherited from the parent process are not restored, and writing and
+ * reading transactions are handled differently:
  *
  *  - The writing transaction, if there was one at the moment of forking, is aborted in the child process with the
  *    release of its associated resources, including all nested transactions.
@@ -3320,7 +3301,12 @@ LIBMDBX_API int mdbx_env_warmup(const MDBX_env *env, const MDBX_txn *txn, MDBX_w
  *
  * \returns A non-zero error value on failure and 0 on success,
  *          some possible errors are:
- * \retval MDBX_EINVAL  An invalid parameter was specified. */
+ * \retval MDBX_EINVAL        An invalid parameter was specified.
+ * \retval MDBX_EPERM         The requested flag cannot be changed for the
+ *                            current environment state.
+ * \retval MDBX_EACCESS       The environment is read-only.
+ * \retval MDBX_INCOMPATIBLE  \ref MDBX_WRITEMAP was requested for a writable
+ *                            explicit-I/O environment. */
 LIBMDBX_API int mdbx_env_set_flags(MDBX_env *env, MDBX_env_flags_t flags, bool onoff);
 
 /** \brief Get environment flags.
@@ -3376,7 +3362,7 @@ LIBMDBX_API int mdbx_env_get_pathW(const MDBX_env *env, const wchar_t **dest);
 LIBMDBX_API int mdbx_env_get_fd(const MDBX_env *env, mdbx_filehandle_t *fd);
 
 /** \brief Set all size-related parameters of environment, including page size
- * and the min/max size of the memory map.
+ * and the min/max size of the database file.
  * \ingroup c_settings
  *
  * In contrast to LMDB, the MDBX provide automatic size management of an
@@ -3433,20 +3419,17 @@ LIBMDBX_API int mdbx_env_get_fd(const MDBX_env *env, mdbx_filehandle_t *fd);
  *    in case of lack of space;
  *  - There is the threshold for unused space, beyond which the database file
  *    will be shrunk;
- *  - The size of the memory map is also the maximum size of the database;
- *  - MDBX will automatically manage both the size of the database and the size
- *    of memory map, according to the given parameters.
+ *  - The upper size is also the maximum size of the database;
+ *  - MDBX will automatically manage the size of the database file according to
+ *    the given parameters.
  *
  * So, there some considerations about choosing these parameters:
  *  - The lower bound allows you to prevent database shrinking below certain
  *    reasonable size to avoid unnecessary resizing costs.
  *  - The upper bound allows you to prevent database growth above certain
- *    reasonable size. Besides, the upper bound defines the linear address space
- *    reservation in each process that opens the database. Therefore changing
- *    the upper bound is costly and may be required reopening environment in
- *    case of \ref MDBX_UNABLE_EXTEND_MAPSIZE errors, and so on. Therefore, this
- *    value should be chosen reasonable large, to accommodate future growth of
- *    the database.
+ *    reasonable size. Therefore this value should be chosen reasonable large,
+ *    to accommodate future growth of the database, while still matching
+ *    application and filesystem limits.
  *  - The growth step must be greater than zero to allow the database to grow,
  *    but also reasonable not too small, since increasing the size by little
  *    steps will result a large overhead.
@@ -3457,17 +3440,8 @@ LIBMDBX_API int mdbx_env_get_fd(const MDBX_env *env, mdbx_filehandle_t *fd);
  *    simulation legacy \ref mdbx_env_set_mapsize() and as workaround Windows
  *    issues (see below).
  *
- * Unfortunately, Windows has is a several issue
- * with resizing of memory-mapped file:
- *  - Windows unable shrinking a memory-mapped file (i.e memory-mapped section)
- *    in any way except unmapping file entirely and then map again. Moreover,
- *    it is impossible in any way when a memory-mapped file is used more than
- *    one process.
- *  - Windows does not provide the usual API to augment a memory-mapped file
- *    (i.e. a memory-mapped partition), but only by using "Native API"
- *    in an undocumented way.
- *
- * MDBX bypasses all Windows issues, but at a cost:
+ * MDBX coordinates online resize with active readers and writers, but at a
+ * cost:
  *  - Ability to resize database on the fly requires an additional lock
  *    and release `SlimReadWriteLock` during each read-only transaction.
  *  - During resize all in-process threads should be paused and then resumed.
@@ -3561,10 +3535,10 @@ LIBMDBX_API int mdbx_env_get_fd(const MDBX_env *env, mdbx_filehandle_t *fd);
  *                        and now it enabled, but there are reading threads that
  *                        don't use the additional `SRWL` (which is required to
  *                        avoid Windows issues).
- *                        2) Temporary close memory mapped is required to change
- *                        geometry, but there read transaction(s) is running
- *                        and no corresponding thread(s) could be suspended
- *                        since the \ref MDBX_NOSTICKYTHREADS mode is used.
+ *                        2) Geometry change requires pausing in-process read
+ *                        transaction(s), but no corresponding thread(s) could
+ *                        be suspended since the \ref MDBX_NOSTICKYTHREADS mode
+ *                        is used.
  * \retval MDBX_EACCESS   The environment opened in read-only.
  * \retval MDBX_MAP_FULL  Specified size smaller than the space already
  *                        consumed by the environment.
@@ -5142,12 +5116,10 @@ LIBMDBX_API int mdbx_drop(MDBX_txn *txn, MDBX_dbi dbi, bool del);
  * \note The memory pointed to by the returned values is owned by the
  * table. The caller MUST not dispose of the memory, and MUST not modify it
  * in any way regardless in a read-only nor read-write transactions!
- * For case a table opened without the \ref MDBX_WRITEMAP modification
- * attempts likely will cause a `SIGSEGV`. However, when a table opened with
- * the \ref MDBX_WRITEMAP or in case values returned inside read-write
- * transaction are located on a "dirty" (modified and pending to commit) pages,
- * such modification will silently accepted and likely will lead to DB and/or
- * data corruption.
+ * Modification attempts have undefined behavior. Values may be backed by
+ * explicit read-cache pages or by dirty pages in a read-write transaction; in
+ * the latter case modifying returned memory can corrupt data committed by the
+ * transaction.
  *
  * \note Values returned from the table are valid only until a
  * subsequent update operation, or the end of the transaction.
@@ -5246,7 +5218,7 @@ typedef struct MDBX_cache_entry {
                                   *   that hold the cached data or reflect it state. */
   uint64_t last_confirmed_txnid; /**< The recent transaction/MVCC-snapshot ID wherein the cache entry
                                   *   was checked and confirmed. */
-  size_t offset;                 /**< The offset of cached data value for a corresponding key.
+  size_t offset;                 /**< The data-file offset of cached data value for a corresponding key.
                                   *   The zero value means \ref MDBX_NOTFOUND. */
   uint32_t length;               /**< The length of cached data value for a corresponding key. */
 } MDBX_cache_entry_t;
@@ -5352,9 +5324,9 @@ typedef struct MDBX_cache_result {
  * \ingroup c_crud
  * \details The essence of this "caching" is using a cached information to check as quickly as possible whether the data
  * has changed or not, with early exit when searching though a DB. For this a petty version information is stored in
- * a \ref MDBX_cache_entry_t structure, along with the offset to the "cached" data inside the memory-mapped database
- * file. Instead of a full B-tree search it stops when reaches a DB page that has not been modified after the last
- * check. Thus a minimum number of steps are performed which provides dramatic acceleration in many cases.
+ * a \ref MDBX_cache_entry_t structure, along with the data-file offset to the "cached" data. Instead of a full B-tree
+ * search it stops when reaches a DB page that has not been modified after the last check. Thus a minimum number of
+ * steps are performed which provides dramatic acceleration in many cases.
  *
  * \note This function is supports multi-threaded cases and automatically resolves collisions using lockfree approach,
  * nonetheless \ref MDBX_NOSTICKYTHREADS mode is required to use it within a different threads.
@@ -5379,9 +5351,9 @@ LIBMDBX_API MDBX_cache_result_t mdbx_cache_get(const MDBX_txn *txn, MDBX_dbi dbi
  * \ingroup c_crud
  * \details The essence of this "caching" is using a cached information to check as quickly as possible whether the data
  * has changed or not, with early exit when searching though a DB. For this a petty version information is stored in
- * a \ref MDBX_cache_entry_t structure, along with the offset to the "cached" data inside the memory-mapped database
- * file. Instead of a full B-tree search it stops when reaches a DB page that has not been modified after the last
- * check. Thus a minimum number of steps are performed which provides dramatic acceleration in many cases.
+ * a \ref MDBX_cache_entry_t structure, along with the data-file offset to the "cached" data. Instead of a full B-tree
+ * search it stops when reaches a DB page that has not been modified after the last check. Thus a minimum number of
+ * steps are performed which provides dramatic acceleration in many cases.
  *
  * \note This function is intended to be used with a given cache entry only in single-threaded cases, otherwise
  * behaviour is undefined.
@@ -5943,12 +5915,10 @@ LIBMDBX_API int mdbx_cursor_compare(const MDBX_cursor *left, const MDBX_cursor *
  * \note The memory pointed to by the returned values is owned by the
  * database. The caller MUST not dispose of the memory, and MUST not modify it
  * in any way regardless in a read-only nor read-write transactions!
- * For case a database opened without the \ref MDBX_WRITEMAP modification
- * attempts likely will cause a `SIGSEGV`. However, when a database opened with
- * the \ref MDBX_WRITEMAP or in case values returned inside read-write
- * transaction are located on a "dirty" (modified and pending to commit) pages,
- * such modification will silently accepted and likely will lead to DB and/or
- * data corruption.
+ * Modification attempts have undefined behavior. Values may be backed by
+ * explicit read-cache pages or by dirty pages in a read-write transaction; in
+ * the latter case modifying returned memory can corrupt data committed by the
+ * transaction.
  *
  * \param [in] cursor    A cursor handle returned by \ref mdbx_cursor_open().
  * \param [in,out] key   The key for a retrieved item.
@@ -6148,12 +6118,10 @@ LIBMDBX_API int mdbx_cursor_scan_from(MDBX_cursor *cursor, MDBX_predicate_func p
  * \note The memory pointed to by the returned values is owned by the
  * database. The caller MUST not dispose of the memory, and MUST not modify it
  * in any way regardless in a read-only nor read-write transactions!
- * For case a database opened without the \ref MDBX_WRITEMAP modification
- * attempts likely will cause a `SIGSEGV`. However, when a database opened with
- * the \ref MDBX_WRITEMAP or in case values returned inside read-write
- * transaction are located on a "dirty" (modified and pending to commit) pages,
- * such modification will silently accepted and likely will lead to DB and/or
- * data corruption.
+ * Modification attempts have undefined behavior. Values may be backed by
+ * explicit read-cache pages or by dirty pages in a read-write transaction; in
+ * the latter case modifying returned memory can corrupt data committed by the
+ * transaction.
  *
  * \param [in] cursor     A cursor handle returned by \ref mdbx_cursor_open().
  * \param [out] count     The number of key and value item returned, on success

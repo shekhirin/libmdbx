@@ -480,18 +480,10 @@ if(WIN32)
   if(MDBX_NTDLL_EXTRA_IMPLIB)
     add_option(MDBX WITHOUT_MSVC_CRT "Avoid dependence from MSVC CRT and use ntdll.dll instead" OFF)
   endif()
-  set(MDBX_AVOID_MSYNC_DEFAULT ON)
 else()
   add_option(MDBX USE_OFDLOCKS "Use Open file description locks (aka OFD locks, non-POSIX)" AUTO)
   mark_as_advanced(MDBX_USE_OFDLOCKS)
-  add_option(MDBX USE_MINCORE "Use Unix' mincore() to determine whether DB-pages are resident in memory" ON)
-  mark_as_advanced(MDBX_USE_MINCORE)
-  set(MDBX_AVOID_MSYNC_DEFAULT OFF)
 endif()
-add_option(
-  MDBX AVOID_MSYNC
-  "Disable in-memory database updating with consequent flush-to-disk/msync syscall in `MDBX_WRITEMAP` mode"
-  ${MDBX_AVOID_MSYNC_DEFAULT})
 add_option(MDBX MMAP_NEEDS_JOLT "Assume system needs explicit syscall to sync/flush/write modified mapped memory" AUTO)
 mark_as_advanced(MDBX_MMAP_NEEDS_JOLT)
 add_option(MDBX LOCKING "Locking method (Windows=-1, SystemV=5, POSIX=1988, POSIX=2001, POSIX=2008)" AUTO)
@@ -512,6 +504,8 @@ add_option(MDBX ENABLE_PGET_STAT "Gathering the number of page get operations fo
 add_option(MDBX ENABLE_DBI_SPARSE
            "Support for sparse sets of DBI handles to reduce overhead when starting and processing transactions" ON)
 add_option(MDBX ENABLE_DBI_LOCKFREE "Support for deferred releasing and a lockfree path to quickly open DBI handles" ON)
+add_option(MDBX ENABLE_DXB_FAULT_INJECTION "Enable test-only DXB I/O fault injection hooks" OFF)
+mark_as_advanced(MDBX_ENABLE_DXB_FAULT_INJECTION)
 add_option(MDBX USE_FALLOCATE "Using posix_fallocate() or fcntl(F_PREALLOCATE) on OSX" AUTO)
 mark_as_advanced(MDBX_USE_FALLOCATE)
 add_option(MDBX ENABLE_FAKE_NESTED_READONLY_TRANSACTIONS "Enables fake nested read-only transactions, which are much cheaper but do not restore the state of cursors in case of transaction abortion." OFF)

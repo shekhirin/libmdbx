@@ -4,6 +4,7 @@
 
 #include <iostream>
 #include <mdbx.h++>
+#include <cstdlib>
 
 /* This is a minimal example now, which will be expanded soon. */
 
@@ -109,10 +110,6 @@ int main(int, const char *[]) {
     thousand(bench_database, mdbx::env::mode::write_file_io, mdbx::env::durability::half_synchronous_weak_last);
     thousand(bench_database, mdbx::env::mode::write_file_io, mdbx::env::durability::lazy_weak_tail);
     thousand(bench_database, mdbx::env::mode::write_file_io, mdbx::env::durability::whole_fragile);
-    thousand(bench_database, mdbx::env::mode::write_mapped_io, mdbx::env::durability::robust_synchronous);
-    thousand(bench_database, mdbx::env::mode::write_mapped_io, mdbx::env::durability::half_synchronous_weak_last);
-    thousand(bench_database, mdbx::env::mode::write_mapped_io, mdbx::env::durability::lazy_weak_tail);
-    thousand(bench_database, mdbx::env::mode::write_mapped_io, mdbx::env::durability::whole_fragile);
     return doit("example_database") ? EXIT_SUCCESS : EXIT_FAILURE;
   } catch (const std::exception &ex) {
     std::cerr << "Exception: " << ex.what() << "\n";
