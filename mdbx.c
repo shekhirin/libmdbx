@@ -1514,19 +1514,6 @@ static inline int dxb_storage_page_ref_io(const dxb_storage_t *storage, const pa
   return dxb_storage_page_ref_span_io(storage, ref, ref->npages ? ref->npages : 1, io);
 }
 
-static inline int dxb_storage_page_ref_bytes_io(const dxb_storage_t *storage, const page_ref_t *ref,
-                                                size_t page_offset, size_t bytes, dxb_byte_io_t *io) {
-  dxb_page_io_t pages;
-  int rc = dxb_storage_page_ref_io(storage, ref, &pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_byte_io_t page_bytes;
-  rc = dxb_storage_byte_io_from_page(&pages, &page_bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_byte_subrange_io(&page_bytes, page_offset, bytes, io);
-}
-
 static inline bool dxb_storage_io_channel_valid(enum dxb_io_channel channel) {
   switch (channel) {
   case dxb_io_data:
@@ -9588,7 +9575,15 @@ static inline int cache_value_io_from_ref(const dxb_storage_t *storage, const pa
   if (inside < 0)
     return MDBX_NOTFOUND;
 
-  return dxb_storage_page_ref_bytes_io(storage, ref, (size_t)inside, data->iov_len, io);
+  dxb_page_io_t pages;
+  int err = dxb_storage_page_ref_io(storage, ref, &pages);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  dxb_byte_io_t page_bytes;
+  err = dxb_storage_byte_io_from_page(&pages, &page_bytes);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  return dxb_storage_byte_subrange_io(&page_bytes, (size_t)inside, data->iov_len, io);
 }
 
 static int cache_value_io(const MDBX_cursor *mc, const MDBX_val *data, dxb_byte_io_t *io) {
@@ -9657,7 +9652,14 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
   }
 
   dxb_byte_io_t materialized_value;
-  err = dxb_storage_page_ref_bytes_io(storage, &pgr.ref, page_offset, value_io.bytes, &materialized_value);
+  dxb_page_io_t pgr_pages;
+  err = dxb_storage_page_ref_io(storage, &pgr.ref, &pgr_pages);
+  if (likely(err == MDBX_SUCCESS)) {
+    dxb_byte_io_t pgr_bytes;
+    err = dxb_storage_byte_io_from_page(&pgr_pages, &pgr_bytes);
+    if (likely(err == MDBX_SUCCESS))
+      err = dxb_storage_byte_subrange_io(&pgr_bytes, page_offset, value_io.bytes, &materialized_value);
+  }
   if (unlikely(err != MDBX_SUCCESS || materialized_value.offset != value_io.offset ||
                materialized_value.bytes != value_io.bytes)) {
     err = MDBX_INVALID;
