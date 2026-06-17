@@ -170,8 +170,9 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   exchange that byte request shape with dirty-write completion instead of
   loose offset/length pairs. Queued write items now also store that
   `dxb_byte_io_t` internally and use it for coalescing, walking, and POSIX
-  write submission; the old raw item offset and separate last-byte accounting
-  are gone. The old raw `dxb_storage_read()`,
+  write submission, with the queued payload span validated against the stored
+  descriptor before submission; the old raw item offset and separate last-byte
+  accounting are gone. The old raw `dxb_storage_read()`,
   `dxb_storage_write()`, `dxb_storage_writev()`, and
   `dxb_storage_add_queued_write()` helpers are gone from the C source.
   Readahead plus data-file tail discard paths now
@@ -3874,6 +3875,22 @@ focused ASAN `migration_smoke` CTest entries, and
 `mdbx_migration_bench_lazy`. The paired benchmark gate passed with
 forced/default ratios of `1.083` batch, `1.162` crud, `0.847` iterate, `0.968`
 get, and `1.081` delete.
+
+A later queued-write descriptor validation pass made the stored
+`dxb_byte_io_t` authoritative at the POSIX queued submission boundary. The
+`pwritev()` path now computes the queued iovec payload span and rejects a
+descriptor mismatch with `MDBX_EINVAL`; the single-buffer fallback performs the
+same check before writing. Single-buffer queued writes submit `item->io.bytes`
+to `pwrite()`, so queued request length now comes from the stored descriptor
+rather than the payload container. Verification passed `git diff --check`,
+`make -f GNUmakefile mdbx_migration_smoke`, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public migration
+CTest suite, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `0.733` batch, `1.132` crud, `1.003` iterate, `0.861`
+get, and `0.632` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.

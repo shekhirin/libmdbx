@@ -30928,13 +30928,35 @@ void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
 }
 
 #if !defined(_WIN32) && !defined(_WIN64)
+#if MDBX_HAVE_PWRITEV
+static int osal_ioring_item_iov_bytes(const ior_item_t *item, size_t *bytes) {
+  size_t total = 0;
+  for (size_t i = 0; i < item->sgvcnt; ++i) {
+    if (unlikely(item->sgv[i].iov_len > SIZE_MAX - total))
+      return MDBX_EINVAL;
+    total += item->sgv[i].iov_len;
+  }
+  *bytes = total;
+  return MDBX_SUCCESS;
+}
+#endif /* MDBX_HAVE_PWRITEV */
+
 static size_t osal_ioring_write_item(osal_ioring_write_result_t *result, ior_item_t *item, mdbx_filehandle_t fd) {
 #if MDBX_HAVE_PWRITEV
   ASSERT(item->sgvcnt > 0);
+  size_t bytes;
+  result->err = osal_ioring_item_iov_bytes(item, &bytes);
+  if (unlikely(result->err != MDBX_SUCCESS))
+    return item->sgvcnt;
+  if (unlikely(bytes != item->io.bytes)) {
+    result->err = MDBX_EINVAL;
+    return item->sgvcnt;
+  }
+
   if (item->sgvcnt == 1) {
     result->err = dxb_fault_inject("write");
     if (likely(result->err == MDBX_SUCCESS))
-      result->err = osal_pwrite(fd, item->sgv[0].iov_base, item->sgv[0].iov_len, item->io.offset);
+      result->err = osal_pwrite(fd, item->sgv[0].iov_base, item->io.bytes, item->io.offset);
     if (likely(result->err == MDBX_SUCCESS))
       result->err = dxb_fault_inject("write-complete");
   } else {
@@ -30950,9 +30972,14 @@ static size_t osal_ioring_write_item(osal_ioring_write_result_t *result, ior_ite
   result->wops += 1;
   return item->sgvcnt;
 #else
+  if (unlikely(item->single.iov_len != item->io.bytes)) {
+    result->err = MDBX_EINVAL;
+    return 1;
+  }
+
   result->err = dxb_fault_inject("write");
   if (likely(result->err == MDBX_SUCCESS))
-    result->err = osal_pwrite(fd, item->single.iov_base, item->single.iov_len, item->io.offset);
+    result->err = osal_pwrite(fd, item->single.iov_base, item->io.bytes, item->io.offset);
   if (likely(result->err == MDBX_SUCCESS))
     result->err = dxb_fault_inject("write-complete");
   result->wops += 1;
