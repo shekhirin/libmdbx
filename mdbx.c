@@ -5415,7 +5415,7 @@ __cold static int compacting_walk_tree(ctx_t *ctx, tree_t *tree) {
   return compacting_walk(ctx, &couple.outer, &tree->root, tree->mod_txnid);
 }
 
-__cold static void compacting_fixup_meta(MDBX_env *env, meta_t *meta) {
+__cold static void compacting_fixup_meta(MDBX_env *env, const dxb_storage_t *storage, meta_t *meta) {
   eASSERT0(env, meta->trees.gc.mod_txnid || meta->trees.gc.root == P_INVALID);
   eASSERT0(env, meta->trees.main.mod_txnid || meta->trees.main.root == P_INVALID);
 
@@ -5424,8 +5424,8 @@ __cold static void compacting_fixup_meta(MDBX_env *env, meta_t *meta) {
     meta->geometry.now = meta->geometry.first_unallocated;
     const size_t aligner = pv2pages(meta->geometry.grow_pv ? meta->geometry.grow_pv : meta->geometry.shrink_pv);
     if (aligner) {
-      const pgno_t aligned = pgno_ceil2os_pgno(env, meta->geometry.first_unallocated + aligner -
-                                                        meta->geometry.first_unallocated % aligner);
+      const pgno_t aligned = dxb_storage_pgno_ceil2os_pgno(
+          storage, meta->geometry.first_unallocated + aligner - meta->geometry.first_unallocated % aligner);
       meta->geometry.now = aligned;
     }
   }
@@ -5455,7 +5455,8 @@ __cold static void meta_make_sizeable(meta_t *meta) {
 
 __cold static int copy_with_compacting(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, uint8_t *buffer,
                                        const bool dest_is_pipe, const MDBX_copy_flags_t flags) {
-  const size_t meta_bytes = pgno2bytes(env, NUM_METAS);
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  const size_t meta_bytes = (size_t)dxb_storage_npages2bytes(storage, NUM_METAS);
   uint8_t *const data_buffer = buffer + ceil_powerof2(meta_bytes, globals.sys_pagesize);
   meta_t *const meta = meta_init_triplet(env, buffer);
   meta_set_txnid(env, meta, txn->txnid);
@@ -5473,7 +5474,7 @@ __cold static int copy_with_compacting(MDBX_env *env, MDBX_txn *txn, mdbx_fileha
     /* When the DB is empty, handle it specially to
      * fix any breakage like page leaks from ITS#8174. */
     meta->trees.main.flags = txn->dbs[MAIN_DBI].flags;
-    compacting_fixup_meta(env, meta);
+    compacting_fixup_meta(env, storage, meta);
     if (dest_is_pipe) {
       if (flags & MDBX_CP_THROTTLE_MVCC)
         mdbx_txn_park(txn, false);
@@ -5532,7 +5533,7 @@ __cold static int copy_with_compacting(MDBX_env *env, MDBX_txn *txn, mdbx_fileha
       if (dest_is_pipe) {
         if (!meta->trees.main.mod_txnid)
           meta->trees.main.mod_txnid = txn->txnid;
-        compacting_fixup_meta(env, meta);
+        compacting_fixup_meta(env, storage, meta);
         if (flags & MDBX_CP_THROTTLE_MVCC)
           mdbx_txn_park(txn, false);
         rc = osal_write(fd, buffer, meta_bytes);
@@ -5577,7 +5578,7 @@ __cold static int copy_with_compacting(MDBX_env *env, MDBX_txn *txn, mdbx_fileha
     if (unlikely(ctx.error != MDBX_SUCCESS))
       return ctx.error;
     if (!dest_is_pipe)
-      compacting_fixup_meta(env, meta);
+      compacting_fixup_meta(env, storage, meta);
   }
 
   if (flags & MDBX_CP_THROTTLE_MVCC)
@@ -5585,11 +5586,11 @@ __cold static int copy_with_compacting(MDBX_env *env, MDBX_txn *txn, mdbx_fileha
 
   /* Extend file if required */
   if (meta->geometry.now != meta->geometry.first_unallocated) {
-    const size_t whole_size = pgno2bytes(env, meta->geometry.now);
+    const size_t whole_size = (size_t)dxb_storage_pgno2bytes(storage, meta->geometry.now);
     if (!dest_is_pipe)
       return osal_fsetsize(fd, whole_size);
 
-    const size_t used_size = pgno2bytes(env, meta->geometry.first_unallocated);
+    const size_t used_size = (size_t)dxb_storage_pgno2bytes(storage, meta->geometry.first_unallocated);
     memset(data_buffer, 0, (size_t)MDBX_ENVCOPY_WRITEBUF);
     for (size_t offset = used_size; offset < whole_size;) {
       const size_t chunk =
@@ -5607,7 +5608,8 @@ __cold static int copy_with_compacting(MDBX_env *env, MDBX_txn *txn, mdbx_fileha
 
 __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, uint8_t *buffer,
                             const bool dest_is_pipe, const MDBX_copy_flags_t flags) {
-  const size_t meta_bytes = pgno2bytes(env, NUM_METAS);
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  const size_t meta_bytes = (size_t)dxb_storage_npages2bytes(storage, NUM_METAS);
   uint8_t *const data_buffer = buffer + ceil_powerof2(meta_bytes, globals.sys_pagesize);
   meta_t *const meta = meta_init_triplet(env, buffer);
   meta_set_txnid(env, meta, txn->txnid);
@@ -5656,8 +5658,8 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
 #endif /* MDBX_USE_COPYFILERANGE */
 
   /* Copy the data */
-  const size_t whole_size = pgno_ceil2os_bytes(env, txn->geo.end_pgno);
-  const size_t used_size = pgno2bytes(env, txn->geo.first_unallocated);
+  const size_t whole_size = dxb_storage_pgno_ceil2os_bytes(storage, txn->geo.end_pgno);
+  const size_t used_size = (size_t)dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated);
   while (rc == MDBX_SUCCESS && offset < used_size) {
     if (flags & MDBX_CP_THROTTLE_MVCC) {
       rc = mdbx_txn_unpark(txn, false);
@@ -5670,7 +5672,7 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
     if (dest_is_pipe && likely(!sendfile_unavailable)) {
       off_t in_offset = offset;
       bool copied = false, unavailable = false;
-      rc = dxb_storage_sendfile_to_fd(&env->dxb_storage, fd, &in_offset, used_size - offset, &copied, &unavailable);
+      rc = dxb_storage_sendfile_to_fd(storage, fd, &in_offset, used_size - offset, &copied, &unavailable);
       if (likely(copied)) {
         offset = in_offset;
         if (flags & MDBX_CP_THROTTLE_MVCC)
@@ -5688,8 +5690,8 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
     if (!dest_is_pipe && !not_the_same_filesystem && likely(!copyfilerange_unavailable)) {
       off_t in_offset = offset, out_offset = offset;
       bool copied = false, unavailable = false, cross_device = false;
-      rc = dxb_storage_copy_to_fd(&env->dxb_storage, fd, &in_offset, &out_offset, used_size - offset, &copied,
-                                  &unavailable, &cross_device);
+      rc = dxb_storage_copy_to_fd(storage, fd, &in_offset, &out_offset, used_size - offset, &copied, &unavailable,
+                                  &cross_device);
       if (likely(copied)) {
         offset = in_offset;
         if (flags & MDBX_CP_THROTTLE_MVCC)
@@ -5709,7 +5711,7 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
     /* fallback to portable */
     const size_t chunk =
         ((size_t)MDBX_ENVCOPY_WRITEBUF < used_size - offset) ? (size_t)MDBX_ENVCOPY_WRITEBUF : used_size - offset;
-    rc = dxb_storage_read(&env->dxb_storage, data_buffer, chunk, offset);
+    rc = dxb_storage_read(storage, data_buffer, chunk, offset);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     if (flags & MDBX_CP_THROTTLE_MVCC) {
@@ -5766,8 +5768,10 @@ __cold static int copy2fd(MDBX_txn *txn, mdbx_filehandle_t fd, MDBX_copy_flags_t
   }
 
   MDBX_env *const env = txn->env;
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  const size_t meta_bytes = (size_t)dxb_storage_npages2bytes(storage, NUM_METAS);
   const size_t buffer_size =
-      pgno_ceil2os_bytes(env, NUM_METAS) +
+      dxb_storage_pgno_ceil2os_bytes(storage, NUM_METAS) +
       ceil_powerof2(((flags & MDBX_CP_COMPACT) ? 2 * (size_t)MDBX_ENVCOPY_WRITEBUF : (size_t)MDBX_ENVCOPY_WRITEBUF),
                     globals.sys_pagesize);
 
@@ -5779,14 +5783,14 @@ __cold static int copy2fd(MDBX_txn *txn, mdbx_filehandle_t fd, MDBX_copy_flags_t
   if (!dest_is_pipe) {
     /* Firstly write a stub to meta-pages.
      * Now we sure to incomplete copy will not be used. */
-    memset(buffer, -1, pgno2bytes(env, NUM_METAS));
-    rc = osal_write(fd, buffer, pgno2bytes(env, NUM_METAS));
+    memset(buffer, -1, meta_bytes);
+    rc = osal_write(fd, buffer, meta_bytes);
   }
 
   if (likely(rc == MDBX_SUCCESS))
     rc = mdbx_txn_unpark(txn, false);
   if (likely(rc == MDBX_SUCCESS)) {
-    memset(buffer, 0, pgno2bytes(env, NUM_METAS));
+    memset(buffer, 0, meta_bytes);
     rc = ((flags & MDBX_CP_COMPACT) ? copy_with_compacting : copy_asis)(env, txn, fd, buffer, dest_is_pipe, flags);
 
     if (likely(rc == MDBX_SUCCESS))
@@ -5807,7 +5811,7 @@ __cold static int copy2fd(MDBX_txn *txn, mdbx_filehandle_t fd, MDBX_copy_flags_t
 
     /* Write actual meta */
     if (likely(rc == MDBX_SUCCESS))
-      rc = osal_pwrite(fd, buffer, pgno2bytes(env, NUM_METAS), 0);
+      rc = osal_pwrite(fd, buffer, meta_bytes, 0);
 
     if (likely(rc == MDBX_SUCCESS) && (flags & MDBX_CP_DONT_FLUSH) == 0)
       rc = osal_fsync(fd, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
