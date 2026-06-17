@@ -4241,6 +4241,26 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.103` batch, `1.158` crud, `0.832` iterate,
 `1.047` get, and `1.074` delete.
 
+A later page-write descriptor cleanup added `dxb_write_io_t` so page writes
+carry the write channel together with checked page and byte spans. Defrag
+writebacks, database creation meta triplets, whole-meta overrides, queued dirty
+page preparation/submission, page-kill write/writev paths, and same-file copy
+cache invalidation now build write descriptors before crossing the storage
+write boundary. `dxb_storage_write_pages()`, `dxb_storage_writev_pages()`, and
+the queued write helpers validate the descriptor's byte span against the page
+span before calling the synchronous write backend. Byte-only metadata field
+writes remain on `dxb_storage_write_bytes()`. Verification passed
+`git diff --check`, source scans proving the old
+`dxb_storage_write_io(..., dxb_page_io_t, ...)` and `dxb_storage_writev_io()`
+executor shapes are gone from `mdbx.c`, the GNUmake `mdbx_migration_smoke`
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.134` batch, `1.141`
+crud, `1.026` iterate, `1.004` get, and `1.082` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
