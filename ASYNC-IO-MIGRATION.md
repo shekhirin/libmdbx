@@ -132,7 +132,11 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   are channelized as data-file or meta-file writes, so call sites no longer pass
   raw DXB file handles into the facade. Full-page reads, writes, same-file page
   copies, and prefetch hints are routed through page-addressed helpers where the
-  page number is already known. Readahead plus data-file tail discard paths now
+  page number is already known. Those page-addressed helpers now share a
+  checked `dxb_page_io_t` descriptor for `(pgno, npages)` to `(offset, bytes)`
+  conversion, giving a later async backend one storage-owned page request shape
+  for reads, queued writes, prefetch, writev offsets, and file-range copies.
+  Readahead plus data-file tail discard paths now
   use fd-backed advice/discard through storage; an earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
   branches.
@@ -3561,6 +3565,23 @@ tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
 focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.163`
 batch, `1.140` crud, `1.037` iterate, `1.025` get, and `1.071` delete.
+
+A later page-I/O descriptor cleanup added `dxb_page_io_t` and
+`dxb_storage_page_io()` as the common checked conversion for page-addressed
+storage operations. Queued dirty writes, committed page reads, page writes,
+prefetch hints, writev page offsets, and same-file page copies now derive their
+storage byte ranges through that descriptor, including range and host-size
+checks before crossing into raw byte I/O. This narrows the future async backend
+surface to one page-request shape while keeping the public API synchronous.
+Verification passed stale data-file mmap and removed sync-adapter scans across
+the shipped core sources, `git diff --check`, `make -f GNUmakefile
+mdbx_migration_smoke`, `mdbx_migration_smoke` default and forced tiny-cache
+runs, `cmake --build @cmake-ninja-build`, the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` CTest entries. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.099`
+batch, `1.169` crud, `1.001` iterate, `0.965` get, and `1.080` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
