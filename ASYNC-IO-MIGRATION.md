@@ -178,6 +178,15 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   final storage adapters for `pread()`, `pwrite()`, and `pwritev()` now accept
   the same `dxb_byte_io_t` request instead of loose byte/offset pairs, and the
   async-style partial-writev fault hook consumes that descriptor too.
+  The remaining page-number read/write request adapters
+  `dxb_storage_read_io()` and `dxb_storage_write_io()` have been removed from
+  the C source. Meta-shadow refresh, initial meta triplet creation, defrag
+  fallback page moves, dirty-page queue setup/enqueue, explicit meta override,
+  and debug page-kill writes now build checked `dxb_page_io_t` descriptors
+  first and then derive `dxb_read_io_t`/`dxb_write_io_t` from those descriptors.
+  This leaves the async-facing read/write request shapes derived from a single
+  validated page-span object at each call site instead of from helper-local
+  `(pgno, npages)` adapters.
   Non-compacting environment-copy `sendfile()` and `copy_file_range()` fast
   paths now also build source `dxb_byte_io_t` requests before entering storage,
   and the in-file page-copy helper converts its source/destination page
