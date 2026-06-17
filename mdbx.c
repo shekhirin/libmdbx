@@ -111,6 +111,13 @@ typedef struct dxb_copy_io {
   dxb_page_io_t dst_pages;
 } dxb_copy_io_t;
 
+typedef struct dxb_meta_io {
+  dxb_byte_io_t bytes;
+  unsigned number;
+  size_t payload_offset;
+  size_t payload_bytes;
+} dxb_meta_io_t;
+
 typedef struct dxb_readahead_io {
   dxb_byte_io_t bytes;
   dxb_page_io_t pages;
@@ -1618,17 +1625,24 @@ static inline uint64_t dxb_storage_meta_field_offset(const dxb_storage_t *storag
   return dxb_storage_meta_payload_offset(storage, number) + field_offset;
 }
 
-static inline int dxb_storage_meta_payload_io(const dxb_storage_t *storage, unsigned number, dxb_byte_io_t *io) {
-  if (unlikely(number >= NUM_METAS))
+static inline int dxb_storage_meta_io(const dxb_storage_t *storage, unsigned number, size_t payload_offset,
+                                      size_t bytes, dxb_meta_io_t *io) {
+  if (unlikely(number >= NUM_METAS || payload_offset > sizeof(meta_t) || bytes > sizeof(meta_t) - payload_offset))
     return MDBX_EINVAL;
-  return dxb_storage_byte_io(dxb_storage_meta_payload_offset(storage, number), sizeof(meta_t), io);
+
+  io->number = number;
+  io->payload_offset = payload_offset;
+  io->payload_bytes = bytes;
+  return dxb_storage_byte_io(dxb_storage_meta_field_offset(storage, number, payload_offset), bytes, &io->bytes);
+}
+
+static inline int dxb_storage_meta_payload_io(const dxb_storage_t *storage, unsigned number, dxb_meta_io_t *io) {
+  return dxb_storage_meta_io(storage, number, 0, sizeof(meta_t), io);
 }
 
 static inline int dxb_storage_meta_field_io(const dxb_storage_t *storage, unsigned number, size_t field_offset,
-                                            size_t bytes, dxb_byte_io_t *io) {
-  if (unlikely(number >= NUM_METAS || field_offset > sizeof(meta_t) || bytes > sizeof(meta_t) - field_offset))
-    return MDBX_EINVAL;
-  return dxb_storage_byte_io(dxb_storage_meta_field_offset(storage, number, field_offset), bytes, io);
+                                            size_t bytes, dxb_meta_io_t *io) {
+  return dxb_storage_meta_io(storage, number, field_offset, bytes, io);
 }
 
 /* The database environment. */
@@ -1915,6 +1929,7 @@ static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_i
 static int dxb_storage_read_pages(const dxb_storage_t *storage, const dxb_read_io_t *io, void *buf);
 static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel channel, const dxb_byte_io_t *io,
                                    const void *buf);
+static int dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_io_t *io, const void *buf);
 static int dxb_storage_write_pages(dxb_storage_t *storage, const dxb_write_io_t *io, const void *buf);
 static int dxb_storage_writev_pages(dxb_storage_t *storage, const dxb_write_io_t *io, struct iovec *iov,
                                     size_t sgvcnt);
@@ -3924,8 +3939,8 @@ MDBX_INTERNAL int __must_check_result meta_shadow_tap(MDBX_env *env, troika_t *t
 MDBX_INTERNAL int __must_check_result meta_shadow_tap_cached(MDBX_env *env, troika_t *troika);
 MDBX_INTERNAL int __must_check_result meta_shadow_should_retry(MDBX_env *env, troika_t *troika, bool *retry);
 MDBX_INTERNAL void meta_shadow_copy_page(const MDBX_env *env, const dxb_page_io_t *io, const page_t *page);
-MDBX_INTERNAL void meta_shadow_copy_payload(const MDBX_env *env, const dxb_byte_io_t *io, const meta_t *meta);
-MDBX_INTERNAL void meta_shadow_copy_bytes(const MDBX_env *env, const dxb_byte_io_t *io, const void *src);
+MDBX_INTERNAL void meta_shadow_copy_payload(const MDBX_env *env, const dxb_meta_io_t *io, const meta_t *meta);
+MDBX_INTERNAL void meta_shadow_copy_bytes(const MDBX_env *env, const dxb_meta_io_t *io, const void *src);
 
 struct meta_ptr {
   txnid_t txnid;
@@ -4008,16 +4023,21 @@ void meta_shadow_copy_page(const MDBX_env *env, const dxb_page_io_t *io, const p
   }
 }
 
-void meta_shadow_copy_payload(const MDBX_env *env, const dxb_byte_io_t *io, const meta_t *meta) {
+void meta_shadow_copy_payload(const MDBX_env *env, const dxb_meta_io_t *io, const meta_t *meta) {
   if (likely(env->meta_shadow)) {
-    eASSERT0(env, io->bytes == sizeof(meta_t));
-    memcpy(meta_shadow_bytes_ptr(env, io), meta, sizeof(meta_t));
+    eASSERT0(env, io->number < NUM_METAS);
+    eASSERT0(env, io->payload_offset == 0 && io->payload_bytes == sizeof(meta_t));
+    eASSERT0(env, io->bytes.bytes == sizeof(meta_t));
+    memcpy(meta_shadow_bytes_ptr(env, &io->bytes), meta, sizeof(meta_t));
   }
 }
 
-void meta_shadow_copy_bytes(const MDBX_env *env, const dxb_byte_io_t *io, const void *src) {
-  if (likely(env->meta_shadow))
-    memcpy(meta_shadow_bytes_ptr(env, io), src, io->bytes);
+void meta_shadow_copy_bytes(const MDBX_env *env, const dxb_meta_io_t *io, const void *src) {
+  if (likely(env->meta_shadow)) {
+    eASSERT0(env, io->number < NUM_METAS);
+    eASSERT0(env, io->bytes.bytes == io->payload_bytes);
+    memcpy(meta_shadow_bytes_ptr(env, &io->bytes), src, io->payload_bytes);
+  }
 }
 
 static inline meta_ptr_t meta_recent_shadow(const MDBX_env *env, const troika_t *troika) {
@@ -21701,6 +21721,17 @@ static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel c
   return MDBX_SUCCESS;
 }
 
+static int dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_io_t *io, const void *buf) {
+  dxb_meta_io_t checked;
+  int rc = dxb_storage_meta_io(storage, io->number, io->payload_offset, io->payload_bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.bytes.offset != io->bytes.offset || checked.bytes.bytes != io->bytes.bytes))
+    return MDBX_EINVAL;
+
+  return dxb_storage_write_bytes(storage, dxb_io_meta, &io->bytes, buf);
+}
+
 static void dxb_storage_invalidate_written_io(dxb_storage_t *storage, const dxb_write_io_t *io) {
   if (!dxb_io_channel_is_data(io->channel))
     return;
@@ -22956,17 +22987,17 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
   const meta_t undo_meta = *target;
   eASSERT0(env, pending->trees.gc.flags == MDBX_INTEGERKEY);
   eASSERT0(env, check_table_flags(pending->trees.main.flags));
-  dxb_byte_io_t meta_request;
+  dxb_meta_io_t meta_request;
   rc = dxb_storage_meta_payload_io(storage, target_number, &meta_request);
   if (unlikely(rc != MDBX_SUCCESS))
     goto fail;
-  rc = dxb_storage_write_bytes(storage, dxb_io_meta, &meta_request, pending);
+  rc = dxb_storage_write_meta(storage, &meta_request, pending);
   if (unlikely(rc != MDBX_SUCCESS)) {
   undo:
     DEBUG("%s", "write failed, disk error?");
     /* On a failure, the pagecache still contains the new data.
      * Try write some old data back, to prevent it from being used. */
-    dxb_storage_write_bytes(storage, dxb_io_meta, &meta_request, &undo_meta);
+    dxb_storage_write_meta(storage, &meta_request, &undo_meta);
     goto fail;
   }
   /* sync meta-pages */
@@ -29322,10 +29353,10 @@ static int meta_unsteady(MDBX_env *env, dxb_storage_t *const storage, const txni
 
   if (MDBX_ENABLE_PGOP_STAT)
     env->lck->pgops.wops.weak += 1;
-  dxb_byte_io_t request;
+  dxb_meta_io_t request;
   int err = dxb_storage_meta_field_io(storage, pgno, offsetof(meta_t, sign), sizeof(meta->sign), &request);
   if (likely(err == MDBX_SUCCESS))
-    err = dxb_storage_write_bytes(storage, dxb_io_meta, &request, ptr);
+    err = dxb_storage_write_meta(storage, &request, ptr);
   if (likely(err == MDBX_SUCCESS)) {
     meta_shadow_copy_bytes(env, &request, &wipe);
     return MDBX_RESULT_TRUE;
