@@ -1530,7 +1530,8 @@ static inline int dxb_storage_filesize_shrink_tail_io(const dxb_filesize_io_t *t
     return MDBX_EINVAL;
 
   const uint64_t tail_bytes = old_filesize - target->bytes;
-  return dxb_storage_byte_io(target->bytes, tail_bytes > SIZE_MAX ? SIZE_MAX : (size_t)tail_bytes, io);
+  const size_t bytes = tail_bytes > SIZE_MAX ? SIZE_MAX : (size_t)tail_bytes;
+  return dxb_storage_byte_span_io(target->bytes, target->bytes + bytes, io);
 }
 
 static inline int dxb_storage_page_io(const dxb_storage_t *storage, pgno_t pgno, size_t npages, dxb_page_io_t *io) {
@@ -1986,7 +1987,10 @@ static inline int dxb_storage_meta_probe_io(size_t probe_pagesize, unsigned numb
   if (unlikely(number && (uint64_t)probe_pagesize > UINT64_MAX / number))
     return MDBX_EINVAL;
 
-  return dxb_storage_byte_io((uint64_t)probe_pagesize * number, MDBX_MIN_PAGESIZE, io);
+  const uint64_t offset = (uint64_t)probe_pagesize * number;
+  if (unlikely(MDBX_MIN_PAGESIZE > UINT64_MAX - offset))
+    return MDBX_EINVAL;
+  return dxb_storage_byte_span_io(offset, offset + MDBX_MIN_PAGESIZE, io);
 }
 
 static inline uint64_t dxb_storage_meta_page_offset(const dxb_storage_t *storage, unsigned number) {
@@ -2010,7 +2014,10 @@ static inline int dxb_storage_meta_io(const dxb_storage_t *storage, unsigned num
   io->number = number;
   io->payload_offset = payload_offset;
   io->payload_bytes = bytes;
-  return dxb_storage_byte_io(dxb_storage_meta_field_offset(storage, number, payload_offset), bytes, &io->bytes);
+  const uint64_t offset = dxb_storage_meta_field_offset(storage, number, payload_offset);
+  if (unlikely(bytes > UINT64_MAX - offset))
+    return MDBX_EINVAL;
+  return dxb_storage_byte_span_io(offset, offset + bytes, &io->bytes);
 }
 
 static inline int dxb_storage_meta_io_validate(const dxb_storage_t *storage, const dxb_meta_io_t *io) {
@@ -9889,7 +9896,10 @@ static inline int cache_store_entry_io(MDBX_cache_entry_t *entry, const dxb_byte
 static inline int cache_entry_io(const MDBX_cache_entry_t *entry, dxb_byte_io_t *io) {
   if (!entry->offset)
     return MDBX_NOTFOUND;
-  return dxb_storage_byte_io(entry->offset, entry->length, io);
+  const uint64_t offset = entry->offset;
+  if (unlikely(entry->length > UINT64_MAX - offset))
+    return MDBX_EINVAL;
+  return dxb_storage_byte_span_io(offset, offset + entry->length, io);
 }
 
 static inline int cache_value_io_from_ref(const dxb_storage_t *storage, const page_ref_t *ref, const MDBX_val *data,
@@ -31811,7 +31821,8 @@ static void osal_ioring_walk_bytes(iov_ctx_t *ctx,
                                    void (*callback)(iov_ctx_t *ctx, const dxb_byte_io_t *io, void *data),
                                    uint64_t offset, size_t bytes, void *data) {
   dxb_byte_io_t request;
-  const int err = dxb_storage_byte_io(offset, bytes, &request);
+  const int err =
+      (bytes > UINT64_MAX - offset) ? MDBX_EINVAL : dxb_storage_byte_span_io(offset, offset + bytes, &request);
   if (unlikely(err != MDBX_SUCCESS)) {
     if (ctx->err == MDBX_SUCCESS)
       ctx->err = err;

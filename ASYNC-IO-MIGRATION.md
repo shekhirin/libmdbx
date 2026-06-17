@@ -4887,6 +4887,22 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.125` batch, `1.181` crud, `1.020` iterate,
 `0.953` get, and `1.062` delete.
 
+A later primitive byte-constructor cleanup routed the remaining metadata,
+public-cache, filesize-tail, and dirty-write-walk byte request builders through
+`dxb_storage_byte_span_io()`. The primitive `dxb_storage_byte_io()` constructor
+is now confined to its own validator/span layer, while meta probes, meta
+payload writes, public cache entries, capped stale-file tails, and ioring walk
+callbacks use checked byte spans before storage submission. Verification passed
+`git diff --check`, source scans proving `dxb_storage_byte_io()` is only used
+inside the primitive layer, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.131` batch, `1.165` crud, `1.058` iterate,
+`0.935` get, and `1.087` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
