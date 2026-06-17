@@ -2843,6 +2843,21 @@ deterministic forced tiny-cache fault injection, `cmake --build
 `mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.100`
 batch, `1.168` crud, `1.204` iterate, `0.950` get, and `1.073` delete.
 
+A later creation-size cleanup added `dxb_storage_set_filesize_as_current()` and
+removed the now-unused env-shaped `dxb_set_filesize()` wrapper. New database
+creation now asks storage to establish the initial file length and accept that
+length as the current storage size in one storage-owned transition, instead of
+setting file length through an env adapter and mutating storage current size
+from the setup path. Verification passed `git diff --check`, stale data-file
+mmap symbol scans, creation-size routing scans, `make -f GNUmakefile
+mdbx_migration_smoke`, direct default and forced tiny-cache smoke runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public CTest suite including migration tool roundtrip coverage,
+deterministic forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and focused ASAN `migration_smoke` CTest. The paired
+`mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.082`
+batch, `1.182` crud, `1.226` iterate, `0.930` get, and `1.076` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

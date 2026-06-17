@@ -1644,7 +1644,6 @@ static int dxb_storage_sendfile_to_fd(const dxb_storage_t *storage, mdbx_filehan
                                       size_t bytes, bool *copied, bool *unavailable);
 #endif /* MDBX_USE_SENDFILE */
 MDBX_INTERNAL int __must_check_result dxb_fetch_filesize(MDBX_env *env);
-MDBX_INTERNAL int __must_check_result dxb_set_filesize(MDBX_env *env, uint64_t bytes);
 MDBX_INTERNAL int __must_check_result dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending,
                                                       troika_t *const troika);
 
@@ -21342,6 +21341,14 @@ static int dxb_storage_set_filesize_bytes(dxb_storage_t *storage, uint64_t bytes
   return MDBX_SUCCESS;
 }
 
+static int dxb_storage_set_filesize_as_current(dxb_storage_t *storage, size_t bytes, size_t pagesize,
+                                               uint8_t pagesize_ln) {
+  int rc = dxb_storage_set_filesize_bytes(storage, bytes, pagesize, pagesize_ln);
+  if (likely(rc == MDBX_SUCCESS))
+    dxb_storage_set_current(storage, bytes);
+  return rc;
+}
+
 static int dxb_storage_fetch_filesize(dxb_storage_t *storage) {
   int rc = dxb_fault_inject("filesize");
   if (unlikely(rc != MDBX_SUCCESS))
@@ -21464,10 +21471,6 @@ int dxb_copy_pages(const MDBX_env *env, pgno_t src_pgno, pgno_t dst_pgno, size_t
 
 int dxb_fetch_filesize(MDBX_env *env) {
   return dxb_storage_fetch_filesize(&env->dxb_storage);
-}
-
-int dxb_set_filesize(MDBX_env *env, uint64_t bytes) {
-  return dxb_storage_set_filesize_bytes(&env->dxb_storage, bytes, env->ps, env->ps2ln);
 }
 
 static int dxb_storage_setup_bytes(dxb_storage_t *storage, const size_t size, const size_t limit, const unsigned flags,
@@ -21848,10 +21851,9 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
-    err = dxb_set_filesize(env, env->geo_in_bytes.now);
+    err = dxb_storage_set_filesize_as_current(&env->dxb_storage, env->geo_in_bytes.now, env->ps, env->ps2ln);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    dxb_storage_set_current(&env->dxb_storage, env->geo_in_bytes.now);
 
 #if MDBX_CHECKING > 0 || MDBX_DEBUG > 0
     err = dxb_read_header(env, &header, lck_rc, mode_bits);
