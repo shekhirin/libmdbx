@@ -787,6 +787,7 @@ typedef struct dxb_storage {
   size_t page_cache_limit;
   osal_fastmutex_t page_cache_lock;
   bool page_cache_lock_initialized;
+  uint8_t pagesize_ln;
   uint64_t filesize;
   size_t current;
   size_t limit;

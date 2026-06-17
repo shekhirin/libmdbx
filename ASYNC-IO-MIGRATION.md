@@ -3170,6 +3170,22 @@ CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.108` batch, `1.152` crud, `0.935` iterate, `0.977`
 get, and `1.074` delete.
 
+A later storage-owned page-size cleanup added the data-file page-size shift to
+`dxb_storage_t` and configured it when the explicit-I/O storage backend is set
+up, with the new-database bootstrap path setting it before its initial meta-page
+write. Cache invalidation, byte writes, filesize changes, discard operations,
+resize operations, and cached single-page reads now derive their page geometry
+from the storage object instead of accepting `env->ps2ln` at each call site.
+Verification passed stale storage-owned geometry scans, stale data-file mmap and
+removed sync-adapter scans across the shipped core sources, `git diff --check`,
+`make -f GNUmakefile mdbx_migration_smoke`, `mdbx_migration_smoke` default and
+forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the
+six focused ASAN `migration_smoke` CTest entries. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.105`
+batch, `1.167` crud, `0.995` iterate, `1.034` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

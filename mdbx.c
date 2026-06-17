@@ -1301,6 +1301,7 @@ typedef struct dxb_storage {
   size_t page_cache_limit;
   osal_fastmutex_t page_cache_lock;
   bool page_cache_lock_initialized;
+  uint8_t pagesize_ln;
   uint64_t filesize;
   size_t current;
   size_t limit;
@@ -1324,6 +1325,21 @@ static inline size_t dxb_storage_limit_size(const dxb_storage_t *storage) {
 
 static inline uint64_t dxb_storage_filesize(const dxb_storage_t *storage) {
   return storage->filesize;
+}
+
+static inline void dxb_storage_set_pagesize_ln(dxb_storage_t *storage, uint8_t pagesize_ln) {
+  ASSERT(storage->pagesize_ln == 0 || storage->pagesize_ln == pagesize_ln);
+  ASSERT(storage->page_cache.entries == nullptr);
+  storage->pagesize_ln = pagesize_ln;
+}
+
+static inline uint8_t dxb_storage_pagesize_ln(const dxb_storage_t *storage) {
+  ASSERT(storage->pagesize_ln > 0);
+  return storage->pagesize_ln;
+}
+
+static inline size_t dxb_storage_pagesize(const dxb_storage_t *storage) {
+  return (size_t)1 << dxb_storage_pagesize_ln(storage);
 }
 
 static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, uint64_t offset, size_t bytes) {
@@ -1624,7 +1640,7 @@ MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
 static int dxb_storage_read(const dxb_storage_t *storage, void *buf, size_t bytes, uint64_t offset);
 static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
-                                   size_t bytes, uint64_t offset, uint8_t pagesize_ln);
+                                   size_t bytes, uint64_t offset);
 static int dxb_storage_write_pages(dxb_storage_t *storage, uint8_t pagesize_ln, enum dxb_io_channel channel,
                                    pgno_t pgno, const void *buf, size_t npages);
 static int dxb_storage_writev_pages(dxb_storage_t *storage, uint8_t pagesize_ln, enum dxb_io_channel channel,
@@ -20336,10 +20352,11 @@ static void dxb_storage_invalidate_cached_pages(dxb_storage_t *storage, pgno_t b
 }
 
 static void dxb_storage_invalidate_cached_bytes(dxb_storage_t *storage, uint64_t offset, size_t bytes,
-                                                uint8_t pagesize_ln, bool include_reusable) {
+                                                bool include_reusable) {
   if (bytes == 0)
     return;
 
+  const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
   const uint64_t begin = offset >> pagesize_ln;
   uint64_t end_bytes = offset + bytes;
   const uint64_t max_pgno = (uint64_t)MAX_PAGENO + 1u;
@@ -20347,7 +20364,7 @@ static void dxb_storage_invalidate_cached_bytes(dxb_storage_t *storage, uint64_t
   if (end_bytes < offset || end_bytes > max_bytes)
     end_bytes = max_bytes;
 
-  const size_t pagesize = (size_t)1 << pagesize_ln;
+  const size_t pagesize = dxb_storage_pagesize(storage);
   const uint64_t end = (end_bytes + pagesize - 1) >> pagesize_ln;
   if (begin <= MAX_PAGENO)
     dxb_storage_invalidate_cached_pages(storage, (pgno_t)begin, (pgno_t)((end > max_pgno) ? max_pgno : end),
@@ -20393,13 +20410,14 @@ static pgr_t dxb_storage_lookup_cached_page(dxb_storage_t *storage, const pgno_t
   return pgr_error(MDBX_RESULT_TRUE);
 }
 
-static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, uint8_t pagesize_ln, const pgno_t pgno,
-                                          const txnid_t snapshot, const bool reusable, const bool tracked) {
+static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, const pgno_t pgno, const txnid_t snapshot,
+                                          const bool reusable, const bool tracked) {
   page_cache_entry_t *entry = osal_calloc(1, sizeof(*entry));
   if (unlikely(!entry))
     return pgr_error(MDBX_ENOMEM);
 
-  const size_t pagesize = (size_t)1 << pagesize_ln;
+  const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
+  const size_t pagesize = dxb_storage_pagesize(storage);
   entry->owner = tracked ? &storage->page_cache : nullptr;
   entry->storage = storage;
   entry->snapshot_txnid = snapshot;
@@ -20451,7 +20469,7 @@ static pgr_t page_cache_read(MDBX_txn *txn, const pgno_t pgno, const bool track_
     return cached;
 
   const bool tracked = reusable || track_private || CHECKS0_ENABLED();
-  return dxb_storage_read_cached_page(storage, env->ps2ln, pgno, snapshot, reusable, tracked);
+  return dxb_storage_read_cached_page(storage, pgno, snapshot, reusable, tracked);
 }
 
 static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr_t *pgr) {
@@ -20538,6 +20556,7 @@ void dxb_storage_reset(dxb_storage_t *storage, bool env_active) {
   storage->data_fd = INVALID_HANDLE_VALUE;
   storage->meta_fd = INVALID_HANDLE_VALUE;
   storage->dsync_fd = INVALID_HANDLE_VALUE;
+  storage->pagesize_ln = 0;
   storage->filesize = 0;
   storage->current = 0;
   storage->limit = 0;
@@ -20992,7 +21011,7 @@ static int dxb_storage_discard_remove_range(const dxb_storage_t *storage, size_t
   return MDBX_RESULT_TRUE;
 }
 
-static int dxb_storage_discard_range(dxb_storage_t *storage, size_t offset, size_t length, uint8_t pagesize_ln,
+static int dxb_storage_discard_range(dxb_storage_t *storage, size_t offset, size_t length,
                                      enum dxb_discard_mode mode) {
   if (length == 0)
     return MDBX_SUCCESS;
@@ -21003,13 +21022,13 @@ static int dxb_storage_discard_range(dxb_storage_t *storage, size_t offset, size
   case dxb_discard_remove: {
     int rc = dxb_storage_discard_remove_range(storage, offset, length);
     if (rc == MDBX_SUCCESS)
-      dxb_storage_invalidate_cached_bytes(storage, offset, length, pagesize_ln, true);
+      dxb_storage_invalidate_cached_bytes(storage, offset, length, true);
     return rc;
   }
   case dxb_discard_remove_or_clean: {
     int rc = dxb_storage_discard_remove_range(storage, offset, length);
     if (rc == MDBX_SUCCESS)
-      dxb_storage_invalidate_cached_bytes(storage, offset, length, pagesize_ln, true);
+      dxb_storage_invalidate_cached_bytes(storage, offset, length, true);
     return (rc == MDBX_RESULT_TRUE) ? dxb_storage_discard_clean_range(storage, offset, length) : rc;
   }
   }
@@ -21231,12 +21250,12 @@ static int dxb_storage_write(const dxb_storage_t *storage, enum dxb_io_channel c
 }
 
 static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
-                                   size_t bytes, uint64_t offset, uint8_t pagesize_ln) {
+                                   size_t bytes, uint64_t offset) {
   int rc = dxb_storage_write(storage, channel, buf, bytes, offset);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (dxb_io_channel_is_data(channel))
-    dxb_storage_invalidate_cached_bytes(storage, offset, bytes, pagesize_ln, false);
+    dxb_storage_invalidate_cached_bytes(storage, offset, bytes, false);
   return MDBX_SUCCESS;
 }
 
@@ -21315,19 +21334,19 @@ static int dxb_storage_set_filesize_on_disk(const dxb_storage_t *storage, uint64
   return dxb_fault_inject("setsize-complete");
 }
 
-static int dxb_storage_set_filesize_bytes(dxb_storage_t *storage, uint64_t bytes, uint8_t pagesize_ln) {
+static int dxb_storage_set_filesize_bytes(dxb_storage_t *storage, uint64_t bytes) {
   const uint64_t old_filesize = dxb_storage_filesize(storage);
   int rc = dxb_storage_set_filesize_on_disk(storage, bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (bytes < old_filesize)
-    dxb_storage_invalidate_cached_bytes(storage, bytes, (size_t)(old_filesize - bytes), pagesize_ln, true);
+    dxb_storage_invalidate_cached_bytes(storage, bytes, (size_t)(old_filesize - bytes), true);
   dxb_storage_set_filesize(storage, bytes);
   return MDBX_SUCCESS;
 }
 
-static int dxb_storage_set_filesize_as_current(dxb_storage_t *storage, size_t bytes, uint8_t pagesize_ln) {
-  int rc = dxb_storage_set_filesize_bytes(storage, bytes, pagesize_ln);
+static int dxb_storage_set_filesize_as_current(dxb_storage_t *storage, size_t bytes) {
+  int rc = dxb_storage_set_filesize_bytes(storage, bytes);
   if (likely(rc == MDBX_SUCCESS))
     dxb_storage_set_current(storage, bytes);
   return rc;
@@ -21434,8 +21453,9 @@ static int dxb_storage_sendfile_to_fd(const dxb_storage_t *storage, mdbx_filehan
 static int dxb_storage_setup_bytes(dxb_storage_t *storage, const size_t size, const size_t limit, const unsigned flags,
                                    const unsigned options, uint8_t pagesize_ln) {
   int rc;
+  dxb_storage_set_pagesize_ln(storage, pagesize_ln);
   if ((flags & MDBX_RDONLY) == 0 && (options & MMAP_OPTION_SETLENGTH) != 0) {
-    rc = dxb_storage_set_filesize_bytes(storage, size, pagesize_ln);
+    rc = dxb_storage_set_filesize_bytes(storage, size);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
     dxb_storage_set_size_with_known_filesize(storage, size, limit);
@@ -21448,8 +21468,8 @@ static int dxb_storage_setup_bytes(dxb_storage_t *storage, const size_t size, co
   return MDBX_SUCCESS;
 }
 
-static int dxb_storage_resize_bytes(dxb_storage_t *storage, const size_t size, const size_t limit, const unsigned flags,
-                                    uint8_t pagesize_ln) {
+static int dxb_storage_resize_bytes(dxb_storage_t *storage, const size_t size, const size_t limit,
+                                    const unsigned flags) {
   int rc = dxb_storage_fetch_filesize(storage);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
@@ -21467,7 +21487,7 @@ static int dxb_storage_resize_bytes(dxb_storage_t *storage, const size_t size, c
   const uint64_t filesize = dxb_storage_filesize(storage);
   if (filesize != size) {
     if (size > filesize || (flags & txn_shrink_allowed)) {
-      rc = dxb_storage_set_filesize_bytes(storage, size, pagesize_ln);
+      rc = dxb_storage_set_filesize_bytes(storage, size);
       if (unlikely(rc != MDBX_SUCCESS))
         return rc;
     }
@@ -21636,7 +21656,7 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
 
   if (size_bytes < prev_size && mode > implicit_grow) {
     NOTICE("resize-DONTNEED %u..%u", size_pgno, bytes2pgno(env, prev_size));
-    rc = dxb_storage_discard_range(storage, size_bytes, prev_size - size_bytes, env->ps2ln, dxb_discard_clean);
+    rc = dxb_storage_discard_range(storage, size_bytes, prev_size - size_bytes, dxb_discard_clean);
     if (unlikely(MDBX_IS_ERROR(rc))) {
       ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "resize", "DONTNEED", size_bytes, prev_size - size_bytes, rc);
       goto bailout;
@@ -21644,7 +21664,7 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
       env->lck->discarded_tail.weak = size_pgno;
   }
 
-  rc = dxb_storage_resize_bytes(storage, size_bytes, limit_bytes, resize_flags, env->ps2ln);
+  rc = dxb_storage_resize_bytes(storage, size_bytes, limit_bytes, resize_flags);
   eASSERT0(env, dxb_storage_current_within_limit(storage));
 
   if (rc == MDBX_SUCCESS) {
@@ -21785,11 +21805,12 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
       return err;
 
     header = *meta_init_triplet(env, env->page_auxbuf);
+    dxb_storage_set_pagesize_ln(&env->dxb_storage, env->ps2ln);
     err = dxb_storage_write_pages(&env->dxb_storage, env->ps2ln, dxb_io_data, 0, env->page_auxbuf, NUM_METAS);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
-    err = dxb_storage_set_filesize_as_current(&env->dxb_storage, env->geo_in_bytes.now, env->ps2ln);
+    err = dxb_storage_set_filesize_as_current(&env->dxb_storage, env->geo_in_bytes.now);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
@@ -22185,7 +22206,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
     NOTICE("open-FADV_%s %u..%u", "DONTNEED", env->lck->discarded_tail.weak,
            bytes2pgno(env, current_size));
     err = dxb_storage_discard_range(&env->dxb_storage, allocated_aligned2os_bytes,
-                                    current_size - allocated_aligned2os_bytes, env->ps2ln, dxb_discard_clean);
+                                    current_size - allocated_aligned2os_bytes, dxb_discard_clean);
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
 #endif /* POSIX_FADV_DONTNEED */
@@ -22254,8 +22275,7 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
         if (prev_discarded_bytes > discard_edge_bytes) {
           NOTICE("shrink-FADV_%s %zu..%zu", "DONTNEED", discard_edge_pgno, prev_discarded_pgno);
           int err = dxb_storage_discard_range(&env->dxb_storage, discard_edge_bytes,
-                                              prev_discarded_bytes - discard_edge_bytes, env->ps2ln,
-                                              dxb_discard_clean);
+                                              prev_discarded_bytes - discard_edge_bytes, dxb_discard_clean);
           if (unlikely(MDBX_IS_ERROR(err))) {
             ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "shrink", "DONTNEED", discard_edge_bytes,
                   prev_discarded_bytes - discard_edge_bytes, err);
@@ -22407,14 +22427,14 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
   eASSERT0(env, pending->trees.gc.flags == MDBX_INTEGERKEY);
   eASSERT0(env, check_table_flags(pending->trees.main.flags));
   rc = dxb_storage_write_bytes(&env->dxb_storage, dxb_io_meta, pending, sizeof(meta_t),
-                               meta_payload_dxb_offset(env, target_number), env->ps2ln);
+                               meta_payload_dxb_offset(env, target_number));
   if (unlikely(rc != MDBX_SUCCESS)) {
   undo:
     DEBUG("%s", "write failed, disk error?");
     /* On a failure, the pagecache still contains the new data.
      * Try write some old data back, to prevent it from being used. */
     dxb_storage_write_bytes(&env->dxb_storage, dxb_io_meta, &undo_meta, sizeof(meta_t),
-                            meta_payload_dxb_offset(env, target_number), env->ps2ln);
+                            meta_payload_dxb_offset(env, target_number));
     goto fail;
   }
   /* sync meta-pages */
@@ -28726,7 +28746,7 @@ static int meta_unsteady(MDBX_env *env, const txnid_t inclusive_upto, const pgno
 
   if (MDBX_ENABLE_PGOP_STAT)
     env->lck->pgops.wops.weak += 1;
-  int err = dxb_storage_write_bytes(&env->dxb_storage, dxb_io_meta, ptr, bytes, offset, env->ps2ln);
+  int err = dxb_storage_write_bytes(&env->dxb_storage, dxb_io_meta, ptr, bytes, offset);
   if (likely(err == MDBX_SUCCESS)) {
     meta_shadow_copy_field(env, pgno, offsetof(meta_t, sign), &wipe, sizeof(meta->sign));
     return MDBX_RESULT_TRUE;
