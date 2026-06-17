@@ -187,6 +187,13 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   This leaves the async-facing read/write request shapes derived from a single
   validated page-span object at each call site instead of from helper-local
   `(pgno, npages)` adapters.
+  The same descriptor-first cleanup now covers in-file page copies, data-page
+  sync ranges, and page-field byte subranges: the old
+  `dxb_storage_copy_io()`, `dxb_storage_sync_io()`,
+  `dxb_storage_page_span_bytes_io()`, and `dxb_storage_page_field_io()` helpers
+  are gone, while defrag copy tails, commit/pre-sync ranges, meta payload
+  offsets, and coherency root-txnid probes build checked `dxb_page_io_t`
+  requests before deriving copy, sync, or byte-range descriptors.
   Non-compacting environment-copy `sendfile()` and `copy_file_range()` fast
   paths now also build source `dxb_byte_io_t` requests before entering storage,
   and the in-file page-copy helper converts its source/destination page
