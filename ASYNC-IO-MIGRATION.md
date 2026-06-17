@@ -4076,6 +4076,23 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.112` batch, `1.161`
 crud, `1.038` iterate, `1.106` get, and `1.057` delete.
 
+A later filesize descriptor cleanup introduced `dxb_filesize_io_t` for
+data-file length observations and mutations. The storage filesize read,
+truncate/extend, fault-injected setsize path, checker bookkeeping, and
+creation-time current-size update now pass file-length descriptors instead of
+raw byte counts. The coherency path that refreshes the observed filesize now
+passes the required data-file span as a `dxb_byte_io_t` range into
+`dxb_storage_fetch_filesize_if_current_lacks()`, keeping the refresh trigger
+keyed by the same range shape used by explicit reads and writes. Verification
+passed `git diff --check`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke`
+CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
+passed with forced/default ratios of `1.121` batch, `1.137` crud, `1.249`
+iterate, `0.967` get, and `1.086` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
