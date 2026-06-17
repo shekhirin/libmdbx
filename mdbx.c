@@ -1613,6 +1613,8 @@ static int dxb_storage_fetch_sysinfo(const dxb_storage_t *storage, MDBX_envinfo 
 static int dxb_storage_check_readonly(const dxb_storage_t *storage, const pathchar_t *pathname, int err);
 static inline void dxb_storage_set_filesize(dxb_storage_t *storage, uint64_t bytes);
 static inline void dxb_storage_set_current(dxb_storage_t *storage, size_t bytes);
+static int dxb_storage_fetch_filesize(dxb_storage_t *storage);
+static int dxb_storage_fetch_filesize_if_current_lacks(dxb_storage_t *storage, size_t bytes);
 MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno_t used_pgno, const pgno_t size_pgno,
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
@@ -1643,7 +1645,6 @@ static int dxb_storage_copy_to_fd(const dxb_storage_t *storage, mdbx_filehandle_
 static int dxb_storage_sendfile_to_fd(const dxb_storage_t *storage, mdbx_filehandle_t dst_fd, off_t *src_offset,
                                       size_t bytes, bool *copied, bool *unavailable);
 #endif /* MDBX_USE_SENDFILE */
-MDBX_INTERNAL int __must_check_result dxb_fetch_filesize(MDBX_env *env);
 MDBX_INTERNAL int __must_check_result dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending,
                                                       troika_t *const troika);
 
@@ -14571,9 +14572,9 @@ __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *t
   VALGRIND_MAKE_MEM_UNDEFINED(txn->dbs + CORE_DBS, txn->env->max_dbi - CORE_DBS);
   txn->canary = head.ptr_c->canary;
 
-  if (unlikely(pgno2bytes(txn->env, txn->geo.first_unallocated) >
-               dxb_storage_current_size(&txn->env->dxb_storage))) {
-    const int err = dxb_fetch_filesize(txn->env);
+  const size_t required_bytes = pgno2bytes(txn->env, txn->geo.first_unallocated);
+  if (unlikely(required_bytes > dxb_storage_current_size(&txn->env->dxb_storage))) {
+    const int err = dxb_storage_fetch_filesize_if_current_lacks(&txn->env->dxb_storage, required_bytes);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
@@ -21367,6 +21368,10 @@ static int dxb_storage_fetch_filesize(dxb_storage_t *storage) {
   return MDBX_SUCCESS;
 }
 
+static int dxb_storage_fetch_filesize_if_current_lacks(dxb_storage_t *storage, size_t bytes) {
+  return dxb_storage_current_covers(storage, bytes) ? MDBX_SUCCESS : dxb_storage_fetch_filesize(storage);
+}
+
 #if MDBX_USE_COPYFILERANGE
 static int dxb_storage_copy_to_fd(const dxb_storage_t *storage, mdbx_filehandle_t dst_fd, off_t *src_offset,
                                   off_t *dst_offset, size_t bytes, bool *copied, bool *unavailable,
@@ -21469,10 +21474,6 @@ int dxb_copy_pages(const MDBX_env *env, pgno_t src_pgno, pgno_t dst_pgno, size_t
 }
 #endif /* MDBX_USE_COPYFILERANGE */
 
-int dxb_fetch_filesize(MDBX_env *env) {
-  return dxb_storage_fetch_filesize(&env->dxb_storage);
-}
-
 static int dxb_storage_setup_bytes(dxb_storage_t *storage, const size_t size, const size_t limit, const unsigned flags,
                                    const unsigned options, size_t pagesize, uint8_t pagesize_ln) {
   int rc;
@@ -21542,7 +21543,7 @@ int dxb_discard_range(const MDBX_env *env, size_t offset, size_t length, enum dx
 
 __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive, const mdbx_mode_t mode_bits) {
   memset(dest, 0, sizeof(meta_t));
-  int rc = dxb_fetch_filesize(env);
+  int rc = dxb_storage_fetch_filesize(&env->dxb_storage);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
@@ -29034,7 +29035,7 @@ __cold int meta_validate(MDBX_env *env, meta_t *const meta, const page_t *const 
   const uint64_t dxbsize_pages = filesize / (uint64_t)meta->pagesize;
   if (unlikely(allocated_bytes > filesize)) {
     /* Here could be a race with DB-shrinking performed by other process */
-    int err = dxb_fetch_filesize(env);
+    int err = dxb_storage_fetch_filesize(&env->dxb_storage);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
     filesize = dxb_storage_filesize(&env->dxb_storage);
@@ -41996,7 +41997,7 @@ int txn_setup_primal(MDBX_txn *txn) {
     }
 #endif
     eASSERT0(env, dxb_storage_current_within_limit(&env->dxb_storage));
-    err = dxb_fetch_filesize(env);
+    err = dxb_storage_fetch_filesize(&env->dxb_storage);
     if (likely(err == MDBX_SUCCESS)) {
       eASSERT0(env, dxb_storage_filesize_covers(&env->dxb_storage, required_bytes));
       if (dxb_storage_current_size(&env->dxb_storage) > dxb_storage_filesize(&env->dxb_storage))

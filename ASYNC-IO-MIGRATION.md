@@ -2858,6 +2858,23 @@ deterministic forced tiny-cache fault injection, `cmake --build
 `mdbx_migration_bench_lazy` gate reported forced/default ratios of `1.082`
 batch, `1.182` crud, `1.226` iterate, `0.930` get, and `1.076` delete.
 
+A later filesize-refresh cleanup removed the remaining env-shaped
+`dxb_fetch_filesize()` wrapper. Header reads, meta validation, and shrink-side
+transaction checks now call `dxb_storage_fetch_filesize()` directly, while the
+coherency head path uses `dxb_storage_fetch_filesize_if_current_lacks()` for the
+common "refresh only if current storage size does not cover this byte range"
+case. This leaves real file-size refresh and current/limit/filesize bookkeeping
+behind storage-owned helpers instead of an environment adapter. Verification
+passed `git diff --check`, stale data-file mmap symbol scans, filesize-refresh
+routing scans, `make -f GNUmakefile mdbx_migration_smoke`, direct default and
+forced tiny-cache smoke runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public CTest suite
+including migration tool roundtrip coverage, deterministic forced tiny-cache
+fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.123` batch, `1.177` crud, `0.933` iterate, `1.120`
+get, and `1.099` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
