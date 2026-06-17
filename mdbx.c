@@ -23796,6 +23796,7 @@ pgr_t gc_alloc_ex(const MDBX_cursor *const mc, const size_t num, uint8_t flags) 
   pgr_t ret = pgr_empty();
   MDBX_txn *const txn = mc->txn;
   MDBX_env *const env = txn->env;
+  const dxb_storage_t *const storage = &env->dxb_storage;
   tASSERT0(txn, (txn->flags & MDBX_WRITEMAP) == 0);
 #if MDBX_ENABLE_PROFGC
   gc_prof_stat_t *const prof =
@@ -24232,7 +24233,7 @@ no_gc:
 
   eASSERT0(env, newnext > txn->geo.end_pgno);
   const size_t grow_step = pv2pages(txn->geo.grow_pv);
-  size_t aligned = pgno_ceil2os_pgno(env, (pgno_t)(newnext + grow_step - newnext % grow_step));
+  size_t aligned = dxb_storage_pgno_ceil2os_pgno(storage, (pgno_t)(newnext + grow_step - newnext % grow_step));
 
   if (aligned > txn->geo.upper)
     aligned = txn->geo.upper;
