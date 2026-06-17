@@ -5186,6 +5186,22 @@ focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
 The paired benchmark gate passed with forced/default ratios of `1.139` batch,
 `1.155` crud, `0.858` iterate, `1.051` get, and `1.074` delete.
 
+A later page-read submission cleanup reused `dxb_storage_read_page_span()` for
+meta-shadow refresh and defrag fallback reads. These callers already build
+checked `dxb_page_io_t` spans, and now hand those spans directly to the storage
+read helper instead of each deriving a local `dxb_read_io_t` before submission.
+This keeps the page-numbered read boundary consistent across cache fills,
+overflow materialization, meta refresh, and defrag copy fallback reads.
+Verification passed `git diff --check`, source scans proving there are no
+remaining local `dxb_read_io_t request` page-read conversions, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.116` batch,
+`1.183` crud, `0.974` iterate, `1.053` get, and `1.081` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

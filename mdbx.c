@@ -2333,6 +2333,7 @@ MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
 static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *io, void *buf);
 static int dxb_storage_read_pages(const dxb_storage_t *storage, const dxb_read_io_t *io, void *buf);
+static int dxb_storage_read_page_span(const dxb_storage_t *storage, const dxb_page_io_t *io, void *buf);
 static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel channel, const dxb_byte_io_t *io,
                                    const void *buf);
 static int dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_io_t *io, const void *buf);
@@ -4419,11 +4420,7 @@ int meta_shadow_refresh(MDBX_env *env) {
   err = dxb_storage_meta_pages_io(storage, &meta_pages);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  dxb_read_io_t request;
-  err = dxb_storage_read_io_from_page(storage, &meta_pages, &request);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  return dxb_storage_read_pages(storage, &request, env->meta_shadow);
+  return dxb_storage_read_page_span(storage, &meta_pages, env->meta_shadow);
 }
 
 void meta_shadow_copy_page(const MDBX_env *env, const dxb_page_io_t *io, const page_t *page) {
@@ -19676,11 +19673,7 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
     err = dxb_storage_page_io(storage, arc->key_or_pgno, 1, &source_page);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    dxb_read_io_t request;
-    err = dxb_storage_read_io_from_page(storage, &source_page, &request);
-    if (unlikely(err != MDBX_SUCCESS))
-      return err;
-    err = dxb_storage_read_pages(storage, &request, dst);
+    err = dxb_storage_read_page_span(storage, &source_page, dst);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
@@ -19734,11 +19727,7 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
       err = dxb_storage_page_io(storage, src_pgno, 1, &source_page);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
-      dxb_read_io_t request;
-      err = dxb_storage_read_io_from_page(storage, &source_page, &request);
-      if (unlikely(err != MDBX_SUCCESS))
-        return err;
-      err = dxb_storage_read_pages(storage, &request, env->page_auxbuf);
+      err = dxb_storage_read_page_span(storage, &source_page, env->page_auxbuf);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
 #if MDBX_CHECKING > 1
