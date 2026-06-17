@@ -183,10 +183,10 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   the C source. Meta-shadow refresh, initial meta triplet creation, defrag
   fallback page moves, dirty-page queue setup/enqueue, explicit meta override,
   and debug page-kill writes now build checked `dxb_page_io_t` descriptors
-  first and then derive `dxb_read_io_t`/`dxb_write_io_t` from those descriptors.
-  This leaves the async-facing read/write request shapes derived from a single
-  validated page-span object at each call site instead of from helper-local
-  `(pgno, npages)` adapters.
+  first, while storage helpers derive `dxb_byte_io_t` descriptors at the
+  submission boundary. The old single-use read/write page wrapper structs are
+  gone, leaving the async-facing request shapes derived from one validated
+  page-span object instead of helper-local `(pgno, npages)` adapters.
   The same descriptor-first cleanup now covers in-file page copies, data-page
   sync ranges, and page-field byte subranges: the old
   `dxb_storage_copy_io()`, `dxb_storage_sync_io()`,
@@ -5240,6 +5240,24 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
 benchmark gate passed with forced/default ratios of `1.113` batch, `1.158`
 crud, `1.007` iterate, `0.943` get, and `1.063` delete.
+
+A later queued-write page-span cleanup removed the last `dxb_write_io_t` layer
+from the C source. Dirty-write queue sizing and enqueue now use
+`dxb_storage_prepare_write_queue_page_span()` and
+`dxb_storage_add_queued_page_span()`, which validate the caller's checked
+`dxb_page_io_t`, derive a `dxb_byte_io_t`, and then hand that byte descriptor
+to the existing OSAL queue. The queue storage and completion walk still use
+byte descriptors, with completion converting back to exact page spans for
+shadow-buffer release checks. Verification passed `git diff --check`, source
+scans proving `dxb_write_io_t` and the old write-IO adapter/queue helpers are
+gone, the GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the
+six focused `migration_smoke` CTest entries, the full 15-test public migration
+CTest suite, forced tiny-cache fault injection, the ASAN build, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.144` batch, `1.156` crud, `1.189` iterate, `0.996`
+get, and `1.075` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
