@@ -8279,18 +8279,19 @@ __cold int mdbx_preopen_snapinfoW(const wchar_t *pathname, MDBX_envinfo *out, si
   env.flags = MDBX_RDONLY | MDBX_NORDAHEAD | MDBX_ACCEDE | MDBX_VALIDATION;
   env.stuck_meta = -1;
   env.lck_mmap.fd = INVALID_HANDLE_VALUE;
-  dxb_storage_reset(&env.dxb_storage, false);
+  dxb_storage_t *const storage = &env.dxb_storage;
+  dxb_storage_reset(storage, false);
 #if defined(_WIN32) || defined(_WIN64)
   env.dxb_lock_event = INVALID_HANDLE_VALUE;
   env.lck_lock_event = INVALID_HANDLE_VALUE;
-  dxb_storage_mark_overlapped_closed(&env.dxb_storage);
+  dxb_storage_mark_overlapped_closed(storage);
 #endif /* Windows */
   env_options_init(&env);
 
   int err, rc = env_handle_pathname(&env, pathname, 0);
   if (unlikely(rc != MDBX_SUCCESS))
     goto bailout;
-  rc = dxb_storage_open_data(&env.dxb_storage, &env, env.pathname.dxb, MDBX_OPEN_DXB_READ, 0);
+  rc = dxb_storage_open_data(storage, &env, env.pathname.dxb, MDBX_OPEN_DXB_READ, 0);
   if (unlikely(rc != MDBX_SUCCESS))
     goto bailout;
 

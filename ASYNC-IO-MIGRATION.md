@@ -3528,6 +3528,20 @@ focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.072`
 batch, `1.164` crud, `1.026` iterate, `1.073` get, and `1.084` delete.
 
+A later preopen snapshot cleanup routed the temporary stack environment through
+a bound storage handle. `mdbx_preopen_snapinfo()` now binds the stack
+`MDBX_env` storage once for reset, Windows overlapped-handle marking, and
+read-only data-file open. Verification passed direct storage call-argument
+scans, stale data-file mmap and removed sync-adapter scans across the shipped
+core sources, `git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.100` batch, `1.190` crud, `1.072` iterate, `0.922`
+get, and `1.100` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
