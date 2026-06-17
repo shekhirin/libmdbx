@@ -5220,6 +5220,27 @@ focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
 The paired benchmark gate passed with forced/default ratios of `1.144` batch,
 `1.168` crud, `1.234` iterate, `0.973` get, and `1.082` delete.
 
+A later direct page-span I/O cleanup collapsed the legacy read/write page
+wrapper layer underneath those helpers. `dxb_storage_read_page_span()` now
+validates its checked `dxb_page_io_t`, derives the byte descriptor itself, and
+submits the read; the single-use `dxb_read_io_t`, read-page adapter, and
+read-page validator are gone. Direct page writes and debug page-kill writev
+now follow the same pattern through `dxb_storage_write_page_span()` and
+`dxb_storage_writev_page_span()`, deriving byte descriptors locally and
+invalidating cached data pages from the original page-span descriptor. The
+remaining `dxb_write_io_t` users are intentionally limited to dirty-write queue
+setup/enqueue and the queue validator, where the queued completion path still
+needs both byte and page views. Verification passed `git diff --check`, source
+scans proving the removed read/write wrappers are gone and the remaining
+`dxb_write_io_t` uses are queue-local, the GNUmake `mdbx_migration_smoke`
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.113` batch, `1.158`
+crud, `1.007` iterate, `0.943` get, and `1.063` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
