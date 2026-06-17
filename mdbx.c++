@@ -40,6 +40,7 @@ typedef struct meta_ptr meta_ptr_t;
 typedef struct inner_cursor subcur_t;
 typedef struct cursor_couple cursor_couple_t;
 typedef struct defer_free_item defer_free_item_t;
+typedef struct page_cache_entry page_cache_entry_t;
 
 typedef struct troika {
   uint8_t fsm, recent, prefer_steady, tail_and_flags;
@@ -53,10 +54,47 @@ typedef struct troika {
   txnid_t txnid[NUM_METAS];
 } troika_t;
 
+typedef struct page_ref {
+  page_t *page;
+  page_cache_entry_t *cache;
+  pgno_t pgno;
+  size_t npages;
+  unsigned flags;
+} page_ref_t;
+
 typedef struct page_get_result {
   page_t *page;
   int err;
+  page_ref_t ref;
 } pgr_t;
+
+enum page_ref_flags {
+  PAGE_REF_NONE = 0,
+  PAGE_REF_TXN_DIRTY = 1u << 0,
+  PAGE_REF_OWNED = 1u << 1,
+  PAGE_REF_CACHE = 1u << 2
+};
+
+typedef struct page_cache {
+  page_cache_entry_t *entries;
+  size_t entries_count;
+  size_t pages;
+  size_t bytes;
+  size_t pinned;
+} page_cache_t;
+
+struct page_cache_entry {
+  page_cache_entry_t *next;
+  page_cache_t *owner;
+  struct dxb_storage *storage;
+  page_t *page;
+  txnid_t snapshot_txnid;
+  pgno_t pgno;
+  size_t npages;
+  size_t bytes;
+  size_t pins;
+  bool reusable;
+};
 
 typedef struct bind_reader_slot_result {
   int err;
@@ -705,6 +743,8 @@ struct MDBX_cursor {
   clc_couple_t *clc;
   subcur_t *__restrict subcur;
   page_t *pg[CURSOR_STACK_SIZE]; /* stack of pushed pages */
+  page_ref_t pgref[CURSOR_STACK_SIZE];
+  page_ref_t value_ref;          /* page ref backing the latest returned non-stack value */
   indx_t ki[CURSOR_STACK_SIZE];  /* stack of page indices */
   MDBX_cursor *next;
   /* Состояние на момент старта вложенной транзакции */
@@ -737,6 +777,20 @@ struct cursor_couple {
   subcur_t inner;
 };
 
+typedef struct dxb_storage {
+  mdbx_filehandle_t data_fd;
+  mdbx_filehandle_t meta_fd;
+  mdbx_filehandle_t dsync_fd;
+  osal_ioring_t ioring;
+  page_cache_t page_cache;
+  size_t page_cache_limit;
+  osal_fastmutex_t page_cache_lock;
+  bool page_cache_lock_initialized;
+  uint64_t filesize;
+  size_t current;
+  size_t limit;
+} dxb_storage_t;
+
 enum env_flags {
   /* Failed to update the meta page. Probably an I/O error. */
   ENV_FATAL_ERROR = INT32_MIN /* 0x80000000 */,
@@ -765,9 +819,7 @@ struct MDBX_env {
   mdbx_atomic_uint32_t signature;
   uint32_t flags;
   unsigned ps;          /* DB page size, initialized from me_os_psize */
-  osal_mmap_t dxb_mmap; /* The main data file */
-#define lazy_fd dxb_mmap.fd
-  mdbx_filehandle_t dsync_fd, fd4meta;
+  dxb_storage_t dxb_storage;
 #if defined(_WIN32) || defined(_WIN64)
   HANDLE dxb_lock_event;
   HANDLE lck_lock_event;
@@ -781,7 +833,6 @@ struct MDBX_env {
   uint16_t subpage_room_threshold;
   uint16_t subpage_reserve_prereq;
   uint16_t subpage_reserve_limit;
-  atomic_pgno_t mlocked_pgno;
   uint8_t ps2ln;              /* log2 of DB page size */
   int8_t stuck_meta;          /* recovery-only: target meta page or less that zero */
   uint16_t merge_threshold;   /* pages emptier than this are candidates for merging */
@@ -795,6 +846,8 @@ struct MDBX_env {
   } pathname;
   void *page_auxbuf;              /* scratch area for DUPSORT put() */
   MDBX_txn *basal_txn;            /* preallocated write transaction */
+  void *meta_shadow;              /* explicit-I/O copy of the three meta pages */
+  size_t meta_shadow_bytes;
   kvx_t *kvs;                     /* array of auxiliary key-value properties */
   uint8_t *__restrict dbs_flags;  /* array of flags from tree_t.flags */
   mdbx_atomic_uint32_t *dbi_seqs; /* array of dbi sequence numbers */
@@ -892,8 +945,6 @@ struct MDBX_env {
 
   unsigned shadow_reserve_len;
   page_t *__restrict shadow_reserve; /* list of malloc'ed blocks for re-use */
-
-  osal_ioring_t ioring;
 
 #if defined(_WIN32) || defined(_WIN64)
   osal_srwlock_t remap_lock;

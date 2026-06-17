@@ -2967,12 +2967,28 @@ A later data-sync range wrapper cleanup removed the env-shaped
 sites, keep the no-WRITEMAP invariants and pgop accounting there, and submit
 the range directly through `dxb_storage_sync_range()`. This leaves data sync
 range submission behind storage without preserving a separate environment
-forwarder. Verification for this checkpoint should cover stale sync-wrapper
+forwarder. Verification passed stale sync-wrapper
 scans, stale data-file mmap symbol scans, `mdbx_migration_smoke` default and
 forced tiny-cache runs, Ninja build plus focused CTest, public migration CTest,
 fault injection, ASAN build plus focused ASAN CTest, and the paired lazy
 benchmark gate. The lazy gate passed with forced/default ratios of `1.255`
 batch, `1.338` crud, `0.834` iterate, `1.205` get, and `1.152` delete.
+
+A later C++ layout mirror cleanup synchronized the shipped `mdbx.c++` private
+cursor and environment declarations with the explicit-I/O core layout. The C++
+translation unit no longer carries the stale data-file `dxb_mmap` shell,
+`lazy_fd`, `fd4meta`, `mlocked_pgno`, or env-owned dirty-write queue field; it
+now declares the page-cache/page-ref types, `dxb_storage_t`, cursor page refs,
+and meta-shadow fields needed to keep wrapper dereferences such as
+`handle_->userctx` and `handle_->txn` aligned with `mdbx.c`. Verification passed
+`git diff --check`, stale data-file mmap and stale sync-wrapper scans across
+the shipped core sources, GNUmake C++ object/shared-library/example builds,
+`LD_LIBRARY_PATH=. ./mdbx_modern_example`, `mdbx_migration_smoke` default and
+forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, and the full 15-test public migration CTest
+suite including both C++ API variants. The paired `mdbx_migration_bench_lazy`
+gate passed with forced/default ratios of `1.088` batch, `1.169` crud, `1.140`
+iterate, `0.958` get, and `1.061` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
