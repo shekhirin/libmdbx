@@ -5034,6 +5034,23 @@ focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
 The paired benchmark gate passed with forced/default ratios of `1.139` batch,
 `1.163` crud, `0.944` iterate, `1.067` get, and `1.092` delete.
 
+A later queued-write release cleanup added
+`dxb_storage_exact_page_io_from_bytes()` so queued byte descriptors can be
+validated as exact page spans before being used as page ranges.
+`iov_callback4dirtypages()` now derives the queued page descriptor once, checks
+shadow-release bounds against that descriptor, and advances multi-page releases
+with checked `dxb_page_io_t` chunks instead of converting queued offsets and
+lengths back to page numbers manually. Verification passed `git diff --check`,
+source scans proving the targeted queue-drain `dxb_storage_bytes2pgno()` and
+`dxb_storage_npages2bytes()` conversions are gone, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.115` batch,
+`1.171` crud, `1.120` iterate, `0.957` get, and `1.081` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

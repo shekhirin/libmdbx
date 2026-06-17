@@ -1739,6 +1739,16 @@ static inline int dxb_storage_page_io_from_bytes(const dxb_storage_t *storage, c
   return dxb_storage_page_io(storage, (pgno_t)begin, (size_t)(end - begin), io);
 }
 
+static inline int dxb_storage_exact_page_io_from_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *bytes,
+                                                       dxb_page_io_t *io) {
+  int rc = dxb_storage_page_io_from_bytes(storage, bytes, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(io->offset != bytes->offset || io->bytes != bytes->bytes || io->npages == 0))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_byte_start_page_io(const dxb_storage_t *storage, const dxb_byte_io_t *bytes,
                                                  dxb_page_io_t *page, size_t *page_offset) {
   int rc = dxb_storage_byte_io_validate(bytes);
@@ -35043,27 +35053,40 @@ static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_byte_io_t *io, voi
   const dxb_storage_t *const storage = ctx->storage;
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
 
-  uint64_t offset = io->offset;
-  size_t bytes = io->bytes;
+  dxb_page_io_t queued_pages;
+  int err = dxb_storage_exact_page_io_from_bytes(storage, io, &queued_pages);
+  if (unlikely(err != MDBX_SUCCESS)) {
+    if (ctx->err == MDBX_SUCCESS)
+      ctx->err = err;
+    return;
+  }
+
+  pgno_t pgno = queued_pages.pgno;
+  size_t bytes = queued_pages.bytes;
   page_t *wp = (page_t *)data;
-  eASSERT0(env, wp->pgno == dxb_storage_bytes2pgno(storage, offset));
-  eASSERT0(env, dxb_storage_bytes2pgno(storage, bytes) >= (is_largepage(wp) ? wp->pages : 1u));
+  eASSERT0(env, wp->pgno == pgno);
+  eASSERT0(env, queued_pages.npages >= (is_largepage(wp) ? wp->pages : 1u));
   eASSERT0(env, (wp->flags & P_ILL_BITS) == 0);
 
-  if (likely(bytes == dxb_storage_pagesize(storage)))
+  if (likely(queued_pages.npages == 1))
     page_shadow_release(env, wp, 1);
   else {
     do {
-      eASSERT0(env, wp->pgno == dxb_storage_bytes2pgno(storage, offset));
+      eASSERT0(env, wp->pgno == pgno);
       eASSERT0(env, (wp->flags & P_ILL_BITS) == 0);
       size_t npages = is_largepage(wp) ? wp->pages : 1u;
-      size_t chunk = (size_t)dxb_storage_npages2bytes(storage, npages);
-      eASSERT0(env, bytes >= chunk);
-      page_t *next = ptr_disp(wp, chunk);
+      dxb_page_io_t chunk_pages;
+      err = dxb_storage_page_io(storage, pgno, npages, &chunk_pages);
+      if (unlikely(err != MDBX_SUCCESS || chunk_pages.bytes > bytes || chunk_pages.end_pgno > queued_pages.end_pgno)) {
+        if (ctx->err == MDBX_SUCCESS)
+          ctx->err = (err != MDBX_SUCCESS) ? err : MDBX_EINVAL;
+        return;
+      }
+      page_t *next = ptr_disp(wp, chunk_pages.bytes);
       page_shadow_release(env, wp, npages);
       wp = next;
-      offset += chunk;
-      bytes -= chunk;
+      pgno = chunk_pages.end_pgno;
+      bytes -= chunk_pages.bytes;
     } while (bytes);
   }
 }
