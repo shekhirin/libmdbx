@@ -11146,7 +11146,8 @@ static const page_t *dirtylist_page_from_ptr(const MDBX_txn *txn, const void *pt
 static bool page_ptr_is_explicit_io_buffer(const MDBX_txn *txn, const page_t *mp) {
   pgno_t pgno = 0;
   const MDBX_env *const env = txn->env;
-  const page_t *page = dxb_storage_cached_page_from_ptr(&env->dxb_storage, mp, &pgno);
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  const page_t *page = dxb_storage_cached_page_from_ptr(storage, mp, &pgno);
   if (page == mp && pgno == mp->pgno)
     return true;
 
@@ -11188,8 +11189,9 @@ int mdbx_is_dirty(const MDBX_txn *txn, const void *ptr) {
     return LOG_IFERR(rc);
 
   const MDBX_env *env = txn->env;
+  const dxb_storage_t *const storage = &env->dxb_storage;
   pgno_t pgno = 0;
-  const page_t *page = dxb_storage_cached_page_from_ptr(&env->dxb_storage, ptr, &pgno);
+  const page_t *page = dxb_storage_cached_page_from_ptr(storage, ptr, &pgno);
   if (page) {
     rc = check_dirty_page_ptr(txn, page, pgno);
     return unlikely(rc == MDBX_EINVAL) ? LOG_IFERR(rc) : rc;

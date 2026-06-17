@@ -3513,6 +3513,21 @@ CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.084` batch, `1.181` crud, `0.968` iterate, `1.004`
 get, and `1.084` delete.
 
+A later pointer-origin cleanup routed explicit page-cache pointer validation
+through bound storage handles. `page_ptr_is_explicit_io_buffer()` and
+`mdbx_is_dirty()` now bind `dxb_storage_t` before checking whether a pointer
+belongs to the explicit page cache, preserving the existing dirty-list fallback
+and pointer validation behavior. Verification passed direct `env->dxb_storage`
+call-argument scans, stale data-file mmap and removed sync-adapter scans across
+the shipped core sources, `git diff --check`, `make -f GNUmakefile
+mdbx_migration_smoke`, `mdbx_migration_smoke` default and forced tiny-cache
+runs, `cmake --build @cmake-ninja-build`, the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` CTest entries. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.072`
+batch, `1.164` crud, `1.026` iterate, `1.073` get, and `1.084` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
