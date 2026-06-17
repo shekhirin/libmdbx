@@ -1492,18 +1492,6 @@ static inline int dxb_storage_byte_io_from_page(const dxb_page_io_t *pages, dxb_
   return dxb_storage_byte_span_io(pages->offset, pages->offset + pages->bytes, io);
 }
 
-static inline int dxb_storage_page_subrange_bytes_io(const dxb_storage_t *storage, const dxb_page_io_t *pages,
-                                                     size_t page_offset, size_t bytes, dxb_byte_io_t *io) {
-  int rc = dxb_storage_page_io_validate(storage, pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_byte_io_t page_bytes;
-  rc = dxb_storage_byte_io_from_page(pages, &page_bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_byte_subrange_io(&page_bytes, page_offset, bytes, io);
-}
-
 static inline int dxb_storage_page_ref_span_io(const dxb_storage_t *storage, const page_ref_t *ref, size_t npages,
                                                dxb_page_io_t *io) {
   if (unlikely(!ref->page))
@@ -1532,7 +1520,11 @@ static inline int dxb_storage_page_ref_bytes_io(const dxb_storage_t *storage, co
   int rc = dxb_storage_page_ref_io(storage, ref, &pages);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return dxb_storage_page_subrange_bytes_io(storage, &pages, page_offset, bytes, io);
+  dxb_byte_io_t page_bytes;
+  rc = dxb_storage_byte_io_from_page(&pages, &page_bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_byte_subrange_io(&page_bytes, page_offset, bytes, io);
 }
 
 static inline bool dxb_storage_io_channel_valid(enum dxb_io_channel channel) {
@@ -6036,7 +6028,11 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
   rc = dxb_storage_page_prefix_io(storage, txn->geo.first_unallocated, &used_pages);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  const size_t used_size = used_pages.bytes;
+  dxb_byte_io_t used_bytes;
+  rc = dxb_storage_byte_io_from_page(&used_pages, &used_bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  const size_t used_size = used_bytes.bytes;
   while (rc == MDBX_SUCCESS && offset < used_size) {
     if (flags & MDBX_CP_THROTTLE_MVCC) {
       rc = mdbx_txn_unpark(txn, false);
@@ -6045,7 +6041,7 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
     }
 
     dxb_byte_io_t remaining;
-    rc = dxb_storage_page_subrange_bytes_io(storage, &used_pages, offset, used_size - offset, &remaining);
+    rc = dxb_storage_byte_subrange_io(&used_bytes, offset, used_size - offset, &remaining);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
 
@@ -14958,9 +14954,12 @@ static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, co
   dxb_page_io_t root_page;
   int err = dxb_storage_page_io(storage, root_pgno, 1, &root_page);
   dxb_byte_io_t bytes;
-  if (likely(err == MDBX_SUCCESS))
-    err = dxb_storage_page_subrange_bytes_io(storage, &root_page, offsetof(page_t, txnid), sizeof(probe->txnid),
-                                            &bytes);
+  if (likely(err == MDBX_SUCCESS)) {
+    dxb_byte_io_t root_bytes;
+    err = dxb_storage_byte_io_from_page(&root_page, &root_bytes);
+    if (likely(err == MDBX_SUCCESS))
+      err = dxb_storage_byte_subrange_io(&root_bytes, offsetof(page_t, txnid), sizeof(probe->txnid), &bytes);
+  }
   const bool storage_probe_possible = likely(err == MDBX_SUCCESS) && dxb_storage_contains_range(storage, &bytes);
   if (likely(storage_probe_possible)) {
     err = dxb_storage_read_bytes(storage, &bytes, &probe->txnid);

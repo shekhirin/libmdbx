@@ -5561,6 +5561,23 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.100` batch, `1.183` crud, `0.915` iterate, `1.008`
 get, and `1.075` delete.
 
+A later page-subrange adapter cleanup removed
+`dxb_storage_page_subrange_bytes_io()` from the C source. Page-ref value
+materialization, non-compacting copy fallbacks, and coherency root-txnid probes
+now derive checked page coverage first, convert that coverage to a
+`dxb_byte_io_t`, and then derive local subranges with
+`dxb_storage_byte_subrange_io()`. Verification passed `git diff --check`,
+source scans proving the page-subrange adapter, read/write page-span wrappers,
+and the unused `dxb_storage_meta_pages_io()` helper are gone from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.124` batch, `1.142` crud, `1.175` iterate, `0.964`
+get, and `1.062` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
