@@ -4778,6 +4778,21 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.119` batch, `1.162`
 crud, `1.010` iterate, `0.951` get, and `1.080` delete.
 
+A later readahead-window cleanup replaced the raw `offset,length` readahead
+constructor with `dxb_storage_readahead_io_from_bytes()`. `dxb_set_readahead()`
+now clamps the advice window against the storage limit, builds a checked
+`dxb_byte_io_t`, and derives the page-aware readahead request from that
+descriptor before issuing prefetch or advice calls. Verification passed
+`git diff --check`, source scans proving the raw `dxb_storage_readahead_io()`
+constructor is absent, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.147` batch, `1.154`
+crud, `1.136` iterate, `0.959` get, and `1.078` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

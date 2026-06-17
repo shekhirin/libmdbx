@@ -1827,12 +1827,9 @@ static inline int dxb_storage_discard_io_validate(const dxb_storage_t *storage, 
   return MDBX_SUCCESS;
 }
 
-static inline int dxb_storage_readahead_io(const dxb_storage_t *storage, uint64_t offset, size_t bytes,
-                                           dxb_readahead_io_t *io) {
-  int rc = dxb_storage_byte_io(offset, bytes, &io->bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
+static inline int dxb_storage_readahead_io_from_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *bytes,
+                                                      dxb_readahead_io_t *io) {
+  io->bytes = *bytes;
   return dxb_storage_page_io_from_bytes(storage, &io->bytes, &io->pages);
 }
 
@@ -22794,8 +22791,13 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
   if (length == 0)
     return MDBX_SUCCESS;
 
+  dxb_byte_io_t window_bytes;
+  int err = dxb_storage_byte_io(offset, length, &window_bytes);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
   dxb_readahead_io_t window;
-  int err = dxb_storage_readahead_io(storage, offset, length, &window);
+  err = dxb_storage_readahead_io_from_bytes(storage, &window_bytes, &window);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
