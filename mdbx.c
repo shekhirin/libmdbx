@@ -1421,6 +1421,28 @@ static inline uint64_t dxb_storage_bytes2pgno(const dxb_storage_t *storage, uint
   return bytes >> dxb_storage_pagesize_ln(storage);
 }
 
+static inline int dxb_storage_page_io_from_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *bytes,
+                                                 dxb_page_io_t *io) {
+  const uint64_t max_pgno = (uint64_t)MAX_PAGENO + 1u;
+  uint64_t begin = dxb_storage_bytes2pgno(storage, bytes->offset);
+  if (unlikely(begin > max_pgno))
+    begin = max_pgno;
+
+  const uint64_t max_bytes = dxb_storage_pgno2bytes(storage, max_pgno);
+  uint64_t end_bytes = bytes->offset + bytes->bytes;
+  if (end_bytes < bytes->offset || end_bytes > max_bytes)
+    end_bytes = max_bytes;
+
+  const size_t pagesize = dxb_storage_pagesize(storage);
+  uint64_t end = dxb_storage_bytes2pgno(storage, end_bytes + pagesize - 1);
+  if (unlikely(end > max_pgno))
+    end = max_pgno;
+  if (unlikely(end < begin))
+    end = begin;
+
+  return dxb_storage_page_io(storage, (pgno_t)begin, (size_t)(end - begin), io);
+}
+
 static inline uint64_t dxb_storage_page_field_offset(const dxb_storage_t *storage, pgno_t pgno,
                                                      size_t field_offset) {
   return dxb_storage_pgno2bytes(storage, pgno) + field_offset;
@@ -20519,9 +20541,9 @@ static void page_cache_release_all(dxb_storage_t *storage, bool env_active) {
   page_cache_unlock(storage);
 }
 
-static void dxb_storage_invalidate_cached_pages(dxb_storage_t *storage, pgno_t begin, pgno_t end,
-                                                bool include_reusable) {
-  if (begin >= end)
+static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_page_io_t *io,
+                                             bool include_reusable) {
+  if (io->npages == 0)
     return;
 
   page_cache_lock(storage);
@@ -20529,7 +20551,7 @@ static void dxb_storage_invalidate_cached_pages(dxb_storage_t *storage, pgno_t b
   page_cache_entry_t *entry = cache->entries;
   while (entry) {
     page_cache_entry_t *const next = entry->next;
-    if (entry->io.pgno < end && begin < entry->io.end_pgno) {
+    if (entry->io.pgno < io->end_pgno && io->pgno < entry->io.end_pgno) {
       /* Snapshot-keyed reusable entries remain valid across ordinary CoW
        * writes. Only destructive truncate/remove operations force them out. */
       if (include_reusable || !entry->reusable) {
@@ -20548,18 +20570,10 @@ static void dxb_storage_invalidate_cached_bytes(dxb_storage_t *storage, const dx
   if (io->bytes == 0)
     return;
 
-  const uint64_t begin = dxb_storage_bytes2pgno(storage, io->offset);
-  uint64_t end_bytes = io->offset + io->bytes;
-  const uint64_t max_pgno = (uint64_t)MAX_PAGENO + 1u;
-  const uint64_t max_bytes = dxb_storage_pgno2bytes(storage, max_pgno);
-  if (end_bytes < io->offset || end_bytes > max_bytes)
-    end_bytes = max_bytes;
-
-  const size_t pagesize = dxb_storage_pagesize(storage);
-  const uint64_t end = dxb_storage_bytes2pgno(storage, end_bytes + pagesize - 1);
-  if (begin <= MAX_PAGENO)
-    dxb_storage_invalidate_cached_pages(storage, (pgno_t)begin, (pgno_t)((end > max_pgno) ? max_pgno : end),
-                                        include_reusable);
+  dxb_page_io_t pages;
+  const int err = dxb_storage_page_io_from_bytes(storage, io, &pages);
+  if (likely(err == MDBX_SUCCESS))
+    dxb_storage_invalidate_cached_io(storage, &pages, include_reusable);
 }
 
 static inline bool page_cache_can_reuse(const MDBX_txn *txn) {
@@ -21500,7 +21514,7 @@ static void dxb_storage_invalidate_written_io(dxb_storage_t *storage, enum dxb_i
   if (!dxb_io_channel_is_data(channel))
     return;
 
-  dxb_storage_invalidate_cached_pages(storage, io->pgno, io->end_pgno, false);
+  dxb_storage_invalidate_cached_io(storage, io, false);
 }
 
 static int dxb_storage_write_io(dxb_storage_t *storage, enum dxb_io_channel channel, const dxb_page_io_t *io,

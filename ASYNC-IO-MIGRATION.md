@@ -4093,6 +4093,24 @@ CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
 passed with forced/default ratios of `1.121` batch, `1.137` crud, `1.249`
 iterate, `0.967` get, and `1.086` delete.
 
+A later cache-invalidation page descriptor cleanup added
+`dxb_storage_page_io_from_bytes()` and changed the storage page-cache invalidator
+to consume `dxb_page_io_t` ranges instead of raw begin/end page numbers. Byte
+range invalidation now converts its `dxb_byte_io_t` span into a checked page
+descriptor before evicting overlapping cache entries, and write/copy paths pass
+their existing page I/O descriptors directly into invalidation. This keeps
+cache eviction keyed by the same explicit page range shape used by storage
+reads, writes, copy, prefetch, sync, and queue preparation. Verification passed
+`git diff --check`, source scans proving the old raw page invalidator is gone
+from `mdbx.c`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke`
+CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
+passed with forced/default ratios of `1.154` batch, `1.154` crud, `1.200`
+iterate, `0.957` get, and `1.087` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
