@@ -4297,6 +4297,25 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.119` batch, `1.167` crud, `0.817` iterate,
 `1.048` get, and `1.077` delete.
 
+A later readahead-advice descriptor cleanup kept `dxb_readahead_io_t` intact
+through storage advice and prefetch submission. `dxb_set_readahead()` now
+passes the checked window descriptor to `dxb_storage_advise_readahead_io()` for
+normal/random advice and to `dxb_storage_prefetch_readahead_io()` for
+`WILLNEED` prefetch; both helpers rebuild and validate the page span from the
+byte window before touching the fd-backed advice path. This leaves the raw
+`dxb_storage_advise_range()` helper below the storage request boundary instead
+of exposing separate byte/page window members to callers. Verification passed
+`git diff --check`, source scans proving the old `dxb_storage_prefetch_io()`
+helper and direct `window.bytes`/`window.pages` advice calls are gone from
+`mdbx.c`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.125` batch, `1.153` crud, `0.743` iterate,
+`0.876` get, and `1.076` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
