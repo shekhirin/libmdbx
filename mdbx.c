@@ -1977,7 +1977,7 @@ static int dxb_storage_check_readonly(const dxb_storage_t *storage, const pathch
 static inline int dxb_storage_set_filesize(dxb_storage_t *storage, uint64_t filesize);
 static inline int dxb_storage_set_current(dxb_storage_t *storage, uint64_t filesize);
 static int dxb_storage_fetch_filesize(dxb_storage_t *storage);
-static int dxb_storage_fetch_filesize_for_page_span_if_needed(dxb_storage_t *storage, const dxb_page_io_t *io);
+static int dxb_storage_fetch_filesize_for_bytes_if_needed(dxb_storage_t *storage, const dxb_byte_io_t *io);
 MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno_t used_pgno, const pgno_t size_pgno,
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
@@ -15090,9 +15090,12 @@ __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *t
   int err = dxb_storage_page_prefix_io(storage, txn->geo.first_unallocated, &required);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  const size_t required_bytes = required.bytes;
-  if (unlikely(required_bytes > dxb_storage_current_size(storage))) {
-    err = dxb_storage_fetch_filesize_for_page_span_if_needed(storage, &required);
+  dxb_byte_io_t required_bytes;
+  err = dxb_storage_byte_io_from_page(&required, &required_bytes);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(required_bytes.bytes > dxb_storage_current_size(storage))) {
+    err = dxb_storage_fetch_filesize_for_bytes_if_needed(storage, &required_bytes);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
@@ -22089,15 +22092,11 @@ static int dxb_storage_fetch_filesize(dxb_storage_t *storage) {
   return dxb_storage_note_filesize(storage, filesize);
 }
 
-static int dxb_storage_fetch_filesize_for_page_span_if_needed(dxb_storage_t *storage, const dxb_page_io_t *io) {
-  int rc = dxb_storage_page_io_validate(storage, io);
+static int dxb_storage_fetch_filesize_for_bytes_if_needed(dxb_storage_t *storage, const dxb_byte_io_t *io) {
+  int rc = dxb_storage_byte_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  dxb_byte_io_t bytes;
-  rc = dxb_storage_byte_io_from_page(io, &bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_contains_range(storage, &bytes) ? MDBX_SUCCESS : dxb_storage_fetch_filesize(storage);
+  return dxb_storage_contains_range(storage, io) ? MDBX_SUCCESS : dxb_storage_fetch_filesize(storage);
 }
 
 #if MDBX_USE_COPYFILERANGE

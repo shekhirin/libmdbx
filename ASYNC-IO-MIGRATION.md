@@ -5493,6 +5493,23 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 The paired benchmark gate passed with forced/default ratios of `1.129` batch,
 `1.160` crud, `0.943` iterate, `0.980` get, and `1.093` delete.
 
+A later coherency filesize-coverage cleanup removed
+`dxb_storage_fetch_filesize_for_page_span_if_needed()` from the C source.
+`coherency_fetch_head()` now builds the checked `0..first_unallocated`
+page-prefix span, derives the byte coverage explicitly, compares that byte span
+with the cached current size, and calls
+`dxb_storage_fetch_filesize_for_bytes_if_needed()` only when a filesize refresh
+is still required. Verification passed `git diff --check`, source scans proving
+the old page-span filesize helper is gone from `mdbx.c` and the coherency path
+now submits byte coverage directly, the GNUmake `mdbx_migration_smoke` target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.094` batch,
+`1.168` crud, `1.148` iterate, `0.966` get, and `1.096` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
