@@ -4560,6 +4560,23 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.124` batch, `1.151` crud, `0.976` iterate,
 `0.994` get, and `1.081` delete.
 
+A later DXB lock request validation cleanup added
+`dxb_storage_lock_io_validate()` so POSIX data-file lock ranges are rebuilt and
+checked before the storage lock helpers submit them to `fcntl()`.
+`dxb_storage_lock_op()` and `dxb_storage_setlk_with3retries()` now validate the
+range descriptor before converting it to `off_t`, keeping DXB lock routing on
+the same descriptor-validation pattern as the explicit read/write/copy/sync
+paths. Verification passed `git diff --check`, source scans proving the DXB
+lock executors call `dxb_storage_lock_io_validate()`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.132` batch, `1.163` crud, `0.976` iterate, `0.997`
+get, and `1.084` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

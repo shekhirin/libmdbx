@@ -1463,6 +1463,16 @@ static inline int dxb_storage_lock_io(uint64_t offset, uint64_t bytes, dxb_lock_
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_lock_io_validate(const dxb_lock_io_t *io) {
+  dxb_lock_io_t checked;
+  int rc = dxb_storage_lock_io(io->offset, io->bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.offset != io->offset || checked.bytes != io->bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_size_io(size_t current, size_t limit, dxb_size_io_t *io) {
   if (unlikely(current > limit))
     return MDBX_EINVAL;
@@ -27656,11 +27666,17 @@ static int lck_setlk_with3retries(const mdbx_filehandle_t fd, const int lck, con
 
 static int dxb_storage_lock_op(const dxb_storage_t *storage, const int cmd, const int lck,
                                const dxb_lock_io_t *range) {
+  int rc = dxb_storage_lock_io_validate(range);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   return lck_op(dxb_storage_data_fd(storage), cmd, lck, (off_t)range->offset, (off_t)range->bytes);
 }
 
 static int dxb_storage_setlk_with3retries(const dxb_storage_t *storage, const int lck,
                                           const dxb_lock_io_t *range) {
+  int rc = dxb_storage_lock_io_validate(range);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   return lck_setlk_with3retries(dxb_storage_data_fd(storage), lck, (off_t)range->offset, (off_t)range->bytes);
 }
 
