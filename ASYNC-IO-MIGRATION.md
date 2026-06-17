@@ -3357,6 +3357,21 @@ CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.128` batch, `1.167` crud, `0.999` iterate, `1.017`
 get, and `1.076` delete.
 
+A later meta-shadow geometry cleanup moved env-owned meta shadow buffer sizing
+and slot addressing onto `dxb_storage_t`. The shadow triplet now allocates and
+addresses meta page slots through storage page geometry, refreshes via a local
+storage handle, and asserts that storage/env page sizes match before copying
+shadow pages. Verification passed stale meta-shadow conversion scans, stale
+data-file mmap and removed sync-adapter scans across the shipped core sources,
+`git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.101` batch, `1.156` crud, `1.015` iterate, `0.969`
+get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

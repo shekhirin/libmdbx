@@ -3731,13 +3731,17 @@ MDBX_INTERNAL void meta_troika_dump(const MDBX_env *env, const troika_t *troika)
 static inline page_t *meta_shadow_page(const MDBX_env *env, unsigned n) {
   eASSERT0(env, n < NUM_METAS);
   eASSERT0(env, env->meta_shadow);
-  return ptr_disp(env->meta_shadow, pgno2bytes(env, n));
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  eASSERT0(env, dxb_storage_pagesize(storage) == env->ps);
+  return ptr_disp(env->meta_shadow, (size_t)dxb_storage_meta_page_offset(storage, n));
 }
 
 static inline meta_t *meta_shadow_ptr(const MDBX_env *env, unsigned n) { return page_meta(meta_shadow_page(env, n)); }
 
 __cold static int meta_shadow_alloc(MDBX_env *env) {
-  const size_t bytes = pgno2bytes(env, NUM_METAS);
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  eASSERT0(env, dxb_storage_pagesize(storage) == env->ps);
+  const size_t bytes = (size_t)dxb_storage_npages2bytes(storage, NUM_METAS);
   if (likely(env->meta_shadow && env->meta_shadow_bytes == bytes))
     return MDBX_SUCCESS;
 
@@ -3756,16 +3760,16 @@ __cold static int meta_shadow_alloc(MDBX_env *env) {
 }
 
 int meta_shadow_refresh(MDBX_env *env) {
+  const dxb_storage_t *const storage = &env->dxb_storage;
   int err = meta_shadow_alloc(env);
-  return unlikely(err != MDBX_SUCCESS)
-             ? err
-             : dxb_storage_read_pages(&env->dxb_storage, 0, env->meta_shadow, NUM_METAS);
+  return unlikely(err != MDBX_SUCCESS) ? err : dxb_storage_read_pages(storage, 0, env->meta_shadow, NUM_METAS);
 }
 
 void meta_shadow_copy_page(const MDBX_env *env, unsigned n, const page_t *page) {
   if (likely(env->meta_shadow)) {
     eASSERT0(env, n < NUM_METAS);
-    memcpy(meta_shadow_page(env, n), page, env->ps);
+    const dxb_storage_t *const storage = &env->dxb_storage;
+    memcpy(meta_shadow_page(env, n), page, dxb_storage_pagesize(storage));
   }
 }
 
