@@ -9186,7 +9186,7 @@ __cold int mdbx_env_defrag(MDBX_env *env, size_t defrag_atleast, size_t time_atl
 
 static MDBX_cache_result_t cache_get(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *data,
                                      MDBX_cache_entry_t *entry);
-static pgr_t page_cache_read(MDBX_txn *txn, const pgno_t pgno, const bool track_private);
+static pgr_t page_cache_read(MDBX_txn *txn, const dxb_page_io_t *request, const bool track_private);
 static int page_cache_read_large(MDBX_txn *txn, pgr_t *pgr);
 
 static inline MDBX_cache_result_t cache_result(int err, MDBX_cache_status_t status) {
@@ -9253,11 +9253,16 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
     return MDBX_INVALID;
 
   const size_t page_offset = entry->offset - (size_t)dxb_storage_pgno2bytes(storage, pgno);
-  pgr_t pgr = page_cache_read((MDBX_txn *)txn, pgno, false);
+  dxb_page_io_t request;
+  int err = dxb_storage_page_io(storage, pgno, 1, &request);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  pgr_t pgr = page_cache_read((MDBX_txn *)txn, &request, false);
   if (unlikely(pgr.err != MDBX_SUCCESS))
     return pgr.err;
 
-  int err = MDBX_SUCCESS;
+  err = MDBX_SUCCESS;
   if (unlikely(pgr.page->pgno != pgno || (pgr.page->flags & P_ILL_BITS) != 0 ||
                pgr.page->txnid > txn_basis_snapshot(txn))) {
     err = MDBX_INVALID;
@@ -20579,22 +20584,19 @@ static int dxb_storage_detach_materialized_large_page(dxb_storage_t *storage, pg
   return MDBX_SUCCESS;
 }
 
-static pgr_t page_cache_read(MDBX_txn *txn, const pgno_t pgno, const bool track_private) {
+static pgr_t page_cache_read(MDBX_txn *txn, const dxb_page_io_t *request, const bool track_private) {
+  ASSERT(request->npages == 1);
   MDBX_env *const env = txn->env;
   dxb_storage_t *const storage = &env->dxb_storage;
   const bool reusable = page_cache_can_reuse(txn);
   const txnid_t snapshot = reusable ? txn_basis_snapshot(txn) : 0;
-  dxb_page_io_t request;
-  int err = dxb_storage_page_io(storage, pgno, 1, &request);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
 
-  pgr_t cached = dxb_storage_lookup_cached_page(storage, &request, snapshot, reusable);
+  pgr_t cached = dxb_storage_lookup_cached_page(storage, request, snapshot, reusable);
   if (cached.err == MDBX_SUCCESS)
     return cached;
 
   const bool tracked = reusable || track_private || CHECKS0_ENABLED();
-  return dxb_storage_read_cached_page(storage, &request, snapshot, reusable, tracked);
+  return dxb_storage_read_cached_page(storage, request, snapshot, reusable, tracked);
 }
 
 static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr_t *pgr) {
@@ -33818,7 +33820,11 @@ __cold static __noinline pgr_t check_page_complete(const uint16_t ILL, pgr_t r, 
 
 static inline pgr_t page_get_committed(MDBX_txn *txn, const pgno_t pgno, const bool track_private) {
   tASSERT0(txn, (txn->flags & MDBX_WRITEMAP) == 0);
-  return page_cache_read(txn, pgno, track_private);
+  dxb_page_io_t request;
+  int err = dxb_storage_page_io(&txn->env->dxb_storage, pgno, 1, &request);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return page_cache_read(txn, &request, track_private);
 }
 
 static __hot pgr_t page_get_unchecked_ex(MDBX_txn *const txn, const pgno_t pgno, const txnid_t front,
