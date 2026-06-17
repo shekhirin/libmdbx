@@ -1354,6 +1354,30 @@ static inline uint64_t dxb_storage_bytes2pgno(const dxb_storage_t *storage, uint
   return bytes >> dxb_storage_pagesize_ln(storage);
 }
 
+static inline size_t dxb_storage_os_alignment_unit(void) {
+  return MDBX_ROUNDING_TO_ALLOCATION_GRANULARITY ? globals.sys_allocation_granularity : globals.sys_pagesize;
+}
+
+static inline size_t dxb_storage_bytes_ceil2os_bytes(const dxb_storage_t *storage, size_t bytes) {
+  const size_t sys_unit = dxb_storage_os_alignment_unit();
+  const size_t pagesize = dxb_storage_pagesize(storage);
+  return ceil_powerof2(bytes, (pagesize > sys_unit) ? pagesize : sys_unit);
+}
+
+static inline size_t dxb_storage_bytes_ceil2allocation_bytes(const dxb_storage_t *storage, size_t bytes) {
+  const size_t pagesize = dxb_storage_pagesize(storage);
+  const size_t alloc_unit = globals.sys_allocation_granularity;
+  return ceil_powerof2(bytes, (pagesize > alloc_unit) ? pagesize : alloc_unit);
+}
+
+static inline pgno_t dxb_storage_bytes_ceil2os_pgno(const dxb_storage_t *storage, size_t bytes) {
+  return (pgno_t)dxb_storage_bytes2pgno(storage, dxb_storage_bytes_ceil2os_bytes(storage, bytes));
+}
+
+static inline size_t dxb_storage_pgno_ceil2os_bytes(const dxb_storage_t *storage, size_t pgno) {
+  return ceil_powerof2((size_t)dxb_storage_pgno2bytes(storage, pgno), dxb_storage_os_alignment_unit());
+}
+
 static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, uint64_t offset, size_t bytes) {
   const uint64_t current = dxb_storage_current_size(storage);
   return offset <= current && bytes <= current - offset;
@@ -4796,7 +4820,7 @@ __cold int mdbx_env_warmup(const MDBX_env *env, const MDBX_txn *txn, MDBX_warmup
       return LOG_IFERR(err);
     used_pgno = meta_recent_shadow(env, &troika).ptr_v->geometry.first_unallocated;
   }
-  const size_t used_range = pgno_ceil2os_bytes(env, used_pgno);
+  const size_t used_range = dxb_storage_pgno_ceil2os_bytes(&env->dxb_storage, used_pgno);
 
   int rc = MDBX_SUCCESS;
   if (flags & MDBX_warmup_touchlimit) {
@@ -21634,7 +21658,7 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
   dxb_storage_t *const storage = &env->dxb_storage;
   const size_t prev_size = dxb_storage_current_size(storage);
   const size_t prev_limit = dxb_storage_limit_size(storage);
-  const pgno_t prev_limit_pgno = bytes2pgno(env, prev_limit);
+  const pgno_t prev_limit_pgno = (pgno_t)dxb_storage_bytes2pgno(storage, prev_limit);
   eASSERT0(env, limit_pgno >= size_pgno);
   eASSERT0(env, size_pgno >= allocated_pgno);
   if (mode < explicit_resize && size_pgno <= prev_limit_pgno) {
@@ -21642,8 +21666,8 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
      * by another process. Avoid redundant resize until necessary. */
     limit_pgno = prev_limit_pgno;
   }
-  const size_t limit_bytes = pgno_ceil2os_bytes(env, limit_pgno);
-  const size_t size_bytes = pgno_ceil2os_bytes(env, size_pgno);
+  const size_t limit_bytes = dxb_storage_pgno_ceil2os_bytes(storage, limit_pgno);
+  const size_t size_bytes = dxb_storage_pgno_ceil2os_bytes(storage, size_pgno);
 
   VERBOSE("resize(env-flags 0x%x, mode %d) datafile: "
           "present %" PRIuPTR " -> %" PRIuPTR ", "
@@ -21651,8 +21675,8 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
           env->flags, mode, prev_size, size_bytes, prev_limit, limit_bytes);
 
   eASSERT0(env, limit_bytes >= size_bytes);
-  eASSERT0(env, bytes2pgno(env, size_bytes) >= size_pgno);
-  eASSERT0(env, bytes2pgno(env, limit_bytes) >= limit_pgno);
+  eASSERT0(env, dxb_storage_bytes2pgno(storage, size_bytes) >= size_pgno);
+  eASSERT0(env, dxb_storage_bytes2pgno(storage, limit_bytes) >= limit_pgno);
 
   unsigned resize_flags = env->flags & (MDBX_RDONLY | MDBX_UTTERLY_NOSYNC);
   if (mode >= impilict_shrink)
@@ -21665,7 +21689,7 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
   (void)allocated_pgno;
 
   if (size_bytes < prev_size && mode > implicit_grow) {
-    NOTICE("resize-DONTNEED %u..%u", size_pgno, bytes2pgno(env, prev_size));
+    NOTICE("resize-DONTNEED %u..%u", size_pgno, (pgno_t)dxb_storage_bytes2pgno(storage, prev_size));
     rc = dxb_storage_discard_range(storage, size_bytes, prev_size - size_bytes, dxb_discard_clean);
     if (unlikely(MDBX_IS_ERROR(rc))) {
       ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "resize", "DONTNEED", size_bytes, prev_size - size_bytes, rc);
@@ -21739,13 +21763,14 @@ bailout:
 __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole) {
   eASSERT0(env, edge >= NUM_METAS && edge <= MAX_PAGENO + 1);
   eASSERT0(env, (enable & 1) == (enable != 0));
+  const dxb_storage_t *const storage = &env->dxb_storage;
   const bool toggle = force_whole || ((enable ^ env->lck->readahead_anchor) & 1) || !env->lck->readahead_anchor;
   const pgno_t prev_edge = env->lck->readahead_anchor >> 1;
-  const size_t limit = dxb_storage_limit_size(&env->dxb_storage);
-  size_t offset = toggle ? 0 : pgno_ceil2os_bytes(env, (prev_edge < edge) ? prev_edge : edge);
+  const size_t limit = dxb_storage_limit_size(storage);
+  size_t offset = toggle ? 0 : dxb_storage_pgno_ceil2os_bytes(storage, (prev_edge < edge) ? prev_edge : edge);
   offset = (offset < limit) ? offset : limit;
 
-  size_t length = pgno_ceil2os_bytes(env, (prev_edge < edge) ? edge : prev_edge);
+  size_t length = dxb_storage_pgno_ceil2os_bytes(storage, (prev_edge < edge) ? edge : prev_edge);
   length = (length < limit) ? length : limit;
   length -= offset;
 
@@ -21753,17 +21778,19 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
   if (length == 0)
     return MDBX_SUCCESS;
 
-  NOTICE("readahead %s %u..%u", enable ? "ON" : "OFF", bytes2pgno(env, offset), bytes2pgno(env, offset + length));
+  const pgno_t begin_pgno = (pgno_t)dxb_storage_bytes2pgno(storage, offset);
+  const pgno_t end_pgno = (pgno_t)dxb_storage_bytes2pgno(storage, offset + length);
+  NOTICE("readahead %s %u..%u", enable ? "ON" : "OFF", begin_pgno, end_pgno);
 
   if (toggle) {
-    int err = dxb_storage_set_readahead(&env->dxb_storage, enable);
+    int err = dxb_storage_set_readahead(storage, enable);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
 
   int err;
   if (enable) {
-    err = dxb_storage_advise_range(&env->dxb_storage, offset, length, dxb_advice_normal);
+    err = dxb_storage_advise_range(storage, offset, length, dxb_advice_normal);
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
     if (toggle) {
@@ -21772,15 +21799,13 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
        * on following access to the hinted region.
        * 19.6.0 Darwin Kernel Version 19.6.0: Tue Jan 12 22:13:05 PST 2021;
        * root:xnu-6153.141.16~1/RELEASE_X86_64 x86_64 */
-      const pgno_t prefetch_pgno = bytes2pgno(env, offset);
-      err = dxb_storage_prefetch_pages(&env->dxb_storage, prefetch_pgno,
-                                       bytes2pgno(env, offset + length) - prefetch_pgno);
+      err = dxb_storage_prefetch_pages(storage, begin_pgno, end_pgno - begin_pgno);
       if (unlikely(MDBX_IS_ERROR(err)))
         return err;
     }
   } else {
     env_clear_incore_cache(env);
-    err = dxb_storage_advise_range(&env->dxb_storage, offset, length, dxb_advice_random);
+    err = dxb_storage_advise_range(storage, offset, length, dxb_advice_random);
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
   }
@@ -21853,6 +21878,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   if (env->ps != header.pagesize)
     env_setup_pagesize(env, header.pagesize);
   dxb_storage_set_pagesize_ln(&env->dxb_storage, env->ps2ln);
+  dxb_storage_t *const storage = &env->dxb_storage;
   if ((env->flags & MDBX_RDONLY) == 0) {
     err = env_page_auxbuffer(env);
     if (unlikely(err != MDBX_SUCCESS))
@@ -21860,8 +21886,8 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   }
 
   size_t expected_filesize = 0;
-  const size_t allocated_bytes = pgno2bytes(env, header.geometry.first_unallocated);
-  const size_t allocated_aligned2os_bytes = ceil_powerof2(allocated_bytes, globals.sys_allocation_granularity);
+  const size_t allocated_bytes = (size_t)dxb_storage_pgno2bytes(storage, header.geometry.first_unallocated);
+  const size_t allocated_aligned2os_bytes = dxb_storage_bytes_ceil2allocation_bytes(storage, allocated_bytes);
   if ((env->flags & MDBX_RDONLY)    /* readonly */
       || lck_rc != MDBX_RESULT_TRUE /* not exclusive */
       || /* recovery mode */ env->stuck_meta >= 0) {
@@ -21885,10 +21911,14 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
      *  - upper or lower limit changes
      *  - shrink threshold or growth step
      * But ignore change just a 'now/current' size. */
-    if (bytes_ceil2os_bytes(env, env->geo_in_bytes.upper) != pgno2bytes(env, header.geometry.upper) ||
-        bytes_ceil2os_bytes(env, env->geo_in_bytes.lower) != pgno2bytes(env, header.geometry.lower) ||
-        bytes_ceil2os_bytes(env, env->geo_in_bytes.shrink) != pgno2bytes(env, pv2pages(header.geometry.shrink_pv)) ||
-        bytes_ceil2os_bytes(env, env->geo_in_bytes.grow) != pgno2bytes(env, pv2pages(header.geometry.grow_pv))) {
+    if (dxb_storage_bytes_ceil2os_bytes(storage, env->geo_in_bytes.upper) !=
+            dxb_storage_pgno2bytes(storage, header.geometry.upper) ||
+        dxb_storage_bytes_ceil2os_bytes(storage, env->geo_in_bytes.lower) !=
+            dxb_storage_pgno2bytes(storage, header.geometry.lower) ||
+        dxb_storage_bytes_ceil2os_bytes(storage, env->geo_in_bytes.shrink) !=
+            dxb_storage_pgno2bytes(storage, pv2pages(header.geometry.shrink_pv)) ||
+        dxb_storage_bytes_ceil2os_bytes(storage, env->geo_in_bytes.grow) !=
+            dxb_storage_pgno2bytes(storage, pv2pages(header.geometry.grow_pv))) {
 
       if (env->geo_in_bytes.shrink && env->geo_in_bytes.now > allocated_bytes)
         /* pre-shrink if enabled */
@@ -21904,12 +21934,12 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
       }
 
       /* altering fields to match geometry given from user */
-      expected_filesize = pgno_ceil2os_bytes(env, header.geometry.now);
-      header.geometry.now = bytes_ceil2os_pgno(env, env->geo_in_bytes.now);
-      header.geometry.lower = bytes_ceil2os_pgno(env, env->geo_in_bytes.lower);
-      header.geometry.upper = bytes_ceil2os_pgno(env, env->geo_in_bytes.upper);
-      header.geometry.grow_pv = pages2pv(bytes_ceil2os_pgno(env, env->geo_in_bytes.grow));
-      header.geometry.shrink_pv = pages2pv(bytes_ceil2os_pgno(env, env->geo_in_bytes.shrink));
+      expected_filesize = dxb_storage_pgno_ceil2os_bytes(storage, header.geometry.now);
+      header.geometry.now = dxb_storage_bytes_ceil2os_pgno(storage, env->geo_in_bytes.now);
+      header.geometry.lower = dxb_storage_bytes_ceil2os_pgno(storage, env->geo_in_bytes.lower);
+      header.geometry.upper = dxb_storage_bytes_ceil2os_pgno(storage, env->geo_in_bytes.upper);
+      header.geometry.grow_pv = pages2pv(dxb_storage_bytes_ceil2os_pgno(storage, env->geo_in_bytes.grow));
+      header.geometry.shrink_pv = pages2pv(dxb_storage_bytes_ceil2os_pgno(storage, env->geo_in_bytes.shrink));
 
       VERBOSE("amending: root %" PRIaPGNO "/%" PRIaPGNO ", geo %" PRIaPGNO "/%" PRIaPGNO "-%" PRIaPGNO "/%" PRIaPGNO
               " +%u -%u, txn_id %" PRIaTXN ", %s",
@@ -21918,16 +21948,16 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
               pv2pages(header.geometry.shrink_pv), unaligned_peek_u64(4, header.txnid_a), durable_caption(&header));
     } else {
       /* fetch back 'now/current' size, since it was ignored during comparison and may differ. */
-      env->geo_in_bytes.now = pgno_ceil2os_bytes(env, header.geometry.now);
+      env->geo_in_bytes.now = dxb_storage_pgno_ceil2os_bytes(storage, header.geometry.now);
     }
     ENSURE_OBJ(env, header.geometry.now >= header.geometry.first_unallocated);
   } else {
     /* geo-params are not pre-configured by user, get current values from the meta. */
-    env->geo_in_bytes.now = pgno_ceil2os_bytes(env, header.geometry.now);
-    env->geo_in_bytes.lower = pgno_ceil2os_bytes(env, header.geometry.lower);
-    env->geo_in_bytes.upper = pgno_ceil2os_bytes(env, header.geometry.upper);
-    env->geo_in_bytes.grow = pgno_ceil2os_bytes(env, pv2pages(header.geometry.grow_pv));
-    env->geo_in_bytes.shrink = pgno_ceil2os_bytes(env, pv2pages(header.geometry.shrink_pv));
+    env->geo_in_bytes.now = dxb_storage_pgno_ceil2os_bytes(storage, header.geometry.now);
+    env->geo_in_bytes.lower = dxb_storage_pgno_ceil2os_bytes(storage, header.geometry.lower);
+    env->geo_in_bytes.upper = dxb_storage_pgno_ceil2os_bytes(storage, header.geometry.upper);
+    env->geo_in_bytes.grow = dxb_storage_pgno_ceil2os_bytes(storage, pv2pages(header.geometry.grow_pv));
+    env->geo_in_bytes.shrink = dxb_storage_pgno_ceil2os_bytes(storage, pv2pages(header.geometry.shrink_pv));
   }
 
   ENSURE_OBJ(env, env->geo_in_bytes.now >= allocated_bytes);
@@ -21935,19 +21965,20 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
     expected_filesize = env->geo_in_bytes.now;
   const uint64_t filesize_before = dxb_storage_filesize(&env->dxb_storage);
   if (unlikely(filesize_before != env->geo_in_bytes.now)) {
-    const uint64_t filesize_before_pgno = dxb_storage_bytes2pgno(&env->dxb_storage, filesize_before);
+    const uint64_t filesize_before_pgno = dxb_storage_bytes2pgno(storage, filesize_before);
     if (lck_rc != /* lck exclusive */ MDBX_RESULT_TRUE) {
       VERBOSE("filesize mismatch (expect %" PRIuPTR "b/%" PRIaPGNO "p, have %" PRIu64 "b/%" PRIu64
               "p), assume other process working",
-              env->geo_in_bytes.now, bytes2pgno(env, env->geo_in_bytes.now), filesize_before,
-              filesize_before_pgno);
+              env->geo_in_bytes.now, (pgno_t)dxb_storage_bytes2pgno(storage, env->geo_in_bytes.now),
+              filesize_before, filesize_before_pgno);
     } else {
       if (filesize_before != expected_filesize)
         WARNING("filesize mismatch (expect %" PRIuSIZE "b/%" PRIaPGNO "p, have %" PRIu64 "b/%" PRIu64 "p)",
-                expected_filesize, bytes2pgno(env, expected_filesize), filesize_before, filesize_before_pgno);
+                expected_filesize, (pgno_t)dxb_storage_bytes2pgno(storage, expected_filesize), filesize_before,
+                filesize_before_pgno);
       if (filesize_before < allocated_bytes) {
         ERROR("last-page beyond end-of-file (last %" PRIaPGNO ", have %" PRIaPGNO ")",
-              header.geometry.first_unallocated, bytes2pgno(env, (size_t)filesize_before));
+              header.geometry.first_unallocated, (pgno_t)dxb_storage_bytes2pgno(storage, filesize_before));
         return MDBX_CORRUPTED;
       }
 
@@ -21959,7 +21990,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
         WARNING("%s", "ignore filesize mismatch in readonly-mode");
       } else {
         VERBOSE("will resize datafile to %" PRIuSIZE " bytes, %" PRIaPGNO " pages", env->geo_in_bytes.now,
-                bytes2pgno(env, env->geo_in_bytes.now));
+                (pgno_t)dxb_storage_bytes2pgno(storage, env->geo_in_bytes.now));
       }
     }
   }
@@ -21974,13 +22005,12 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   const unsigned storage_options = (lck_rc && env->stuck_meta < 0) ? MMAP_OPTION_SETLENGTH : 0;
   NOTICE("%s", "open without data-file mmap");
   eASSERT0(env, env->geo_in_bytes.now <= env->geo_in_bytes.upper);
-  err = dxb_storage_setup_bytes(&env->dxb_storage, env->geo_in_bytes.now, env->geo_in_bytes.upper, env->flags,
-                                storage_options);
+  err = dxb_storage_setup_bytes(storage, env->geo_in_bytes.now, env->geo_in_bytes.upper, env->flags, storage_options);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  eASSERT0(env, allocated_bytes >= pgno2bytes(env, NUM_METAS) &&
-                    allocated_bytes <= dxb_storage_limit_size(&env->dxb_storage));
+  eASSERT0(env,
+           allocated_bytes >= dxb_storage_npages2bytes(storage, NUM_METAS) && allocated_bytes <= dxb_storage_limit_size(storage));
 
   err = meta_shadow_refresh(env);
   if (unlikely(err != MDBX_SUCCESS))
@@ -22118,13 +22148,13 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   if (lck_rc == /* lck exclusive */ MDBX_RESULT_TRUE) {
     //-------------------------------------------------- shrink DB & update geo
     /* re-check size after mmap */
-    const size_t current_size = dxb_storage_current_size(&env->dxb_storage);
+    const size_t current_size = dxb_storage_current_size(storage);
     if (floor_powerof2(current_size, globals.sys_pagesize) < allocated_bytes) {
       ERROR("unacceptable/unexpected datafile size %" PRIuPTR, current_size);
       return MDBX_PROBLEM;
     }
     if (current_size != env->geo_in_bytes.now) {
-      header.geometry.now = bytes2pgno(env, env->geo_in_bytes.now);
+      header.geometry.now = dxb_storage_bytes2pgno(storage, env->geo_in_bytes.now);
       NOTICE("need update meta-geo to filesize %" PRIuPTR " bytes, aligned %" PRIaPGNO " pages", env->geo_in_bytes.now,
              header.geometry.now);
     }
@@ -22181,7 +22211,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
       }
     }
 
-    atomic_store32(&env->lck->discarded_tail, bytes2pgno(env, allocated_aligned2os_bytes), mo_Relaxed);
+    atomic_store32(&env->lck->discarded_tail, dxb_storage_bytes2pgno(storage, allocated_aligned2os_bytes), mo_Relaxed);
 
     if ((env->flags & MDBX_RDONLY) == 0 && env->stuck_meta < 0 &&
         (globals.runtime_flags & MDBX_DBG_DONT_UPGRADE) == 0) {
@@ -22212,19 +22242,19 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   } /* lck exclusive, lck_rc == MDBX_RESULT_TRUE */
 
   //---------------------------------------------------- setup madvise/readahead
-  const size_t current_size = dxb_storage_current_size(&env->dxb_storage);
+  const size_t current_size = dxb_storage_current_size(storage);
   if (allocated_aligned2os_bytes < current_size) {
 #if defined(POSIX_FADV_DONTNEED)
     NOTICE("open-FADV_%s %u..%u", "DONTNEED", env->lck->discarded_tail.weak,
-           bytes2pgno(env, current_size));
-    err = dxb_storage_discard_range(&env->dxb_storage, allocated_aligned2os_bytes,
-                                    current_size - allocated_aligned2os_bytes, dxb_discard_clean);
+           (pgno_t)dxb_storage_bytes2pgno(storage, current_size));
+    err = dxb_storage_discard_range(storage, allocated_aligned2os_bytes, current_size - allocated_aligned2os_bytes,
+                                    dxb_discard_clean);
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
 #endif /* POSIX_FADV_DONTNEED */
   }
 
-  err = dxb_set_readahead(env, bytes2pgno(env, allocated_bytes), readahead, true);
+  err = dxb_set_readahead(env, (pgno_t)dxb_storage_bytes2pgno(storage, allocated_bytes), readahead, true);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
