@@ -5372,6 +5372,24 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.111` batch, `1.168` crud,
 `0.954` iterate, `1.000` get, and `1.083` delete.
 
+A later filesize-state cleanup removed the one-field `dxb_filesize_io_t`
+wrapper from the C source. Filesize reads, file-size changes, storage-current
+updates, checker accounting, initial database creation, setup, and resize now
+pass raw byte counts directly to the storage helpers, while shrink-tail cache
+invalidation derives its byte range at the state-mutation boundary. This keeps
+the fault-injected setsize/filesize operations explicit without carrying a
+descriptor that held no range or backend-specific submission shape.
+Verification passed `git diff --check`, source scans proving the filesize
+wrapper, constructor, validator, and old filesize-wrapper setters are gone from
+`mdbx.c`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.091` batch, `1.176` crud,
+`1.045` iterate, `0.960` get, and `1.067` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
