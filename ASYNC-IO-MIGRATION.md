@@ -5259,6 +5259,23 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.144` batch, `1.156` crud, `1.189` iterate, `0.996`
 get, and `1.075` delete.
 
+A later same-file page-copy cleanup removed the `dxb_copy_io_t` wrapper from
+the C source. Defrag overflow-tail copies now pass source and destination
+`dxb_page_io_t` spans directly to `dxb_storage_copy_page_span()`, which
+validates both page spans, derives byte descriptors at the storage boundary,
+submits the existing `copy_file_range()` path, and invalidates cached pages
+from the destination page span. Verification passed `git diff --check`, source
+scans proving `dxb_copy_io_t`, the copy wrapper constructor/validator, and the
+old `dxb_storage_copy_pages()` helper are gone, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest
+suite, forced tiny-cache fault injection, `cmake --build @cmake-asan-build`,
+the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.120` batch, `1.179` crud, `1.195` iterate, `0.967`
+get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

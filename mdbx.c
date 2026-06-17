@@ -94,13 +94,6 @@ typedef struct dxb_page_io {
   size_t bytes;
 } dxb_page_io_t;
 
-typedef struct dxb_copy_io {
-  dxb_byte_io_t src_bytes;
-  dxb_byte_io_t dst_bytes;
-  dxb_page_io_t src_pages;
-  dxb_page_io_t dst_pages;
-} dxb_copy_io_t;
-
 typedef struct dxb_outbound_io {
   dxb_byte_io_t src_bytes;
   dxb_page_io_t src_pages;
@@ -1622,45 +1615,6 @@ static inline int dxb_storage_write_bytes_from_page_span(const dxb_storage_t *st
   return dxb_storage_byte_io_from_page(pages, bytes);
 }
 
-static inline int dxb_storage_copy_io_from_pages(const dxb_storage_t *storage, const dxb_page_io_t *src,
-                                                 const dxb_page_io_t *dst, dxb_copy_io_t *io) {
-  int rc = dxb_storage_page_io_validate(storage, src);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_page_io_validate(storage, dst);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(src->bytes != dst->bytes || src->npages != dst->npages))
-    return MDBX_EINVAL;
-
-  io->src_pages = *src;
-  io->dst_pages = *dst;
-  rc = dxb_storage_byte_io_from_page(&io->src_pages, &io->src_bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_byte_io_from_page(&io->dst_pages, &io->dst_bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return (io->src_bytes.bytes == io->dst_bytes.bytes) ? MDBX_SUCCESS : MDBX_EINVAL;
-}
-
-static inline int dxb_storage_copy_io_validate(const dxb_storage_t *storage, const dxb_copy_io_t *io) {
-  dxb_copy_io_t checked;
-  int rc = dxb_storage_copy_io_from_pages(storage, &io->src_pages, &io->dst_pages, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.src_bytes.offset != io->src_bytes.offset || checked.src_bytes.bytes != io->src_bytes.bytes ||
-               checked.dst_bytes.offset != io->dst_bytes.offset || checked.dst_bytes.bytes != io->dst_bytes.bytes ||
-               checked.src_pages.pgno != io->src_pages.pgno || checked.src_pages.end_pgno != io->src_pages.end_pgno ||
-               checked.src_pages.npages != io->src_pages.npages ||
-               checked.src_pages.offset != io->src_pages.offset || checked.src_pages.bytes != io->src_pages.bytes ||
-               checked.dst_pages.pgno != io->dst_pages.pgno || checked.dst_pages.end_pgno != io->dst_pages.end_pgno ||
-               checked.dst_pages.npages != io->dst_pages.npages ||
-               checked.dst_pages.offset != io->dst_pages.offset || checked.dst_pages.bytes != io->dst_pages.bytes))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 static inline uint64_t dxb_storage_bytes2pgno(const dxb_storage_t *storage, uint64_t bytes) {
   return bytes >> dxb_storage_pagesize_ln(storage);
 }
@@ -2293,7 +2247,7 @@ static int dxb_storage_write_page_span(dxb_storage_t *storage, enum dxb_io_chann
 static int dxb_storage_writev_page_span(dxb_storage_t *storage, enum dxb_io_channel channel,
                                         const dxb_page_io_t *io, struct iovec *iov, size_t sgvcnt);
 #if MDBX_USE_COPYFILERANGE
-static int dxb_storage_copy_pages(dxb_storage_t *storage, const dxb_copy_io_t *io);
+static int dxb_storage_copy_page_span(dxb_storage_t *storage, const dxb_page_io_t *src, const dxb_page_io_t *dst);
 static int dxb_storage_copy_to_fd(const dxb_storage_t *storage, dxb_outbound_io_t *io, size_t *advanced, bool *copied,
                                   bool *unavailable,
                                   bool *not_same_filesystem);
@@ -19657,11 +19611,7 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
       err = dxb_storage_page_io(storage, arc->mapped + i, npages - i, &dst_pages);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
-      dxb_copy_io_t copy_io;
-      err = dxb_storage_copy_io_from_pages(storage, &src_pages, &dst_pages, &copy_io);
-      if (unlikely(err != MDBX_SUCCESS))
-        return err;
-      err = dxb_storage_copy_pages(storage, &copy_io);
+      err = dxb_storage_copy_page_span(storage, &src_pages, &dst_pages);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
       break;
@@ -22299,16 +22249,6 @@ static void dxb_storage_invalidate_written_pages(dxb_storage_t *storage, enum dx
   dxb_storage_invalidate_cached_io(storage, io, false);
 }
 
-#if MDBX_USE_COPYFILERANGE
-static int dxb_storage_invalidate_copied_io(dxb_storage_t *storage, const dxb_copy_io_t *io) {
-  int rc = dxb_storage_copy_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_storage_invalidate_cached_io(storage, &io->dst_pages, false);
-  return MDBX_SUCCESS;
-}
-#endif /* MDBX_USE_COPYFILERANGE */
-
 static int dxb_storage_write_page_span(dxb_storage_t *storage, enum dxb_io_channel channel, const dxb_page_io_t *io,
                                        const void *buf) {
   int rc = dxb_storage_page_io_validate(storage, io);
@@ -22500,16 +22440,30 @@ static int dxb_storage_copy_bytes(const dxb_storage_t *storage, const dxb_byte_i
   return dxb_fault_inject("copy-complete");
 }
 
-static int dxb_storage_copy_pages(dxb_storage_t *storage, const dxb_copy_io_t *io) {
-  int rc = dxb_storage_copy_io_validate(storage, io);
+static int dxb_storage_copy_page_span(dxb_storage_t *storage, const dxb_page_io_t *src, const dxb_page_io_t *dst) {
+  int rc = dxb_storage_page_io_validate(storage, src);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_page_io_validate(storage, dst);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(src->bytes != dst->bytes || src->npages != dst->npages))
+    return MDBX_EINVAL;
+
+  dxb_byte_io_t src_bytes, dst_bytes;
+  rc = dxb_storage_byte_io_from_page(src, &src_bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_byte_io_from_page(dst, &dst_bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  rc = dxb_storage_copy_bytes(storage, &io->src_bytes, &io->dst_bytes);
+  rc = dxb_storage_copy_bytes(storage, &src_bytes, &dst_bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  return dxb_storage_invalidate_copied_io(storage, io);
+  dxb_storage_invalidate_cached_io(storage, dst, false);
+  return MDBX_SUCCESS;
 }
 #endif /* MDBX_USE_COPYFILERANGE */
 
