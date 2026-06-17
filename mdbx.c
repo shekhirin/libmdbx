@@ -21130,16 +21130,19 @@ static int dxb_storage_check_readonly(const dxb_storage_t *storage, const pathch
   return osal_check_fs_rdonly(dxb_storage_data_fd(storage), pathname, err);
 }
 
-static int dxb_storage_advise_range(const dxb_storage_t *storage, size_t offset, size_t length,
+static int dxb_storage_advise_range(const dxb_storage_t *storage, const dxb_byte_io_t *io,
                                     enum dxb_advice advice) {
-  if (length == 0)
+  if (io->bytes == 0)
     return MDBX_SUCCESS;
 
 #if defined(F_RDADVISE)
   if (advice == dxb_advice_willneed) {
+    if (unlikely(io->offset > (uint64_t)OFF_T_MAX))
+      return MDBX_EINVAL;
     struct radvisory hint;
-    hint.ra_offset = offset;
-    hint.ra_count = unlikely(length > INT_MAX && sizeof(length) > sizeof(hint.ra_count)) ? INT_MAX : (int)length;
+    hint.ra_offset = (off_t)io->offset;
+    hint.ra_count =
+        unlikely(io->bytes > INT_MAX && sizeof(io->bytes) > sizeof(hint.ra_count)) ? INT_MAX : (int)io->bytes;
     (void)/* Ignore ENOTTY for DB on the ram-disk and so on */ fcntl(dxb_storage_data_fd(storage), F_RDADVISE,
                                                                     &hint);
     return MDBX_SUCCESS;
@@ -21166,11 +21169,12 @@ static int dxb_storage_advise_range(const dxb_storage_t *storage, size_t offset,
   default:
     return MDBX_SUCCESS;
   }
-  return ignore_enosys(posix_fadvise(dxb_storage_data_fd(storage), offset, length, hint));
+  if (unlikely(io->offset > (uint64_t)OFF_T_MAX || io->bytes > (uint64_t)OFF_T_MAX))
+    return MDBX_EINVAL;
+  return ignore_enosys(posix_fadvise(dxb_storage_data_fd(storage), (off_t)io->offset, (off_t)io->bytes, hint));
 #else
   (void)storage;
-  (void)offset;
-  (void)length;
+  (void)io;
   (void)advice;
   return MDBX_SUCCESS;
 #endif /* POSIX_FADV_* */
@@ -21179,9 +21183,8 @@ static int dxb_storage_advise_range(const dxb_storage_t *storage, size_t offset,
 static int dxb_storage_prefetch_io(const dxb_storage_t *storage, const dxb_page_io_t *io) {
   if (io->npages == 0)
     return MDBX_SUCCESS;
-  if (unlikely(io->offset > SIZE_MAX))
-    return MDBX_EINVAL;
-  return dxb_storage_advise_range(storage, (size_t)io->offset, io->bytes, dxb_advice_willneed);
+  const dxb_byte_io_t bytes = {io->offset, io->bytes};
+  return dxb_storage_advise_range(storage, &bytes, dxb_advice_willneed);
 }
 
 static int dxb_storage_prefetch_pages(const dxb_storage_t *storage, pgno_t pgno, size_t npages) {
@@ -21193,43 +21196,44 @@ static int dxb_storage_prefetch_pages(const dxb_storage_t *storage, pgno_t pgno,
   return unlikely(rc != MDBX_SUCCESS) ? rc : dxb_storage_prefetch_io(storage, &io);
 }
 
-static int dxb_storage_discard_clean_range(const dxb_storage_t *storage, size_t offset, size_t length) {
+static int dxb_storage_discard_clean_range(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
 #if defined(POSIX_FADV_DONTNEED)
-  return ignore_enosys(posix_fadvise(dxb_storage_data_fd(storage), offset, length, POSIX_FADV_DONTNEED));
+  if (unlikely(io->offset > (uint64_t)OFF_T_MAX || io->bytes > (uint64_t)OFF_T_MAX))
+    return MDBX_EINVAL;
+  return ignore_enosys(
+      posix_fadvise(dxb_storage_data_fd(storage), (off_t)io->offset, (off_t)io->bytes, POSIX_FADV_DONTNEED));
 #else
   (void)storage;
-  (void)offset;
-  (void)length;
+  (void)io;
   return MDBX_RESULT_TRUE;
 #endif /* POSIX_FADV_DONTNEED */
 }
 
-static int dxb_storage_discard_remove_range(const dxb_storage_t *storage, size_t offset, size_t length) {
+static int dxb_storage_discard_remove_range(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
   (void)storage;
-  (void)offset;
-  (void)length;
+  (void)io;
   return MDBX_RESULT_TRUE;
 }
 
-static int dxb_storage_discard_range(dxb_storage_t *storage, size_t offset, size_t length,
+static int dxb_storage_discard_range(dxb_storage_t *storage, const dxb_byte_io_t *io,
                                      enum dxb_discard_mode mode) {
-  if (length == 0)
+  if (io->bytes == 0)
     return MDBX_SUCCESS;
 
   switch (mode) {
   case dxb_discard_clean:
-    return dxb_storage_discard_clean_range(storage, offset, length);
+    return dxb_storage_discard_clean_range(storage, io);
   case dxb_discard_remove: {
-    int rc = dxb_storage_discard_remove_range(storage, offset, length);
+    int rc = dxb_storage_discard_remove_range(storage, io);
     if (rc == MDBX_SUCCESS)
-      dxb_storage_invalidate_cached_bytes(storage, offset, length, true);
+      dxb_storage_invalidate_cached_bytes(storage, io->offset, io->bytes, true);
     return rc;
   }
   case dxb_discard_remove_or_clean: {
-    int rc = dxb_storage_discard_remove_range(storage, offset, length);
+    int rc = dxb_storage_discard_remove_range(storage, io);
     if (rc == MDBX_SUCCESS)
-      dxb_storage_invalidate_cached_bytes(storage, offset, length, true);
-    return (rc == MDBX_RESULT_TRUE) ? dxb_storage_discard_clean_range(storage, offset, length) : rc;
+      dxb_storage_invalidate_cached_bytes(storage, io->offset, io->bytes, true);
+    return (rc == MDBX_RESULT_TRUE) ? dxb_storage_discard_clean_range(storage, io) : rc;
   }
   }
   return MDBX_RESULT_TRUE;
@@ -21927,7 +21931,10 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
 
   if (size_bytes < prev_size && mode > implicit_grow) {
     NOTICE("resize-DONTNEED %u..%u", size_pgno, (pgno_t)dxb_storage_bytes2pgno(storage, prev_size));
-    rc = dxb_storage_discard_range(storage, size_bytes, prev_size - size_bytes, dxb_discard_clean);
+    dxb_byte_io_t discard;
+    rc = dxb_storage_byte_io(size_bytes, prev_size - size_bytes, &discard);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = dxb_storage_discard_range(storage, &discard, dxb_discard_clean);
     if (unlikely(MDBX_IS_ERROR(rc))) {
       ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "resize", "DONTNEED", size_bytes, prev_size - size_bytes, rc);
       goto bailout;
@@ -22015,6 +22022,11 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
   if (length == 0)
     return MDBX_SUCCESS;
 
+  dxb_byte_io_t advice;
+  int err = dxb_storage_byte_io(offset, length, &advice);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
   const pgno_t begin_pgno = (pgno_t)dxb_storage_bytes2pgno(storage, offset);
   const pgno_t end_pgno = (pgno_t)dxb_storage_bytes2pgno(storage, offset + length);
   NOTICE("readahead %s %u..%u", enable ? "ON" : "OFF", begin_pgno, end_pgno);
@@ -22025,9 +22037,8 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
       return err;
   }
 
-  int err;
   if (enable) {
-    err = dxb_storage_advise_range(storage, offset, length, dxb_advice_normal);
+    err = dxb_storage_advise_range(storage, &advice, dxb_advice_normal);
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
     if (toggle) {
@@ -22042,7 +22053,7 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
     }
   } else {
     env_clear_incore_cache(env);
-    err = dxb_storage_advise_range(storage, offset, length, dxb_advice_random);
+    err = dxb_storage_advise_range(storage, &advice, dxb_advice_random);
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
   }
@@ -22484,8 +22495,10 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
 #if defined(POSIX_FADV_DONTNEED)
     NOTICE("open-FADV_%s %u..%u", "DONTNEED", env->lck->discarded_tail.weak,
            (pgno_t)dxb_storage_bytes2pgno(storage, current_size));
-    err = dxb_storage_discard_range(storage, allocated_aligned2os_bytes, current_size - allocated_aligned2os_bytes,
-                                    dxb_discard_clean);
+    dxb_byte_io_t discard;
+    err = dxb_storage_byte_io(allocated_aligned2os_bytes, current_size - allocated_aligned2os_bytes, &discard);
+    if (likely(err == MDBX_SUCCESS))
+      err = dxb_storage_discard_range(storage, &discard, dxb_discard_clean);
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
 #endif /* POSIX_FADV_DONTNEED */
@@ -22554,9 +22567,10 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
          * могут быть равны */
         if (prev_discarded_bytes > discard_edge_bytes) {
           NOTICE("shrink-FADV_%s %zu..%zu", "DONTNEED", (size_t)discard_edge_pgno, prev_discarded_pgno);
-          int err =
-              dxb_storage_discard_range(storage, discard_edge_bytes, prev_discarded_bytes - discard_edge_bytes,
-                                        dxb_discard_clean);
+          dxb_byte_io_t discard;
+          int err = dxb_storage_byte_io(discard_edge_bytes, prev_discarded_bytes - discard_edge_bytes, &discard);
+          if (likely(err == MDBX_SUCCESS))
+            err = dxb_storage_discard_range(storage, &discard, dxb_discard_clean);
           if (unlikely(MDBX_IS_ERROR(err))) {
             ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "shrink", "DONTNEED", discard_edge_bytes,
                   prev_discarded_bytes - discard_edge_bytes, err);

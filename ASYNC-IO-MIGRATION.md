@@ -182,8 +182,9 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   paths now also build source `dxb_byte_io_t` requests before entering storage,
   and the in-file page-copy helper converts its source/destination page
   descriptors into byte descriptors before issuing `copy_file_range()`.
-  Readahead plus data-file tail discard paths now
-  use fd-backed advice/discard through storage; an earlier explicit-only
+  Readahead plus data-file tail discard paths now build checked
+  `dxb_byte_io_t` requests before fd-backed advice/discard through storage; an
+  earlier explicit-only
   cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
   branches.
   Data-page sync callers now use explicit range sync through storage instead of
@@ -3936,6 +3937,24 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
 benchmark gate passed with forced/default ratios of `1.172` batch, `1.212`
 crud, `1.502` iterate, `0.921` get, and `0.848` delete.
+
+A later advice/discard descriptor cleanup changed storage readahead and
+discard helpers to receive `dxb_byte_io_t` ranges instead of loose
+offset/length pairs. Page prefetch now adapts its `dxb_page_io_t` into a byte
+request before `F_RDADVISE`/`posix_fadvise()`, and resize/open/shrink tail
+discard callers build checked byte descriptors before `DONTNEED` advice and
+cache invalidation. The POSIX advice wrappers validate descriptor bounds before
+casting to platform offsets, keeping fd-backed advisory operations shaped like
+future async range requests. Verification passed `git diff --check`, source
+scans proving advice/discard helpers no longer receive loose range arguments,
+`make -f GNUmakefile mdbx_migration_smoke`, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public migration
+CTest suite, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.118` batch, `1.186` crud, `1.048` iterate, `0.962`
+get, and `1.073` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
