@@ -1748,6 +1748,20 @@ static inline int dxb_storage_outbound_io_from_bytes(const dxb_storage_t *storag
   return dxb_storage_page_io_from_bytes(storage, &io->src_bytes, &io->src_pages);
 }
 
+static inline int dxb_storage_outbound_io_from_page_span(const dxb_storage_t *storage, const dxb_page_io_t *src_pages,
+                                                         size_t page_offset, size_t bytes, mdbx_filehandle_t dst_fd,
+                                                         uint64_t dst_offset, bool has_dst_offset,
+                                                         dxb_outbound_io_t *io) {
+  int rc = dxb_storage_page_io_validate(storage, src_pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_byte_io_t src;
+  rc = dxb_storage_page_span_bytes_io(storage, src_pages->pgno, src_pages->npages, page_offset, bytes, &src);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_outbound_io_from_bytes(storage, &src, dst_fd, dst_offset, has_dst_offset, io);
+}
+
 static inline int dxb_storage_outbound_io(const dxb_storage_t *storage, uint64_t begin, uint64_t end,
                                           mdbx_filehandle_t dst_fd, uint64_t dst_offset, bool has_dst_offset,
                                           dxb_outbound_io_t *io) {
@@ -6265,7 +6279,11 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
 
   /* Copy the data */
   const size_t whole_size = dxb_storage_pgno_ceil2os_bytes(storage, txn->geo.end_pgno);
-  const size_t used_size = (size_t)dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated);
+  dxb_page_io_t used_pages;
+  rc = dxb_storage_page_io(storage, 0, txn->geo.first_unallocated, &used_pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  const size_t used_size = used_pages.bytes;
   while (rc == MDBX_SUCCESS && offset < used_size) {
     if (flags & MDBX_CP_THROTTLE_MVCC) {
       rc = mdbx_txn_unpark(txn, false);
@@ -6277,7 +6295,8 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
     static bool sendfile_unavailable;
     if (dest_is_pipe && likely(!sendfile_unavailable)) {
       dxb_outbound_io_t request;
-      rc = dxb_storage_outbound_io(storage, offset, used_size, fd, 0, false, &request);
+      rc = dxb_storage_outbound_io_from_page_span(storage, &used_pages, offset, used_size - offset, fd, 0, false,
+                                                  &request);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
       size_t advanced = 0;
@@ -6299,7 +6318,8 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
 #if MDBX_USE_COPYFILERANGE
     if (!dest_is_pipe && !not_the_same_filesystem && likely(!copyfilerange_unavailable)) {
       dxb_outbound_io_t request;
-      rc = dxb_storage_outbound_io(storage, offset, used_size, fd, offset, true, &request);
+      rc = dxb_storage_outbound_io_from_page_span(storage, &used_pages, offset, used_size - offset, fd, offset, true,
+                                                  &request);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
       size_t advanced = 0;
@@ -6325,7 +6345,7 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
     const size_t chunk =
         ((size_t)MDBX_ENVCOPY_WRITEBUF < used_size - offset) ? (size_t)MDBX_ENVCOPY_WRITEBUF : used_size - offset;
     dxb_byte_io_t request;
-    rc = dxb_storage_byte_span_io(offset, offset + chunk, &request);
+    rc = dxb_storage_page_span_bytes_io(storage, used_pages.pgno, used_pages.npages, offset, chunk, &request);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     rc = dxb_storage_read_bytes(storage, &request, data_buffer);

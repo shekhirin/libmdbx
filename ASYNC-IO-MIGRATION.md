@@ -4689,6 +4689,24 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.124` batch, `1.166` crud, `1.041` iterate,
 `0.977` get, and `1.067` delete.
 
+A later non-compacting copy source-range cleanup added
+`dxb_storage_outbound_io_from_page_span()` so accelerated outbound copies can
+start from a validated page descriptor and derive the source byte request from
+that descriptor before entering storage. `copy_asis()` now constructs a checked
+used-page span for `0..first_unallocated` and builds the `sendfile()`,
+`copy_file_range()`, and portable fallback DXB source ranges from that
+descriptor instead of repeatedly passing loose `offset..used_size` byte spans
+through copy planning. Verification passed `git diff --check`, source scans
+proving the targeted loose copy-source spans are gone, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.106` batch, `1.159` crud, `1.003` iterate, `0.994`
+get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
