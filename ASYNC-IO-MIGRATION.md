@@ -5294,6 +5294,14 @@ threshold by noise at `0.695` versus `0.700`; the rerun passed with
 forced/default ratios of `0.959` batch, `0.992` crud, `0.979` iterate, `1.044`
 get, and `1.002` delete.
 
+A later discard cleanup removed the `dxb_discard_io_t` wrapper from the C
+source. Resize/open/shrink advisory discard paths now submit their checked
+`dxb_byte_io_t` ranges directly to `dxb_storage_discard_range()`, which validates
+the discard mode, derives the page coverage internally, and invalidates cached
+pages only for destructive remove-style discard modes. This keeps byte-range
+advice at the call sites while preserving the storage-boundary page span needed
+by the explicit page cache.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
