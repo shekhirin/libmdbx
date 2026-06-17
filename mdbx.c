@@ -13763,6 +13763,7 @@ __cold static int env_chk(MDBX_chk_scope_t *const scope) {
   MDBX_chk_internal_t *const chk = scope->internal;
   MDBX_chk_context_t *const usr = chk->usr;
   MDBX_env *const env = usr->env;
+  dxb_storage_t *const storage = &env->dxb_storage;
   MDBX_txn *const txn = usr->txn;
   int err = env_info(env, txn, &chk->envinfo, &chk->troika);
   if (unlikely(err))
@@ -13788,18 +13789,17 @@ __cold static int env_chk(MDBX_chk_scope_t *const scope) {
                         chk->envinfo.mi_sys_upcblk, "");
   chk_line_end(line);
 
-    dxb_storage_set_filesize(&env->dxb_storage, chk->envinfo.mi_dxb_fsize);
+  dxb_storage_set_filesize(storage, chk->envinfo.mi_dxb_fsize);
 
   //--------------------------------------------------------------------------
 
   err = chk_scope_begin(chk, 1, MDBX_chk_meta, nullptr, &usr->result.problems_meta, "Peek the meta-pages...");
   if (likely(!err)) {
     MDBX_chk_scope_t *const inner = usr->scope;
-    const uint64_t dxbfile_pages = dxb_storage_bytes2pgno(&env->dxb_storage,
-                                                          dxb_storage_filesize(&env->dxb_storage));
+    const uint64_t dxbfile_pages = dxb_storage_bytes2pgno(storage, dxb_storage_filesize(storage));
     usr->result.alloc_pages = txn->geo.first_unallocated;
     usr->result.backed_pages =
-        (size_t)dxb_storage_bytes2pgno(&env->dxb_storage, dxb_storage_current_size(&env->dxb_storage));
+        (size_t)dxb_storage_bytes2pgno(storage, dxb_storage_current_size(storage));
     if (unlikely(usr->result.backed_pages > dxbfile_pages))
       chk_scope_issue(inner, "backed-pages %zu > file-pages %" PRIu64, usr->result.backed_pages, dxbfile_pages);
     if (unlikely(dxbfile_pages < NUM_METAS))
@@ -13849,7 +13849,7 @@ __cold static int env_chk(MDBX_chk_scope_t *const scope) {
       line = chk_line_feed(chk_print(chk_line_begin(inner, MDBX_chk_info), "currently %u readers of %u maximum",
                                      atomic_load32(&env->lck_mmap.lck->rdt_length, mo_Relaxed), env->max_readers));
     }
-    line = chk_line_feed(chk_print_size(line, "mapsize ", dxb_storage_current_size(&env->dxb_storage), nullptr));
+    line = chk_line_feed(chk_print_size(line, "mapsize ", dxb_storage_current_size(storage), nullptr));
     if (txn->geo.lower == txn->geo.upper)
       line = chk_print_size(line, "fixed datafile: ", chk->envinfo.mi_geo.current, nullptr);
     else {

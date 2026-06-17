@@ -3465,6 +3465,20 @@ six focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.116`
 batch, `1.174` crud, `0.927` iterate, `1.012` get, and `1.071` delete.
 
+A later checker/reporting cleanup routed environment-check geometry reporting
+through a bound storage handle. `env_chk()` now binds `dxb_storage_t` once and
+uses that handle for checker filesize refreshes, file/backed page conversions,
+and mapsize reporting. Verification passed stale checker storage-call scans,
+stale data-file mmap and removed sync-adapter scans across the shipped core
+sources, `git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.138` batch, `1.157` crud, `0.805` iterate, `1.042`
+get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
