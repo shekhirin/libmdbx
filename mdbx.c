@@ -20439,22 +20439,17 @@ bailout:
   return pgr_error(err);
 }
 
-static int page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
+static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, uint8_t pagesize_ln, pgr_t *pgr) {
   page_cache_entry_t *const entry = pgr->ref.cache;
-  if (!entry || !is_largepage(pgr->page) || entry->npages >= pgr->page->pages)
-    return MDBX_SUCCESS;
-
-  MDBX_env *const env = txn->env;
-  dxb_storage_t *const storage = entry->storage;
+  ASSERT(entry != nullptr && entry->storage == storage);
   const size_t npages = pgr->page->pages;
-  tASSERT0(txn, npages > 1 && (size_t)pgr->page->pgno + npages <= txn->geo.first_unallocated);
   page_t *large = nullptr;
-  const size_t bytes = npages << env->ps2ln;
+  const size_t bytes = npages << pagesize_ln;
   int err = osal_memalign_alloc(globals.sys_pagesize, bytes, (void **)&large);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  err = dxb_storage_read_pages(storage, env->ps2ln, pgr->ref.pgno, large, npages);
+  err = dxb_storage_read_pages(storage, pagesize_ln, pgr->ref.pgno, large, npages);
   if (unlikely(err != MDBX_SUCCESS)) {
     osal_memalign_free(large);
     return err;
@@ -20483,6 +20478,16 @@ static int page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
     pgr->ref.npages = npages;
   }
   return MDBX_SUCCESS;
+}
+
+static int page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
+  page_cache_entry_t *const entry = pgr->ref.cache;
+  if (!entry || !is_largepage(pgr->page) || entry->npages >= pgr->page->pages)
+    return MDBX_SUCCESS;
+
+  const size_t npages = pgr->page->pages;
+  tASSERT0(txn, npages > 1 && (size_t)pgr->page->pgno + npages <= txn->geo.first_unallocated);
+  return dxb_storage_materialize_cached_large_page(entry->storage, txn->env->ps2ln, pgr);
 }
 
 MDBX_MAYBE_UNUSED static bool dxb_storage_cached_page_contains(const dxb_storage_t *const_storage, size_t pagesize,

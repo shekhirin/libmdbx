@@ -3074,6 +3074,22 @@ CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.089` batch, `1.155` crud, `0.995` iterate, `1.000`
 get, and `1.084` delete.
 
+A later large-page cache materialization cleanup split transaction validation
+from the storage-owned overflow-span read and cache-entry replacement.
+`page_cache_read_large()` still checks the transaction snapshot bounds, while
+`dxb_storage_materialize_cached_large_page()` now owns the explicit storage read,
+buffer replacement, and cache accounting for expanding a cached overflow header
+to its full page span. Verification passed stale large-page env-storage scans,
+stale data-file mmap and removed sync-adapter scans across the shipped core
+sources, `git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.076` batch, `1.116` crud, `0.967` iterate, `1.045`
+get, and `1.077` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
