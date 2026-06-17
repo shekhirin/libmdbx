@@ -1982,6 +1982,15 @@ static inline int dxb_storage_readahead_window_bytes_io(const dxb_storage_t *sto
   return dxb_storage_byte_span_io(offset, end, io);
 }
 
+static inline int dxb_storage_readahead_window_io(const dxb_storage_t *storage, pgno_t prev_edge, pgno_t edge,
+                                                  bool force_whole, dxb_readahead_io_t *io) {
+  dxb_byte_io_t bytes;
+  int rc = dxb_storage_readahead_window_bytes_io(storage, prev_edge, edge, force_whole, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_readahead_io_from_bytes(storage, &bytes, io);
+}
+
 static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
   if (unlikely(dxb_storage_byte_io_validate(io) != MDBX_SUCCESS))
     return false;
@@ -22903,17 +22912,12 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
   const bool toggle = force_whole || ((enable ^ env->lck->readahead_anchor) & 1) || !env->lck->readahead_anchor;
   const pgno_t prev_edge = env->lck->readahead_anchor >> 1;
 
-  dxb_byte_io_t window_bytes;
-  int err = dxb_storage_readahead_window_bytes_io(storage, prev_edge, edge, toggle, &window_bytes);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (window_bytes.bytes == 0)
-    return MDBX_SUCCESS;
-
   dxb_readahead_io_t window;
-  err = dxb_storage_readahead_io_from_bytes(storage, &window_bytes, &window);
+  int err = dxb_storage_readahead_window_io(storage, prev_edge, edge, toggle, &window);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
+  if (window.bytes.bytes == 0)
+    return MDBX_SUCCESS;
 
   NOTICE("readahead %s %u..%u", enable ? "ON" : "OFF", window.pages.pgno, window.pages.end_pgno);
 

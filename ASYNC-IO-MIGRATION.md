@@ -5138,6 +5138,21 @@ CTest suite, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.124` batch, `1.162` crud, `1.011` iterate, `1.015`
 get, and `1.088` delete.
 
+A later readahead descriptor cleanup added `dxb_storage_readahead_window_io()`
+so `dxb_set_readahead()` asks storage for the complete page-aware readahead
+request derived from `(prev_edge, edge, force_whole)`. The byte-window helper
+still owns file-size clamping, but the readahead toggle path no longer keeps a
+local byte descriptor and then derives the readahead descriptor itself.
+Verification passed `git diff --check`, source scans proving the local
+`window_bytes` construction is gone from `dxb_set_readahead()`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.114` batch,
+`1.163` crud, `0.978` iterate, `0.990` get, and `1.077` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
