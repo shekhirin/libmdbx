@@ -1564,12 +1564,6 @@ static inline int dxb_storage_page_prefix_io(const dxb_storage_t *storage, pgno_
   return dxb_storage_page_io(storage, 0, end_pgno, io);
 }
 
-static inline bool dxb_storage_current_covers_page_prefix(const dxb_storage_t *storage, pgno_t end_pgno) {
-  dxb_page_io_t prefix;
-  return dxb_storage_page_prefix_io(storage, end_pgno, &prefix) == MDBX_SUCCESS &&
-         prefix.bytes <= dxb_storage_current_size(storage);
-}
-
 static inline int dxb_storage_byte_io_from_page(const dxb_page_io_t *pages, dxb_byte_io_t *io) {
   if (unlikely(pages->bytes > UINT64_MAX - pages->offset))
     return MDBX_EINVAL;
@@ -41467,7 +41461,11 @@ static int basal_start_locked(MDBX_txn *txn, unsigned flags) {
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  eASSERT0(env, dxb_storage_current_covers_page_prefix(storage, txn->geo.first_unallocated));
+  if (CHECKS0_ENABLED()) {
+    dxb_page_io_t used_pages;
+    const int check = dxb_storage_page_prefix_io(storage, txn->geo.first_unallocated, &used_pages);
+    eASSERT0(env, check == MDBX_SUCCESS && used_pages.bytes <= dxb_storage_current_size(storage));
+  }
   eASSERT0(env, dxb_storage_current_within_limit(storage));
 
   if (env->options.need_dp_limit_adjust)
@@ -42744,13 +42742,21 @@ int txn_ro_start(MDBX_txn *txn, bool prepare_only) {
     return err;
   }
 
-  eASSERT0(env, dxb_storage_current_covers_page_prefix(storage, txn->geo.first_unallocated));
-  eASSERT0(env, dxb_storage_current_within_limit(storage));
 #if defined(_WIN32) || defined(_WIN64)
   dxb_page_io_t used_pages;
   err = dxb_storage_page_prefix_io(storage, txn->geo.first_unallocated, &used_pages);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
+  eASSERT0(env, used_pages.bytes <= dxb_storage_current_size(storage));
+#else
+  if (CHECKS0_ENABLED()) {
+    dxb_page_io_t used_pages;
+    const int check = dxb_storage_page_prefix_io(storage, txn->geo.first_unallocated, &used_pages);
+    eASSERT0(env, check == MDBX_SUCCESS && used_pages.bytes <= dxb_storage_current_size(storage));
+  }
+#endif /* Windows */
+  eASSERT0(env, dxb_storage_current_within_limit(storage));
+#if defined(_WIN32) || defined(_WIN64)
   const size_t used_bytes = used_pages.bytes;
   if (((used_bytes > env->geo_in_bytes.lower && env->geo_in_bytes.shrink) ||
        (globals.running_under_Wine &&

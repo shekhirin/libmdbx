@@ -4728,10 +4728,9 @@ forced/default ratios of `1.106` batch, `1.159` crud, `1.003` iterate, `0.994`
 get, and `1.070` delete.
 
 A later transaction/setup page-prefix cleanup added
-`dxb_storage_page_prefix_io()` and
-`dxb_storage_current_covers_page_prefix()` so storage-bound uses of
-`0..end_pgno` ranges validate the page descriptor before consuming the derived
-byte size. Compaction-copy output extension, non-compacting copy used-page
+`dxb_storage_page_prefix_io()` so storage-bound uses of `0..end_pgno` ranges
+validate the page descriptor before consuming the derived byte size.
+Compaction-copy output extension, non-compacting copy used-page
 setup, public-cache materialization bounds, coherency snapshot file-coverage
 checks, open/setup allocated-range handling, read/write transaction coverage
 assertions, Windows read-transaction shrink checks, and `txn_setup_primal()`
@@ -4999,6 +4998,23 @@ and forced tiny-cache runs after the crash fix, `cmake --build
 entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.079` batch, `1.152` crud, `1.187` iterate,
 `1.014` get, and `1.071` delete.
+
+A later transaction coverage descriptor cleanup removed
+`dxb_storage_current_covers_page_prefix()` so transaction start paths no longer
+hide page-prefix descriptor construction behind a boolean helper.
+`basal_start_locked()` now builds the checked used-page prefix under
+`CHECKS0_ENABLED()` before asserting current storage coverage, while
+`txn_ro_start()` reuses the explicit prefix descriptor for the Windows shrink
+decision and builds the same checked descriptor for non-Windows coverage
+assertions. Verification passed `git diff --check`, source scans proving the
+removed helper is absent, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.112` batch, `1.164` crud, `1.010` iterate, `1.004`
+get, and `1.069` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
