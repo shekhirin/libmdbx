@@ -114,12 +114,6 @@ typedef struct dxb_coverage_io {
   dxb_page_io_t pages;
 } dxb_coverage_io_t;
 
-typedef struct dxb_sync_io {
-  dxb_byte_io_t bytes;
-  dxb_page_io_t pages;
-  enum osal_syncmode_bits mode_bits;
-} dxb_sync_io_t;
-
 typedef struct dxb_lock_io {
   uint64_t offset;
   uint64_t bytes;
@@ -1750,41 +1744,6 @@ static inline int dxb_storage_coverage_io_validate(const dxb_storage_t *storage,
                checked.pages.pgno != io->pages.pgno || checked.pages.end_pgno != io->pages.end_pgno ||
                checked.pages.npages != io->pages.npages || checked.pages.offset != io->pages.offset ||
                checked.pages.bytes != io->pages.bytes))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_sync_io_from_page(const dxb_storage_t *storage, const dxb_page_io_t *pages,
-                                                enum osal_syncmode_bits mode_bits, dxb_sync_io_t *io) {
-  int rc = dxb_storage_page_io_validate(storage, pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  io->pages = *pages;
-  rc = dxb_storage_byte_io_from_page(&io->pages, &io->bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  io->mode_bits = mode_bits;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_sync_io_from_page_prefix(const dxb_storage_t *storage, pgno_t end_pgno,
-                                                       enum osal_syncmode_bits mode_bits, dxb_sync_io_t *io) {
-  dxb_page_io_t pages;
-  int rc = dxb_storage_page_prefix_io(storage, end_pgno, &pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_sync_io_from_page(storage, &pages, mode_bits, io);
-}
-
-static inline int dxb_storage_sync_io_validate(const dxb_storage_t *storage, const dxb_sync_io_t *io) {
-  dxb_sync_io_t checked;
-  int rc = dxb_storage_sync_io_from_page(storage, &io->pages, io->mode_bits, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.bytes.offset != io->bytes.offset || checked.bytes.bytes != io->bytes.bytes ||
-               checked.pages.pgno != io->pages.pgno || checked.pages.end_pgno != io->pages.end_pgno ||
-               checked.pages.npages != io->pages.npages || checked.pages.offset != io->pages.offset ||
-               checked.pages.bytes != io->pages.bytes || checked.mode_bits != io->mode_bits))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -21976,7 +21935,8 @@ static inline ssize_t dxb_storage_sendfile_to_fd_raw(const dxb_storage_t *storag
 
 static int dxb_fault_inject(const char *operation);
 static int dxb_storage_sync(const dxb_storage_t *storage, enum osal_syncmode_bits mode_bits);
-static int dxb_storage_sync_range(const dxb_storage_t *storage, const dxb_sync_io_t *io);
+static int dxb_storage_sync_page_span(const dxb_storage_t *storage, const dxb_page_io_t *io,
+                                      enum osal_syncmode_bits mode_bits);
 
 static inline void dxb_note_fsync_pgop(const MDBX_env *env, enum osal_syncmode_bits mode_bits) {
   if (MDBX_ENABLE_PGOP_STAT)
@@ -22130,11 +22090,16 @@ static int dxb_storage_sync(const dxb_storage_t *storage, enum osal_syncmode_bit
   return dxb_fault_inject("sync-complete");
 }
 
-static int dxb_storage_sync_range(const dxb_storage_t *storage, const dxb_sync_io_t *io) {
-  int rc = dxb_storage_sync_io_validate(storage, io);
+static int dxb_storage_sync_page_span(const dxb_storage_t *storage, const dxb_page_io_t *io,
+                                      enum osal_syncmode_bits mode_bits) {
+  int rc = dxb_storage_page_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return dxb_storage_sync(storage, io->mode_bits);
+  dxb_byte_io_t bytes;
+  rc = dxb_storage_byte_io_from_page(io, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_sync(storage, mode_bits);
 }
 
 static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *io, void *buf) {
@@ -23386,12 +23351,12 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
     } else if (unlikely(env->incore))
       goto skip_incore_sync;
 
-    dxb_sync_io_t sync_range;
-    rc = dxb_storage_sync_io_from_page_prefix(storage, pending->geometry.first_unallocated, mode_bits, &sync_range);
+    dxb_page_io_t sync_range;
+    rc = dxb_storage_page_prefix_io(storage, pending->geometry.first_unallocated, &sync_range);
     if (unlikely(rc != MDBX_SUCCESS))
       goto fail;
-    dxb_note_fsync_pgop(env, sync_range.mode_bits);
-    rc = dxb_storage_sync_range(storage, &sync_range);
+    dxb_note_fsync_pgop(env, mode_bits);
+    rc = dxb_storage_sync_page_span(storage, &sync_range, mode_bits);
     if (unlikely(rc != MDBX_SUCCESS))
       goto fail;
     rc = (flags & MDBX_SAFE_NOSYNC) ? MDBX_RESULT_TRUE /* carry non-steady */
@@ -23670,13 +23635,12 @@ retry:;
       if (unsynced_pages > /* FIXME: define threshold */ 42 && (flags & MDBX_SAFE_NOSYNC) == 0) {
         eASSERT0(env, ((flags ^ env->flags) & MDBX_WRITEMAP) == 0);
         eASSERT0(env, (flags & MDBX_WRITEMAP) == 0);
-        dxb_sync_io_t sync_range;
-        err = dxb_storage_sync_io_from_page_prefix(storage, head.ptr_c->geometry.first_unallocated, MDBX_SYNC_DATA,
-                                                   &sync_range);
+        dxb_page_io_t sync_range;
+        err = dxb_storage_page_prefix_io(storage, head.ptr_c->geometry.first_unallocated, &sync_range);
         if (unlikely(err != MDBX_SUCCESS))
           return err;
-        dxb_note_fsync_pgop(env, sync_range.mode_bits);
-        err = dxb_storage_sync_range(storage, &sync_range);
+        dxb_note_fsync_pgop(env, MDBX_SYNC_DATA);
+        err = dxb_storage_sync_page_span(storage, &sync_range, MDBX_SYNC_DATA);
 
         if (unlikely(err != MDBX_SUCCESS))
           return err;

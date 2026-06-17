@@ -5302,6 +5302,23 @@ pages only for destructive remove-style discard modes. This keeps byte-range
 advice at the call sites while preserving the storage-boundary page span needed
 by the explicit page cache.
 
+A later data-sync cleanup removed the `dxb_sync_io_t` wrapper from the C source.
+Commit sync and pre-sync paths now build checked page-prefix descriptors and
+submit them directly to `dxb_storage_sync_page_span()`, which validates the page
+span and derives the corresponding byte range at the storage boundary before
+issuing the existing fd sync. `dxb_note_fsync_pgop()` still observes the selected
+sync mode after successful range construction and before sync submission.
+Verification passed `git diff --check`, source scans proving the sync wrapper,
+constructors, validator, and old range helper are gone from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.106` batch, `1.166` crud, `1.027` iterate, `0.983`
+get, and `1.075` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
