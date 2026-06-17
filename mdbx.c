@@ -21470,21 +21470,26 @@ int dxb_set_filesize(MDBX_env *env, uint64_t bytes) {
   return dxb_storage_set_filesize_bytes(&env->dxb_storage, bytes, env->ps, env->ps2ln);
 }
 
-static int dxb_setup_storage(MDBX_env *env, const size_t size, const size_t limit, const unsigned options) {
-  eASSERT0(env, size <= limit);
+static int dxb_storage_setup_bytes(dxb_storage_t *storage, const size_t size, const size_t limit, const unsigned flags,
+                                   const unsigned options, size_t pagesize, uint8_t pagesize_ln) {
   int rc;
-  if ((env->flags & MDBX_RDONLY) == 0 && (options & MMAP_OPTION_SETLENGTH) != 0) {
-    rc = dxb_set_filesize(env, size);
+  if ((flags & MDBX_RDONLY) == 0 && (options & MMAP_OPTION_SETLENGTH) != 0) {
+    rc = dxb_storage_set_filesize_bytes(storage, size, pagesize, pagesize_ln);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    dxb_storage_set_size_with_known_filesize(&env->dxb_storage, size, limit);
+    dxb_storage_set_size_with_known_filesize(storage, size, limit);
   } else {
-    rc = dxb_fetch_filesize(env);
+    rc = dxb_storage_fetch_filesize(storage);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    dxb_storage_set_limit_from_filesize(&env->dxb_storage, limit);
+    dxb_storage_set_limit_from_filesize(storage, limit);
   }
   return MDBX_SUCCESS;
+}
+
+static int dxb_setup_storage(MDBX_env *env, const size_t size, const size_t limit, const unsigned options) {
+  eASSERT0(env, size <= limit);
+  return dxb_storage_setup_bytes(&env->dxb_storage, size, limit, env->flags, options, env->ps, env->ps2ln);
 }
 
 static int dxb_storage_resize_bytes(dxb_storage_t *storage, const size_t size, const size_t limit, const unsigned flags,
