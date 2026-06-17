@@ -18806,6 +18806,8 @@ static int defrag_fixup_page(dfc_t *dfc, page_t *dst, pgno_t pgno) {
 
 static int defrag_move(dfc_t *dfc, da_t *arc) {
   MDBX_txn *const txn = dfc->txn;
+  MDBX_env *const env = txn->env;
+  dxb_storage_t *const storage = &env->dxb_storage;
   ASSERT(arc->key_or_pgno >= NUM_METAS && arc->mapped >= NUM_METAS && arc->npages > 0);
   ASSERT(arc->key_or_pgno + arc->npages <= txn->geo.first_unallocated);
   ASSERT((size_t)arc->mapped + (size_t)arc->npages <= dfc->defrag_edge);
@@ -18838,21 +18840,21 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
     return defrag_fixup_page(dfc, dst, arc->mapped);
   }
 
-  page_t *const dst = txn->env->page_auxbuf;
+  page_t *const dst = env->page_auxbuf;
 
-  if (env_is_page_incore(dfc->txn->env, arc->key_or_pgno)) {
+  if (env_is_page_incore(env, arc->key_or_pgno)) {
     pgr_t pgr = defrag_get_page(dfc, arc->key_or_pgno);
     if (unlikely(pgr.err != MDBX_SUCCESS)) {
       pgr_release(nullptr, &pgr);
       return pgr.err;
     }
-    page_copy(dst, pgr.page, txn->env->ps);
+    page_copy(dst, pgr.page, env->ps);
     pgr_release(nullptr, &pgr);
   } else {
 #if MDBX_CHECKING > 1
     ASSERT(!pnl_contains(dfc->repnl_clone, arc->key_or_pgno));
 #endif /* MDBX_CHECKING > 1 */
-    err = dxb_storage_read_pages(&txn->env->dxb_storage, arc->key_or_pgno, dst, 1);
+    err = dxb_storage_read_pages(storage, arc->key_or_pgno, dst, 1);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
@@ -18864,7 +18866,7 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
 #if MDBX_CHECKING > 1
   ASSERT(pnl_contains(dfc->repnl_clone, arc->mapped));
 #endif /* MDBX_CHECKING > 1 */
-  err = dxb_storage_write_pages(&txn->env->dxb_storage, dxb_io_data, arc->mapped, dst, 1);
+  err = dxb_storage_write_pages(storage, dxb_io_data, arc->mapped, dst, 1);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
@@ -18873,24 +18875,23 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
   if (unlikely(npages > 1)) {
     for (pgno_t i = 1; i < npages; ++i) {
 #if MDBX_USE_COPYFILERANGE
-      err = dxb_storage_copy_pages(&txn->env->dxb_storage, arc->key_or_pgno + i, arc->mapped + i, npages - i);
+      err = dxb_storage_copy_pages(storage, arc->key_or_pgno + i, arc->mapped + i, npages - i);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
       break;
 #else
-      MDBX_env *env = txn->env;
       const pgno_t src_pgno = arc->key_or_pgno + i;
       const pgno_t dst_pgno = arc->mapped + i;
 #if MDBX_CHECKING > 1
       ASSERT(!pnl_contains(dfc->repnl_clone, src_pgno));
 #endif /* MDBX_CHECKING > 1 */
-      err = dxb_storage_read_pages(&env->dxb_storage, src_pgno, txn->env->page_auxbuf, 1);
+      err = dxb_storage_read_pages(storage, src_pgno, env->page_auxbuf, 1);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
 #if MDBX_CHECKING > 1
       ASSERT(pnl_contains(dfc->repnl_clone, dst_pgno));
 #endif /* MDBX_CHECKING > 1 */
-      err = dxb_storage_write_pages(&env->dxb_storage, dxb_io_data, dst_pgno, txn->env->page_auxbuf, 1);
+      err = dxb_storage_write_pages(storage, dxb_io_data, dst_pgno, env->page_auxbuf, 1);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
 #endif /* MDBX_USE_COPYFILERANGE */

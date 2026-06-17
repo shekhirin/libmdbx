@@ -3372,6 +3372,21 @@ CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.101` batch, `1.156` crud, `1.015` iterate, `0.969`
 get, and `1.070` delete.
 
+A later defrag page-move cleanup routed defragmentation data-page movement
+through a single storage handle. `defrag_move()` now binds the env and
+`dxb_storage_t` once, then uses that handle for explicit source-page reads,
+destination-page writes, and copy-range fallback when relocating overflow
+pages. Verification passed stale defrag storage-call scans, stale data-file
+mmap and removed sync-adapter scans across the shipped core sources,
+`git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.101` batch, `1.164` crud, `0.887` iterate, `1.101`
+get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
