@@ -34688,7 +34688,7 @@ static bool iov_empty(const iov_ctx_t *ctx) {
 
 static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_byte_io_t *io, void *data) {
   MDBX_env *const env = ctx->env;
-  const dxb_storage_t *const storage = ctx->storage;
+  dxb_storage_t *const storage = ctx->storage;
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
 
   dxb_page_io_t queued_pages;
@@ -34705,6 +34705,9 @@ static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_byte_io_t *io, voi
   eASSERT0(env, wp->pgno == pgno);
   eASSERT0(env, queued_pages.npages >= (is_largepage(wp) ? wp->pages : 1u));
   eASSERT0(env, (wp->flags & P_ILL_BITS) == 0);
+
+  if (ctx->err == MDBX_SUCCESS && dxb_io_channel_is_data(ctx->channel))
+    dxb_storage_invalidate_cached_io(storage, &queued_pages, false);
 
   if (likely(queued_pages.npages == 1))
     page_shadow_release(env, wp, 1);

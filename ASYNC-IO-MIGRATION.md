@@ -5427,6 +5427,24 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.091` batch, `1.170` crud, `1.181` iterate, `0.970`
 get, and `1.086` delete.
 
+A later queued-write cache invalidation cleanup made successful dirty-write
+queue completion invalidate explicit page-cache entries at the queued byte range
+boundary. `iov_callback4dirtypages()` now converts each queued byte descriptor
+back to an exact page span, invalidates overlapping non-reusable cache entries
+only when the queued write completed successfully and the channel writes the
+data file, then releases the shadow dirty pages. Failed queued writes still skip
+cache invalidation while releasing shadow buffers. Verification passed `git
+diff --check`, source scans proving queued dirty-write completion has the new
+data-channel invalidation boundary and no longer treats storage as const in the
+callback, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.105` batch, `1.159` crud,
+`1.100` iterate, `0.915` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
