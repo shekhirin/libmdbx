@@ -5510,6 +5510,23 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 The paired benchmark gate passed with forced/default ratios of `1.094` batch,
 `1.168` crud, `1.148` iterate, `0.966` get, and `1.096` delete.
 
+A later meta-byte descriptor cleanup added explicit full-meta byte request
+helpers and moved meta-shadow refresh, copy buffer sizing, new-environment
+meta-page writes, meta override writes, and meta payload offset derivation away
+from synthetic page-span storage submissions. Page descriptors still remain
+where page identity matters, such as page-cache reads, defrag movement, and
+debug page-kill writes. Verification passed `git diff --check`, source scans
+proving meta-shadow refresh no longer calls `dxb_storage_read_page_span()` and
+full meta-page writes no longer call `dxb_storage_write_page_span()`, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.126` batch, `1.162` crud, `1.064` iterate, `1.048`
+get, and `1.088` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
