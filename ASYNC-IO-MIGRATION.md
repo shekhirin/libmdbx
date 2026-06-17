@@ -4491,6 +4491,22 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.010` batch, `0.987` crud, `0.979` iterate, `0.976`
 get, and `0.998` delete.
 
+A later metadata request validation cleanup added
+`dxb_storage_meta_io_validate()` so meta slot/payload descriptors are rebuilt
+and checked before metadata writes and shadow updates consume them.
+`dxb_storage_write_meta()`, `meta_shadow_copy_payload()`, and
+`meta_shadow_copy_bytes()` now reject or skip malformed meta requests before
+crossing the explicit meta I/O or in-memory shadow-copy boundary. Verification
+passed `git diff --check`, source scans proving metadata consumers call
+`dxb_storage_meta_io_validate()`, the GNUmake `mdbx_migration_smoke` target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.113` batch, `1.175`
+crud, `1.018` iterate, `0.990` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

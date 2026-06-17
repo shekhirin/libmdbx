@@ -1812,6 +1812,18 @@ static inline int dxb_storage_meta_io(const dxb_storage_t *storage, unsigned num
   return dxb_storage_byte_io(dxb_storage_meta_field_offset(storage, number, payload_offset), bytes, &io->bytes);
 }
 
+static inline int dxb_storage_meta_io_validate(const dxb_storage_t *storage, const dxb_meta_io_t *io) {
+  dxb_meta_io_t checked;
+  int rc = dxb_storage_meta_io(storage, io->number, io->payload_offset, io->payload_bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.bytes.offset != io->bytes.offset || checked.bytes.bytes != io->bytes.bytes ||
+               checked.number != io->number || checked.payload_offset != io->payload_offset ||
+               checked.payload_bytes != io->payload_bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_meta_payload_io(const dxb_storage_t *storage, unsigned number, dxb_meta_io_t *io) {
   return dxb_storage_meta_io(storage, number, 0, sizeof(meta_t), io);
 }
@@ -4204,18 +4216,27 @@ void meta_shadow_copy_page(const MDBX_env *env, const dxb_page_io_t *io, const p
 
 void meta_shadow_copy_payload(const MDBX_env *env, const dxb_meta_io_t *io, const meta_t *meta) {
   if (likely(env->meta_shadow)) {
+    const dxb_storage_t *const storage = &env->dxb_storage;
+    int err = dxb_storage_meta_io_validate(storage, io);
+    eASSERT0(env, err == MDBX_SUCCESS);
     eASSERT0(env, io->number < NUM_METAS);
     eASSERT0(env, io->payload_offset == 0 && io->payload_bytes == sizeof(meta_t));
     eASSERT0(env, io->bytes.bytes == sizeof(meta_t));
-    memcpy(meta_shadow_bytes_ptr(env, &io->bytes), meta, sizeof(meta_t));
+    if (likely(err == MDBX_SUCCESS && io->payload_offset == 0 && io->payload_bytes == sizeof(meta_t) &&
+               io->bytes.bytes == sizeof(meta_t)))
+      memcpy(meta_shadow_bytes_ptr(env, &io->bytes), meta, sizeof(meta_t));
   }
 }
 
 void meta_shadow_copy_bytes(const MDBX_env *env, const dxb_meta_io_t *io, const void *src) {
   if (likely(env->meta_shadow)) {
+    const dxb_storage_t *const storage = &env->dxb_storage;
+    int err = dxb_storage_meta_io_validate(storage, io);
+    eASSERT0(env, err == MDBX_SUCCESS);
     eASSERT0(env, io->number < NUM_METAS);
     eASSERT0(env, io->bytes.bytes == io->payload_bytes);
-    memcpy(meta_shadow_bytes_ptr(env, &io->bytes), src, io->payload_bytes);
+    if (likely(err == MDBX_SUCCESS && io->bytes.bytes == io->payload_bytes))
+      memcpy(meta_shadow_bytes_ptr(env, &io->bytes), src, io->payload_bytes);
   }
 }
 
@@ -21999,13 +22020,9 @@ static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel c
 }
 
 static int dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_io_t *io, const void *buf) {
-  dxb_meta_io_t checked;
-  int rc = dxb_storage_meta_io(storage, io->number, io->payload_offset, io->payload_bytes, &checked);
+  int rc = dxb_storage_meta_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  if (unlikely(checked.bytes.offset != io->bytes.offset || checked.bytes.bytes != io->bytes.bytes))
-    return MDBX_EINVAL;
-
   return dxb_storage_write_bytes(storage, dxb_io_meta, &io->bytes, buf);
 }
 
