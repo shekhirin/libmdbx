@@ -1437,6 +1437,16 @@ static inline int dxb_storage_byte_io(uint64_t offset, size_t bytes, dxb_byte_io
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_byte_io_validate(const dxb_byte_io_t *io) {
+  dxb_byte_io_t checked;
+  int rc = dxb_storage_byte_io(io->offset, io->bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.offset != io->offset || checked.bytes != io->bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_byte_span_io(uint64_t begin, uint64_t end, dxb_byte_io_t *io) {
   if (unlikely(end < begin || end - begin > SIZE_MAX))
     return MDBX_EINVAL;
@@ -1573,6 +1583,10 @@ static inline uint64_t dxb_storage_bytes2pgno(const dxb_storage_t *storage, uint
 
 static inline int dxb_storage_page_io_from_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *bytes,
                                                  dxb_page_io_t *io) {
+  int rc = dxb_storage_byte_io_validate(bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
   const uint64_t max_pgno = (uint64_t)MAX_PAGENO + 1u;
   uint64_t begin = dxb_storage_bytes2pgno(storage, bytes->offset);
   if (unlikely(begin > max_pgno))
@@ -1740,6 +1754,8 @@ static inline pgno_t dxb_storage_pgno_ceil2os_pgno(const dxb_storage_t *storage,
 }
 
 static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
+  if (unlikely(dxb_storage_byte_io_validate(io) != MDBX_SUCCESS))
+    return false;
   const uint64_t current = dxb_storage_current_size(storage);
   return io->offset <= current && io->bytes <= current - io->offset;
 }
@@ -21388,6 +21404,9 @@ static inline void dxb_storage_reset_write_queue(dxb_storage_t *storage) {
 }
 
 static inline int dxb_storage_add_queued_bytes(dxb_storage_t *storage, const dxb_byte_io_t *io, void *data) {
+  int rc = dxb_storage_byte_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   if (unlikely(io->offset > SIZE_MAX))
     return MDBX_EINVAL;
   return osal_ioring_add(dxb_storage_write_queue(storage), io, data);
@@ -21557,6 +21576,9 @@ static int dxb_storage_check_readonly(const dxb_storage_t *storage, const pathch
 
 static int dxb_storage_advise_range(const dxb_storage_t *storage, const dxb_byte_io_t *io,
                                     enum dxb_advice advice) {
+  int rc = dxb_storage_byte_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   if (io->bytes == 0)
     return MDBX_SUCCESS;
 
@@ -21627,6 +21649,9 @@ static int dxb_storage_prefetch_readahead_io(const dxb_storage_t *storage, const
 }
 
 static int dxb_storage_discard_clean_range(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
+  int rc = dxb_storage_byte_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
 #if defined(POSIX_FADV_DONTNEED)
   if (unlikely(io->offset > (uint64_t)OFF_T_MAX || io->bytes > (uint64_t)OFF_T_MAX))
     return MDBX_EINVAL;
@@ -21641,7 +21666,9 @@ static int dxb_storage_discard_clean_range(const dxb_storage_t *storage, const d
 
 static int dxb_storage_discard_remove_range(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
   (void)storage;
-  (void)io;
+  int rc = dxb_storage_byte_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   return MDBX_RESULT_TRUE;
 }
 
@@ -21792,7 +21819,10 @@ __cold static int dxb_fault_inject(const char *operation) {
 __cold static int dxb_fault_inject_after_partial_writev(const char *operation, mdbx_filehandle_t fd,
                                                         const struct iovec *iov, size_t sgvcnt,
                                                         const dxb_byte_io_t *io) {
-  int rc = dxb_fault_inject(operation);
+  int rc = dxb_storage_byte_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_fault_inject(operation);
   if (likely(rc == MDBX_SUCCESS))
     return MDBX_SUCCESS;
   /* Test-only corruption model: write a real queued prefix, then fail before meta advances. */
@@ -21874,7 +21904,10 @@ static int dxb_storage_sync_range(const dxb_storage_t *storage, const dxb_sync_i
 }
 
 static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *io, void *buf) {
-  int rc = dxb_fault_inject("read");
+  int rc = dxb_storage_byte_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_fault_inject("read");
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   rc = dxb_storage_pread(storage, io, buf);
@@ -21895,7 +21928,10 @@ static int dxb_storage_read_pages(const dxb_storage_t *storage, const dxb_read_i
 
 static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel channel, const dxb_byte_io_t *io,
                                    const void *buf) {
-  int rc = dxb_fault_inject("write");
+  int rc = dxb_storage_byte_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_fault_inject("write");
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   rc = dxb_storage_pwrite(storage, channel, io, buf);
@@ -21954,8 +21990,11 @@ static int dxb_storage_iov_bytes(const struct iovec *iov, size_t sgvcnt, size_t 
 
 static int dxb_storage_writev_bytes(const dxb_storage_t *storage, enum dxb_io_channel channel,
                                     const dxb_byte_io_t *io, struct iovec *iov, size_t sgvcnt) {
+  int rc = dxb_storage_byte_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   size_t bytes;
-  int rc = dxb_storage_iov_bytes(iov, sgvcnt, &bytes);
+  rc = dxb_storage_iov_bytes(iov, sgvcnt, &bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (unlikely(bytes != io->bytes))
@@ -22117,13 +22156,19 @@ static int dxb_storage_copy_to_fd(const dxb_storage_t *storage, dxb_outbound_io_
 }
 
 static int dxb_storage_copy_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *src, const dxb_byte_io_t *dst) {
+  int rc = dxb_storage_byte_io_validate(src);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_byte_io_validate(dst);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   if (unlikely(src->bytes != dst->bytes || src->bytes > SSIZE_MAX || src->offset > (uint64_t)OFF_T_MAX ||
                dst->offset > (uint64_t)OFF_T_MAX))
     return MDBX_EINVAL;
 
   off_t src_offset = (off_t)src->offset;
   off_t dst_offset = (off_t)dst->offset;
-  int rc = dxb_fault_inject("copy");
+  rc = dxb_fault_inject("copy");
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   const ssize_t copied = dxb_storage_copy_file_range(storage, &src_offset, &dst_offset, (ssize_t)src->bytes);

@@ -4452,6 +4452,25 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.116` batch, `1.156` crud, `0.873` iterate, `1.041`
 get, and `1.079` delete.
 
+A later byte request validation cleanup added
+`dxb_storage_byte_io_validate()` so raw byte-span requests are rebuilt and
+checked before they cross byte-to-page conversion, cache-coverage checks, queued
+write insertion, advisory/discard calls, raw read/write/writev submission,
+same-file copy, and the partial-write fault-injection hook. This keeps the
+lowest storage syscall boundary aligned with the descriptor-validation pattern:
+page, meta, copy, discard, sync, and outbound descriptors may still carry richer
+shape, but their final `dxb_byte_io_t` span is now rejected if its offset/length
+cannot be represented as a checked byte request. Verification passed
+`git diff --check`, source scans proving targeted byte consumers call
+`dxb_storage_byte_io_validate()`, the GNUmake `mdbx_migration_smoke` target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.114` batch, `1.168`
+crud, `0.740` iterate, `1.069` get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
