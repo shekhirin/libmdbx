@@ -4356,6 +4356,24 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.134` batch, `1.141` crud, `1.014` iterate, `1.016`
 get, and `1.061` delete.
 
+A later current-coverage descriptor cleanup added `dxb_coverage_io_t` so
+storage current-size checks carry the checked byte span and derived page span
+together. Coherency root probes now build that descriptor before asking whether
+the known current file view contains a root-txnid read, and
+`coherency_fetch_head()` builds the same descriptor before asking storage to
+refresh filesize when `current` does not cover `first_unallocated`.
+`dxb_storage_fetch_filesize_if_current_lacks()` validates the descriptor before
+consulting cached current-size state or fetching filesize. Verification passed
+`git diff --check`, source scans proving raw current-coverage checks no longer
+cross the storage request boundary, the GNUmake `mdbx_migration_smoke` target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.113` batch, `1.177`
+crud, `0.876` iterate, `0.982` get, and `1.075` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

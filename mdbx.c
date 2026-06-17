@@ -132,6 +132,11 @@ typedef struct dxb_readahead_io {
   dxb_page_io_t pages;
 } dxb_readahead_io_t;
 
+typedef struct dxb_coverage_io {
+  dxb_byte_io_t bytes;
+  dxb_page_io_t pages;
+} dxb_coverage_io_t;
+
 typedef struct dxb_discard_io {
   dxb_byte_io_t bytes;
   dxb_page_io_t pages;
@@ -1641,6 +1646,34 @@ static inline int dxb_storage_readahead_io_validate(const dxb_storage_t *storage
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_coverage_io_from_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *bytes,
+                                                     dxb_coverage_io_t *io) {
+  io->bytes = *bytes;
+  return dxb_storage_page_io_from_bytes(storage, &io->bytes, &io->pages);
+}
+
+static inline int dxb_storage_coverage_io(const dxb_storage_t *storage, uint64_t begin, uint64_t end,
+                                          dxb_coverage_io_t *io) {
+  dxb_byte_io_t bytes;
+  int rc = dxb_storage_byte_span_io(begin, end, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_coverage_io_from_bytes(storage, &bytes, io);
+}
+
+static inline int dxb_storage_coverage_io_validate(const dxb_storage_t *storage, const dxb_coverage_io_t *io) {
+  dxb_coverage_io_t checked;
+  int rc = dxb_storage_coverage_io_from_bytes(storage, &io->bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.bytes.offset != io->bytes.offset || checked.bytes.bytes != io->bytes.bytes ||
+               checked.pages.pgno != io->pages.pgno || checked.pages.end_pgno != io->pages.end_pgno ||
+               checked.pages.npages != io->pages.npages || checked.pages.offset != io->pages.offset ||
+               checked.pages.bytes != io->pages.bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_sync_io(const dxb_storage_t *storage, pgno_t pgno, size_t npages,
                                       enum osal_syncmode_bits mode_bits, dxb_sync_io_t *io) {
   int rc = dxb_storage_page_io(storage, pgno, npages, &io->pages);
@@ -1689,6 +1722,10 @@ static inline pgno_t dxb_storage_pgno_ceil2os_pgno(const dxb_storage_t *storage,
 static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
   const uint64_t current = dxb_storage_current_size(storage);
   return io->offset <= current && io->bytes <= current - io->offset;
+}
+
+static inline bool dxb_storage_contains_coverage(const dxb_storage_t *storage, const dxb_coverage_io_t *io) {
+  return dxb_storage_contains_range(storage, &io->bytes);
 }
 
 static inline uint64_t dxb_storage_meta_page_offset(const dxb_storage_t *storage, unsigned number) {
@@ -1999,7 +2036,7 @@ static int dxb_storage_check_readonly(const dxb_storage_t *storage, const pathch
 static inline void dxb_storage_set_filesize(dxb_storage_t *storage, const dxb_filesize_io_t *filesize);
 static inline void dxb_storage_set_current(dxb_storage_t *storage, size_t bytes);
 static int dxb_storage_fetch_filesize(dxb_storage_t *storage);
-static int dxb_storage_fetch_filesize_if_current_lacks(dxb_storage_t *storage, const dxb_byte_io_t *range);
+static int dxb_storage_fetch_filesize_if_current_lacks(dxb_storage_t *storage, const dxb_coverage_io_t *io);
 MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno_t used_pgno, const pgno_t size_pgno,
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
@@ -14902,11 +14939,14 @@ static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, co
 
   const dxb_storage_t *const storage = &env->dxb_storage;
   const uint64_t offset = dxb_storage_page_field_offset(storage, root_pgno, offsetof(page_t, txnid));
-  dxb_byte_io_t request;
-  int err = dxb_storage_byte_io(offset, sizeof(probe->txnid), &request);
-  const bool storage_probe_possible = likely(err == MDBX_SUCCESS) && dxb_storage_contains_range(storage, &request);
+  dxb_byte_io_t bytes;
+  int err = dxb_storage_byte_io(offset, sizeof(probe->txnid), &bytes);
+  dxb_coverage_io_t request;
+  if (likely(err == MDBX_SUCCESS))
+    err = dxb_storage_coverage_io_from_bytes(storage, &bytes, &request);
+  const bool storage_probe_possible = likely(err == MDBX_SUCCESS) && dxb_storage_contains_coverage(storage, &request);
   if (likely(storage_probe_possible)) {
-    err = dxb_storage_read_bytes(storage, &request, &probe->txnid);
+    err = dxb_storage_read_bytes(storage, &request.bytes, &probe->txnid);
     if (unlikely(err != MDBX_SUCCESS)) {
       if (report)
         WARNING("catch %s-db root %" PRIaPGNO " read error %d for meta_txnid %" PRIaTXN " %s", name, root_pgno, err,
@@ -15035,8 +15075,8 @@ __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *t
   dxb_storage_t *const storage = &txn->env->dxb_storage;
   const size_t required_bytes = (size_t)dxb_storage_pgno2bytes(storage, txn->geo.first_unallocated);
   if (unlikely(required_bytes > dxb_storage_current_size(storage))) {
-    dxb_byte_io_t required;
-    int err = dxb_storage_byte_io(0, required_bytes, &required);
+    dxb_coverage_io_t required;
+    int err = dxb_storage_coverage_io(storage, 0, required_bytes, &required);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
     err = dxb_storage_fetch_filesize_if_current_lacks(storage, &required);
@@ -21951,8 +21991,11 @@ static int dxb_storage_fetch_filesize(dxb_storage_t *storage) {
   return MDBX_SUCCESS;
 }
 
-static int dxb_storage_fetch_filesize_if_current_lacks(dxb_storage_t *storage, const dxb_byte_io_t *range) {
-  return dxb_storage_contains_range(storage, range) ? MDBX_SUCCESS : dxb_storage_fetch_filesize(storage);
+static int dxb_storage_fetch_filesize_if_current_lacks(dxb_storage_t *storage, const dxb_coverage_io_t *io) {
+  int rc = dxb_storage_coverage_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_contains_coverage(storage, io) ? MDBX_SUCCESS : dxb_storage_fetch_filesize(storage);
 }
 
 #if MDBX_USE_COPYFILERANGE || MDBX_USE_SENDFILE
