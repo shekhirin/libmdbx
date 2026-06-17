@@ -2797,8 +2797,8 @@ MDBX_MAYBE_UNUSED MDBX_NOTHROW_PURE_FUNCTION static inline bool inner_hollow(con
 static void page_cache_lock(dxb_storage_t *storage);
 static void page_cache_unlock(dxb_storage_t *storage);
 static size_t page_cache_limit_from_env(void);
-static void page_cache_retain_entry(page_cache_entry_t *entry);
-static void page_cache_release_ref(const MDBX_cursor *mc, page_ref_t *ref);
+static void dxb_storage_retain_cached_entry(dxb_storage_t *storage, page_cache_entry_t *entry);
+static void dxb_storage_release_cached_ref(dxb_storage_t *storage, const MDBX_cursor *mc, page_ref_t *ref);
 
 static inline page_ref_t cursor_ref_retain(const MDBX_cursor *mc, page_ref_t ref) {
   if (ref.page == nullptr)
@@ -2808,7 +2808,7 @@ static inline page_ref_t cursor_ref_retain(const MDBX_cursor *mc, page_ref_t ref
     cASSERT0(mc, (ref.flags & PAGE_REF_CACHE) != 0);
     cASSERT0(mc, ref.cache->page == ref.page);
     cASSERT0(mc, ref.cache->pgno == ref.pgno);
-    page_cache_retain_entry(ref.cache);
+    dxb_storage_retain_cached_entry(ref.cache->storage, ref.cache);
   } else
     cASSERT0(mc, (ref.flags & PAGE_REF_CACHE) == 0);
   return ref;
@@ -2816,7 +2816,7 @@ static inline page_ref_t cursor_ref_retain(const MDBX_cursor *mc, page_ref_t ref
 
 static inline void cursor_ref_release(const MDBX_cursor *mc, page_ref_t *ref) {
   if (ref->cache) {
-    page_cache_release_ref(mc, ref);
+    dxb_storage_release_cached_ref(ref->cache->storage, mc, ref);
   } else if (mc)
     cASSERT0(mc, (ref->flags & PAGE_REF_CACHE) == 0);
   else
@@ -20219,7 +20219,8 @@ static void page_cache_prune_locked(dxb_storage_t *storage) {
   }
 }
 
-static void page_cache_retain_entry(page_cache_entry_t *entry) {
+static void dxb_storage_retain_cached_entry(dxb_storage_t *storage, page_cache_entry_t *entry) {
+  ASSERT(entry->storage == storage);
   if (!entry->owner) {
     ASSERT(entry->page != nullptr);
     ASSERT(entry->pins > 0);
@@ -20227,7 +20228,6 @@ static void page_cache_retain_entry(page_cache_entry_t *entry) {
     return;
   }
 
-  dxb_storage_t *const storage = entry->storage;
   page_cache_lock(storage);
   ASSERT(entry->owner == &storage->page_cache);
   ASSERT(entry->page != nullptr);
@@ -20237,8 +20237,13 @@ static void page_cache_retain_entry(page_cache_entry_t *entry) {
   page_cache_unlock(storage);
 }
 
-static void page_cache_release_ref(const MDBX_cursor *mc, page_ref_t *ref) {
+static void dxb_storage_release_cached_ref(dxb_storage_t *storage, const MDBX_cursor *mc, page_ref_t *ref) {
   page_cache_entry_t *const entry = ref->cache;
+  if (mc)
+    cASSERT0(mc, entry->storage == storage);
+  else
+    ASSERT(entry->storage == storage);
+
   if (!entry->owner) {
     if (mc) {
       cASSERT0(mc, (ref->flags & PAGE_REF_CACHE) != 0);
@@ -20258,7 +20263,6 @@ static void page_cache_release_ref(const MDBX_cursor *mc, page_ref_t *ref) {
     return;
   }
 
-  dxb_storage_t *const storage = entry->storage;
   page_cache_lock(storage);
   if (mc) {
     cASSERT0(mc, (ref->flags & PAGE_REF_CACHE) != 0);

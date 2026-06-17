@@ -3090,6 +3090,22 @@ CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.076` batch, `1.116` crud, `0.967` iterate, `1.045`
 get, and `1.077` delete.
 
+A later page-cache ref pin accounting cleanup made retained cache refs pass the
+storage target explicitly. Cursor/page-result retain and release paths now call
+`dxb_storage_retain_cached_entry()` and `dxb_storage_release_cached_ref()` with
+the cache entry's owning `dxb_storage_t`, so pin-count mutations and the
+storage-owned pinned counter no longer hide the storage target behind the cache
+entry alone. Verification passed stale page-cache ref-helper scans, stale
+data-file mmap and removed sync-adapter scans across the shipped core sources,
+`git diff --check`, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.121` batch, `1.134` crud, `1.018` iterate, `0.965`
+get, and `1.058` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
