@@ -11808,14 +11808,26 @@ static const page_t *page_from_buffer_range(size_t pagesize, const page_t *base,
   return ptr_disp(base, offset & ~(pagesize - 1));
 }
 
+static const page_t *page_from_storage_buffer(const dxb_storage_t *storage, const dxb_page_io_t *span,
+                                              const page_t *base, const void *ptr, pgno_t *pgno) {
+  int err = dxb_storage_page_io_validate(storage, span);
+  if (unlikely(err != MDBX_SUCCESS))
+    return nullptr;
+
+  const page_t *const page = page_from_buffer_range(dxb_storage_pagesize(storage), base, span->bytes, ptr);
+  if (!page)
+    return nullptr;
+
+  *pgno = span->pgno + (pgno_t)dxb_storage_bytes2pgno(storage, (uint64_t)ptr_dist(page, base));
+  return page;
+}
+
 static const page_t *dxb_storage_cached_page_from_ptr(const dxb_storage_t *storage, const void *ptr, pgno_t *pgno) {
   page_cache_lock(storage);
   const page_t *found = nullptr;
   for (const page_cache_entry_t *entry = storage->page_cache.entries; entry; entry = entry->next) {
-    const size_t pagesize = (size_t)1 << entry->pagesize_ln;
-    const page_t *const page = page_from_buffer_range(pagesize, entry->page, entry->io.bytes, ptr);
+    const page_t *const page = page_from_storage_buffer(storage, &entry->io, entry->page, ptr, pgno);
     if (page) {
-      *pgno = entry->io.pgno + (pgno_t)(ptr_dist(page, entry->page) >> entry->pagesize_ln);
       found = page;
       break;
     }
@@ -11834,10 +11846,14 @@ static const page_t *dirtylist_page_from_ptr(const MDBX_txn *txn, const void *pt
       continue;
 
     for (size_t i = 1; i <= dl->length; ++i) {
-      const page_t *const page =
-          page_from_buffer_range(scan->env->ps, dl->items[i].ptr, pgno2bytes(scan->env, dpl_npages(dl, i)), ptr);
+      const dxb_storage_t *const storage = &scan->env->dxb_storage;
+      dxb_page_io_t dirty_pages;
+      const int err = dxb_storage_page_io(storage, dl->items[i].pgno, dpl_npages(dl, i), &dirty_pages);
+      tASSERT0(scan, err == MDBX_SUCCESS);
+      if (unlikely(err != MDBX_SUCCESS))
+        continue;
+      const page_t *const page = page_from_storage_buffer(storage, &dirty_pages, dl->items[i].ptr, ptr, pgno);
       if (page) {
-        *pgno = dl->items[i].pgno + (pgno_t)(ptr_dist(page, dl->items[i].ptr) >> scan->env->ps2ln);
         return page;
       }
     }

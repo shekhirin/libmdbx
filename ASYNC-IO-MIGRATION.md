@@ -5016,6 +5016,24 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed with
 forced/default ratios of `1.112` batch, `1.164` crud, `1.010` iterate, `1.004`
 get, and `1.069` delete.
 
+A later explicit-buffer pointer cleanup added `page_from_storage_buffer()` so
+known explicit I/O buffers map pointers back to page numbers through validated
+`dxb_page_io_t` spans. Page-cache lookups now use each cache entry's stored page
+descriptor for range size and page-number derivation, while dirty-list lookups
+build a checked descriptor from the dirty entry's `(pgno, npages)` before
+checking whether a user pointer belongs to that buffer. This removes the raw
+`pgno2bytes(scan->env, dpl_npages(...))` range calculation and direct
+pagesize-shift page-number recovery from that explicit-buffer path. Verification
+passed `git diff --check`, source scans proving the targeted dirty-list raw
+range calculation and direct shift recovery are gone, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.139` batch,
+`1.163` crud, `0.944` iterate, `1.067` get, and `1.092` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
