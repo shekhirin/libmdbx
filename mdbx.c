@@ -1618,7 +1618,6 @@ static int dxb_storage_fetch_filesize_if_current_lacks(dxb_storage_t *storage, s
 MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno_t used_pgno, const pgno_t size_pgno,
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
-MDBX_INTERNAL int dxb_sync_meta_written(const MDBX_env *env, enum osal_syncmode_bits mode_bits);
 static int dxb_storage_read(const dxb_storage_t *storage, void *buf, size_t bytes, uint64_t offset);
 static int dxb_storage_write_bytes(const dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
                                    size_t bytes, uint64_t offset, size_t pagesize, uint8_t pagesize_ln);
@@ -21042,13 +21041,6 @@ static inline void dxb_note_fsync_pgop(const MDBX_env *env, enum osal_syncmode_b
     env->lck->pgops.fsync.weak += (mode_bits > MDBX_SYNC_NONE);
 }
 
-int dxb_sync_meta_written(const MDBX_env *env, enum osal_syncmode_bits mode_bits) {
-  if (!dxb_storage_meta_write_uses_data_sync(&env->dxb_storage))
-    return MDBX_SUCCESS;
-  dxb_note_fsync_pgop(env, mode_bits);
-  return dxb_storage_sync(&env->dxb_storage, mode_bits);
-}
-
 #if MDBX_ENABLE_DXB_FAULT_INJECTION
 __cold static int dxb_fault_code(const char *operation, const char *code, size_t code_len) {
   if (code_len == 3 && strncasecmp(code, "EIO", code_len) == 0)
@@ -22419,7 +22411,8 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
     if (flags & MDBX_NOMETASYNC)
       env->lck->unsynced_pages.weak += 1;
     else {
-      rc = dxb_sync_meta_written(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+      dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+      rc = dxb_storage_sync(&env->dxb_storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
       if (rc != MDBX_SUCCESS)
         goto undo;
     }
@@ -28739,7 +28732,10 @@ __cold int meta_wipe_steady(MDBX_env *env, txnid_t inclusive_upto) {
 
   if (err == MDBX_RESULT_TRUE) {
     err = MDBX_SUCCESS;
-    err = dxb_sync_meta_written(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+    if (dxb_storage_meta_write_uses_data_sync(&env->dxb_storage)) {
+      dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+      err = dxb_storage_sync(&env->dxb_storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+    }
   }
 
   /* force oldest refresh */
@@ -28884,8 +28880,10 @@ __cold int __must_check_result meta_override(MDBX_env *env, size_t target, txnid
   if (MDBX_ENABLE_PGOP_STAT)
     env->lck->pgops.wops.weak += 1;
   rc = dxb_storage_write_pages(&env->dxb_storage, env->ps2ln, dxb_io_meta, (pgno_t)target, page, 1);
-  if (rc == MDBX_SUCCESS)
-    rc = dxb_sync_meta_written(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+  if (rc == MDBX_SUCCESS && dxb_storage_meta_write_uses_data_sync(&env->dxb_storage)) {
+    dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+    rc = dxb_storage_sync(&env->dxb_storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+  }
   eASSERT0(env,
            (!env->txn && (env->flags & ENV_ACTIVE) == 0) ||
                (env->stuck_meta == (int)target && (env->flags & (MDBX_EXCLUSIVE | MDBX_RDONLY)) == MDBX_EXCLUSIVE));

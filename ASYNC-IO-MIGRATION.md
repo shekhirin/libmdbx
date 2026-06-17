@@ -135,8 +135,8 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   branches.
   Data-page sync callers now use explicit range sync through storage instead of
   choosing `msync()` versus `fsync()` themselves, and explicit meta-write call
-  sites use `dxb_sync_meta_written()` for the existing `meta_fd == data_fd`
-  sync rule.
+  sites apply the existing `meta_fd == data_fd` sync rule before submitting
+  directly through storage.
 - `MDBX_env` now contains an env-owned `dxb_storage_t` block for the data, meta,
   and dsync fds, `filesize`, `current`, and `limit` state, the explicit page
   cache, and the dirty-write queue. DXB helper internals and non-pointer size
@@ -348,8 +348,9 @@ The exact representation can differ, but the contract must be explicit:
    `dxb_storage_advise_range()`, `dxb_storage_prefetch_pages()`, and
    `dxb_storage_discard_range()` with explicit page geometry, using fd-backed
    advice/discard for accepted environments. Data-page sync now carries an
-   explicit page-range intent to storage, and explicit meta writes use
-   `dxb_sync_meta_written()` for their follow-up sync decision. Defrag
+   explicit page-range intent to storage, and explicit meta writes keep their
+   follow-up sync decision at the policy site before submitting through storage.
+   Defrag
    file-range copies now go through storage-owned page-copy helpers, and the
    portable non-compacting copy fallback reads through storage-owned byte reads.
    `MDBX_env` now has a
@@ -1772,9 +1773,9 @@ island onto the shadow/meta-I/O path. `dxb_sync_locked()`, `env_sync()`,
 defrag GC loading, GC allocation checkpoint selection, read/write-side MVCC
 oldest/laggard selection, `txn_basal_commit()`, `meta_unsteady()`,
 `meta_sync()`, and `meta_override()` now assert the accepted no-WRITEMAP policy
-and select shadow metadata only. Metadata writes go through explicit
-`dxb_write()`/`dxb_write_pages()` plus `dxb_sync_meta_written()`, and successful
-writes refresh the env-owned shadow pages. The cleanup removed
+and select shadow metadata only. Metadata writes go through explicit write
+helpers plus storage-backed sync, and successful writes refresh the env-owned
+shadow pages. The cleanup removed
 `MAPPED_METAPAGE()`, `mapped_pgno2page()`, `mapped_ptr2page()`,
 `meta_tap_mapped()`, `meta_ptr_mapped()`, `meta_recent_mapped()`,
 `meta_prefer_steady_mapped()`, `meta_tail_mapped()`,
@@ -2989,6 +2990,23 @@ forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
 suite including both C++ API variants. The paired `mdbx_migration_bench_lazy`
 gate passed with forced/default ratios of `1.088` batch, `1.169` crud, `1.140`
 iterate, `0.958` get, and `1.061` delete.
+
+A later metadata-sync adapter cleanup removed the env-shaped metadata sync
+forwarder. `dxb_sync_locked()`, `meta_wipe_steady()`, and `meta_override()`
+now keep the `meta_fd == data_fd` follow-up sync predicate, pgop accounting,
+and storage submission at their policy sites before calling
+`dxb_storage_sync()` directly. This leaves metadata durability decisions
+visible at the write sites while keeping the raw sync operation behind the
+storage facade. Verification passed stale
+metadata-sync adapter scans, stale data-file mmap and sync-wrapper scans across
+the shipped core sources, `make -f GNUmakefile mdbx_migration_smoke`,
+`mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` CTest entries. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.113` batch, `1.179` crud, `1.265`
+iterate, `0.987` get, and `1.071` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
