@@ -4523,6 +4523,24 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.137` batch, `1.168`
 crud, `0.930` iterate, `1.005` get, and `1.084` delete.
 
+A later read/write request validation cleanup added
+`dxb_storage_read_io_validate()` and `dxb_storage_write_io_validate()` so page
+read/write descriptors are rebuilt from their page ranges before page reads,
+page writes, vector page writes, write-queue preparation, and queued-write
+insertion consume them. Write descriptor construction and byte write/writev
+submission now also reject invalid storage channels before resolving a DXB file
+descriptor. Verification passed `git diff --check`, source scans proving the
+page read/write and queued-write boundaries call the new validators and no
+longer carry the old inline page-to-byte validation blocks, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.109` batch, `1.149` crud, `1.020` iterate, `1.012`
+get, and `1.065` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
