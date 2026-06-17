@@ -4825,6 +4825,22 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.117` batch, `1.158` crud, `0.994` iterate, `0.994`
 get, and `1.083` delete.
 
+A later warmup scan-range cleanup changed `warmup_force_read()` to derive its
+current-file clamped scan descriptor as a checked subrange of the already
+validated warmup range. The forced-read loop still clamps the requested range to
+the current storage size and reads it in aligned chunks, but the scan window now
+flows through `dxb_storage_byte_subrange_io(range, 0, used_range, ...)` instead
+of rebuilding `range->offset, used_range` as a loose byte request. Verification
+passed `git diff --check`, source scans proving the targeted
+`dxb_storage_byte_io(range->offset, ...)` request is absent, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.135` batch,
+`1.161` crud, `1.157` iterate, `0.936` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

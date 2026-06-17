@@ -5400,7 +5400,7 @@ static int warmup_force_read(const dxb_storage_t *storage, const dxb_byte_io_t *
   const size_t used_range = (range->bytes > current_available) ? current_available : range->bytes;
   if (used_range == 0)
     return MDBX_SUCCESS;
-  rc = dxb_storage_byte_io(range->offset, used_range, &scan);
+  rc = dxb_storage_byte_subrange_io(range, 0, used_range, &scan);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
