@@ -93,6 +93,7 @@ struct page_cache_entry {
   size_t npages;
   size_t bytes;
   size_t pins;
+  uint8_t pagesize_ln;
   bool reusable;
 };
 

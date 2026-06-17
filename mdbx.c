@@ -93,6 +93,7 @@ struct page_cache_entry {
   size_t npages;
   size_t bytes;
   size_t pins;
+  uint8_t pagesize_ln;
   bool reusable;
 };
 
@@ -11024,14 +11025,14 @@ static const page_t *page_from_buffer_range(size_t pagesize, const page_t *base,
   return ptr_disp(base, offset & ~(pagesize - 1));
 }
 
-static const page_t *dxb_storage_cached_page_from_ptr(const dxb_storage_t *storage, size_t pagesize,
-                                                      uint8_t pagesize_ln, const void *ptr, pgno_t *pgno) {
+static const page_t *dxb_storage_cached_page_from_ptr(const dxb_storage_t *storage, const void *ptr, pgno_t *pgno) {
   page_cache_lock(storage);
   const page_t *found = nullptr;
   for (const page_cache_entry_t *entry = storage->page_cache.entries; entry; entry = entry->next) {
+    const size_t pagesize = (size_t)1 << entry->pagesize_ln;
     const page_t *const page = page_from_buffer_range(pagesize, entry->page, entry->bytes, ptr);
     if (page) {
-      *pgno = entry->pgno + (pgno_t)(ptr_dist(page, entry->page) >> pagesize_ln);
+      *pgno = entry->pgno + (pgno_t)(ptr_dist(page, entry->page) >> entry->pagesize_ln);
       found = page;
       break;
     }
@@ -11064,7 +11065,7 @@ static const page_t *dirtylist_page_from_ptr(const MDBX_txn *txn, const void *pt
 static bool page_ptr_is_explicit_io_buffer(const MDBX_txn *txn, const page_t *mp) {
   pgno_t pgno = 0;
   const MDBX_env *const env = txn->env;
-  const page_t *page = dxb_storage_cached_page_from_ptr(&env->dxb_storage, env->ps, env->ps2ln, mp, &pgno);
+  const page_t *page = dxb_storage_cached_page_from_ptr(&env->dxb_storage, mp, &pgno);
   if (page == mp && pgno == mp->pgno)
     return true;
 
@@ -11107,7 +11108,7 @@ int mdbx_is_dirty(const MDBX_txn *txn, const void *ptr) {
 
   const MDBX_env *env = txn->env;
   pgno_t pgno = 0;
-  const page_t *page = dxb_storage_cached_page_from_ptr(&env->dxb_storage, env->ps, env->ps2ln, ptr, &pgno);
+  const page_t *page = dxb_storage_cached_page_from_ptr(&env->dxb_storage, ptr, &pgno);
   if (page) {
     rc = check_dirty_page_ptr(txn, page, pgno);
     return unlikely(rc == MDBX_EINVAL) ? LOG_IFERR(rc) : rc;
@@ -20405,6 +20406,7 @@ static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, size_t pagesiz
   entry->npages = 1;
   entry->bytes = pagesize;
   entry->pins = 1;
+  entry->pagesize_ln = pagesize_ln;
   entry->reusable = reusable;
   int err = osal_memalign_alloc(globals.sys_pagesize, entry->bytes, (void **)&entry->page);
   if (unlikely(err != MDBX_SUCCESS))
@@ -20451,11 +20453,12 @@ static pgr_t page_cache_read(MDBX_txn *txn, const pgno_t pgno, const bool track_
   return dxb_storage_read_cached_page(storage, env->ps, env->ps2ln, pgno, snapshot, reusable, tracked);
 }
 
-static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, uint8_t pagesize_ln, pgr_t *pgr) {
+static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr_t *pgr) {
   page_cache_entry_t *const entry = pgr->ref.cache;
   ASSERT(entry != nullptr && entry->storage == storage);
   const size_t npages = pgr->page->pages;
   page_t *large = nullptr;
+  const uint8_t pagesize_ln = entry->pagesize_ln;
   const size_t bytes = npages << pagesize_ln;
   int err = osal_memalign_alloc(globals.sys_pagesize, bytes, (void **)&large);
   if (unlikely(err != MDBX_SUCCESS))
@@ -20499,15 +20502,15 @@ static int page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
 
   const size_t npages = pgr->page->pages;
   tASSERT0(txn, npages > 1 && (size_t)pgr->page->pgno + npages <= txn->geo.first_unallocated);
-  return dxb_storage_materialize_cached_large_page(entry->storage, txn->env->ps2ln, pgr);
+  return dxb_storage_materialize_cached_large_page(entry->storage, pgr);
 }
 
-MDBX_MAYBE_UNUSED static bool dxb_storage_cached_page_contains(const dxb_storage_t *storage, size_t pagesize,
-                                                               const page_t *page) {
+MDBX_MAYBE_UNUSED static bool dxb_storage_cached_page_contains(const dxb_storage_t *storage, const page_t *page) {
   const uintptr_t addr = (uintptr_t)page;
   page_cache_lock(storage);
   bool found = false;
   for (const page_cache_entry_t *entry = storage->page_cache.entries; entry; entry = entry->next) {
+    const size_t pagesize = (size_t)1 << entry->pagesize_ln;
     const uintptr_t begin = (uintptr_t)entry->page;
     const uintptr_t end = begin + entry->bytes;
     if (addr >= begin && addr < end && ((addr - begin) & (pagesize - 1)) == 0) {
