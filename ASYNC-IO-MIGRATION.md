@@ -4316,6 +4316,25 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.125` batch, `1.153` crud, `0.743` iterate,
 `0.876` get, and `1.076` delete.
 
+A later discard descriptor cleanup added `dxb_discard_io_t` so data-file
+DONTNEED/remove requests carry the checked byte span, derived page span, and
+discard mode as one storage request. Resize shrink, open-tail discard, and
+commit-time shrink discard now build that descriptor before crossing into
+storage, and `dxb_storage_discard_range()` rebuilds and validates the
+page-derived view before choosing clean/remove behavior and cache
+invalidation. The raw byte-only `posix_fadvise(POSIX_FADV_DONTNEED)` helper now
+stays below the storage request boundary. Verification passed
+`git diff --check`, source scans proving the old
+`dxb_storage_discard_range(..., mode)` call shape and local byte-only discard
+requests are gone from `mdbx.c`, the GNUmake `mdbx_migration_smoke` target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, `cmake
+--build @cmake-ninja-build`, the six focused `migration_smoke` CTest entries,
+the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.132` batch, `1.135`
+crud, `0.975` iterate, `0.981` get, and `1.087` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
