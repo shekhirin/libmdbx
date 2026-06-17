@@ -4132,6 +4132,26 @@ CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
 passed with forced/default ratios of `1.120` batch, `1.148` crud, `1.242`
 iterate, `1.406` get, and `1.073` delete.
 
+A later meta-shadow descriptor cleanup added checked
+`dxb_storage_meta_payload_io()` and `dxb_storage_meta_field_io()` helpers.
+Commit-meta writes and steady-sign wipes now build byte descriptors for the
+metadata payload/sign spans before writing, and the in-memory `meta_shadow`
+mirror consumes those same `dxb_byte_io_t` requests instead of separate raw meta
+numbers and field offsets. Whole-page meta overrides pass their existing
+`dxb_page_io_t` descriptor into the shadow copy path as well. This keeps the
+disk metadata write and shadow metadata update keyed by the same explicit
+request descriptors. Verification passed `git diff --check`, source scans
+proving `meta_shadow_copy_field()` is gone and raw meta payload/field write
+descriptor construction is gone from call sites in `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries,
+the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.112` batch, `1.151`
+crud, `0.841` iterate, `0.929` get, and `1.076` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
