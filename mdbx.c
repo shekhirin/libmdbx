@@ -1995,7 +1995,6 @@ MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
 static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *io, void *buf);
-static int dxb_storage_read_page_span(const dxb_storage_t *storage, const dxb_page_io_t *io, void *buf);
 static int dxb_storage_write_bytes(dxb_storage_t *storage, enum dxb_io_channel channel, const dxb_byte_io_t *io,
                                    const void *buf);
 static int dxb_storage_write_meta(dxb_storage_t *storage, unsigned number, size_t payload_offset, size_t bytes,
@@ -20933,17 +20932,6 @@ static int dxb_storage_invalidate_cached_bytes_io(dxb_storage_t *storage, const 
   return MDBX_SUCCESS;
 }
 
-static int dxb_storage_read_page_span(const dxb_storage_t *storage, const dxb_page_io_t *io, void *buf) {
-  int rc = dxb_storage_page_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_byte_io_t bytes;
-  rc = dxb_storage_byte_io_from_page(io, &bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_read_bytes(storage, &bytes, buf);
-}
-
 static inline bool page_cache_can_reuse(const MDBX_txn *txn) {
   return (txn->flags & txn_ro_both) != 0;
 }
@@ -21009,7 +20997,11 @@ static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, const dxb_page
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
-  err = dxb_storage_read_page_span(storage, &entry->io, entry->page);
+  dxb_byte_io_t bytes;
+  err = dxb_storage_byte_io_from_page(&entry->io, &bytes);
+  if (unlikely(err != MDBX_SUCCESS))
+    goto bailout;
+  err = dxb_storage_read_bytes(storage, &bytes, entry->page);
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
@@ -21094,7 +21086,13 @@ static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  err = dxb_storage_read_page_span(storage, &io, large);
+  dxb_byte_io_t bytes;
+  err = dxb_storage_byte_io_from_page(&io, &bytes);
+  if (unlikely(err != MDBX_SUCCESS)) {
+    osal_memalign_free(large);
+    return err;
+  }
+  err = dxb_storage_read_bytes(storage, &bytes, large);
   if (unlikely(err != MDBX_SUCCESS)) {
     osal_memalign_free(large);
     return err;
