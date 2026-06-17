@@ -21649,16 +21649,29 @@ static inline osal_ioring_write_result_t dxb_storage_write_queued(dxb_storage_t 
 }
 
 static inline int dxb_storage_pread(const dxb_storage_t *storage, const dxb_byte_io_t *io, void *buf) {
+  int rc = dxb_storage_byte_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   return osal_pread(dxb_storage_data_fd(storage), buf, io->bytes, io->offset);
 }
 
 static inline int dxb_storage_pwrite(const dxb_storage_t *storage, enum dxb_io_channel channel,
                                      const dxb_byte_io_t *io, const void *buf) {
+  if (unlikely(!dxb_storage_io_channel_valid(channel)))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_byte_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   return osal_pwrite(dxb_storage_fd(storage, channel), buf, io->bytes, io->offset);
 }
 
 static inline int dxb_storage_pwritev(const dxb_storage_t *storage, enum dxb_io_channel channel, struct iovec *iov,
                                       size_t sgvcnt, const dxb_byte_io_t *io) {
+  if (unlikely(!dxb_storage_io_channel_valid(channel)))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_byte_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
   return osal_pwritev(dxb_storage_fd(storage, channel), iov, sgvcnt, io->offset);
 }
 
@@ -31712,6 +31725,13 @@ static int osal_ioring_item_iov_bytes(const ior_item_t *item, size_t *bytes) {
 }
 #endif /* MDBX_HAVE_PWRITEV */
 
+static int osal_ioring_item_io_validate(const ior_item_t *item, size_t bytes) {
+  int rc = dxb_storage_byte_io_validate(&item->io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return likely(bytes == item->io.bytes) ? MDBX_SUCCESS : MDBX_EINVAL;
+}
+
 static size_t osal_ioring_write_item(osal_ioring_write_result_t *result, ior_item_t *item, mdbx_filehandle_t fd) {
 #if MDBX_HAVE_PWRITEV
   ASSERT(item->sgvcnt > 0);
@@ -31719,10 +31739,9 @@ static size_t osal_ioring_write_item(osal_ioring_write_result_t *result, ior_ite
   result->err = osal_ioring_item_iov_bytes(item, &bytes);
   if (unlikely(result->err != MDBX_SUCCESS))
     return item->sgvcnt;
-  if (unlikely(bytes != item->io.bytes)) {
-    result->err = MDBX_EINVAL;
+  result->err = osal_ioring_item_io_validate(item, bytes);
+  if (unlikely(result->err != MDBX_SUCCESS))
     return item->sgvcnt;
-  }
 
   if (item->sgvcnt == 1) {
     result->err = dxb_fault_inject("write");
@@ -31742,10 +31761,9 @@ static size_t osal_ioring_write_item(osal_ioring_write_result_t *result, ior_ite
   result->wops += 1;
   return item->sgvcnt;
 #else
-  if (unlikely(item->single.iov_len != item->io.bytes)) {
-    result->err = MDBX_EINVAL;
+  result->err = osal_ioring_item_io_validate(item, item->single.iov_len);
+  if (unlikely(result->err != MDBX_SUCCESS))
     return 1;
-  }
 
   result->err = dxb_fault_inject("write");
   if (likely(result->err == MDBX_SUCCESS))

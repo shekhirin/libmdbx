@@ -4598,6 +4598,25 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.131` batch, `1.170` crud, `0.931` iterate, `0.889`
 get, and `1.067` delete.
 
+A later syscall-boundary validation cleanup made the final explicit storage
+adapters and POSIX dirty-write queue executor revalidate byte request
+descriptors immediately before raw file I/O. `dxb_storage_pread()`,
+`dxb_storage_pwrite()`, and `dxb_storage_pwritev()` now validate the
+`dxb_byte_io_t` they receive, and the write adapters also reject invalid
+storage channels before selecting a DXB fd. The POSIX `osal_ioring_write_item()`
+path now validates the queued item's stored byte descriptor and payload span
+before submitting `pwrite()` or `pwritev()`, so queue insertion, queue walking,
+fault-injection, and the final synchronous executor all enforce the same
+request shape that a future async backend will submit. Verification passed
+`git diff --check`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.101` batch, `1.144` crud, `0.996` iterate,
+`0.997` get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
