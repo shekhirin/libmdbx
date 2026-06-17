@@ -5170,6 +5170,22 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.118` batch, `1.148`
 crud, `0.861` iterate, `1.060` get, and `1.069` delete.
 
+A later cached-read descriptor cleanup added `dxb_storage_read_page_span()` so
+explicit page-cache miss fills and large-overflow materialization submit reads
+through one storage helper that accepts the checked `dxb_page_io_t` span and
+derives the async-facing read descriptor internally. `dxb_storage_read_cached_page()`
+and `dxb_storage_materialize_cached_large_page()` no longer each keep a local
+`dxb_read_io_t` conversion before calling the read submission helper.
+Verification passed `git diff --check`, source scans proving the cache-read
+paths now use `dxb_storage_read_page_span()`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.139` batch,
+`1.155` crud, `0.858` iterate, `1.051` get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

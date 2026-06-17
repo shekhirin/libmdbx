@@ -21280,6 +21280,14 @@ static int dxb_storage_invalidate_cached_bytes_io(dxb_storage_t *storage, const 
   return MDBX_SUCCESS;
 }
 
+static int dxb_storage_read_page_span(const dxb_storage_t *storage, const dxb_page_io_t *io, void *buf) {
+  dxb_read_io_t read;
+  int rc = dxb_storage_read_io_from_page(storage, io, &read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_read_pages(storage, &read, buf);
+}
+
 static inline bool page_cache_can_reuse(const MDBX_txn *txn) {
   return (txn->flags & txn_ro_both) != 0;
 }
@@ -21345,11 +21353,7 @@ static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, const dxb_page
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
-  dxb_read_io_t read;
-  err = dxb_storage_read_io_from_page(storage, &entry->io, &read);
-  if (unlikely(err != MDBX_SUCCESS))
-    goto bailout;
-  err = dxb_storage_read_pages(storage, &read, entry->page);
+  err = dxb_storage_read_page_span(storage, &entry->io, entry->page);
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
@@ -21434,13 +21438,7 @@ static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  dxb_read_io_t read;
-  err = dxb_storage_read_io_from_page(storage, &io, &read);
-  if (unlikely(err != MDBX_SUCCESS)) {
-    osal_memalign_free(large);
-    return err;
-  }
-  err = dxb_storage_read_pages(storage, &read, large);
+  err = dxb_storage_read_page_span(storage, &io, large);
   if (unlikely(err != MDBX_SUCCESS)) {
     osal_memalign_free(large);
     return err;
