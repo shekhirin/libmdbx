@@ -3219,6 +3219,21 @@ six focused ASAN `migration_smoke` CTest entries. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.116`
 batch, `1.154` crud, `0.793` iterate, `1.032` get, and `1.073` delete.
 
+A later storage setup geometry cleanup configures the storage page-size shift as
+soon as `dxb_setup()` accepts the meta page size, before the explicit-I/O
+storage setup helper is called. `dxb_storage_setup_bytes()` now requires storage
+geometry to be preconfigured, and the remaining open-time filesize diagnostic
+uses `dxb_storage_bytes2pgno()` instead of an environment-local page-size shift.
+Verification passed storage-geometry ordering scans, stale data-file mmap and
+removed sync-adapter scans across the shipped core sources, `git diff --check`,
+`make -f GNUmakefile mdbx_migration_smoke`, `mdbx_migration_smoke` default and
+forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the
+six focused ASAN `migration_smoke` CTest entries. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.083`
+batch, `1.164` crud, `1.010` iterate, `1.014` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

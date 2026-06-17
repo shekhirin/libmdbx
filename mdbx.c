@@ -21461,9 +21461,9 @@ static int dxb_storage_sendfile_to_fd(const dxb_storage_t *storage, mdbx_filehan
 #endif /* MDBX_USE_SENDFILE */
 
 static int dxb_storage_setup_bytes(dxb_storage_t *storage, const size_t size, const size_t limit, const unsigned flags,
-                                   const unsigned options, uint8_t pagesize_ln) {
+                                   const unsigned options) {
   int rc;
-  dxb_storage_set_pagesize_ln(storage, pagesize_ln);
+  ASSERT(dxb_storage_pagesize_ln(storage) > 0);
   if ((flags & MDBX_RDONLY) == 0 && (options & MMAP_OPTION_SETLENGTH) != 0) {
     rc = dxb_storage_set_filesize_bytes(storage, size);
     if (unlikely(rc != MDBX_SUCCESS))
@@ -21852,6 +21852,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
 
   if (env->ps != header.pagesize)
     env_setup_pagesize(env, header.pagesize);
+  dxb_storage_set_pagesize_ln(&env->dxb_storage, env->ps2ln);
   if ((env->flags & MDBX_RDONLY) == 0) {
     err = env_page_auxbuffer(env);
     if (unlikely(err != MDBX_SUCCESS))
@@ -21934,15 +21935,16 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
     expected_filesize = env->geo_in_bytes.now;
   const uint64_t filesize_before = dxb_storage_filesize(&env->dxb_storage);
   if (unlikely(filesize_before != env->geo_in_bytes.now)) {
+    const uint64_t filesize_before_pgno = dxb_storage_bytes2pgno(&env->dxb_storage, filesize_before);
     if (lck_rc != /* lck exclusive */ MDBX_RESULT_TRUE) {
       VERBOSE("filesize mismatch (expect %" PRIuPTR "b/%" PRIaPGNO "p, have %" PRIu64 "b/%" PRIu64
               "p), assume other process working",
               env->geo_in_bytes.now, bytes2pgno(env, env->geo_in_bytes.now), filesize_before,
-              filesize_before >> env->ps2ln);
+              filesize_before_pgno);
     } else {
       if (filesize_before != expected_filesize)
         WARNING("filesize mismatch (expect %" PRIuSIZE "b/%" PRIaPGNO "p, have %" PRIu64 "b/%" PRIu64 "p)",
-                expected_filesize, bytes2pgno(env, expected_filesize), filesize_before, filesize_before >> env->ps2ln);
+                expected_filesize, bytes2pgno(env, expected_filesize), filesize_before, filesize_before_pgno);
       if (filesize_before < allocated_bytes) {
         ERROR("last-page beyond end-of-file (last %" PRIaPGNO ", have %" PRIaPGNO ")",
               header.geometry.first_unallocated, bytes2pgno(env, (size_t)filesize_before));
@@ -21973,7 +21975,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   NOTICE("%s", "open without data-file mmap");
   eASSERT0(env, env->geo_in_bytes.now <= env->geo_in_bytes.upper);
   err = dxb_storage_setup_bytes(&env->dxb_storage, env->geo_in_bytes.now, env->geo_in_bytes.upper, env->flags,
-                                storage_options, env->ps2ln);
+                                storage_options);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
