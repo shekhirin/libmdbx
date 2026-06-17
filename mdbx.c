@@ -2794,8 +2794,8 @@ MDBX_MAYBE_UNUSED MDBX_NOTHROW_PURE_FUNCTION static inline bool inner_hollow(con
   return r;
 }
 
-static void page_cache_lock(dxb_storage_t *storage);
-static void page_cache_unlock(dxb_storage_t *storage);
+static void page_cache_lock(const dxb_storage_t *storage);
+static void page_cache_unlock(const dxb_storage_t *storage);
 static size_t page_cache_limit_from_env(void);
 static void dxb_storage_retain_cached_entry(dxb_storage_t *storage, page_cache_entry_t *entry);
 static void dxb_storage_release_cached_ref(dxb_storage_t *storage, const MDBX_cursor *mc, page_ref_t *ref);
@@ -11024,9 +11024,8 @@ static const page_t *page_from_buffer_range(size_t pagesize, const page_t *base,
   return ptr_disp(base, offset & ~(pagesize - 1));
 }
 
-static const page_t *dxb_storage_cached_page_from_ptr(const dxb_storage_t *const_storage, size_t pagesize,
+static const page_t *dxb_storage_cached_page_from_ptr(const dxb_storage_t *storage, size_t pagesize,
                                                       uint8_t pagesize_ln, const void *ptr, pgno_t *pgno) {
-  dxb_storage_t *const storage = (dxb_storage_t *)const_storage;
   page_cache_lock(storage);
   const page_t *found = nullptr;
   for (const page_cache_entry_t *entry = storage->page_cache.entries; entry; entry = entry->next) {
@@ -20170,14 +20169,17 @@ static size_t page_cache_limit_from_env(void) {
   return (size_t)(limit * scale);
 }
 
-static void page_cache_lock(dxb_storage_t *storage) {
-  if (storage->page_cache_lock_initialized)
-    ENSURE(osal_fastmutex_acquire(&storage->page_cache_lock) == MDBX_SUCCESS);
+static void page_cache_lock(const dxb_storage_t *storage) {
+  /* Page-cache observation is logical-const; the mutex is internal state. */
+  dxb_storage_t *const mutable_storage = (dxb_storage_t *)storage;
+  if (mutable_storage->page_cache_lock_initialized)
+    ENSURE(osal_fastmutex_acquire(&mutable_storage->page_cache_lock) == MDBX_SUCCESS);
 }
 
-static void page_cache_unlock(dxb_storage_t *storage) {
-  if (storage->page_cache_lock_initialized)
-    ENSURE(osal_fastmutex_release(&storage->page_cache_lock) == MDBX_SUCCESS);
+static void page_cache_unlock(const dxb_storage_t *storage) {
+  dxb_storage_t *const mutable_storage = (dxb_storage_t *)storage;
+  if (mutable_storage->page_cache_lock_initialized)
+    ENSURE(osal_fastmutex_release(&mutable_storage->page_cache_lock) == MDBX_SUCCESS);
 }
 
 static void page_cache_release_entry_locked(page_cache_entry_t *entry) {
@@ -20500,10 +20502,9 @@ static int page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
   return dxb_storage_materialize_cached_large_page(entry->storage, txn->env->ps2ln, pgr);
 }
 
-MDBX_MAYBE_UNUSED static bool dxb_storage_cached_page_contains(const dxb_storage_t *const_storage, size_t pagesize,
+MDBX_MAYBE_UNUSED static bool dxb_storage_cached_page_contains(const dxb_storage_t *storage, size_t pagesize,
                                                                const page_t *page) {
   const uintptr_t addr = (uintptr_t)page;
-  dxb_storage_t *const storage = (dxb_storage_t *)const_storage;
   page_cache_lock(storage);
   bool found = false;
   for (const page_cache_entry_t *entry = storage->page_cache.entries; entry; entry = entry->next) {

@@ -3122,6 +3122,22 @@ CTest entries. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.127` batch, `1.134` crud, `1.223` iterate, `1.016`
 get, and `1.064` delete.
 
+A later page-cache observation constness cleanup made cache locking logical-const.
+`page_cache_lock()` and `page_cache_unlock()` now take `const dxb_storage_t *`
+and centralize the mutex mutability cast, so read-only storage observation
+helpers no longer cast their storage target before scanning cached page ranges.
+This keeps public const transaction paths on const storage-shaped helpers while
+leaving the mutable cache accounting paths explicit. Verification passed
+logical-const cache-lock scans, stale data-file mmap and removed sync-adapter
+scans across the shipped core sources, `git diff --check`, `make -f GNUmakefile
+mdbx_migration_smoke`, `mdbx_migration_smoke` default and forced tiny-cache
+runs, `cmake --build @cmake-ninja-build`, the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite, forced tiny-cache
+fault injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` CTest entries. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.139` batch, `1.143` crud, `0.997`
+iterate, `0.901` get, and `1.144` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
