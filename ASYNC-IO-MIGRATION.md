@@ -120,23 +120,19 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   `txn_basal_commit()` builds an `iov_ctx_t`, `txn_write()` iterates the dirty
   page list, and `iov_page()`/`iov_write()` submit pages through the
   storage-owned dirty-write queue.
-- This branch now has thin `dxb_read()`, `dxb_read_pages()`, `dxb_write()`,
-  `dxb_write_pages()`, `dxb_writev_pages()`, `dxb_copy_pages()`,
-  `dxb_fetch_filesize()`, `dxb_set_filesize()`,
-  `dxb_advise_range()`, `dxb_prefetch()`, `dxb_discard_range()`,
-  `dxb_sync_data()`, and `dxb_sync_meta_written()` helpers around the existing
-  OSAL file calls. They are intentionally behavior-neutral and are only a first
-  facade for open-time meta reads, explicit meta writes, data-file size checks
-  and growth, defrag page copies, copy fallback reads, page
-  cleanup, readahead/prefetch hints, tail discard/deallocation hints, data-page
-  sync selection, and meta-write sync follow-up. Explicit writes are now
-  channelized as data-file or meta-file
-  writes, so call sites no longer pass raw DXB file handles into the facade.
-  Full-page reads, writes, same-file page copies, and prefetch hints are routed
-  through page-addressed helpers where the page number is already known.
-  Readahead plus data-file tail discard paths now go through facades that use
-  fd-backed advice/discard for accepted environments; a later explicit-only
-  cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper branches.
+- This branch now routes explicit read, write, copy, advisory, prefetch, and
+  discard operations through storage-owned helpers instead of env-shaped DXB
+  adapters. The remaining higher-level sync wrappers keep environment pgop
+  accounting and policy selection, while storage owns raw byte/page I/O,
+  file-size changes, data-cache invalidation, `posix_fadvise()`/`F_RDADVISE`
+  hints, and page/byte geometry for page-addressed operations. Explicit writes
+  are channelized as data-file or meta-file writes, so call sites no longer pass
+  raw DXB file handles into the facade. Full-page reads, writes, same-file page
+  copies, and prefetch hints are routed through page-addressed helpers where the
+  page number is already known. Readahead plus data-file tail discard paths now
+  use fd-backed advice/discard through storage; an earlier explicit-only
+  cleanup removed the mapped `madvise()`/`MADV_REMOVE` data-file helper
+  branches.
   Data-page sync callers now use `dxb_sync_data()` instead of choosing
   `msync()` versus `fsync()` themselves, and explicit meta-write call sites use
   `dxb_sync_meta_written()` for the existing `meta_fd == data_fd` sync rule.
@@ -346,10 +342,11 @@ The exact representation can differ, but the contract must be explicit:
    directly to OSAL and still expose some mmap-era shell state. Explicit writes
    no longer expose the selected file
    handle at call sites; they use an internal data/meta channel. Full-page
-   operations are now expressed as page-numbered reads/writes. Readahead now
-   goes through `dxb_advise_range()`/`dxb_prefetch()`, and data-file tail
-   discard/deallocation hints go through `dxb_discard_range()` and use
-   fd-backed advice/discard for accepted environments. Data-page sync now
+   operations are now expressed as page-numbered reads/writes. Readahead and
+   data-file tail discard/deallocation hints now go through
+   `dxb_storage_advise_range()`, `dxb_storage_prefetch_pages()`, and
+   `dxb_storage_discard_range()` with explicit page geometry, using fd-backed
+   advice/discard for accepted environments. Data-page sync now
    goes through `dxb_sync_data()`, and explicit meta writes use
    `dxb_sync_meta_written()` for their follow-up sync decision. Defrag
    file-range copies now go through `dxb_copy_pages()`, and the portable
@@ -2909,6 +2906,23 @@ fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
 `migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
 forced/default ratios of `1.122` batch, `1.176` crud, `1.017` iterate, `1.012`
 get, and `1.085` delete.
+
+A later advisory-routing cleanup removed the env-shaped `dxb_advise_range()`,
+`dxb_prefetch()`, and `dxb_discard_range()` adapters. Resize shrink discard,
+readahead advice/prefetch, open-time tail discard, and commit-time shrink
+discard now call `dxb_storage_advise_range()`,
+`dxb_storage_prefetch_pages()`, or `dxb_storage_discard_range()` directly with
+explicit storage and page geometry. This keeps advisory and discard behavior
+behind the same storage facade as byte/page read, write, copy, sync, and size
+operations. Verification passed `git diff --check`, stale wrapper scans, stale
+data-file mmap symbol scans, `make -f GNUmakefile mdbx_migration_smoke`, direct
+default and forced tiny-cache smoke runs, `cmake --build @cmake-ninja-build`,
+the six focused `migration_smoke` CTest entries, the full 15-test public CTest
+suite including migration tool roundtrip coverage, deterministic forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and focused ASAN
+`migration_smoke` CTest. The paired `mdbx_migration_bench_lazy` gate reported
+forced/default ratios of `1.116` batch, `1.165` crud, `0.975` iterate, `1.015`
+get, and `1.076` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.

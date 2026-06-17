@@ -1624,9 +1624,6 @@ MDBX_INTERNAL int dxb_sync_data_range(const MDBX_env *env, dxb_sync_range_t rang
 MDBX_INTERNAL int dxb_sync_data(const MDBX_env *env, size_t length_pages, enum osal_syncmode_bits mode_bits,
                                 unsigned flags);
 MDBX_INTERNAL int dxb_sync_meta_written(const MDBX_env *env, enum osal_syncmode_bits mode_bits);
-MDBX_INTERNAL int dxb_advise_range(const MDBX_env *env, size_t offset, size_t length, enum dxb_advice advice);
-MDBX_INTERNAL int dxb_prefetch(const MDBX_env *env, pgno_t pgno, size_t npages);
-MDBX_INTERNAL int dxb_discard_range(const MDBX_env *env, size_t offset, size_t length, enum dxb_discard_mode mode);
 static int dxb_storage_read(const dxb_storage_t *storage, void *buf, size_t bytes, uint64_t offset);
 static int dxb_storage_write_bytes(const dxb_storage_t *storage, enum dxb_io_channel channel, const void *buf,
                                    size_t bytes, uint64_t offset, size_t pagesize, uint8_t pagesize_ln);
@@ -21504,18 +21501,6 @@ static int dxb_storage_resize(MDBX_env *env, const size_t size, const size_t lim
   return dxb_storage_resize_bytes(&env->dxb_storage, size, limit, flags, env->ps, env->ps2ln);
 }
 
-int dxb_advise_range(const MDBX_env *env, size_t offset, size_t length, enum dxb_advice advice) {
-  return dxb_storage_advise_range(&env->dxb_storage, offset, length, advice);
-}
-
-int dxb_prefetch(const MDBX_env *env, pgno_t pgno, size_t npages) {
-  return dxb_storage_prefetch_pages(&env->dxb_storage, env->ps2ln, pgno, npages);
-}
-
-int dxb_discard_range(const MDBX_env *env, size_t offset, size_t length, enum dxb_discard_mode mode) {
-  return dxb_storage_discard_range(&env->dxb_storage, offset, length, env->ps, env->ps2ln, mode);
-}
-
 __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive, const mdbx_mode_t mode_bits) {
   memset(dest, 0, sizeof(meta_t));
   int rc = dxb_storage_fetch_filesize(&env->dxb_storage);
@@ -21675,7 +21660,8 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
 
   if (size_bytes < prev_size && mode > implicit_grow) {
     NOTICE("resize-DONTNEED %u..%u", size_pgno, bytes2pgno(env, prev_size));
-    rc = dxb_discard_range(env, size_bytes, prev_size - size_bytes, dxb_discard_clean);
+    rc = dxb_storage_discard_range(storage, size_bytes, prev_size - size_bytes, env->ps, env->ps2ln,
+                                   dxb_discard_clean);
     if (unlikely(MDBX_IS_ERROR(rc))) {
       ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "resize", "DONTNEED", size_bytes, prev_size - size_bytes, rc);
       goto bailout;
@@ -21772,7 +21758,7 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
 
   int err;
   if (enable) {
-    err = dxb_advise_range(env, offset, length, dxb_advice_normal);
+    err = dxb_storage_advise_range(&env->dxb_storage, offset, length, dxb_advice_normal);
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
     if (toggle) {
@@ -21782,13 +21768,14 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
        * 19.6.0 Darwin Kernel Version 19.6.0: Tue Jan 12 22:13:05 PST 2021;
        * root:xnu-6153.141.16~1/RELEASE_X86_64 x86_64 */
       const pgno_t prefetch_pgno = bytes2pgno(env, offset);
-      err = dxb_prefetch(env, prefetch_pgno, bytes2pgno(env, offset + length) - prefetch_pgno);
+      err = dxb_storage_prefetch_pages(&env->dxb_storage, env->ps2ln, prefetch_pgno,
+                                       bytes2pgno(env, offset + length) - prefetch_pgno);
       if (unlikely(MDBX_IS_ERROR(err)))
         return err;
     }
   } else {
     env_clear_incore_cache(env);
-    err = dxb_advise_range(env, offset, length, dxb_advice_random);
+    err = dxb_storage_advise_range(&env->dxb_storage, offset, length, dxb_advice_random);
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
   }
@@ -22220,8 +22207,9 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
 #if defined(POSIX_FADV_DONTNEED)
     NOTICE("open-FADV_%s %u..%u", "DONTNEED", env->lck->discarded_tail.weak,
            bytes2pgno(env, current_size));
-    err = dxb_discard_range(env, allocated_aligned2os_bytes, current_size - allocated_aligned2os_bytes,
-                            dxb_discard_clean);
+    err = dxb_storage_discard_range(&env->dxb_storage, allocated_aligned2os_bytes,
+                                    current_size - allocated_aligned2os_bytes, env->ps, env->ps2ln,
+                                    dxb_discard_clean);
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
 #endif /* POSIX_FADV_DONTNEED */
@@ -22289,8 +22277,9 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
          * могут быть равны */
         if (prev_discarded_bytes > discard_edge_bytes) {
           NOTICE("shrink-FADV_%s %zu..%zu", "DONTNEED", discard_edge_pgno, prev_discarded_pgno);
-          int err = dxb_discard_range(env, discard_edge_bytes, prev_discarded_bytes - discard_edge_bytes,
-                                      dxb_discard_clean);
+          int err = dxb_storage_discard_range(&env->dxb_storage, discard_edge_bytes,
+                                              prev_discarded_bytes - discard_edge_bytes, env->ps, env->ps2ln,
+                                              dxb_discard_clean);
           if (unlikely(MDBX_IS_ERROR(err))) {
             ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "shrink", "DONTNEED", discard_edge_bytes,
                   prev_discarded_bytes - discard_edge_bytes, err);
