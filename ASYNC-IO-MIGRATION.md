@@ -4054,6 +4054,28 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.096` batch, `1.155`
 crud, `1.044` iterate, `0.978` get, and `1.097` delete.
 
+A later page-helper descriptor cleanup removed the remaining page-number
+wrapper entry points for storage writes, vector writes, same-file page copies,
+prefetch, and dirty-write queue add/prepare. Callers now build checked
+`dxb_page_io_t` requests before entering `dxb_storage_write_io()`,
+`dxb_storage_writev_io()`, `dxb_storage_copy_io()`,
+`dxb_storage_prefetch_io()`, `dxb_storage_add_queued_io()`, and
+`dxb_storage_prepare_write_queue_io()`. This keeps page-addressed storage work
+described before it reaches the storage layer, and lets the storage layer adapt
+only from page descriptors to byte descriptors or raw syscalls. The old
+`dxb_storage_write_pages()`, `dxb_storage_writev_pages()`,
+`dxb_storage_copy_pages()`, `dxb_storage_prefetch_pages()`,
+`dxb_storage_add_queued_pages()`, and
+`dxb_storage_prepare_write_queue_pages()` helpers are gone from `mdbx.c`.
+Verification passed `git diff --check`, the GNUmake `mdbx_migration_smoke`
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.112` batch, `1.161`
+crud, `1.038` iterate, `1.106` get, and `1.057` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
