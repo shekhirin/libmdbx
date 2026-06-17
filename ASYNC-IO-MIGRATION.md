@@ -4793,6 +4793,22 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.147` batch, `1.154`
 crud, `1.136` iterate, `0.959` get, and `1.078` delete.
 
+A later file-size shrink cleanup added `dxb_storage_filesize_shrink_tail_io()`
+so truncation-driven cache invalidation derives the stale tail from a validated
+file-size target descriptor instead of rebuilding `target->bytes + stale_bytes`
+inline in `dxb_storage_set_filesize_io()`. The shrink path now sets the file
+size on disk, asks the descriptor helper for the stale byte range, converts that
+range to pages, and invalidates cached pages from the checked descriptor.
+Verification passed `git diff --check`, source scans proving the old
+`stale_bytes64` inline request is gone, the GNUmake `mdbx_migration_smoke`
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+`cmake --build @cmake-ninja-build`, the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.116` batch, `1.148`
+crud, `1.281` iterate, `0.946` get, and `1.081` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

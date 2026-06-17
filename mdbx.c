@@ -1513,6 +1513,18 @@ static inline int dxb_storage_filesize_io_validate(const dxb_filesize_io_t *io) 
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_filesize_shrink_tail_io(const dxb_filesize_io_t *target, uint64_t old_filesize,
+                                                      dxb_byte_io_t *io) {
+  int rc = dxb_storage_filesize_io_validate(target);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(target->bytes >= old_filesize))
+    return MDBX_EINVAL;
+
+  const uint64_t tail_bytes = old_filesize - target->bytes;
+  return dxb_storage_byte_io(target->bytes, tail_bytes > SIZE_MAX ? SIZE_MAX : (size_t)tail_bytes, io);
+}
+
 static inline int dxb_storage_page_io(const dxb_storage_t *storage, pgno_t pgno, size_t npages, dxb_page_io_t *io) {
   const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
   const uint64_t max_pgno = (uint64_t)MAX_PAGENO + 1u;
@@ -22314,9 +22326,8 @@ static int dxb_storage_set_filesize_io(dxb_storage_t *storage, const dxb_filesiz
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (target->bytes < old_filesize) {
-    const uint64_t stale_bytes64 = old_filesize - target->bytes;
     dxb_byte_io_t stale;
-    int err = dxb_storage_byte_io(target->bytes, stale_bytes64 > SIZE_MAX ? SIZE_MAX : (size_t)stale_bytes64, &stale);
+    int err = dxb_storage_filesize_shrink_tail_io(target, old_filesize, &stale);
     if (likely(err == MDBX_SUCCESS)) {
       dxb_page_io_t stale_pages;
       err = dxb_storage_page_io_from_bytes(storage, &stale, &stale_pages);
