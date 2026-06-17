@@ -4617,6 +4617,22 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.101` batch, `1.144` crud, `0.996` iterate,
 `0.997` get, and `1.074` delete.
 
+A later queue-drain validation cleanup moved the queued-item byte descriptor
+check into common OSAL code and applies it to the Windows `WriteFileGather()`,
+`WriteFileEx()`, and `WriteFile()` submission branches after their actual
+payload byte counts are derived. POSIX and Windows queue drains now enforce the
+same stored `dxb_byte_io_t` request shape before issuing platform writes, so a
+future async backend can rely on queue items being validated at insertion,
+walking, fault-injection, and final submission boundaries. Verification passed
+`git diff --check`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.143` batch, `1.170` crud, `1.121` iterate,
+`0.963` get, and `1.085` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

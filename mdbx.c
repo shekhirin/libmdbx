@@ -31711,6 +31711,13 @@ void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
   }
 }
 
+static int osal_ioring_item_io_validate(const ior_item_t *item, size_t bytes) {
+  int rc = dxb_storage_byte_io_validate(&item->io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return likely(bytes == item->io.bytes) ? MDBX_SUCCESS : MDBX_EINVAL;
+}
+
 #if !defined(_WIN32) && !defined(_WIN64)
 #if MDBX_HAVE_PWRITEV
 static int osal_ioring_item_iov_bytes(const ior_item_t *item, size_t *bytes) {
@@ -31724,13 +31731,6 @@ static int osal_ioring_item_iov_bytes(const ior_item_t *item, size_t *bytes) {
   return MDBX_SUCCESS;
 }
 #endif /* MDBX_HAVE_PWRITEV */
-
-static int osal_ioring_item_io_validate(const ior_item_t *item, size_t bytes) {
-  int rc = dxb_storage_byte_io_validate(&item->io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return likely(bytes == item->io.bytes) ? MDBX_SUCCESS : MDBX_EINVAL;
-}
 
 static size_t osal_ioring_write_item(osal_ioring_write_result_t *result, ior_item_t *item, mdbx_filehandle_t fd) {
 #if MDBX_HAVE_PWRITEV
@@ -31814,6 +31814,9 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, mdbx_filehandle
         ++i;
       }
       ASSERT(bytes < MAX_WRITE);
+      r.err = osal_ioring_item_io_validate(item, bytes);
+      if (unlikely(r.err != MDBX_SUCCESS))
+        goto bailout_rc;
       item->ov.hEvent = ior_get_event(ior);
       if (unlikely(!item->ov.hEvent)) {
       bailout_geterr:
@@ -31842,6 +31845,9 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, mdbx_filehandle
       }
     } else if (fd == ior->overlapped_fd) {
       ASSERT(bytes < MAX_WRITE);
+      r.err = osal_ioring_item_io_validate(item, bytes);
+      if (unlikely(r.err != MDBX_SUCCESS))
+        goto bailout_rc;
     retry:
       item->ov.hEvent = ior;
       if (WriteFileEx(fd, item->single.iov_base, (DWORD)bytes, &item->ov, ior_wocr)) {
@@ -31877,6 +31883,9 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, mdbx_filehandle
       }
     } else {
       ASSERT(bytes < MAX_WRITE);
+      r.err = osal_ioring_item_io_validate(item, bytes);
+      if (unlikely(r.err != MDBX_SUCCESS))
+        goto bailout_rc;
       DWORD written = 0;
       if (!WriteFile(fd, item->single.iov_base, (DWORD)bytes, &written, &item->ov)) {
         r.err = (int)GetLastError();
