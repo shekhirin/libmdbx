@@ -195,6 +195,8 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   `msync()` versus `fsync()` themselves, and explicit meta-write call sites
   apply the existing `meta_fd == data_fd` sync rule before submitting directly
   through storage.
+  Data-file descriptor parking now uses a checked zero-length `dxb_byte_io_t`
+  request instead of passing a loose raw offset through storage helpers.
 - `MDBX_env` now contains an env-owned `dxb_storage_t` block for the data, meta,
   and dsync fds, `filesize`, `current`, and `limit` state, the explicit page
   cache, and the dirty-write queue. DXB helper internals and non-pointer size
@@ -3995,6 +3997,24 @@ forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
 focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
 The paired benchmark gate passed with forced/default ratios of `1.090` batch,
 `1.165` crud, `0.817` iterate, `1.054` get, and `1.095` delete.
+
+A later descriptor-parking cleanup changed the data-file, dsync, and Windows
+overlapped parking helpers to receive a checked zero-length `dxb_byte_io_t`
+position request instead of a loose raw offset. `env_open()` now builds the
+safe parking descriptor once, uses it for all data-file storage handles, and
+continues to leave lock-file parking as a direct lock-file seek. This keeps the
+data-file handle-positioning boundary shaped like the rest of the explicit
+storage requests while preserving the existing corruption guard against
+accidental relative descriptor use. Verification passed `git diff --check`,
+source scans proving the storage parking helpers no longer receive loose raw
+offsets, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, `cmake --build
+@cmake-ninja-build`, the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke`
+CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
+passed with forced/default ratios of `1.127` batch, `1.166` crud, `0.959`
+iterate, `0.966` get, and `1.058` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
