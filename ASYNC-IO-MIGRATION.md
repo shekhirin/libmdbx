@@ -6255,6 +6255,25 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.146` batch, `1.152`
 crud, `0.997` iterate, `0.994` get, and `1.070` delete.
 
+A later queued-write retention cleanup moved `dxb_page_io_t` and
+`dxb_data_write_io_t` into the internal header and changed `ior_item_t` to
+retain the checked data-write descriptor instead of only its byte span.
+`dxb_storage_add_queued_write()` now hands the validated descriptor directly to
+`osal_ioring_add()`, and ring coalescing extends both the byte range and page
+coverage when adjacent writes merge. The low-level OSAL submission still writes
+through the descriptor's byte member, but the queued state now preserves page
+coverage needed by the storage layer and by future async write completion.
+Verification passed `git diff --check`, source scans proving the old
+`osal_ioring_add(..., const dxb_byte_io_t *)` shape and plain `item->io.bytes`
+counter are gone, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.104` batch, `1.166`
+crud, `0.857` iterate, `1.027` get, and `1.077` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

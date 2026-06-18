@@ -87,14 +87,6 @@ typedef struct page_cache {
   size_t pinned;
 } page_cache_t;
 
-typedef struct dxb_page_io {
-  pgno_t pgno;
-  pgno_t end_pgno;
-  size_t npages;
-  uint64_t offset;
-  size_t bytes;
-} dxb_page_io_t;
-
 typedef struct dxb_lock_io {
   uint64_t offset;
   uint64_t bytes;
@@ -115,11 +107,6 @@ typedef struct dxb_data_read_io {
   dxb_page_io_t pages;
   dxb_byte_io_t bytes;
 } dxb_data_read_io_t;
-
-typedef struct dxb_data_write_io {
-  dxb_page_io_t pages;
-  dxb_byte_io_t bytes;
-} dxb_data_write_io_t;
 
 typedef void (*dxb_storage_queued_write_callback_t)(iov_ctx_t *ctx, const dxb_data_write_io_t *io, void *data);
 
@@ -21791,7 +21778,7 @@ static inline int dxb_storage_add_queued_write(dxb_storage_t *storage, const dxb
     return rc;
   if (unlikely(io->pages.npages == 0 || io->bytes.offset > SIZE_MAX || !data))
     return MDBX_EINVAL;
-  return osal_ioring_add(dxb_storage_write_queue(storage), &io->bytes, data);
+  return osal_ioring_add(dxb_storage_write_queue(storage), io, data);
 }
 
 static void dxb_storage_walk_queued_write_bytes(iov_ctx_t *ctx, const dxb_byte_io_t *io, void *data) {
@@ -31694,7 +31681,7 @@ int osal_ioring_create(osal_ioring_t *ior
 }
 
 static inline uint64_t ior_offset(const ior_item_t *item) {
-  return item->io.offset;
+  return item->io.bytes.offset;
 }
 
 static inline ior_item_t *ior_next(ior_item_t *item, size_t sgvcnt) {
@@ -31708,11 +31695,24 @@ static inline ior_item_t *ior_next(ior_item_t *item, size_t sgvcnt) {
 #endif
 }
 
-int osal_ioring_add(osal_ioring_t *ior, const dxb_byte_io_t *io, void *data) {
-  if (unlikely(io->offset > SIZE_MAX))
+static inline void ior_item_append_io(ior_item_t *item, const dxb_data_write_io_t *io) {
+  item->io.bytes.bytes += io->bytes.bytes;
+  item->io.pages.end_pgno = io->pages.end_pgno;
+  item->io.pages.npages += io->pages.npages;
+  item->io.pages.bytes += io->pages.bytes;
+}
+
+static inline bool ior_item_io_contiguous(const ior_item_t *item, const dxb_data_write_io_t *io) {
+  return item->io.bytes.offset + item->io.bytes.bytes == io->bytes.offset &&
+         item->io.pages.end_pgno == io->pages.pgno &&
+         item->io.pages.offset + item->io.pages.bytes == io->pages.offset;
+}
+
+int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *data) {
+  if (unlikely(io->bytes.offset > SIZE_MAX || io->bytes.bytes != io->pages.bytes))
     return MDBX_EINVAL;
-  const size_t offset = (size_t)io->offset;
-  const size_t bytes = io->bytes;
+  const size_t offset = (size_t)io->bytes.offset;
+  const size_t bytes = io->bytes.bytes;
   ASSERT(bytes && data);
   ASSERT(bytes % MDBX_MIN_PAGESIZE == 0 && bytes <= MAX_WRITE);
   ASSERT(offset % MDBX_MIN_PAGESIZE == 0 && offset + (uint64_t)bytes <= MAX_MAPSIZE);
@@ -31725,17 +31725,17 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_byte_io_t *io, void *data) {
   ior_item_t *item = ior->pool;
   if (likely(ior->last)) {
     item = ior->last;
-    if (unlikely(ior_offset(item) + ior_last_bytes(ior, item) == offset) &&
+    if (unlikely(ior_item_io_contiguous(item, io)) &&
         likely(ior_last_bytes(ior, item) + bytes <= MAX_WRITE)) {
 #if defined(_WIN32) || defined(_WIN64)
       if (use_gather &&
-          ((bytes | (uintptr_t)data | item->io.bytes | (uintptr_t)(uint64_t)item->sgv[0].Buffer) &
+          ((bytes | (uintptr_t)data | item->io.bytes.bytes | (uintptr_t)(uint64_t)item->sgv[0].Buffer) &
            ior_alignment_mask) == 0 &&
           ior->last_sgvcnt + (size_t)segments < OSAL_IOV_MAX) {
         ASSERT(ior->overlapped_fd);
         ASSERT((item->single.iov_len & ior_WriteFile_flag) == 0);
         ASSERT(item->sgv[ior->last_sgvcnt].Buffer == 0);
-        item->io.bytes += bytes;
+        ior_item_append_io(item, io);
         size_t i = 0;
         do {
           item->sgv[ior->last_sgvcnt + i].Buffer = PtrToPtr64(data);
@@ -31750,7 +31750,7 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_byte_io_t *io, void *data) {
       if (unlikely(end == data)) {
         ASSERT((item->single.iov_len & ior_WriteFile_flag) != 0);
         item->single.iov_len += bytes;
-        item->io.bytes += bytes;
+        ior_item_append_io(item, io);
         return MDBX_SUCCESS;
       }
 #elif MDBX_HAVE_PWRITEV
@@ -31758,7 +31758,7 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_byte_io_t *io, void *data) {
       const void *end = ptr_disp(item->sgv[item->sgvcnt - 1].iov_base, item->sgv[item->sgvcnt - 1].iov_len);
       if (unlikely(end == data)) {
         item->sgv[item->sgvcnt - 1].iov_len += bytes;
-        item->io.bytes += bytes;
+        ior_item_append_io(item, io);
         return MDBX_SUCCESS;
       }
       if (likely(item->sgvcnt < OSAL_IOV_MAX)) {
@@ -31766,7 +31766,7 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_byte_io_t *io, void *data) {
           return MDBX_RESULT_TRUE;
         item->sgv[item->sgvcnt].iov_base = data;
         item->sgv[item->sgvcnt].iov_len = bytes;
-        item->io.bytes += bytes;
+        ior_item_append_io(item, io);
         item->sgvcnt += 1;
         ior->slots_left -= 1;
         return MDBX_SUCCESS;
@@ -31775,7 +31775,7 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_byte_io_t *io, void *data) {
       const void *end = ptr_disp(item->single.iov_base, item->single.iov_len);
       if (unlikely(end == data)) {
         item->single.iov_len += bytes;
-        item->io.bytes += bytes;
+        ior_item_append_io(item, io);
         return MDBX_SUCCESS;
       }
 #endif
@@ -31853,7 +31853,7 @@ void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
       MDBX_SUPPRESS_GOOFY_MSVC_ANALYZER(6385);
       while (item->sgv[i].Buffer) {
         if (data + ior->pagesize != item->sgv[i].Buffer) {
-          osal_ioring_walk_bytes(ctx, callback, &item->io, offset, bytes, data);
+          osal_ioring_walk_bytes(ctx, callback, &item->io.bytes, offset, bytes, data);
           offset += bytes;
           data = Ptr64ToPtr(item->sgv[i].Buffer);
           bytes = 0;
@@ -31863,28 +31863,29 @@ void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
       }
     }
     ASSERT(bytes < MAX_WRITE);
-    osal_ioring_walk_bytes(ctx, callback, &item->io, offset, bytes, data);
+    osal_ioring_walk_bytes(ctx, callback, &item->io.bytes, offset, bytes, data);
 #elif MDBX_HAVE_PWRITEV
     ASSERT(item->sgvcnt > 0);
     size_t offset = 0;
     size_t i = 0;
     do {
-      osal_ioring_walk_bytes(ctx, callback, &item->io, offset, item->sgv[i].iov_len, item->sgv[i].iov_base);
+      osal_ioring_walk_bytes(ctx, callback, &item->io.bytes, offset, item->sgv[i].iov_len,
+                             item->sgv[i].iov_base);
       offset += item->sgv[i].iov_len;
     } while (++i != item->sgvcnt);
 #else
     const size_t i = 1;
-    osal_ioring_walk_bytes(ctx, callback, &item->io, 0, item->single.iov_len, item->single.iov_base);
+    osal_ioring_walk_bytes(ctx, callback, &item->io.bytes, 0, item->single.iov_len, item->single.iov_base);
 #endif
     item = ior_next(item, i);
   }
 }
 
 static int osal_ioring_item_io_validate(const ior_item_t *item, size_t bytes) {
-  int rc = dxb_storage_byte_io_validate(&item->io);
+  int rc = dxb_storage_byte_io_validate(&item->io.bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return likely(bytes == item->io.bytes) ? MDBX_SUCCESS : MDBX_EINVAL;
+  return likely(bytes == item->io.bytes.bytes) ? MDBX_SUCCESS : MDBX_EINVAL;
 }
 
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -31915,15 +31916,16 @@ static size_t osal_ioring_write_item(osal_ioring_write_result_t *result, ior_ite
   if (item->sgvcnt == 1) {
     result->err = dxb_fault_inject("write");
     if (likely(result->err == MDBX_SUCCESS))
-      result->err = osal_pwrite(fd, item->sgv[0].iov_base, item->io.bytes, item->io.offset);
+      result->err = osal_pwrite(fd, item->sgv[0].iov_base, item->io.bytes.bytes, item->io.bytes.offset);
     if (likely(result->err == MDBX_SUCCESS))
       result->err = dxb_fault_inject("write-complete");
   } else {
-    result->err = dxb_fault_inject_after_partial_writev("writev-partial", fd, item->sgv, item->sgvcnt, &item->io);
+    result->err =
+        dxb_fault_inject_after_partial_writev("writev-partial", fd, item->sgv, item->sgvcnt, &item->io.bytes);
     if (likely(result->err == MDBX_SUCCESS))
       result->err = dxb_fault_inject("writev");
     if (likely(result->err == MDBX_SUCCESS))
-      result->err = osal_pwritev(fd, item->sgv, item->sgvcnt, item->io.offset);
+      result->err = osal_pwritev(fd, item->sgv, item->sgvcnt, item->io.bytes.offset);
     if (likely(result->err == MDBX_SUCCESS))
       result->err = dxb_fault_inject("writev-complete");
   }
@@ -31936,7 +31938,7 @@ static size_t osal_ioring_write_item(osal_ioring_write_result_t *result, ior_ite
 
   result->err = dxb_fault_inject("write");
   if (likely(result->err == MDBX_SUCCESS))
-    result->err = osal_pwrite(fd, item->single.iov_base, item->io.bytes, item->io.offset);
+    result->err = osal_pwrite(fd, item->single.iov_base, item->io.bytes.bytes, item->io.bytes.offset);
   if (likely(result->err == MDBX_SUCCESS))
     result->err = dxb_fault_inject("write-complete");
   result->wops += 1;

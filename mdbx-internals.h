@@ -1333,6 +1333,19 @@ typedef struct dxb_byte_io {
   size_t bytes;
 } dxb_byte_io_t;
 
+typedef struct dxb_page_io {
+  uint32_t pgno;
+  uint32_t end_pgno;
+  size_t npages;
+  uint64_t offset;
+  size_t bytes;
+} dxb_page_io_t;
+
+typedef struct dxb_data_write_io {
+  dxb_page_io_t pages;
+  dxb_byte_io_t bytes;
+} dxb_data_write_io_t;
+
 typedef struct ior_item {
 #if defined(_WIN32) || defined(_WIN64)
   OVERLAPPED ov;
@@ -1345,7 +1358,7 @@ typedef struct ior_item {
 #define ior_sgv_element struct iovec
 #endif /* MDBX_HAVE_PWRITEV */
 #endif /* !Windows */
-  dxb_byte_io_t io;
+  dxb_data_write_io_t io;
   union {
     MDBX_val single;
 #if defined(ior_sgv_element)
@@ -1375,7 +1388,7 @@ typedef struct osal_ioring {
 #else
 #define ior_last_sgvcnt(ior, item) (1)
 #endif /* !Windows */
-#define ior_last_bytes(ior, item) (item)->io.bytes
+#define ior_last_bytes(ior, item) (item)->io.bytes.bytes
   ior_item_t *last;
   ior_item_t *pool;
   char *boundary;
@@ -1414,7 +1427,7 @@ MDBX_INTERNAL int osal_ioring_create(osal_ioring_t *
 MDBX_INTERNAL int osal_ioring_resize(osal_ioring_t *, size_t items);
 MDBX_INTERNAL void osal_ioring_destroy(osal_ioring_t *);
 MDBX_INTERNAL void osal_ioring_reset(osal_ioring_t *);
-MDBX_INTERNAL int osal_ioring_add(osal_ioring_t *ctx, const dxb_byte_io_t *io, void *data);
+MDBX_INTERNAL int osal_ioring_add(osal_ioring_t *ctx, const dxb_data_write_io_t *io, void *data);
 typedef struct osal_ioring_write_result {
   int err;
   unsigned wops;
