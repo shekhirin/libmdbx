@@ -6695,6 +6695,25 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.110` batch, `1.152`
 crud, `1.375` iterate, `1.005` get, and `1.067` delete.
 
+A later queued-write submission cleanup added `used_slots` to
+`dxb_queued_write_io_t`. Storage now captures the current OSAL write-queue slot
+usage when it builds the submit descriptor, rejects empty submit descriptors,
+and revalidates that the descriptor still matches the queue before submission.
+`osal_ioring_write()` also rejects descriptors whose captured slot count no
+longer matches the ring. This gives future async submission a descriptor that
+describes not only the target data channel and fd but also the exact queued
+batch shape being submitted. Verification passed `git diff --check`, source
+scans covering `used_slots`, the queue-used helpers, queued-write submit
+validation, and the OSAL write boundary, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.098` batch, `1.175` crud, `1.171` iterate,
+`0.966` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

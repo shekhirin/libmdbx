@@ -1371,6 +1371,7 @@ typedef struct dxb_dirty_write_walk_io {
 typedef struct dxb_queued_write_io {
   enum dxb_io_channel channel;
   mdbx_filehandle_t fd;
+  unsigned used_slots;
 } dxb_queued_write_io_t;
 
 typedef struct ior_item {

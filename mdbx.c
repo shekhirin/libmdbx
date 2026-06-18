@@ -2155,7 +2155,8 @@ static inline int dxb_storage_queued_data_write_io_validate(const dxb_storage_t 
 }
 
 static inline int dxb_queued_write_io_validate(const dxb_queued_write_io_t *io) {
-  if (unlikely(!io || !dxb_io_channel_is_data(io->channel) || io->fd == INVALID_HANDLE_VALUE))
+  if (unlikely(!io || !dxb_io_channel_is_data(io->channel) || io->fd == INVALID_HANDLE_VALUE ||
+               io->used_slots == 0))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -22041,8 +22042,16 @@ static inline osal_ioring_t *dxb_storage_write_queue(dxb_storage_t *storage) {
   return &storage->ioring;
 }
 
-static inline bool dxb_storage_write_queue_is_empty(dxb_storage_t *storage) {
-  return osal_ioring_used(dxb_storage_write_queue(storage)) == 0;
+static inline const osal_ioring_t *dxb_storage_write_queue_const(const dxb_storage_t *storage) {
+  return &storage->ioring;
+}
+
+static inline unsigned dxb_storage_write_queue_used(const dxb_storage_t *storage) {
+  return osal_ioring_used(dxb_storage_write_queue_const(storage));
+}
+
+static inline bool dxb_storage_write_queue_is_empty(const dxb_storage_t *storage) {
+  return dxb_storage_write_queue_used(storage) == 0;
 }
 
 static inline void dxb_storage_reset_write_queue(dxb_storage_t *storage) {
@@ -22243,9 +22252,13 @@ static inline int dxb_storage_make_queued_write_io(const dxb_storage_t *storage,
   const mdbx_filehandle_t fd = dxb_storage_iov_fd(storage, channel);
   if (unlikely(fd == INVALID_HANDLE_VALUE))
     return MDBX_EINVAL;
+  const unsigned used_slots = dxb_storage_write_queue_used(storage);
+  if (unlikely(!used_slots))
+    return MDBX_EINVAL;
 
   io->channel = channel;
   io->fd = fd;
+  io->used_slots = used_slots;
   return MDBX_SUCCESS;
 }
 
@@ -22259,7 +22272,9 @@ static inline int dxb_storage_queued_write_io_validate(const dxb_storage_t *stor
   rc = dxb_storage_make_queued_write_io(storage, channel, &checked);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return likely(checked.channel == io->channel && checked.fd == io->fd) ? MDBX_SUCCESS : MDBX_EINVAL;
+  return likely(checked.channel == io->channel && checked.fd == io->fd && checked.used_slots == io->used_slots)
+             ? MDBX_SUCCESS
+             : MDBX_EINVAL;
 }
 
 static inline osal_ioring_write_result_t dxb_storage_write_queued(dxb_storage_t *storage,
@@ -32468,6 +32483,10 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, const dxb_queue
   r.err = dxb_queued_write_io_validate(io);
   if (unlikely(r.err != MDBX_SUCCESS))
     return r;
+  if (unlikely(osal_ioring_used(ior) != io->used_slots)) {
+    r.err = MDBX_EINVAL;
+    return r;
+  }
 
 #if defined(_WIN32) || defined(_WIN64)
   const mdbx_filehandle_t fd = io->fd;
