@@ -1389,6 +1389,15 @@ typedef struct dxb_queue_result {
   bool active;
 } dxb_queue_result_t;
 
+typedef struct dxb_open_result {
+  int err;
+  bool data_opened;
+  bool meta_opened;
+  bool dsync_opened;
+  bool overlapped_opened;
+  bool meta_uses_dsync;
+} dxb_open_result_t;
+
 typedef struct dxb_resize_result {
   int err;
   size_t current;

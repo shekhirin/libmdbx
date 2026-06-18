@@ -7105,6 +7105,26 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.107` batch, `1.149` crud, `0.966` iterate,
 `1.016` get, and `1.070` delete.
 
+A later data-file open cleanup added `dxb_open_result_t` for storage descriptor
+open operations. `dxb_storage_open_data()`, `dxb_storage_open_dsync()`, and the
+Windows `dxb_storage_open_overlapped()` path now return an explicit result with
+the error code and data/meta/dsync/overlapped descriptor state instead of
+returning only `int`. Existing public open and pre-open info paths still unwrap
+the same `.err` value, preserving setup control flow while making descriptor
+open completion data available for future async-capable storage backends.
+Verification passed `git diff --check`, source scans covering
+`dxb_open_result_t`, open result helpers, and every
+`dxb_storage_open_data()`, `dxb_storage_open_dsync()`, and
+`dxb_storage_open_overlapped()` call site, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.096` batch, `1.152` crud, `0.969` iterate,
+`0.985` get, and `1.078` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
