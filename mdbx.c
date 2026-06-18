@@ -1545,36 +1545,6 @@ static inline int dxb_storage_page_io_from_bytes(const dxb_storage_t *storage, c
   return dxb_storage_page_io(storage, (pgno_t)begin, (size_t)(end - begin), io);
 }
 
-static inline int dxb_storage_exact_page_io_from_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *bytes,
-                                                       dxb_page_io_t *io) {
-  int rc = dxb_storage_page_io_from_bytes(storage, bytes, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io->offset != bytes->offset || io->bytes != bytes->bytes || io->npages == 0))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_byte_start_page_io(const dxb_storage_t *storage, const dxb_byte_io_t *bytes,
-                                                 dxb_page_io_t *page, size_t *page_offset) {
-  int rc = dxb_storage_byte_io_validate(bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  const uint64_t pgno64 = dxb_storage_bytes2pgno(storage, bytes->offset);
-  if (unlikely(pgno64 > MAX_PAGENO))
-    return MDBX_EINVAL;
-  rc = dxb_storage_page_io(storage, (pgno_t)pgno64, 1, page);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  const uint64_t offset_in_page = bytes->offset - page->offset;
-  if (unlikely(offset_in_page > page->bytes))
-    return MDBX_EINVAL;
-  *page_offset = (size_t)offset_in_page;
-  return MDBX_SUCCESS;
-}
-
 static inline bool dxb_discard_mode_valid(enum dxb_discard_mode mode) {
   switch (mode) {
   case dxb_discard_clean:
@@ -9601,10 +9571,19 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
     return MDBX_INVALID;
 
   dxb_page_io_t request;
-  size_t page_offset;
-  err = dxb_storage_byte_start_page_io(storage, &value_io, &request, &page_offset);
+  err = dxb_storage_byte_io_validate(&value_io);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
+  const uint64_t request_pgno64 = dxb_storage_bytes2pgno(storage, value_io.offset);
+  if (unlikely(request_pgno64 > MAX_PAGENO))
+    return MDBX_EINVAL;
+  err = dxb_storage_page_io(storage, (pgno_t)request_pgno64, 1, &request);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  const uint64_t offset_in_page = value_io.offset - request.offset;
+  if (unlikely(offset_in_page > request.bytes))
+    return MDBX_EINVAL;
+  const size_t page_offset = (size_t)offset_in_page;
   if (request.pgno < NUM_METAS || request.pgno >= txn->geo.first_unallocated)
     return MDBX_INVALID;
 
@@ -34697,7 +34676,10 @@ static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_byte_io_t *io, voi
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
 
   dxb_page_io_t queued_pages;
-  int err = dxb_storage_exact_page_io_from_bytes(storage, io, &queued_pages);
+  int err = dxb_storage_page_io_from_bytes(storage, io, &queued_pages);
+  if (likely(err == MDBX_SUCCESS) &&
+      unlikely(queued_pages.offset != io->offset || queued_pages.bytes != io->bytes || queued_pages.npages == 0))
+    err = MDBX_EINVAL;
   if (unlikely(err != MDBX_SUCCESS)) {
     if (ctx->err == MDBX_SUCCESS)
       ctx->err = err;

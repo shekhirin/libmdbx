@@ -5672,6 +5672,24 @@ CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
 passed with forced/default ratios of `1.111` batch, `1.161` crud, `1.079`
 iterate, `0.953` get, and `1.059` delete.
 
+A later byte-to-page adapter cleanup removed
+`dxb_storage_byte_start_page_io()` and
+`dxb_storage_exact_page_io_from_bytes()` from the C source. Public-cache value
+materialization now derives the starting page number, one-page read request,
+and byte offset inside `cache_materialize_entry()`, while write-queue
+callbacks derive the queued page coverage locally and require the queued byte
+range to match full page boundaries before cache invalidation and page-shadow
+release. Verification passed `git diff --check`, source scans proving the
+byte-start and exact-page byte adapters are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with
+forced/default ratios of `1.109` batch, `1.160` crud, `1.018` iterate, `0.989`
+get, and `1.078` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
