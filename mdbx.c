@@ -108,6 +108,13 @@ typedef struct dxb_data_read_io {
   dxb_byte_io_t bytes;
 } dxb_data_read_io_t;
 
+typedef struct dxb_cache_read_io {
+  dxb_data_read_io_t data;
+  txnid_t snapshot;
+  bool reusable;
+  bool tracked;
+} dxb_cache_read_io_t;
+
 typedef struct dxb_data_copy_io {
   dxb_page_io_t src_pages;
   dxb_page_io_t dst_pages;
@@ -1599,6 +1606,44 @@ static inline int dxb_storage_data_read_io_validate(const dxb_storage_t *storage
                checked.pages.npages != io->pages.npages || checked.pages.offset != io->pages.offset ||
                checked.pages.bytes != io->pages.bytes || checked.bytes.offset != io->bytes.offset ||
                checked.bytes.bytes != io->bytes.bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_cache_read_io(const dxb_storage_t *storage, const dxb_page_io_t *pages,
+                                                 txnid_t snapshot, bool reusable, bool tracked,
+                                                 dxb_cache_read_io_t *io) {
+  if (unlikely(pages->npages != 1 || (!reusable && snapshot != 0)))
+    return MDBX_EINVAL;
+
+  dxb_data_read_io_t data;
+  int rc = dxb_storage_make_data_read_io(storage, pages, &data);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->data = data;
+  io->snapshot = snapshot;
+  io->reusable = reusable;
+  io->tracked = tracked;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_cache_read_io_validate(const dxb_storage_t *storage,
+                                                     const dxb_cache_read_io_t *io) {
+  dxb_cache_read_io_t checked;
+  int rc = dxb_storage_make_cache_read_io(storage, &io->data.pages, io->snapshot, io->reusable, io->tracked,
+                                         &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.data.pages.pgno != io->data.pages.pgno ||
+               checked.data.pages.end_pgno != io->data.pages.end_pgno ||
+               checked.data.pages.npages != io->data.pages.npages ||
+               checked.data.pages.offset != io->data.pages.offset ||
+               checked.data.pages.bytes != io->data.pages.bytes ||
+               checked.data.bytes.offset != io->data.bytes.offset ||
+               checked.data.bytes.bytes != io->data.bytes.bytes ||
+               checked.snapshot != io->snapshot || checked.reusable != io->reusable ||
+               checked.tracked != io->tracked))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -21355,10 +21400,9 @@ static inline bool page_cache_can_reuse(const MDBX_txn *txn) {
   return (txn->flags & txn_ro_both) != 0;
 }
 
-static inline bool page_cache_entry_can_reuse(const page_cache_entry_t *entry, const dxb_page_io_t *request,
-                                              const txnid_t snapshot) {
-  ASSERT(request->npages == 1);
-  if (!entry->reusable || entry->io.pgno != request->pgno || entry->snapshot_txnid != snapshot)
+static inline bool page_cache_entry_can_reuse(const page_cache_entry_t *entry, const dxb_cache_read_io_t *io) {
+  ASSERT(io->data.pages.npages == 1);
+  if (!entry->reusable || entry->io.pgno != io->data.pages.pgno || entry->snapshot_txnid != io->snapshot)
     return false;
 
   if (entry->pins == 0)
@@ -21377,15 +21421,16 @@ static inline pgr_t dxb_storage_make_cached_pgr(page_cache_entry_t *entry) {
   return ret;
 }
 
-static pgr_t dxb_storage_lookup_cached_page(dxb_storage_t *storage, const dxb_page_io_t *request,
-                                            const txnid_t snapshot,
-                                            const bool reusable) {
-  if (!reusable)
+static pgr_t dxb_storage_lookup_cached_page(dxb_storage_t *storage, const dxb_cache_read_io_t *io) {
+  int err = dxb_storage_cache_read_io_validate(storage, io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  if (!io->reusable)
     return pgr_error(MDBX_RESULT_TRUE);
 
   page_cache_lock(storage);
   for (page_cache_entry_t *entry = storage->page_cache.entries; entry; entry = entry->next) {
-    if (page_cache_entry_can_reuse(entry, request, snapshot)) {
+    if (page_cache_entry_can_reuse(entry, io)) {
       entry->pins += 1;
       entry->owner->pinned += 1;
       pgr_t ret = dxb_storage_make_cached_pgr(entry);
@@ -21397,11 +21442,8 @@ static pgr_t dxb_storage_lookup_cached_page(dxb_storage_t *storage, const dxb_pa
   return pgr_error(MDBX_RESULT_TRUE);
 }
 
-static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, const dxb_page_io_t *request,
-                                          const txnid_t snapshot,
-                                          const bool reusable, const bool tracked) {
-  dxb_data_read_io_t read_io;
-  int err = dxb_storage_make_data_read_io(storage, request, &read_io);
+static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, const dxb_cache_read_io_t *io) {
+  int err = dxb_storage_cache_read_io_validate(storage, io);
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
 
@@ -21410,22 +21452,22 @@ static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, const dxb_page
     return pgr_error(MDBX_ENOMEM);
 
   const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
-  entry->owner = tracked ? &storage->page_cache : nullptr;
+  entry->owner = io->tracked ? &storage->page_cache : nullptr;
   entry->storage = storage;
-  entry->io = read_io.pages;
-  entry->snapshot_txnid = snapshot;
+  entry->io = io->data.pages;
+  entry->snapshot_txnid = io->snapshot;
   entry->pins = 1;
   entry->pagesize_ln = pagesize_ln;
-  entry->reusable = reusable;
+  entry->reusable = io->reusable;
   err = osal_memalign_alloc(globals.sys_pagesize, entry->io.bytes, (void **)&entry->page);
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
-  err = dxb_storage_read_data(storage, &read_io, entry->page);
+  err = dxb_storage_read_data(storage, &io->data, entry->page);
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
-  if (tracked) {
+  if (io->tracked) {
     page_cache_t *const cache = &storage->page_cache;
     page_cache_lock(storage);
     entry->next = cache->entries;
@@ -21476,19 +21518,23 @@ static pgr_t page_cache_read(MDBX_txn *txn, const dxb_page_io_t *request, const 
   ASSERT(request->npages == 1);
   MDBX_env *const env = txn->env;
   dxb_storage_t *const storage = &env->dxb_storage;
-  int err = dxb_storage_page_io_validate(storage, request);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
 
   const bool reusable = page_cache_can_reuse(txn);
   const txnid_t snapshot = reusable ? txn_basis_snapshot(txn) : 0;
+  const bool tracked = reusable || track_private || CHECKS0_ENABLED();
 
-  pgr_t cached = dxb_storage_lookup_cached_page(storage, request, snapshot, reusable);
+  dxb_cache_read_io_t read;
+  int err = dxb_storage_make_cache_read_io(storage, request, snapshot, reusable, tracked, &read);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  pgr_t cached = dxb_storage_lookup_cached_page(storage, &read);
   if (cached.err == MDBX_SUCCESS)
     return cached;
+  if (unlikely(cached.err != MDBX_RESULT_TRUE))
+    return cached;
 
-  const bool tracked = reusable || track_private || CHECKS0_ENABLED();
-  return dxb_storage_read_cached_page(storage, request, snapshot, reusable, tracked);
+  return dxb_storage_read_cached_page(storage, &read);
 }
 
 static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr_t *pgr) {
