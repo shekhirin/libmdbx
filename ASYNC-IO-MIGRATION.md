@@ -12350,6 +12350,30 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 in an isolated run with forced/default ratios of `1.098` batch, `1.142` crud,
 `0.849` iterate, `0.941` get, and `1.069` delete.
 
+A later page-cache read submit cleanup added
+`dxb_page_cache_read_submit_io_t` for the common cache lookup/fill boundary.
+The new payload carries the validated `dxb_cache_read_io_t` plus separate
+lookup and fill `dxb_cache_page_submit_io_t` descriptors. Both
+`dxb_cache_entry_read_submit_io_t` and `dxb_committed_page_submit_io_t` now
+carry that nested page-cache read payload, so public-cache entry reads and
+committed-page reads submit the same prebuilt cache lookup/fill request shape.
+`page_cache_submit_read()` validates the full nested payload, submits the cache
+lookup descriptor first, and submits the fill descriptor only on a cache miss.
+With no direct callers left, the old `page_cache_read_io()` wrapper and
+`cache_entry_read_io_validate()` helper were removed. Verification passed
+`git diff --check`, source scans confirming no stale `page_cache_read_io()` or
+`cache_entry_read_io_validate()` callers remain in `mdbx.c` or the
+public/internal headers, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `0.993` batch, `0.989` crud, `0.985` iterate,
+`0.975` get, and `1.003` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
