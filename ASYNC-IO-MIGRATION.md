@@ -6027,6 +6027,23 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.115` batch, `1.165` crud, `1.239` iterate,
 `0.973` get, and `1.075` delete.
 
+A later metadata sync descriptor cleanup added
+`dxb_storage_make_meta_sync_io()` for sync requests over the three metadata
+pages. Metadata commit sync, steady-meta wipe sync, `meta_sync()`, and
+full-page `meta_override()` now build checked `dxb_sync_io_t` descriptors
+before calling `dxb_storage_sync_io()`, leaving the raw
+`dxb_storage_sync()` primitive behind that descriptor boundary. Verification
+passed `git diff --check`, source scans proving direct metadata
+`dxb_storage_sync()` submissions are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke`
+CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
+passed with forced/default ratios of `1.110` batch, `1.161` crud, `0.836`
+iterate, `1.077` get, and `1.059` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

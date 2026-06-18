@@ -1550,6 +1550,15 @@ static inline int dxb_storage_sync_io_validate(const dxb_storage_t *storage, con
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_make_meta_sync_io(const dxb_storage_t *storage, enum osal_syncmode_bits mode_bits,
+                                                dxb_sync_io_t *io) {
+  dxb_page_io_t meta_pages;
+  int rc = dxb_storage_page_prefix_io(storage, NUM_METAS, &meta_pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_make_sync_io(storage, &meta_pages, mode_bits, io);
+}
+
 static inline int dxb_storage_make_data_read_io(const dxb_storage_t *storage, const dxb_page_io_t *pages,
                                                 dxb_data_read_io_t *io) {
   int rc = dxb_storage_page_io_validate(storage, pages);
@@ -23431,7 +23440,11 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
       env->lck->unsynced_pages.weak += 1;
     else {
       dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
-      rc = dxb_storage_sync(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+      dxb_sync_io_t meta_sync_io;
+      rc = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &meta_sync_io);
+      if (unlikely(rc != MDBX_SUCCESS))
+        goto undo;
+      rc = dxb_storage_sync_io(storage, &meta_sync_io);
       if (rc != MDBX_SUCCESS)
         goto undo;
     }
@@ -29832,7 +29845,10 @@ __cold int meta_wipe_steady(MDBX_env *env, txnid_t inclusive_upto) {
     err = MDBX_SUCCESS;
     if (dxb_storage_meta_write_uses_data_sync(storage)) {
       dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
-      err = dxb_storage_sync(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+      dxb_sync_io_t sync_io;
+      err = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_io);
+      if (likely(err == MDBX_SUCCESS))
+        err = dxb_storage_sync_io(storage, &sync_io);
     }
   }
 
@@ -29858,7 +29874,10 @@ int meta_sync(const MDBX_env *env, const meta_ptr_t head) {
 
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
   dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
-  int rc = dxb_storage_sync(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+  dxb_sync_io_t sync_io;
+  int rc = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_io);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = dxb_storage_sync_io(storage, &sync_io);
 
   if (likely(rc == MDBX_SUCCESS))
     env->lck->meta_sync_txnid.weak = (uint32_t)head.txnid;
@@ -29989,7 +30008,10 @@ __cold int __must_check_result meta_override(MDBX_env *env, size_t target, txnid
   rc = dxb_storage_write_meta(storage, &target_page, page);
   if (rc == MDBX_SUCCESS && dxb_storage_meta_write_uses_data_sync(storage)) {
     dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
-    rc = dxb_storage_sync(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+    dxb_sync_io_t sync_io;
+    rc = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_io);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = dxb_storage_sync_io(storage, &sync_io);
   }
   eASSERT0(env,
            (!env->txn && (env->flags & ENV_ACTIVE) == 0) ||
