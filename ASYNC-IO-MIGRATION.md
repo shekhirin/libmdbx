@@ -5758,6 +5758,25 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.141` batch, `1.199`
 crud, `1.044` iterate, `0.948` get, and `1.070` delete.
 
+A later cached-read descriptor cleanup added `dxb_data_read_io_t` for
+page-cache data-file reads. Single-page cache fills and large-overflow
+materialization still keep their checked `dxb_page_io_t` cache keys, but now
+build a `dxb_data_read_io_t` that carries both the page coverage and exact byte
+request before calling `dxb_storage_read_bytes()`. General byte reads for meta
+refresh, warmup, and copy fallback remain byte-oriented; the new descriptor is
+limited to population of pinned data pages that future async read submission
+will own. Verification passed `git diff --check`, source scans proving
+`dxb_storage_read_page_span()`, `dxb_storage_page_io_from_bytes()`, and the
+earlier removed storage adapters are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.111` batch, `1.158` crud, `1.021` iterate,
+`1.023` get, and `1.084` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
