@@ -6199,6 +6199,24 @@ CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
 passed with forced/default ratios of `1.122` batch, `1.144` crud, `1.333`
 iterate, `1.127` get, and `1.073` delete.
 
+A later readahead advice descriptor cleanup added `dxb_advice_io_t`.
+`dxb_set_readahead()` now builds checked advice descriptors for normal, random,
+and willneed advice before submitting through `dxb_storage_advise_io()`. The
+descriptor carries the original byte request, its page coverage, and the advice
+mode, so the storage boundary validates the full range and hint instead of
+accepting a loose byte span plus enum. The old `dxb_storage_advise_range()`
+submitter is gone from `mdbx.c`, and source scans prove the removed helper name
+has no remaining references. Verification passed `git diff --check`, source
+scans covering the advice descriptor helpers and stale storage helper names,
+the GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.130` batch, `1.176`
+crud, `1.294` iterate, `1.172` get, and `1.076` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

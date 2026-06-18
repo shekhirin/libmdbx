@@ -77,6 +77,7 @@ enum page_ref_flags {
 
 enum dxb_io_channel { dxb_io_data, dxb_io_data_dsync, dxb_io_meta };
 enum dxb_discard_mode { dxb_discard_clean, dxb_discard_remove, dxb_discard_remove_or_clean };
+enum dxb_advice { dxb_advice_normal, dxb_advice_willneed, dxb_advice_random };
 
 typedef struct page_cache {
   page_cache_entry_t *entries;
@@ -152,6 +153,11 @@ typedef struct dxb_discard_io {
   dxb_page_coverage_io_t range;
   enum dxb_discard_mode mode;
 } dxb_discard_io_t;
+
+typedef struct dxb_advice_io {
+  dxb_page_coverage_io_t range;
+  enum dxb_advice advice;
+} dxb_advice_io_t;
 
 typedef struct dxb_data_export_io {
   dxb_page_coverage_io_t source;
@@ -1849,6 +1855,46 @@ static inline int dxb_storage_discard_io_validate(const dxb_storage_t *storage, 
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_make_advice_io(const dxb_storage_t *storage, const dxb_byte_io_t *range,
+                                             enum dxb_advice advice, dxb_advice_io_t *io) {
+  switch (advice) {
+  case dxb_advice_normal:
+  case dxb_advice_willneed:
+  case dxb_advice_random:
+    break;
+  default:
+    return MDBX_EINVAL;
+  }
+
+  dxb_page_coverage_io_t range_coverage;
+  int rc = dxb_storage_make_page_coverage_io(storage, range, &range_coverage);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->range = range_coverage;
+  io->advice = advice;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_advice_io_validate(const dxb_storage_t *storage, const dxb_advice_io_t *io) {
+  dxb_advice_io_t checked;
+  int rc = dxb_storage_make_advice_io(storage, &io->range.request, io->advice, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.range.request.offset != io->range.request.offset ||
+               checked.range.request.bytes != io->range.request.bytes ||
+               checked.range.pages.pgno != io->range.pages.pgno ||
+               checked.range.pages.end_pgno != io->range.pages.end_pgno ||
+               checked.range.pages.npages != io->range.pages.npages ||
+               checked.range.pages.offset != io->range.pages.offset ||
+               checked.range.pages.bytes != io->range.pages.bytes ||
+               checked.range.page_bytes.offset != io->range.page_bytes.offset ||
+               checked.range.page_bytes.bytes != io->range.page_bytes.bytes ||
+               checked.advice != io->advice))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_data_export_io_validate(const dxb_storage_t *storage,
                                                       const dxb_data_export_io_t *io) {
   dxb_data_export_io_t checked;
@@ -2242,7 +2288,6 @@ MDBX_INTERNAL int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t m
 MDBX_INTERNAL int __must_check_result dxb_read_header(MDBX_env *env, meta_t *meta, const int lck_exclusive,
                                                       const mdbx_mode_t mode_bits);
 enum resize_mode { implicit_grow, impilict_shrink, explicit_resize };
-enum dxb_advice { dxb_advice_normal, dxb_advice_willneed, dxb_advice_random };
 MDBX_INTERNAL int dxb_storage_init(dxb_storage_t *storage);
 MDBX_INTERNAL void dxb_storage_reset(dxb_storage_t *storage, bool env_active);
 MDBX_INTERNAL int dxb_storage_open_data(dxb_storage_t *storage, const MDBX_env *env, const pathchar_t *pathname,
@@ -21865,22 +21910,23 @@ static int dxb_storage_check_readonly(const dxb_storage_t *storage, const pathch
   return osal_check_fs_rdonly(dxb_storage_data_fd(storage), pathname, err);
 }
 
-static int dxb_storage_advise_range(const dxb_storage_t *storage, const dxb_byte_io_t *io,
-                                    enum dxb_advice advice) {
-  int rc = dxb_storage_byte_io_validate(io);
+static int dxb_storage_advise_io(const dxb_storage_t *storage, const dxb_advice_io_t *io) {
+  int rc = dxb_storage_advice_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  if (io->bytes == 0)
+  const dxb_byte_io_t *const range = &io->range.request;
+  if (range->bytes == 0)
     return MDBX_SUCCESS;
 
 #if defined(F_RDADVISE)
-  if (advice == dxb_advice_willneed) {
-    if (unlikely(io->offset > (uint64_t)OFF_T_MAX))
+  if (io->advice == dxb_advice_willneed) {
+    if (unlikely(range->offset > (uint64_t)OFF_T_MAX))
       return MDBX_EINVAL;
     struct radvisory hint;
-    hint.ra_offset = (off_t)io->offset;
+    hint.ra_offset = (off_t)range->offset;
     hint.ra_count =
-        unlikely(io->bytes > INT_MAX && sizeof(io->bytes) > sizeof(hint.ra_count)) ? INT_MAX : (int)io->bytes;
+        unlikely(range->bytes > INT_MAX && sizeof(range->bytes) > sizeof(hint.ra_count)) ? INT_MAX
+                                                                                          : (int)range->bytes;
     (void)/* Ignore ENOTTY for DB on the ram-disk and so on */ fcntl(dxb_storage_data_fd(storage), F_RDADVISE,
                                                                     &hint);
     return MDBX_SUCCESS;
@@ -21888,7 +21934,7 @@ static int dxb_storage_advise_range(const dxb_storage_t *storage, const dxb_byte
 #endif /* F_RDADVISE */
 #if defined(POSIX_FADV_NORMAL) || defined(POSIX_FADV_WILLNEED) || defined(POSIX_FADV_RANDOM)
   int hint;
-  switch (advice) {
+  switch (io->advice) {
 #if defined(POSIX_FADV_NORMAL)
   case dxb_advice_normal:
     hint = POSIX_FADV_NORMAL;
@@ -21907,13 +21953,11 @@ static int dxb_storage_advise_range(const dxb_storage_t *storage, const dxb_byte
   default:
     return MDBX_SUCCESS;
   }
-  if (unlikely(io->offset > (uint64_t)OFF_T_MAX || io->bytes > (uint64_t)OFF_T_MAX))
+  if (unlikely(range->offset > (uint64_t)OFF_T_MAX || range->bytes > (uint64_t)OFF_T_MAX))
     return MDBX_EINVAL;
-  return ignore_enosys(posix_fadvise(dxb_storage_data_fd(storage), (off_t)io->offset, (off_t)io->bytes, hint));
+  return ignore_enosys(posix_fadvise(dxb_storage_data_fd(storage), (off_t)range->offset, (off_t)range->bytes, hint));
 #else
   (void)storage;
-  (void)io;
-  (void)advice;
   return MDBX_SUCCESS;
 #endif /* POSIX_FADV_* */
 }
@@ -22749,7 +22793,11 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
   }
 
   if (enable) {
-    err = dxb_storage_advise_range(storage, &window, dxb_advice_normal);
+    dxb_advice_io_t advice_io;
+    err = dxb_storage_make_advice_io(storage, &window, dxb_advice_normal, &advice_io);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = dxb_storage_advise_io(storage, &advice_io);
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
     if (toggle) {
@@ -22758,13 +22806,20 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
        * on following access to the hinted region.
        * 19.6.0 Darwin Kernel Version 19.6.0: Tue Jan 12 22:13:05 PST 2021;
        * root:xnu-6153.141.16~1/RELEASE_X86_64 x86_64 */
-      err = dxb_storage_advise_range(storage, &window_coverage.page_bytes, dxb_advice_willneed);
+      err = dxb_storage_make_advice_io(storage, &window_coverage.page_bytes, dxb_advice_willneed, &advice_io);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+      err = dxb_storage_advise_io(storage, &advice_io);
       if (unlikely(MDBX_IS_ERROR(err)))
         return err;
     }
   } else {
     env_clear_incore_cache(env);
-    err = dxb_storage_advise_range(storage, &window, dxb_advice_random);
+    dxb_advice_io_t advice_io;
+    err = dxb_storage_make_advice_io(storage, &window, dxb_advice_random, &advice_io);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = dxb_storage_advise_io(storage, &advice_io);
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
   }
