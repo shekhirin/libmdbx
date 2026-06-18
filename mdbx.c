@@ -113,6 +113,14 @@ typedef struct dxb_dirty_write_queue_io {
   dxb_data_write_io_t data;
 } dxb_dirty_write_queue_io_t;
 
+typedef void (*dxb_dirty_write_walk_callback_t)(iov_ctx_t *ctx, const dxb_data_write_io_t *io, void *data);
+
+typedef struct dxb_dirty_write_walk_io {
+  enum dxb_io_channel channel;
+  iov_ctx_t *ctx;
+  dxb_dirty_write_walk_callback_t callback;
+} dxb_dirty_write_walk_io_t;
+
 typedef struct dxb_cache_read_io {
   dxb_data_read_io_t data;
   txnid_t snapshot;
@@ -22065,18 +22073,6 @@ static inline int dxb_storage_add_queued_write(dxb_storage_t *storage, const dxb
   return osal_ioring_add(dxb_storage_write_queue(storage), io, data);
 }
 
-static inline void dxb_storage_walk_write_queue(dxb_storage_t *storage, iov_ctx_t *ctx,
-                                                void (*callback)(iov_ctx_t *ctx, const dxb_data_write_io_t *io,
-                                                                 void *data)) {
-  if (unlikely(ctx->storage != storage || !callback)) {
-    if (ctx->err == MDBX_SUCCESS)
-      ctx->err = MDBX_EINVAL;
-    return;
-  }
-
-  osal_ioring_walk(dxb_storage_write_queue(storage), ctx, callback);
-}
-
 static inline bool dxb_storage_can_lazy_meta_sync_with_data(const dxb_storage_t *storage) {
 #if defined(_WIN32) || defined(_WIN64)
   return !dxb_storage_has_overlapped_data_fd(storage);
@@ -22175,6 +22171,43 @@ static inline int dxb_storage_prepare_write_queue(dxb_storage_t *storage, const 
     return rc;
   return osal_ioring_prepare(dxb_storage_write_queue(storage), io->items,
                              ceil_powerof2(io->data.bytes.bytes, globals.sys_pagesize));
+}
+
+static inline int dxb_storage_make_dirty_write_walk_io(const dxb_storage_t *storage, iov_ctx_t *ctx,
+                                                       dxb_dirty_write_walk_callback_t callback,
+                                                       dxb_dirty_write_walk_io_t *io) {
+  if (unlikely(!storage || !ctx || ctx->storage != storage || !callback))
+    return MDBX_EINVAL;
+
+  io->channel = ctx->channel;
+  io->ctx = ctx;
+  io->callback = callback;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_dirty_write_walk_io_validate(const dxb_storage_t *storage,
+                                                           const dxb_dirty_write_walk_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+
+  dxb_dirty_write_walk_io_t checked;
+  int rc = dxb_storage_make_dirty_write_walk_io(storage, io->ctx, io->callback, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return likely(checked.channel == io->channel && checked.ctx == io->ctx && checked.callback == io->callback)
+             ? MDBX_SUCCESS
+             : MDBX_EINVAL;
+}
+
+static inline void dxb_storage_walk_write_queue(dxb_storage_t *storage, const dxb_dirty_write_walk_io_t *io) {
+  const int rc = dxb_storage_dirty_write_walk_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    if (io && io->ctx && io->ctx->err == MDBX_SUCCESS)
+      io->ctx->err = rc;
+    return;
+  }
+
+  osal_ioring_walk(dxb_storage_write_queue(storage), io->ctx, io->callback);
 }
 
 static inline int dxb_storage_make_queued_write_io(const dxb_storage_t *storage, enum dxb_io_channel channel,
@@ -35512,7 +35545,12 @@ static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_data_write_io_t *q
 
 static void iov_complete(iov_ctx_t *ctx) {
   eASSERT0(ctx->env, (ctx->env->flags & MDBX_WRITEMAP) == 0);
-  dxb_storage_walk_write_queue(ctx->storage, ctx, iov_callback4dirtypages);
+  dxb_dirty_write_walk_io_t walk_io;
+  const int err = dxb_storage_make_dirty_write_walk_io(ctx->storage, ctx, iov_callback4dirtypages, &walk_io);
+  if (likely(err == MDBX_SUCCESS))
+    dxb_storage_walk_write_queue(ctx->storage, &walk_io);
+  else if (ctx->err == MDBX_SUCCESS)
+    ctx->err = err;
   dxb_storage_reset_write_queue(ctx->storage);
 }
 
