@@ -32416,44 +32416,75 @@ static int osal_ioring_item_iov_bytes(const ior_item_t *item, size_t *bytes) {
 }
 #endif /* MDBX_HAVE_PWRITEV */
 
-static size_t osal_ioring_write_item(osal_ioring_write_result_t *result, ior_item_t *item,
-                                     const dxb_queued_write_io_t *io) {
+typedef struct osal_ioring_write_item_io {
+  osal_ioring_write_result_t *result;
+  ior_item_t *item;
+  const dxb_queued_write_io_t *submit;
+} osal_ioring_write_item_io_t;
+
+static inline osal_ioring_write_item_io_t osal_ioring_make_write_item_io(osal_ioring_write_result_t *result,
+                                                                         ior_item_t *item,
+                                                                         const dxb_queued_write_io_t *submit) {
+  const osal_ioring_write_item_io_t io = {result, item, submit};
+  return io;
+}
+
+static size_t osal_ioring_write_item(const osal_ioring_write_item_io_t *io) {
+  if (unlikely(!io || !io->result))
+    return 1;
+  osal_ioring_write_result_t *const result = io->result;
+  ior_item_t *const item = io->item;
+  result->err = dxb_queued_write_io_validate(io->submit);
+  if (unlikely(result->err != MDBX_SUCCESS))
+    return 1;
+  if (unlikely(!item)) {
+    result->err = MDBX_EINVAL;
+    return 1;
+  }
+
 #if MDBX_HAVE_PWRITEV
   ASSERT(item->sgvcnt > 0);
+  if (unlikely(!item->sgvcnt)) {
+    result->err = MDBX_EINVAL;
+    return 1;
+  }
+
+  const mdbx_filehandle_t fd = io->submit->fd;
+  const size_t sgvcnt = item->sgvcnt;
   size_t bytes;
   result->err = osal_ioring_item_iov_bytes(item, &bytes);
   if (unlikely(result->err != MDBX_SUCCESS))
-    return item->sgvcnt;
+    return sgvcnt;
   result->err = osal_ioring_item_io_validate(item, bytes);
   if (unlikely(result->err != MDBX_SUCCESS))
-    return item->sgvcnt;
+    return sgvcnt;
 
   if (item->sgvcnt == 1) {
     result->err = dxb_fault_inject("write");
     if (likely(result->err == MDBX_SUCCESS))
-      result->err = osal_pwrite(io->fd, item->sgv[0].iov_base, item->io.bytes.bytes, item->io.bytes.offset);
+      result->err = osal_pwrite(fd, item->sgv[0].iov_base, item->io.bytes.bytes, item->io.bytes.offset);
     if (likely(result->err == MDBX_SUCCESS))
       result->err = dxb_fault_inject("write-complete");
   } else {
-    result->err =
-        dxb_fault_inject_after_partial_writev("writev-partial", io->fd, item->sgv, item->sgvcnt, &item->io);
+    result->err = dxb_fault_inject_after_partial_writev("writev-partial", fd, item->sgv, item->sgvcnt, &item->io);
     if (likely(result->err == MDBX_SUCCESS))
       result->err = dxb_fault_inject("writev");
     if (likely(result->err == MDBX_SUCCESS))
-      result->err = osal_pwritev(io->fd, item->sgv, item->sgvcnt, item->io.bytes.offset);
+      result->err = osal_pwritev(fd, item->sgv, item->sgvcnt, item->io.bytes.offset);
     if (likely(result->err == MDBX_SUCCESS))
       result->err = dxb_fault_inject("writev-complete");
   }
   result->wops += 1;
-  return item->sgvcnt;
+  return sgvcnt;
 #else
+  const mdbx_filehandle_t fd = io->submit->fd;
   result->err = osal_ioring_item_io_validate(item, item->single.iov_len);
   if (unlikely(result->err != MDBX_SUCCESS))
     return 1;
 
   result->err = dxb_fault_inject("write");
   if (likely(result->err == MDBX_SUCCESS))
-    result->err = osal_pwrite(io->fd, item->single.iov_base, item->io.bytes.bytes, item->io.bytes.offset);
+    result->err = osal_pwrite(fd, item->single.iov_base, item->io.bytes.bytes, item->io.bytes.offset);
   if (likely(result->err == MDBX_SUCCESS))
     result->err = dxb_fault_inject("write-complete");
   result->wops += 1;
@@ -32692,7 +32723,8 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, const dxb_queue
   const enum dxb_fault_write_order write_order = dxb_fault_write_order();
   if (unlikely(write_order == dxb_fault_write_order_reverse)) {
     for (ior_item_t *item = ior->last; item;) {
-      (void)osal_ioring_write_item(&r, item, io);
+      const osal_ioring_write_item_io_t item_io = osal_ioring_make_write_item_io(&r, item, io);
+      (void)osal_ioring_write_item(&item_io);
       if (unlikely(r.err != MDBX_SUCCESS) || item == ior->pool)
         break;
       item = osal_ioring_previous_item(ior, item);
@@ -32701,12 +32733,14 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, const dxb_queue
     ior_item_t *left = ior->pool;
     ior_item_t *right = ior->last;
     while (left <= right) {
-      (void)osal_ioring_write_item(&r, right, io);
+      const osal_ioring_write_item_io_t right_io = osal_ioring_make_write_item_io(&r, right, io);
+      (void)osal_ioring_write_item(&right_io);
       if (unlikely(r.err != MDBX_SUCCESS) || right == left)
         break;
 
       ior_item_t *const previous_right = osal_ioring_previous_item(ior, right);
-      const size_t left_sgvcnt = osal_ioring_write_item(&r, left, io);
+      const osal_ioring_write_item_io_t left_io = osal_ioring_make_write_item_io(&r, left, io);
+      const size_t left_sgvcnt = osal_ioring_write_item(&left_io);
       if (unlikely(r.err != MDBX_SUCCESS) || previous_right == left)
         break;
 
@@ -32715,7 +32749,8 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, const dxb_queue
     }
   } else {
     for (ior_item_t *item = ior->pool; item <= ior->last;) {
-      const size_t sgvcnt = osal_ioring_write_item(&r, item, io);
+      const osal_ioring_write_item_io_t item_io = osal_ioring_make_write_item_io(&r, item, io);
+      const size_t sgvcnt = osal_ioring_write_item(&item_io);
       item = ior_next(item, sgvcnt);
       if (unlikely(r.err != MDBX_SUCCESS))
         break;

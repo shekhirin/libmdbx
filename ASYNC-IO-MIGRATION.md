@@ -6714,6 +6714,27 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.098` batch, `1.175` crud, `1.171` iterate,
 `0.966` get, and `1.071` delete.
 
+A later POSIX write-item cleanup added `osal_ioring_write_item_io_t`, so the
+item executor now receives one descriptor carrying the result accumulator, the
+queued ring item, and the checked queued-write submission context. The POSIX
+fault-order loops now construct that descriptor for forward, reverse, and
+outside-in writes instead of passing loose `result`, `item`, and submit
+arguments. The executor validates the submit descriptor before using its fd and
+preserves the existing scatter/gather advancement behavior on write-vector
+validation errors. This gives future async submission a per-item execution
+object that can be queued or completed without reconstructing state from
+separate loop locals. Verification passed `git diff --check`, source scans
+covering the new item descriptor and removal of the stale split-signature call,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.116` batch, `1.158` crud, `1.000` iterate,
+`0.991` get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
