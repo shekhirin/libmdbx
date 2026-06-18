@@ -12590,6 +12590,28 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.136` batch, `1.136` crud, `0.862` iterate,
 `0.951` get, and `1.072` delete.
 
+A later export fast-path submit-boundary cleanup folded the raw
+`dxb_storage_copy_data_to_fd()` and `dxb_storage_sendfile_data_to_fd()` helpers
+into `dxb_storage_submit_copy_data_to_fd()` and
+`dxb_storage_submit_sendfile_data_to_fd()`. The export submitters now validate
+the full `dxb_data_export_submit_io_t` payload, consume the destination fd from
+that descriptor, issue `copy_file_range()` or `sendfile()` directly from the
+submit boundary, and preserve the existing cross-device, unavailable,
+short-copy, and zero-copy-fallback result handling. This leaves non-compacting
+copy/export fast paths with descriptor-shaped storage entry points and no
+parallel raw data-export helper paths in the C source or public/internal
+headers. Verification passed `git diff --check`, source scans confirming no
+raw storage export helpers remain in `mdbx.c` or the public/internal headers,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.097`
+batch, `1.137` crud, `0.986` iterate, `1.064` get, and `1.079` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
