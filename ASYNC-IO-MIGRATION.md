@@ -12091,6 +12091,31 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.128` batch, `1.145` crud, `0.961`
 iterate, `1.011` get, and `1.069` delete.
 
+A later new-database setup submission cleanup moved setup-time page-size state
+and initial file-size/current state transitions into setup-level submit
+payloads. `dxb_setup_pagesize_state_submit_io_t` now carries the storage
+page-size state descriptor used both while bootstrapping a new database and
+after reading an existing header, while `dxb_setup_newdb_filesize_submit_io_t`
+carries the new-database file-size set/current-state request after the initial
+meta triplet write. `dxb_setup()` now consumes these validated setup
+submissions instead of constructing nested storage state submissions directly
+in the open/setup control flow. Verification passed `git diff --check`, source
+scans covering `dxb_setup_pagesize_state_submit_io_t`,
+`dxb_setup_newdb_filesize_submit_io_t`,
+`dxb_setup_make_pagesize_state_submit_io()`,
+`dxb_setup_make_newdb_filesize_submit_io()`,
+`dxb_setup_submit_pagesize_state()`, `dxb_setup_submit_newdb_filesize()`,
+and the remaining direct storage page-size/set-current helper call sites, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, the ASAN build (`cmake --build @cmake-asan-build`),
+and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.115`
+batch, `1.135` crud, `0.951` iterate, `1.029` get, and `0.989` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
