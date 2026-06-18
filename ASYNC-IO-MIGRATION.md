@@ -12396,6 +12396,27 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.099`
 batch, `1.137` crud, `1.015` iterate, `1.013` get, and `1.074` delete.
 
+A later materialization submit-boundary cleanup folded the raw
+`dxb_storage_materialize_cached_large_page()` helper into
+`dxb_storage_submit_materialize_cached_large_page()`. The storage submit helper
+now validates the full `dxb_cache_materialize_submit_io_t` payload once and
+owns the large-buffer allocation, materialization read submission, and
+detach/replace follow-up submission. This leaves overflow expansion with a
+single storage entry point shaped around the submit descriptor instead of a
+submit wrapper that immediately enters a parallel raw helper. Verification
+passed `git diff --check`, source scans confirming no
+`dxb_storage_materialize_cached_large_page()` calls remain in `mdbx.c` or the
+public/internal headers, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.100` batch, `1.160` crud, `0.938` iterate,
+`1.088` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
