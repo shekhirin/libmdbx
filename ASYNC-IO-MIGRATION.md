@@ -11721,6 +11721,33 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.153` batch, `1.122` crud, `0.804` iterate,
 `0.892` get, and `1.055` delete.
 
+A later cached page-size state submission cleanup added
+`dxb_pagesize_state_submit_io_t`,
+`dxb_storage_make_pagesize_state_submit_io()`,
+`dxb_storage_pagesize_state_submit_io_validate()`, and
+`dxb_storage_submit_pagesize_state()` for storage-owned page-size bookkeeping.
+The submitter validates the log2 page size against MDBX page-size bounds,
+rejects mismatched page-size changes and initialized page-cache entries before
+calling the raw setter, and marks the state result as submitted/completed after
+validation succeeds. This routes both `dxb_setup()` page-size assignments
+through explicit state-submit descriptors before page-derived I/O descriptors
+are built, leaving `dxb_storage_set_pagesize_ln()` as the synchronous backend
+implementation used only by the submitter. Verification passed
+`git diff --check`, source scans covering `dxb_pagesize_state_submit_io_t`,
+`dxb_storage_make_pagesize_state_submit_io()`,
+`dxb_storage_pagesize_state_submit_io_validate()`,
+`dxb_storage_submit_pagesize_state()`, and confirming raw
+`dxb_storage_set_pagesize_ln()` use is limited to that submitter, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.100`
+batch, `1.140` crud, `0.763` iterate, `1.031` get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
