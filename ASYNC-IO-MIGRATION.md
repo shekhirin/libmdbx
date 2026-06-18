@@ -10790,6 +10790,38 @@ The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
 of `1.067` batch, `1.154` crud, `1.044` iterate, `0.975` get, and `1.069`
 delete.
 
+A later primary data-file open cleanup added
+`dxb_env_primary_open_submit_io_t`,
+`env_make_primary_open_submit_io()`,
+`env_primary_open_submit_io_validate()`, and
+`env_submit_primary_open()` for the first read/lazy data-file open in
+`env_open()`. The request captures the environment, data storage handle,
+pathname, read-only flag snapshot, selected open purpose, mode bits, and the
+generic open-submit descriptor. Validation rechecks environment/storage
+identity, pathname identity, live read-only flag identity, selected purpose,
+generic open-submit descriptor, false meta-sync state, and a rebuilt request
+before submitting. Submit delegates to `dxb_storage_submit_open_data()`,
+preserving the existing PID assignment, read-only versus lazy open policy, mode
+bits, open-result error handling, and all later parking, lock-file setup,
+Windows overlapped open, and dsync-open sequencing. This removes inline
+`dxb_storage_make_open_submit_io()` / `dxb_storage_submit_open_data()`
+construction from the primary `env_open()` data-open path; the other utility
+and secondary open paths remain future checkpoints. Verification passed
+`git diff --check`, source scans covering
+`dxb_env_primary_open_submit_io_t`,
+`env_make_primary_open_submit_io()`,
+`env_primary_open_submit_io_validate()`,
+`env_submit_primary_open()`, the updated `env_open()` path, and the scoped
+secondary open descriptors, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.095`
+batch, `1.159` crud, `0.818` iterate, `1.026` get, and `1.085` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
