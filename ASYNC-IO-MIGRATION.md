@@ -6470,6 +6470,27 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.109` batch, `1.153` crud, `1.004` iterate,
 `1.054` get, and `1.073` delete.
 
+A later storage queue-insertion validation cleanup added
+`dxb_storage_queued_data_write_io_validate()`. The storage-facing queued write
+insert path now validates both the storage-derived data-write descriptor and
+the queued-write descriptor contract before forwarding to `osal_ioring_add()`,
+while `dxb_data_write_io_validate_queued()` itself now rejects null descriptors
+before inspecting byte/page spans. Queue capacity preparation intentionally
+stays on the broader data-write descriptor validator because spill/recovery
+paths may prepare an empty write budget after earlier spilled writes. This keeps
+actual queued items descriptor-shaped without making capacity reservation
+stricter than execution. Verification passed `git diff --check`, source scans
+covering storage queued-write validation and stale loose insertion checks, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.107` batch, `1.154` crud, `0.949` iterate,
+`0.993` get, and `1.077` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

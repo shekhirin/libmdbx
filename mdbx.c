@@ -2120,6 +2120,9 @@ static inline int dxb_storage_data_write_io_validate(const dxb_storage_t *storag
 }
 
 static inline int dxb_data_write_io_validate_queued(const dxb_data_write_io_t *io, size_t bytes) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+
   int rc = dxb_storage_byte_io_validate(&io->bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
@@ -2135,6 +2138,17 @@ static inline int dxb_data_write_io_validate_queued(const dxb_data_write_io_t *i
     return MDBX_EINVAL;
 
   return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_queued_data_write_io_validate(const dxb_storage_t *storage,
+                                                           const dxb_data_write_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_data_write_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_data_write_io_validate_queued(io, io->bytes.bytes);
 }
 
 static inline int dxb_storage_make_cache_invalidate_io(const dxb_storage_t *storage, const dxb_page_io_t *pages,
@@ -22040,11 +22054,12 @@ static inline void dxb_storage_reset_write_queue(dxb_storage_t *storage) {
 }
 
 static inline int dxb_storage_add_queued_write(dxb_storage_t *storage, const dxb_data_write_io_t *io, void *data) {
-  int rc = dxb_storage_data_write_io_validate(storage, io);
+  if (unlikely(!data))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_queued_data_write_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  if (unlikely(io->pages.npages == 0 || io->bytes.offset > SIZE_MAX || !data))
-    return MDBX_EINVAL;
   return osal_ioring_add(dxb_storage_write_queue(storage), io, data);
 }
 
