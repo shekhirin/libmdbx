@@ -10890,6 +10890,37 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.096` batch, `1.148` crud, `0.855`
 iterate, `1.021` get, and `1.085` delete.
 
+A later `env_open()` data-handle parking cleanup added
+`dxb_env_data_park_submit_io_t`, `env_make_data_park_submit_io()`,
+`env_data_park_submit_io_validate()`, and `env_submit_data_park()` for the
+primary and dsync data-file descriptor parking operations. The request captures
+the environment, bound data storage handle, data-I/O channel, zero-byte parking
+position, and the generic park-submit descriptor. Validation rechecks
+environment/storage identity, zero-byte position shape, generic park-submit
+descriptor, channel/position correspondence, and a rebuilt request before
+submitting. Submit dispatches to `dxb_storage_submit_park_data()` for the
+primary data handle and `dxb_storage_submit_park_dsync()` for the dsync handle,
+preserving the safe parking-lot offset, ignored park result semantics, Windows
+overlapped branch isolation, lock-file parking order, dsync-open ordering, and
+dsync parking after successful dsync open. This removes inline
+`dxb_storage_make_park_submit_io()` / `dxb_storage_submit_park_data()` and
+`dxb_storage_make_park_submit_io()` / `dxb_storage_submit_park_dsync()`
+construction from the build-covered `env_open()` parking paths; the Windows
+overlapped parking path remains a future Windows-covered checkpoint.
+Verification passed `git diff --check`, source scans covering
+`dxb_env_data_park_submit_io_t`, `env_make_data_park_submit_io()`,
+`env_data_park_submit_io_validate()`, `env_submit_data_park()`, the updated
+`env_open()` primary/dsync parking paths, and the absence of direct
+primary/dsync safe-parking construction, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.118`
+batch, `1.165` crud, `0.916` iterate, `1.074` get, and `1.072` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
