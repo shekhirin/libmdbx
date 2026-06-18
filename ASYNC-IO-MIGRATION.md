@@ -12238,6 +12238,31 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.135` batch, `1.141` crud, `1.013`
 iterate, `0.998` get, and `1.060` delete.
 
+A later branch-child page-get submission cleanup moved the branch-child
+validation and push helpers onto nested cursor page-get payloads.
+`dxb_cursor_validate_branch_child_submit_io_t` and
+`dxb_cursor_branch_child_push_submit_io_t` now carry a
+`dxb_cursor_page_get_submit_io_t` built from the verified parent branch node,
+validate the child page I/O coordinates alongside the parent stack/ref
+snapshot, and submit through `page_submit_cursor_get()` instead of directly
+calling `page_get_three()`. This keeps branch descent, branch-child checking,
+and cursor stack ownership transfer on the same explicit page-cache submit
+boundary used by ordinary cursor fetches. Verification passed
+`git diff --check`, source scans covering
+`dxb_cursor_validate_branch_child_submit_io_t`,
+`dxb_cursor_branch_child_push_submit_io_t`,
+`page_make_cursor_get_submit_io()`, `page_submit_cursor_get()`, and the
+remaining direct `page_get_three()` call sites, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.095` batch, `1.146` crud, `0.955`
+iterate, `0.993` get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

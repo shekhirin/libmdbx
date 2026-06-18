@@ -456,6 +456,7 @@ typedef struct dxb_cursor_validate_branch_child_submit_io {
   page_ref_t parent_ref;
   pgno_t child_pgno;
   txnid_t front;
+  dxb_cursor_page_get_submit_io_t get;
   intptr_t parent_slot;
   size_t parent_ki;
   intptr_t captured_top;
@@ -496,6 +497,7 @@ typedef struct dxb_cursor_branch_child_push_submit_io {
   page_ref_t parent_ref;
   pgno_t child_pgno;
   txnid_t front;
+  dxb_cursor_page_get_submit_io_t get;
   intptr_t parent_top;
   indx_t parent_ki;
   indx_t child_ki;
@@ -8820,11 +8822,17 @@ cursor_make_validate_branch_child_submit_io(const MDBX_cursor *mc, intptr_t pare
   if (unlikely(node_flags(node) != 0))
     return MDBX_CURSOR_FULL;
 
+  dxb_cursor_page_get_submit_io_t get;
+  int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_LARGE, node_pgno(node), parent->txnid, &get);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
   io->cursor = mc;
   io->parent = parent;
   io->parent_ref = mc->pgref[parent_slot];
-  io->child_pgno = node_pgno(node);
-  io->front = parent->txnid;
+  io->child_pgno = get.get.request.pgno;
+  io->front = get.get.front;
+  io->get = get;
   io->parent_slot = parent_slot;
   io->parent_ki = parent_ki;
   io->captured_top = mc->top;
@@ -8856,6 +8864,14 @@ cursor_validate_branch_child_submit_io_validate(const dxb_cursor_validate_branch
     return err;
   if (unlikely(checked.cursor != io->cursor || checked.parent != io->parent ||
                checked.child_pgno != io->child_pgno || checked.front != io->front ||
+               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
+               checked.get.get.request.pgno != io->get.get.request.pgno ||
+               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
+               checked.get.get.request.npages != io->get.get.request.npages ||
+               checked.get.get.request.offset != io->get.get.request.offset ||
+               checked.get.get.request.bytes != io->get.get.request.bytes ||
+               checked.get.get.front != io->get.get.front ||
+               checked.get.get.track_private != io->get.get.track_private ||
                checked.parent_slot != io->parent_slot || checked.parent_ki != io->parent_ki ||
                checked.captured_top != io->captured_top || checked.expect_leaf != io->expect_leaf ||
                !page_ref_equal(&checked.parent_ref, &io->parent_ref)))
@@ -8868,7 +8884,7 @@ static inline int cursor_submit_validate_branch_child(const dxb_cursor_validate_
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  pgr_t child = page_get_three(io->cursor, io->child_pgno, io->front);
+  pgr_t child = page_submit_cursor_get(&io->get);
   err = child.err;
   cASSERT0(io->cursor, err == MDBX_SUCCESS);
   if (unlikely(err != MDBX_SUCCESS)) {
@@ -52869,11 +52885,17 @@ static inline int cursor_make_branch_child_push_submit_io_ex(MDBX_cursor *mc, in
   if (unlikely(node_flags(node) != 0))
     return MDBX_EINVAL;
 
+  dxb_cursor_page_get_submit_io_t get;
+  int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_LARGE, node_pgno(node), parent->txnid, &get);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
   io->cursor = mc;
   io->parent = parent;
   io->parent_ref = mc->pgref[mc->top];
-  io->child_pgno = node_pgno(node);
-  io->front = parent->txnid;
+  io->child_pgno = get.get.request.pgno;
+  io->front = get.get.front;
+  io->get = get;
   io->parent_top = mc->top;
   io->parent_ki = parent_ki;
   io->child_ki = child_ki;
@@ -52914,6 +52936,14 @@ static inline int cursor_branch_child_push_submit_io_validate(const dxb_cursor_b
     return err;
   if (unlikely(checked.cursor != io->cursor || checked.parent != io->parent ||
                checked.child_pgno != io->child_pgno || checked.front != io->front ||
+               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
+               checked.get.get.request.pgno != io->get.get.request.pgno ||
+               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
+               checked.get.get.request.npages != io->get.get.request.npages ||
+               checked.get.get.request.offset != io->get.get.request.offset ||
+               checked.get.get.request.bytes != io->get.get.request.bytes ||
+               checked.get.get.front != io->get.get.front ||
+               checked.get.get.track_private != io->get.get.track_private ||
                checked.parent_top != io->parent_top || checked.parent_ki != io->parent_ki ||
                checked.child_ki != io->child_ki || checked.child_ki_last != io->child_ki_last ||
                !page_ref_equal(&checked.parent_ref, &io->parent_ref)))
@@ -52926,7 +52956,7 @@ static inline int cursor_submit_branch_child_push(const dxb_cursor_branch_child_
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  pgr_t child = page_get_three(io->cursor, io->child_pgno, io->front);
+  pgr_t child = page_submit_cursor_get(&io->get);
   if (unlikely(child.err != MDBX_SUCCESS)) {
     err = child.err;
     pgr_release(io->cursor, &child);
