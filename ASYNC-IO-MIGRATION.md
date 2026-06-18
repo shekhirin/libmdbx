@@ -12659,6 +12659,31 @@ and the six focused ASAN `migration_smoke` entries with
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.094`
 batch, `1.137` crud, `0.976` iterate, `0.950` get, and `1.072` delete.
 
+A later storage probe/readahead submit-boundary cleanup folded the raw
+`dxb_storage_stat()`, `dxb_storage_fetch_sysinfo()`,
+`dxb_storage_check_readonly()`, and `dxb_storage_set_readahead()` helpers into
+their submitters. The stat submitter now validates the full
+`dxb_stat_submit_io_t` payload before issuing `fstat()` directly. The sysinfo
+submitter validates `dxb_sysinfo_submit_io_t` and owns the platform file-info
+or POSIX stat probe directly. The read-only submitter validates
+`dxb_readonly_submit_io_t` before calling `osal_check_fs_rdonly()` directly,
+and the readahead submitter validates `dxb_readahead_submit_io_t` before
+issuing `F_RDAHEAD` directly where available or returning the existing no-op
+completion. This leaves storage stats, sysinfo, read-only fallback checks, and
+readahead toggles with descriptor-shaped submit entry points and no parallel
+raw helper paths in the C source or public/internal headers. Verification
+passed `git diff --check`, source scans confirming no raw storage
+probe/readahead helpers remain in `mdbx.c` or the public/internal headers, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, the ASAN build (`cmake --build @cmake-asan-build`),
+and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.116`
+batch, `1.165` crud, `1.016` iterate, `1.033` get, and `1.076` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

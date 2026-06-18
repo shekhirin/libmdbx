@@ -4651,15 +4651,10 @@ MDBX_INTERNAL dxb_deinit_result_t dxb_storage_deinit(dxb_storage_t *storage, boo
 MDBX_INTERNAL dxb_deinit_result_t dxb_storage_submit_deinit(dxb_storage_t *storage,
                                                             const dxb_deinit_submit_io_t *io);
 #if !defined(_WIN32) && !defined(_WIN64)
-static dxb_stat_result_t dxb_storage_stat(const dxb_storage_t *storage);
 static dxb_stat_result_t dxb_storage_submit_stat(const dxb_storage_t *storage, const dxb_stat_submit_io_t *io);
 #endif /* !Windows */
-static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *storage,
-                                                      const dxb_sysinfo_submit_io_t *io);
 static dxb_sysinfo_result_t dxb_storage_submit_fetch_sysinfo(const dxb_storage_t *storage,
                                                              const dxb_sysinfo_submit_io_t *io);
-static dxb_readonly_result_t dxb_storage_check_readonly(const dxb_storage_t *storage, const pathchar_t *pathname,
-                                                        int err);
 static dxb_readonly_result_t dxb_storage_submit_check_readonly(const dxb_storage_t *storage,
                                                                const dxb_readonly_submit_io_t *io);
 static inline int dxb_storage_make_filesize_state_submit_io(uint64_t filesize, dxb_filesize_state_submit_io_t *io);
@@ -29257,17 +29252,13 @@ static inline dxb_stat_result_t dxb_stat_zero_error(int err) {
   return dxb_stat_result(err, &st, false, false);
 }
 
-static dxb_stat_result_t dxb_storage_stat(const dxb_storage_t *storage) {
-  struct stat st;
-  return unlikely(fstat(dxb_storage_data_fd(storage), &st)) ? dxb_stat_zero_submitted_error(errno)
-                                                            : dxb_stat_completed(&st);
-}
-
 static dxb_stat_result_t dxb_storage_submit_stat(const dxb_storage_t *storage, const dxb_stat_submit_io_t *io) {
   int rc = dxb_storage_stat_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_stat_zero_error(rc);
-  return dxb_storage_stat(storage);
+  struct stat st;
+  return unlikely(fstat(dxb_storage_data_fd(storage), &st)) ? dxb_stat_zero_submitted_error(errno)
+                                                            : dxb_stat_completed(&st);
 }
 #endif /* !Windows */
 
@@ -29329,8 +29320,8 @@ static inline dxb_sysinfo_result_t dxb_sysinfo_completed(uint64_t filesize, uint
   return dxb_sysinfo_result(MDBX_SUCCESS, filesize, allocated, io_block, true, true);
 }
 
-static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *storage,
-                                                      const dxb_sysinfo_submit_io_t *io) {
+static dxb_sysinfo_result_t dxb_storage_submit_fetch_sysinfo(const dxb_storage_t *storage,
+                                                             const dxb_sysinfo_submit_io_t *io) {
   int rc = dxb_storage_sysinfo_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_sysinfo_error(rc, false);
@@ -29379,14 +29370,6 @@ static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *stora
 #endif /* !Windows */
 }
 
-static dxb_sysinfo_result_t dxb_storage_submit_fetch_sysinfo(const dxb_storage_t *storage,
-                                                             const dxb_sysinfo_submit_io_t *io) {
-  int rc = dxb_storage_sysinfo_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_sysinfo_error(rc, false);
-  return dxb_storage_fetch_sysinfo(storage, io);
-}
-
 static inline dxb_readonly_result_t dxb_readonly_result(int err, int source_err, bool submitted, bool completed) {
   const dxb_readonly_result_t result = {err, source_err, err == MDBX_SUCCESS, err != MDBX_ENOSYS, submitted,
                                         completed};
@@ -29413,17 +29396,13 @@ static inline dxb_readonly_result_t dxb_readonly_from_probe(int err, int source_
   return dxb_readonly_submitted_error(err, source_err);
 }
 
-static dxb_readonly_result_t dxb_storage_check_readonly(const dxb_storage_t *storage, const pathchar_t *pathname,
-                                                        int err) {
-  return dxb_readonly_from_probe(osal_check_fs_rdonly(dxb_storage_data_fd(storage), pathname, err), err);
-}
-
 static dxb_readonly_result_t dxb_storage_submit_check_readonly(const dxb_storage_t *storage,
                                                                const dxb_readonly_submit_io_t *io) {
   int rc = dxb_storage_readonly_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_readonly_result(rc, io ? io->source_err : 0, false, false);
-  return dxb_storage_check_readonly(storage, io->pathname, io->source_err);
+  return dxb_readonly_from_probe(osal_check_fs_rdonly(dxb_storage_data_fd(storage), io->pathname, io->source_err),
+                                 io->source_err);
 }
 
 static inline dxb_range_result_t dxb_range_result(int err, size_t payload_bytes, bool submitted, bool completed) {
@@ -29673,23 +29652,19 @@ static inline dxb_readahead_result_t dxb_readahead_completed(bool enabled) {
   return dxb_readahead_result(MDBX_SUCCESS, enabled, true, true, true);
 }
 
-static dxb_readahead_result_t dxb_storage_set_readahead(const dxb_storage_t *storage, bool enable) {
-#if defined(F_RDAHEAD)
-  if (unlikely(fcntl(dxb_storage_data_fd(storage), F_RDAHEAD, enable) == -1))
-    return dxb_readahead_submitted_error(errno, enable);
-  return dxb_readahead_completed(enable);
-#else
-  (void)storage;
-  return dxb_readahead_noop_completed(enable);
-#endif /* F_RDAHEAD */
-}
-
 static dxb_readahead_result_t dxb_storage_submit_readahead(const dxb_storage_t *storage,
                                                            const dxb_readahead_submit_io_t *io) {
   int rc = dxb_storage_readahead_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_readahead_result(rc, false, false, false, false);
-  return dxb_storage_set_readahead(storage, io->enable);
+#if defined(F_RDAHEAD)
+  if (unlikely(fcntl(dxb_storage_data_fd(storage), F_RDAHEAD, io->enable) == -1))
+    return dxb_readahead_submitted_error(errno, io->enable);
+  return dxb_readahead_completed(io->enable);
+#else
+  (void)storage;
+  return dxb_readahead_noop_completed(io->enable);
+#endif /* F_RDAHEAD */
 }
 
 static int dxb_fault_inject(const char *operation);
