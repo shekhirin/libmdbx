@@ -29382,6 +29382,76 @@ static dxb_resize_result_t dxb_storage_submit_resize_size(dxb_storage_t *storage
   return dxb_storage_resize_size(storage, &io->target, io->flags);
 }
 
+typedef struct dxb_header_meta_read_submit_io {
+  const dxb_storage_t *storage;
+  dxb_meta_read_io_t request;
+  dxb_meta_read_submit_io_t submit;
+  void *buffer;
+  size_t buffer_bytes;
+} dxb_header_meta_read_submit_io_t;
+
+static inline int dxb_header_make_meta_read_submit_io(const dxb_storage_t *storage,
+                                                      const dxb_meta_read_io_t *request, void *buffer,
+                                                      size_t buffer_bytes,
+                                                      dxb_header_meta_read_submit_io_t *io) {
+  if (unlikely(!storage || !request || !buffer || !io))
+    return MDBX_EINVAL;
+  if (unlikely(request->bytes.bytes > buffer_bytes))
+    return MDBX_EINVAL;
+
+  dxb_meta_read_submit_io_t submit;
+  int rc = dxb_storage_make_meta_read_submit_io(request, buffer, &submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->storage = storage;
+  io->request = *request;
+  io->submit = submit;
+  io->buffer = buffer;
+  io->buffer_bytes = buffer_bytes;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_header_meta_read_submit_io_validate(const dxb_header_meta_read_submit_io_t *io) {
+  if (unlikely(!io || !io->storage || !io->buffer))
+    return MDBX_EINVAL;
+  if (unlikely(io->request.bytes.bytes > io->buffer_bytes || io->submit.buffer != io->buffer ||
+               io->submit.meta.bytes.offset != io->request.bytes.offset ||
+               io->submit.meta.bytes.bytes != io->request.bytes.bytes ||
+               io->submit.meta.number != io->request.number ||
+               io->submit.meta.probe_pagesize != io->request.probe_pagesize))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_meta_read_submit_io_validate(&io->submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_header_meta_read_submit_io_t checked;
+  rc = dxb_header_make_meta_read_submit_io(io->storage, &io->request, io->buffer, io->buffer_bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.storage != io->storage || checked.buffer != io->buffer ||
+               checked.buffer_bytes != io->buffer_bytes ||
+               checked.request.bytes.offset != io->request.bytes.offset ||
+               checked.request.bytes.bytes != io->request.bytes.bytes ||
+               checked.request.number != io->request.number ||
+               checked.request.probe_pagesize != io->request.probe_pagesize ||
+               checked.submit.meta.bytes.offset != io->submit.meta.bytes.offset ||
+               checked.submit.meta.bytes.bytes != io->submit.meta.bytes.bytes ||
+               checked.submit.meta.number != io->submit.meta.number ||
+               checked.submit.meta.probe_pagesize != io->submit.meta.probe_pagesize ||
+               checked.submit.buffer != io->submit.buffer))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static dxb_read_result_t dxb_header_submit_meta_read(const dxb_header_meta_read_submit_io_t *io) {
+  int rc = dxb_header_meta_read_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_read_error(rc);
+  return dxb_storage_submit_read_meta(io->storage, &io->submit);
+}
+
 __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive, const mdbx_mode_t mode_bits) {
   dxb_storage_t *const storage = &env->dxb_storage;
   memset(dest, 0, sizeof(meta_t));
@@ -29408,15 +29478,15 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
       return err;
 
     char buffer[MDBX_MIN_PAGESIZE];
-    dxb_meta_read_submit_io_t submit;
-    err = dxb_storage_make_meta_read_submit_io(&request, buffer, &submit);
+    dxb_header_meta_read_submit_io_t submit;
+    err = dxb_header_make_meta_read_submit_io(storage, &request, buffer, sizeof(buffer), &submit);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
     unsigned retryleft = 42;
     while (1) {
       TRACE("reading meta[%d]: offset %" PRIu64 ", bytes %zu, retry-left %u", meta_number, request.bytes.offset,
             request.bytes.bytes, retryleft);
-      err = dxb_storage_submit_read_meta(storage, &submit).err;
+      err = dxb_header_submit_meta_read(&submit).err;
       if (err == MDBX_ENODATA && request.bytes.offset == 0 && loop_count == 0 &&
           dxb_storage_filesize(storage) == 0 &&
           mode_bits /* non-zero for DB creation */ != 0) {
@@ -29426,7 +29496,7 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
 #if defined(_WIN32) || defined(_WIN64)
       if (err == ERROR_LOCK_VIOLATION) {
         SleepEx(0, true);
-        err = dxb_storage_submit_read_meta(storage, &submit).err;
+        err = dxb_header_submit_meta_read(&submit).err;
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
           WARNING("read meta[%" PRIu64 ",%zu]: %i, %s", request.bytes.offset, request.bytes.bytes, err,
                   mdbx_strerror(err));
@@ -29441,15 +29511,15 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
       }
 
       char again[MDBX_MIN_PAGESIZE];
-      dxb_meta_read_submit_io_t again_submit;
-      err = dxb_storage_make_meta_read_submit_io(&request, again, &again_submit);
+      dxb_header_meta_read_submit_io_t again_submit;
+      err = dxb_header_make_meta_read_submit_io(storage, &request, again, sizeof(again), &again_submit);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
-      err = dxb_storage_submit_read_meta(storage, &again_submit).err;
+      err = dxb_header_submit_meta_read(&again_submit).err;
 #if defined(_WIN32) || defined(_WIN64)
       if (err == ERROR_LOCK_VIOLATION) {
         SleepEx(0, true);
-        err = dxb_storage_submit_read_meta(storage, &again_submit).err;
+        err = dxb_header_submit_meta_read(&again_submit).err;
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
           WARNING("read meta[%" PRIu64 ",%zu]: %i, %s", request.bytes.offset, request.bytes.bytes, err,
                   mdbx_strerror(err));
