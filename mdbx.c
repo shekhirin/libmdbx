@@ -30135,8 +30135,8 @@ static inline dxb_filesize_result_t dxb_filesize_completed(uint64_t filesize) {
   return dxb_filesize_result(MDBX_SUCCESS, filesize, true, true);
 }
 
-static dxb_filesize_result_t dxb_storage_set_filesize_on_disk(const dxb_storage_t *storage,
-                                                              const dxb_filesize_submit_io_t *io) {
+static dxb_filesize_result_t dxb_storage_submit_set_filesize(const dxb_storage_t *storage,
+                                                             const dxb_filesize_submit_io_t *io) {
   int rc = dxb_storage_filesize_set_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_filesize_error(rc);
@@ -30150,14 +30150,6 @@ static dxb_filesize_result_t dxb_storage_set_filesize_on_disk(const dxb_storage_
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_filesize_submitted_error(rc);
   return dxb_filesize_completed(io->target);
-}
-
-static dxb_filesize_result_t dxb_storage_submit_set_filesize(const dxb_storage_t *storage,
-                                                             const dxb_filesize_submit_io_t *io) {
-  int rc = dxb_storage_filesize_set_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_error(rc);
-  return dxb_storage_set_filesize_on_disk(storage, io);
 }
 
 typedef struct dxb_filesize_shrink_cache_invalidate_submit_io {
@@ -30463,8 +30455,8 @@ static dxb_filesize_result_t dxb_storage_submit_set_filesize_as_current(dxb_stor
   return setsize;
 }
 
-static dxb_filesize_result_t dxb_storage_fetch_filesize_from_disk(const dxb_storage_t *storage,
-                                                                  const dxb_filesize_submit_io_t *io) {
+static dxb_filesize_result_t dxb_storage_submit_fetch_filesize(dxb_storage_t *storage,
+                                                               const dxb_filesize_submit_io_t *io) {
   int rc = dxb_storage_filesize_fetch_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_filesize_error(rc);
@@ -30482,19 +30474,6 @@ static dxb_filesize_result_t dxb_storage_fetch_filesize_from_disk(const dxb_stor
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_filesize_submitted_error(rc);
 
-  return dxb_filesize_completed(filesize);
-}
-
-static dxb_filesize_result_t dxb_storage_submit_fetch_filesize(dxb_storage_t *storage,
-                                                               const dxb_filesize_submit_io_t *io) {
-  int rc = dxb_storage_filesize_fetch_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_error(rc);
-
-  dxb_filesize_result_t fetched = dxb_storage_fetch_filesize_from_disk(storage, io);
-  if (unlikely(fetched.err != MDBX_SUCCESS))
-    return fetched;
-  const uint64_t filesize = fetched.filesize;
   dxb_filesize_note_submit_io_t note_submit;
   rc = dxb_storage_make_note_filesize_submit_io(storage, filesize, &note_submit);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -30502,7 +30481,7 @@ static dxb_filesize_result_t dxb_storage_submit_fetch_filesize(dxb_storage_t *st
   rc = dxb_storage_submit_note_filesize(storage, &note_submit).err;
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_filesize_completed_error(rc, filesize);
-  return fetched;
+  return dxb_filesize_completed(filesize);
 }
 
 static inline dxb_resize_result_t dxb_resize_result(int err, size_t current, size_t limit, uint64_t filesize,
