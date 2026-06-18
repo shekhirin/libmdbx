@@ -6775,6 +6775,27 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.098` batch, `1.134` crud, `1.203` iterate,
 `0.974` get, and `1.085` delete.
 
+A later queued-write result cleanup added `used_slots` to
+`osal_ioring_write_result_t`. `osal_ioring_write()` now reports both submitted
+slot count and payload byte count only after a queued batch completes
+successfully, and the storage wrapper rejects a successful result whose slot or
+byte accounting does not match the checked submit descriptor. `iov_write()`
+also rejects zero-slot or zero-byte successful results for non-empty dirty
+queues. This carries the complete submitted batch shape across the OSAL
+completion boundary so future async backends can report and validate
+completion state without relying on caller-side ring walks after submission.
+Verification passed `git diff --check`, source scans covering result
+initializer updates, `used_slots`, `payload_bytes`, the storage result checks,
+and the OSAL write boundary, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.112` batch, `1.161` crud, `1.015` iterate,
+`1.009` get, and `1.079` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

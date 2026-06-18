@@ -22288,12 +22288,13 @@ static inline int dxb_storage_queued_write_io_validate(const dxb_storage_t *stor
 static inline osal_ioring_write_result_t dxb_storage_write_queued(dxb_storage_t *storage,
                                                                   enum dxb_io_channel channel) {
   dxb_queued_write_io_t io;
-  osal_ioring_write_result_t result = {dxb_storage_make_queued_write_io(storage, channel, &io), 0, 0};
+  osal_ioring_write_result_t result = {dxb_storage_make_queued_write_io(storage, channel, &io), 0, 0, 0};
   if (likely(result.err == MDBX_SUCCESS))
     result.err = dxb_storage_queued_write_io_validate(storage, channel, &io);
   if (likely(result.err == MDBX_SUCCESS)) {
     result = osal_ioring_write(dxb_storage_write_queue(storage), &io);
-    if (likely(result.err == MDBX_SUCCESS) && unlikely(result.payload_bytes != io.payload_bytes))
+    if (likely(result.err == MDBX_SUCCESS) &&
+        unlikely(result.used_slots != io.used_slots || result.payload_bytes != io.payload_bytes))
       result.err = MDBX_EINVAL;
   }
   return result;
@@ -32548,7 +32549,7 @@ static ior_item_t *osal_ioring_previous_item(const osal_ioring_t *ior, const ior
 #endif /* !Windows */
 
 osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, const dxb_queued_write_io_t *io) {
-  osal_ioring_write_result_t r = {MDBX_SUCCESS, 0, 0};
+  osal_ioring_write_result_t r = {MDBX_SUCCESS, 0, 0, 0};
   r.err = dxb_queued_write_io_validate(io);
   if (unlikely(r.err != MDBX_SUCCESS))
     return r;
@@ -32805,8 +32806,10 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, const dxb_queue
   // TODO: io_uring_cqe_seen(&ring, cqe);
 
 #endif /* !Windows */
-  if (likely(r.err == MDBX_SUCCESS))
+  if (likely(r.err == MDBX_SUCCESS)) {
+    r.used_slots = io->used_slots;
     r.payload_bytes = io->payload_bytes;
+  }
   return r;
 }
 
@@ -35686,7 +35689,7 @@ static void iov_complete(iov_ctx_t *ctx) {
 int iov_write(iov_ctx_t *ctx) {
   eASSERT0(ctx->env, !iov_empty(ctx));
   osal_ioring_write_result_t r = dxb_storage_write_queued(ctx->storage, ctx->channel);
-  if (likely(r.err == MDBX_SUCCESS) && unlikely(!r.payload_bytes))
+  if (likely(r.err == MDBX_SUCCESS) && unlikely(!r.used_slots || !r.payload_bytes))
     r.err = MDBX_EINVAL;
   if (MDBX_ENABLE_PGOP_STAT)
     ctx->env->lck->pgops.wops.weak += r.wops;
