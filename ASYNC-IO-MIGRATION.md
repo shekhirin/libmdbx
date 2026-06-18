@@ -12015,6 +12015,30 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.131` batch, `1.142` crud, `1.286` iterate,
 `1.000` get, and `1.063` delete.
 
+A later close-with-reset submission cleanup moved the close-time storage reset
+descriptor into the caller-built close request. `dxb_close_submit_io_t` now
+carries a nested `dxb_reset_submit_io_t`, `dxb_storage_make_close_submit_io()`
+builds it, close validation checks it against a rebuilt request, and
+`dxb_storage_submit_close()` consumes `io->reset_submit` instead of constructing
+a local reset descriptor after closing handles. The env-level data-close
+request validation also checks the nested reset payload, preserving close error
+propagation and close-with-reset behavior while making close-time state reset
+part of the explicit close submission payload. Verification passed `git diff
+--check`, source scans covering `dxb_close_submit_io_t`,
+`dxb_storage_make_close_submit_io()`,
+`dxb_storage_close_submit_io_validate()`, `dxb_storage_submit_close()`,
+`env_data_close_submit_io_validate()`, and the remaining generic
+`dxb_storage_make_reset_submit_io()` / `dxb_storage_submit_reset()` call sites,
+the GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.092`
+batch, `1.147` crud, `0.975` iterate, `0.980` get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

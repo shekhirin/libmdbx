@@ -181,11 +181,6 @@ typedef struct dxb_park_submit_io {
   dxb_byte_io_t position;
 } dxb_park_submit_io_t;
 
-typedef struct dxb_close_submit_io {
-  bool env_active;
-  bool reset;
-} dxb_close_submit_io_t;
-
 typedef struct dxb_init_submit_io {
   bool init;
 } dxb_init_submit_io_t;
@@ -194,6 +189,12 @@ typedef struct dxb_reset_submit_io {
   bool env_active;
   bool reset;
 } dxb_reset_submit_io_t;
+
+typedef struct dxb_close_submit_io {
+  bool env_active;
+  bool reset;
+  dxb_reset_submit_io_t reset_submit;
+} dxb_close_submit_io_t;
 
 typedef struct dxb_deinit_submit_io {
   bool env_active;
@@ -2406,24 +2407,6 @@ static inline int dxb_storage_park_submit_io_validate(const dxb_park_submit_io_t
   return MDBX_SUCCESS;
 }
 
-static inline int dxb_storage_make_close_submit_io(bool env_active, bool reset, dxb_close_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-  io->env_active = env_active != 0;
-  io->reset = reset != 0;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_close_submit_io_validate(const dxb_close_submit_io_t *io) {
-  dxb_close_submit_io_t checked;
-  int rc = unlikely(!io) ? MDBX_EINVAL : dxb_storage_make_close_submit_io(io->env_active, io->reset, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.env_active != io->env_active || checked.reset != io->reset))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 static inline int dxb_storage_make_init_submit_io(dxb_init_submit_io_t *io) {
   if (unlikely(!io))
     return MDBX_EINVAL;
@@ -2451,6 +2434,36 @@ static inline int dxb_storage_reset_submit_io_validate(const dxb_reset_submit_io
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (unlikely(checked.env_active != io->env_active || checked.reset != io->reset))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_close_submit_io(bool env_active, bool reset, dxb_close_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+
+  dxb_reset_submit_io_t reset_submit;
+  int rc = dxb_storage_make_reset_submit_io(env_active, &reset_submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->env_active = env_active != 0;
+  io->reset = reset != 0;
+  io->reset_submit = reset_submit;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_close_submit_io_validate(const dxb_close_submit_io_t *io) {
+  dxb_close_submit_io_t checked;
+  int rc = unlikely(!io) ? MDBX_EINVAL : dxb_storage_make_close_submit_io(io->env_active, io->reset, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_reset_submit_io_validate(&io->reset_submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env_active != io->env_active || checked.reset != io->reset ||
+               checked.reset_submit.env_active != io->reset_submit.env_active ||
+               checked.reset_submit.reset != io->reset_submit.reset))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -28139,10 +28152,7 @@ dxb_close_result_t dxb_storage_submit_close(dxb_storage_t *storage, const dxb_cl
   if (!io->reset)
     return result;
 
-  dxb_reset_submit_io_t reset_submit;
-  rc = dxb_storage_make_reset_submit_io(io->env_active, &reset_submit);
-  dxb_state_result_t reset =
-      likely(rc == MDBX_SUCCESS) ? dxb_storage_submit_reset(storage, &reset_submit) : dxb_state_error(rc);
+  dxb_state_result_t reset = dxb_storage_submit_reset(storage, &io->reset_submit);
   if (unlikely(result.err == MDBX_SUCCESS && reset.err != MDBX_SUCCESS))
     result.err = reset.err;
   return reset.reset ? dxb_close_with_reset(result) : result;
@@ -33793,7 +33803,8 @@ static inline int env_data_close_submit_io_validate(const dxb_env_data_close_sub
   int rc = dxb_storage_close_submit_io_validate(&io->close);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  if (unlikely(io->close.env_active != io->env_active || io->close.reset != io->reset))
+  if (unlikely(io->close.env_active != io->env_active || io->close.reset != io->reset ||
+               io->close.reset_submit.env_active != io->env_active || !io->close.reset_submit.reset))
     return MDBX_EINVAL;
 
   dxb_env_data_close_submit_io_t checked;
@@ -33802,7 +33813,9 @@ static inline int env_data_close_submit_io_validate(const dxb_env_data_close_sub
     return rc;
   if (unlikely(checked.env != io->env || checked.storage != io->storage || checked.env_active != io->env_active ||
                checked.reset != io->reset || checked.close.env_active != io->close.env_active ||
-               checked.close.reset != io->close.reset))
+               checked.close.reset != io->close.reset ||
+               checked.close.reset_submit.env_active != io->close.reset_submit.env_active ||
+               checked.close.reset_submit.reset != io->close.reset_submit.reset))
     return MDBX_EINVAL;
 
   return MDBX_SUCCESS;
