@@ -1845,6 +1845,10 @@ static inline bool dxb_storage_io_channel_valid(enum dxb_io_channel channel) {
   return false;
 }
 
+static inline bool dxb_io_channel_is_data(enum dxb_io_channel channel) {
+  return channel == dxb_io_data || channel == dxb_io_data_dsync;
+}
+
 static inline uint64_t dxb_storage_bytes2pgno(const dxb_storage_t *storage, uint64_t bytes) {
   return bytes >> dxb_storage_pagesize_ln(storage);
 }
@@ -2151,7 +2155,7 @@ static inline int dxb_storage_queued_data_write_io_validate(const dxb_storage_t 
 }
 
 static inline int dxb_queued_write_io_validate(const dxb_queued_write_io_t *io) {
-  if (unlikely(!io || !dxb_storage_io_channel_valid(io->channel) || io->fd == INVALID_HANDLE_VALUE))
+  if (unlikely(!io || !dxb_io_channel_is_data(io->channel) || io->fd == INVALID_HANDLE_VALUE))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -21988,10 +21992,6 @@ static inline bool dxb_storage_meta_write_needs_sync(const dxb_storage_t *storag
   return !incore && dxb_storage_meta_write_uses_data_sync(storage);
 }
 
-static inline bool dxb_io_channel_is_data(enum dxb_io_channel channel) {
-  return channel == dxb_io_data || channel == dxb_io_data_dsync;
-}
-
 static inline mdbx_filehandle_t dxb_storage_fd(const dxb_storage_t *storage, enum dxb_io_channel channel) {
   switch (channel) {
   case dxb_io_data:
@@ -22131,7 +22131,7 @@ static inline bool dxb_storage_iov_channel_is_primary_data(const dxb_storage_t *
 
 static inline int dxb_storage_make_queued_write_io(const dxb_storage_t *storage, enum dxb_io_channel channel,
                                                    dxb_queued_write_io_t *io) {
-  if (unlikely(!dxb_storage_io_channel_valid(channel)))
+  if (unlikely(!dxb_io_channel_is_data(channel)))
     return MDBX_EINVAL;
 
   const mdbx_filehandle_t fd = dxb_storage_iov_fd(storage, channel);

@@ -6529,6 +6529,25 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.144` batch, `1.137` crud, `1.197` iterate,
 `0.947` get, and `1.087` delete.
 
+A later queued-write data-channel validation cleanup made queued submit
+descriptors data-channel only. `dxb_io_channel_is_data()` now lives beside the
+general channel validator so `dxb_queued_write_io_validate()` and
+`dxb_storage_make_queued_write_io()` can reject `dxb_io_meta` before resolving
+or executing a queued write. General storage I/O still accepts the metadata
+channel where appropriate, but the OSAL write queue now represents only dirty
+data-file batches. This keeps future async queue submission from accepting
+metadata writes through the data-write ring. Verification passed `git diff
+--check`, source scans covering the single data-channel predicate and queued
+submit data-channel rejection, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.131` batch, `1.168` crud, `1.014` iterate,
+`0.949` get, and `1.064` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
