@@ -6569,6 +6569,28 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.135` batch, `1.161` crud, `0.984` iterate,
 `0.904` get, and `1.075` delete.
 
+A later dirty-write queue-preparation cleanup added
+`dxb_dirty_write_queue_io_t`. `iov_init()` now builds one descriptor carrying
+the data channel, requested queue capacity, and the page-span write budget, and
+`dxb_storage_prepare_write_queue()` validates that descriptor before calling
+`osal_ioring_prepare()`. The builder keeps the previous capacity-reservation
+semantics, including empty write budgets used by spill/recovery preparation,
+but queue preparation is now explicit about the channel readiness and data-file
+span it is sizing for. This gives future async write submission a validated
+queue-context shape instead of separate loose `items`, `npages`, and channel
+arguments. Verification passed `git diff --check`, source scans covering
+`dxb_dirty_write_queue_io_t`, its builder/validator, the new prepare signature,
+and the remaining direct `osal_ioring_prepare()` boundary, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.105` batch, `1.158` crud, `1.225` iterate,
+`0.968` get, and `1.061` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
