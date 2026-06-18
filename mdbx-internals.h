@@ -1393,6 +1393,7 @@ typedef struct dxb_cache_result {
   int err;
   size_t payload_bytes;
   size_t npages;
+  size_t entries;
   bool detached;
 } dxb_cache_result_t;
 

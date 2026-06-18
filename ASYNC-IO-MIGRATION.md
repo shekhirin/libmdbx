@@ -6994,8 +6994,8 @@ overflow-page read behavior and cursor-visible page lifetimes while exposing
 materialization completion data. This gives future async page-cache read
 backends a place to report extent completion and detach decisions without
 threading state through side effects only. Verification passed
-`git diff --check`, source scans covering `dxb_cache_result_t`, cache result helpers, and
-every `dxb_storage_materialize_cached_large_page()` and
+`git diff --check`, source scans covering `dxb_cache_result_t`, cache result
+helpers, and every `dxb_storage_materialize_cached_large_page()` and
 `dxb_storage_detach_materialized_large_page()` call site, the GNUmake
 `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
 forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
@@ -7005,6 +7005,26 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
 benchmark gate passed with forced/default ratios of `1.140` batch, `1.153`
 crud, `0.867` iterate, `1.074` get, and `1.070` delete.
+
+A later cache-invalidation cleanup extended `dxb_cache_result_t` with a cache
+entry count and converted `dxb_storage_invalidate_cached_io()` from a `void`
+side-effect helper into an explicit result. Cache invalidation now returns the
+validated byte range, page count, and number of cache entries marked stale or
+released, while existing write, copy, discard, truncate, and queued-write
+callers continue to ignore the result and therefore preserve their previous
+success/error behavior. This gives future async-capable page-cache backends a
+completion boundary for cache eviction decisions after data-file writes and
+file-size changes. Verification passed `git diff --check`, source scans
+covering `dxb_cache_result_t`, cache invalidation result helpers, and every
+`dxb_storage_invalidate_cached_io()` call site, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.122` batch, `1.153`
+crud, `0.970` iterate, `0.962` get, and `1.071` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.

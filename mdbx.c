@@ -2553,7 +2553,8 @@ static dxb_write_result_t dxb_storage_write_data(dxb_storage_t *storage, const d
                                                  const void *buf);
 static dxb_write_result_t dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_write_io_t *io,
                                                  const void *buf);
-static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_cache_invalidate_io_t *io);
+static dxb_cache_result_t dxb_storage_invalidate_cached_io(dxb_storage_t *storage,
+                                                           const dxb_cache_invalidate_io_t *io);
 #if MDBX_USE_COPYFILERANGE
 static dxb_copy_result_t dxb_storage_copy_data(dxb_storage_t *storage, const dxb_data_copy_io_t *io);
 static dxb_copy_result_t dxb_storage_copy_data_to_fd(const dxb_storage_t *storage, const dxb_data_export_io_t *io,
@@ -21562,14 +21563,34 @@ static void page_cache_release_all(dxb_storage_t *storage, bool env_active) {
   page_cache_unlock(storage);
 }
 
-static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_cache_invalidate_io_t *io) {
+static inline dxb_cache_result_t dxb_cache_result(int err, size_t payload_bytes, size_t npages, size_t entries,
+                                                  bool detached) {
+  const dxb_cache_result_t result = {err, payload_bytes, npages, entries, detached};
+  return result;
+}
+
+static inline dxb_cache_result_t dxb_cache_error(int err) {
+  return dxb_cache_result(err, 0, 0, 0, false);
+}
+
+static inline dxb_cache_result_t dxb_cache_invalidated(const dxb_cache_invalidate_io_t *io, size_t entries) {
+  return dxb_cache_result(MDBX_SUCCESS, io->pages.bytes, io->pages.npages, entries, false);
+}
+
+static inline dxb_cache_result_t dxb_cache_materialized(const dxb_cache_materialize_io_t *io, bool detached) {
+  return dxb_cache_result(MDBX_SUCCESS, io->data.bytes.bytes, io->data.pages.npages, 1, detached);
+}
+
+static dxb_cache_result_t dxb_storage_invalidate_cached_io(dxb_storage_t *storage,
+                                                           const dxb_cache_invalidate_io_t *io) {
   const int rc = dxb_storage_cache_invalidate_io_validate(storage, io);
   ASSERT(rc == MDBX_SUCCESS);
   if (unlikely(rc != MDBX_SUCCESS))
-    return;
+    return dxb_cache_error(rc);
   if (io->pages.npages == 0)
-    return;
+    return dxb_cache_invalidated(io, 0);
 
+  size_t entries = 0;
   page_cache_lock(storage);
   page_cache_t *const cache = &storage->page_cache;
   page_cache_entry_t *entry = cache->entries;
@@ -21580,6 +21601,7 @@ static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_c
        * writes. Only destructive truncate/remove operations force them out. */
       if (io->include_reusable || !entry->reusable) {
         entry->reusable = false;
+        entries += 1;
         if (entry->pins == 0)
           page_cache_release_entry_locked(entry);
       }
@@ -21587,6 +21609,7 @@ static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_c
     entry = next;
   }
   page_cache_unlock(storage);
+  return dxb_cache_invalidated(io, entries);
 }
 
 static inline bool page_cache_entry_can_reuse(const page_cache_entry_t *entry, const dxb_cache_read_io_t *io) {
@@ -21676,19 +21699,6 @@ bailout:
     osal_memalign_free(entry->page);
   osal_free(entry);
   return pgr_error(err);
-}
-
-static inline dxb_cache_result_t dxb_cache_result(int err, size_t payload_bytes, size_t npages, bool detached) {
-  const dxb_cache_result_t result = {err, payload_bytes, npages, detached};
-  return result;
-}
-
-static inline dxb_cache_result_t dxb_cache_error(int err) {
-  return dxb_cache_result(err, 0, 0, false);
-}
-
-static inline dxb_cache_result_t dxb_cache_materialized(const dxb_cache_materialize_io_t *io, bool detached) {
-  return dxb_cache_result(MDBX_SUCCESS, io->data.bytes.bytes, io->data.pages.npages, detached);
 }
 
 static dxb_cache_result_t dxb_storage_detach_materialized_large_page(dxb_storage_t *storage, pgr_t *pgr,
