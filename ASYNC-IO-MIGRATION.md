@@ -11071,6 +11071,36 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.099`
 batch, `1.155` crud, `1.189` iterate, `0.954` get, and `1.071` delete.
 
+A later `env_open()` write-queue creation cleanup added
+`dxb_env_write_queue_create_submit_io_t`,
+`env_make_write_queue_create_submit_io()`,
+`env_write_queue_create_submit_io_validate()`, and
+`env_submit_write_queue_create()` for the data-file write queue created after
+lock downgrade or MVCC cleanup and before returning from open. The request
+captures the environment, bound data storage handle, readonly state derived
+from env flags, and generic write-queue submit descriptor with `create=true`.
+Validation rechecks environment/storage identity, readonly state, generic
+queue descriptor validity, `create=true`, and a rebuilt request before
+submitting. Submit delegates to `dxb_storage_submit_create_write_queue()`,
+preserving the read-only no-op, writable `osal_ioring_create()` path,
+submitted-error result shape, and open sequencing after lock setup and MVCC
+cleanup. The matching `env_close()` write-queue destroy submit remains a later
+checkpoint. Verification passed `git diff --check`, source scans covering
+`dxb_env_write_queue_create_submit_io_t`,
+`env_make_write_queue_create_submit_io()`,
+`env_write_queue_create_submit_io_validate()`,
+`env_submit_write_queue_create()`, the updated `env_open()` write-queue create
+path, and the remaining direct write-queue submit matches, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.080` batch, `1.157` crud, `0.999` iterate,
+`0.988` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

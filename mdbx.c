@@ -32305,6 +32305,60 @@ static dxb_incore_result_t env_submit_incore_probe(const dxb_env_incore_submit_i
   return dxb_storage_submit_check_incore(io->storage, &io->incore);
 }
 
+typedef struct dxb_env_write_queue_create_submit_io {
+  MDBX_env *env;
+  dxb_storage_t *storage;
+  bool readonly;
+  dxb_write_queue_submit_io_t queue;
+} dxb_env_write_queue_create_submit_io_t;
+
+static inline int env_make_write_queue_create_submit_io(MDBX_env *env,
+                                                        dxb_env_write_queue_create_submit_io_t *io) {
+  if (unlikely(!env || !io))
+    return MDBX_EINVAL;
+
+  const bool readonly = (env->flags & MDBX_RDONLY) != 0;
+  dxb_write_queue_submit_io_t queue;
+  int rc = dxb_storage_make_write_queue_submit_io(readonly, true, &queue);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->env = env;
+  io->storage = &env->dxb_storage;
+  io->readonly = readonly;
+  io->queue = queue;
+  return MDBX_SUCCESS;
+}
+
+static inline int env_write_queue_create_submit_io_validate(const dxb_env_write_queue_create_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage ||
+               io->readonly != ((io->env->flags & MDBX_RDONLY) != 0)))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_write_queue_submit_io_validate(&io->queue);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(io->queue.readonly != io->readonly || !io->queue.create))
+    return MDBX_EINVAL;
+
+  dxb_env_write_queue_create_submit_io_t checked;
+  rc = env_make_write_queue_create_submit_io(io->env, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env != io->env || checked.storage != io->storage || checked.readonly != io->readonly ||
+               checked.queue.readonly != io->queue.readonly || checked.queue.create != io->queue.create))
+    return MDBX_EINVAL;
+
+  return MDBX_SUCCESS;
+}
+
+static dxb_queue_result_t env_submit_write_queue_create(const dxb_env_write_queue_create_submit_io_t *io) {
+  int rc = env_write_queue_create_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_queue_submitted_error(rc, io ? io->readonly : false);
+  return dxb_storage_submit_create_write_queue(io->storage, &io->queue);
+}
+
 __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   /* Использование O_DSYNC или FILE_FLAG_WRITE_THROUGH:
    *
@@ -32373,7 +32427,6 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
    */
 
   env->pid = osal_getpid();
-  dxb_storage_t *const storage = &env->dxb_storage;
   dxb_env_primary_open_submit_io_t primary_open_submit;
   int rc = env_make_primary_open_submit_io(env, mode, &primary_open_submit);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -32402,6 +32455,7 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
     return rc;
   (void)env_submit_data_park(&data_park_submit);
 #if defined(_WIN32) || defined(_WIN64)
+  dxb_storage_t *const storage = &env->dxb_storage;
   env->dxb_lock_event = CreateEventW(nullptr, true, false, nullptr);
   if (unlikely(!env->dxb_lock_event))
     return (int)GetLastError();
@@ -32559,10 +32613,10 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
     }
   }
 
-  dxb_write_queue_submit_io_t queue_submit;
-  rc = dxb_storage_make_write_queue_submit_io((env->flags & MDBX_RDONLY) != 0, true, &queue_submit);
+  dxb_env_write_queue_create_submit_io_t queue_submit;
+  rc = env_make_write_queue_create_submit_io(env, &queue_submit);
   dxb_queue_result_t queue_result =
-      likely(rc == MDBX_SUCCESS) ? dxb_storage_submit_create_write_queue(storage, &queue_submit)
+      likely(rc == MDBX_SUCCESS) ? env_submit_write_queue_create(&queue_submit)
                                  : dxb_queue_submitted_error(rc, (env->flags & MDBX_RDONLY) != 0);
   return queue_result.err;
 }
