@@ -5654,6 +5654,24 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.113` batch, `1.168` crud, `0.940` iterate, `0.971`
 get, and `1.086` delete.
 
+A later startup meta-probe adapter cleanup removed
+`dxb_storage_meta_probe_io()` from the C source. Startup header reads still use
+byte-addressed probes while the database page size is unknown, but
+`dxb_read_header()` now derives the checked `probe_pagesize * meta_number`
+byte offset and `MDBX_MIN_PAGESIZE` request locally before submitting
+`dxb_storage_read_bytes()`. Verification passed `git diff --check`, source
+scans proving the startup meta-probe, shrink-tail, readahead-window,
+byte-invalidation, single-meta-page, meta-payload, meta-triplet, page-ref byte,
+page-subrange, and read/write page-span adapters are gone from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six
+focused `migration_smoke` CTest entries, the full 15-test public migration
+CTest suite, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), the six focused ASAN `migration_smoke`
+CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
+passed with forced/default ratios of `1.111` batch, `1.161` crud, `1.079`
+iterate, `0.953` get, and `1.059` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

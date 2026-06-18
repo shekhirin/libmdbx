@@ -1620,18 +1620,6 @@ static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, cons
   return io->offset <= current && io->bytes <= current - io->offset;
 }
 
-static inline int dxb_storage_meta_probe_io(size_t probe_pagesize, unsigned number, dxb_byte_io_t *io) {
-  if (unlikely(number >= NUM_METAS || probe_pagesize < MDBX_MIN_PAGESIZE))
-    return MDBX_EINVAL;
-  if (unlikely(number && (uint64_t)probe_pagesize > UINT64_MAX / number))
-    return MDBX_EINVAL;
-
-  const uint64_t offset = (uint64_t)probe_pagesize * number;
-  if (unlikely(MDBX_MIN_PAGESIZE > UINT64_MAX - offset))
-    return MDBX_EINVAL;
-  return dxb_storage_byte_span_io(offset, offset + MDBX_MIN_PAGESIZE, io);
-}
-
 /* The database environment. */
 struct MDBX_env {
   /* ----------------------------------------------------- mostly static part */
@@ -22251,8 +22239,16 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
                                   : (loop_count > NUM_METAS) ? env->ps
                                                              : globals.sys_pagesize;
 
+    if (unlikely(meta_number >= NUM_METAS || probe_pagesize < MDBX_MIN_PAGESIZE))
+      return MDBX_EINVAL;
+    if (unlikely(meta_number && (uint64_t)probe_pagesize > UINT64_MAX / meta_number))
+      return MDBX_EINVAL;
+    const uint64_t probe_offset = (uint64_t)probe_pagesize * meta_number;
+    if (unlikely(MDBX_MIN_PAGESIZE > UINT64_MAX - probe_offset))
+      return MDBX_EINVAL;
+
     dxb_byte_io_t request;
-    int err = dxb_storage_meta_probe_io(probe_pagesize, meta_number, &request);
+    int err = dxb_storage_byte_span_io(probe_offset, probe_offset + MDBX_MIN_PAGESIZE, &request);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
