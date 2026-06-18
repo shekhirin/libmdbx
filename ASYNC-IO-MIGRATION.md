@@ -7384,6 +7384,27 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.096` batch, `1.151` crud, `1.019` iterate, `1.004`
 get, and `1.075` delete.
 
+A later overflow read result cleanup changed `page_cache_read_large()` from an
+`int` helper into a `dxb_cache_result_t` helper. Callers still unwrap the same
+`.err` value into their existing `pgr_t` or local error state, preserving
+overflow-page read behavior and cursor-visible page lifetimes, but the
+transaction-level large-page helper now keeps materialized byte count, page
+count, entry count, and detach-state metadata available after storage
+materialization. This narrows another async-facing boundary: a future read
+backend can report whether an overflow extent completed as a no-op, in-place
+cache expansion, or detached pinned buffer without adding side-channel state to
+cursor code. Verification passed `git diff --check`, source scans covering
+`page_cache_read_large()`, `dxb_cache_result_t`, `dxb_cache_success()`, and all
+large-page read call sites, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.091` batch, `1.186` crud, `0.951` iterate, `0.979`
+get, and `1.077` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

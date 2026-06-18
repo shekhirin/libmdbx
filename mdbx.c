@@ -10149,7 +10149,7 @@ static MDBX_cache_result_t cache_get(const MDBX_txn *txn, MDBX_dbi dbi, const MD
                                      MDBX_cache_entry_t *entry);
 static pgr_t page_cache_read_io(MDBX_txn *txn, const dxb_cache_read_io_t *io);
 static pgr_t page_cache_read(MDBX_txn *txn, const dxb_page_io_t *request, const bool track_private);
-static int page_cache_read_large(MDBX_txn *txn, pgr_t *pgr);
+static dxb_cache_result_t page_cache_read_large(MDBX_txn *txn, pgr_t *pgr);
 
 static inline MDBX_cache_result_t cache_result(int err, MDBX_cache_status_t status) {
   MDBX_cache_result_t result = {.errcode = err, .status = status};
@@ -10347,7 +10347,7 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
   }
 
   if (is_largepage(pgr.page)) {
-    err = page_cache_read_large((MDBX_txn *)txn, &pgr);
+    err = page_cache_read_large((MDBX_txn *)txn, &pgr).err;
     if (unlikely(err != MDBX_SUCCESS))
       goto bailout;
   }
@@ -21606,6 +21606,10 @@ static inline dxb_cache_result_t dxb_cache_error(int err) {
   return dxb_cache_result(err, 0, 0, 0, false);
 }
 
+static inline dxb_cache_result_t dxb_cache_success(void) {
+  return dxb_cache_result(MDBX_SUCCESS, 0, 0, 0, false);
+}
+
 static inline dxb_cache_result_t dxb_cache_invalidated(const dxb_cache_invalidate_io_t *io, size_t entries) {
   return dxb_cache_result(MDBX_SUCCESS, io->pages.bytes, io->pages.npages, entries, false);
 }
@@ -21854,15 +21858,14 @@ static dxb_cache_result_t dxb_storage_materialize_cached_large_page(dxb_storage_
   return dxb_cache_materialized(&materialize, false);
 }
 
-static int page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
+static dxb_cache_result_t page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
   page_cache_entry_t *const entry = pgr->ref.cache;
   if (!entry || !is_largepage(pgr->page) || entry->io.npages >= pgr->page->pages)
-    return MDBX_SUCCESS;
+    return dxb_cache_success();
 
   const size_t npages = pgr->page->pages;
   tASSERT0(txn, npages > 1 && (size_t)pgr->page->pgno + npages <= txn->geo.first_unallocated);
-  dxb_cache_result_t result = dxb_storage_materialize_cached_large_page(entry->storage, pgr);
-  return result.err;
+  return dxb_storage_materialize_cached_large_page(entry->storage, pgr);
 }
 
 static inline dxb_init_result_t dxb_init_result(int err, const dxb_storage_t *storage, bool reset) {
@@ -36009,7 +36012,7 @@ static __always_inline pgr_t page_get_inline(const uint16_t ILL, const MDBX_curs
     if (likely(mc->checking & z_pagecheck) == 0) {
 #if MDBX_DISABLE_VALIDATION
       if (is_largepage(r.page) && (ILL & (P_BRANCH | P_LEAF | P_DUPFIX)) == (P_BRANCH | P_LEAF | P_DUPFIX))
-        r.err = page_cache_read_large(txn, &r);
+        r.err = page_cache_read_large(txn, &r).err;
       if (unlikely(r.err != MDBX_SUCCESS)) {
         txn->flags |= MDBX_TXN_ERROR;
         const int err = r.err;
@@ -36021,7 +36024,7 @@ static __always_inline pgr_t page_get_inline(const uint16_t ILL, const MDBX_curs
       r.err = check_page_header(ILL, r.page, txn, front);
       if (likely(r.err == MDBX_SUCCESS)) {
         if (is_largepage(r.page) && (ILL & (P_BRANCH | P_LEAF | P_DUPFIX)) == (P_BRANCH | P_LEAF | P_DUPFIX))
-          r.err = page_cache_read_large(txn, &r);
+          r.err = page_cache_read_large(txn, &r).err;
         if (likely(r.err == MDBX_SUCCESS)) {
           r.ref.npages = is_largepage(r.page) ? r.page->pages : 1;
           return r;
@@ -36032,7 +36035,7 @@ static __always_inline pgr_t page_get_inline(const uint16_t ILL, const MDBX_curs
       r = check_page_complete(ILL, r, mc, front);
       if (likely(r.err == MDBX_SUCCESS) && is_largepage(r.page) &&
           (ILL & (P_BRANCH | P_LEAF | P_DUPFIX)) == (P_BRANCH | P_LEAF | P_DUPFIX))
-        r.err = page_cache_read_large(txn, &r);
+        r.err = page_cache_read_large(txn, &r).err;
       if (likely(r.err == MDBX_SUCCESS))
         return r;
     }
