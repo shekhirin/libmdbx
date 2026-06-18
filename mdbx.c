@@ -28863,7 +28863,11 @@ static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *stora
   }
   return dxb_sysinfo_error(GetLastError(), true);
 #else
-  dxb_stat_result_t stat_result = dxb_storage_stat(storage);
+  dxb_stat_submit_io_t stat_submit;
+  int rc = dxb_storage_make_stat_submit_io(&stat_submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_sysinfo_error(rc, false);
+  dxb_stat_result_t stat_result = dxb_storage_submit_stat(storage, &stat_submit);
   if (unlikely(stat_result.err != MDBX_SUCCESS))
     return dxb_sysinfo_from_stat_error(stat_result);
   return dxb_sysinfo_completed(stat_result.st.st_size, UINT64_C(512) * stat_result.st.st_blocks,

@@ -11796,6 +11796,27 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.104` batch, `1.144` crud, `1.000` iterate,
 `1.007` get, and `1.074` delete.
 
+A later sysinfo stat submission cleanup routed the POSIX
+`dxb_storage_fetch_sysinfo()` fallback through an explicit
+`dxb_stat_submit_io_t` built by `dxb_storage_make_stat_submit_io()` before
+calling `dxb_storage_submit_stat()`. This removes another nested direct stat
+call from higher-level storage probing while leaving raw `dxb_storage_stat()`
+as the synchronous backend implementation behind the stat submitter. The
+Windows sysinfo probe remains unchanged because it already uses native file
+information calls under the sysinfo submitter. Verification passed
+`git diff --check`, source scans covering
+`dxb_storage_fetch_sysinfo()`, `dxb_storage_submit_fetch_sysinfo()`,
+`dxb_storage_make_stat_submit_io()`, `dxb_storage_submit_stat()`, and
+`dxb_storage_stat()`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.119`
+batch, `1.137` crud, `1.209` iterate, `0.950` get, and `1.065` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
