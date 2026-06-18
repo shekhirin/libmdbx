@@ -10218,6 +10218,37 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.101` batch, `1.163` crud, `1.238` iterate,
 `0.923` get, and `1.079` delete.
 
+A later bootstrap meta-pages write cleanup added
+`dxb_setup_meta_pages_write_submit_io_t` and
+`dxb_setup_submit_meta_pages_write()` for the new-database creation path in
+`dxb_setup()`. The request captures the environment, data storage handle,
+three-page meta prefix span, rebuilt data-write descriptor, generic
+write-submit descriptor, auxiliary meta buffer, and expected byte count.
+Validation rechecks the environment/storage identity, auxiliary-buffer identity,
+page-size agreement, meta-prefix span shape, data-write descriptor, generic
+write-submit descriptor, expected payload size, and a rebuilt request before
+submitting the write. Submit still delegates to
+`dxb_storage_submit_write_data()`, preserving the current `meta_init_triplet()`
+payload, cache invalidation, submitted/completed write accounting, subsequent
+current-size update, and debug header reread. This removes the inline direct
+storage-write submit from the bootstrap meta-page write and gives initial
+database creation an explicit async-capable request point. Verification passed
+`git diff --check`, source scans covering
+`dxb_setup_meta_pages_write_submit_io_t`,
+`dxb_setup_make_meta_pages_write_submit_io()`,
+`dxb_setup_meta_pages_write_submit_io_validate()`,
+`dxb_setup_submit_meta_pages_write()`, the updated `dxb_setup()` call site, and
+the absence of the old inline `dxb_storage_submit_write_data(storage,
+&meta_pages_submit)` call, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.112`
+batch, `1.165` crud, `0.976` iterate, `1.086` get, and `1.072` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
