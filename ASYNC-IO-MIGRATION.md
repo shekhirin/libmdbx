@@ -11195,7 +11195,7 @@ state, generic reset descriptor validity, `reset=true`, and a rebuilt request
 before submitting. Submit delegates to `dxb_storage_submit_reset()`, preserving
 the reset error propagation into `lck_destroy()`'s return code and the ordering
 after DXB close/neighbor lock restoration and before lock-file close. The
-scratch reset in `mdbx_preopen_snapinfoW()` remains a later checkpoint because
+scratch reset in `mdbx_preopen_snapinfoW()` was left for a later checkpoint because
 it uses a stack-local preopen environment rather than a normal open/close
 lifecycle. Verification passed `git diff --check`, source scans covering
 `dxb_env_data_reset_submit_io_t`,
@@ -11211,6 +11211,36 @@ injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
 ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.095` batch, `1.158` crud, `0.887` iterate,
 `1.001` get, and `1.082` delete.
+
+A later `mdbx_preopen_snapinfoW()` scratch-env reset cleanup reused
+`dxb_env_data_reset_submit_io_t`, `env_make_data_reset_submit_io()`,
+`env_data_reset_submit_io_validate()`, and `env_submit_data_reset()` for the
+stack-local preopen environment. The request captures the scratch environment,
+bound data storage handle, false `ENV_ACTIVE` state, and generic reset-submit
+descriptor. Validation rechecks environment/storage identity, current active
+state, generic reset descriptor validity, `reset=true`, and a rebuilt request
+before submitting. Submit delegates to `dxb_storage_submit_reset()`, preserving
+`LOG_IFERR` make/reset error handling, storage reset before Windows event
+invalidation and overlapped-close marking, `env_options_init()`, pathname
+handling, and the read-only validation preopen flow. This also moved the
+env-level reset descriptor next to the preopen helpers so both preopen and
+later close/destruction paths share one wrapper, and removed the last direct
+higher-level `dxb_storage_make_reset_submit_io()` /
+`dxb_storage_submit_reset()` construction outside the generic reset submitter
+and write-queue reset helpers. Verification passed `git diff --check`, source
+scans covering `dxb_env_data_reset_submit_io_t`,
+`env_make_data_reset_submit_io()`, `env_data_reset_submit_io_validate()`,
+`env_submit_data_reset()`, the updated `mdbx_preopen_snapinfoW()` scratch reset
+path, and the remaining direct reset-submit matches, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.098` batch, `1.135` crud, `1.005` iterate,
+`0.953` get, and `1.099` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
