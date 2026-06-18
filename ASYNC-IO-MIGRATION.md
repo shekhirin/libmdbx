@@ -47,8 +47,9 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   replacing a shared buffer. Normal writer reads use private unlisted entries,
   while validation/checking builds can track those private entries so
   `page_check()` can classify them.
-  `page_get_unchecked()` checks dirty/spilled transaction pages before falling
-  back to committed-page lookup.
+  `page_submit_get_unchecked()` checks dirty/spilled transaction pages after
+  callers build a checked `dxb_page_get_submit_io_t`, before falling back to
+  committed-page lookup.
 - `pgr_t` now carries a named `page_ref_t` alongside the returned `page_t *`.
   Committed reads are cache refs, while dirty-list, newly allocated, loose, and
   unspilled pages are transaction-dirty refs.
@@ -93,9 +94,9 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   result; overflow-page requests can extend that entry to the full large-page
   span after header validation. The remaining `MDBX_WRITEMAP` branch is
   unreachable through accepted opens.
-  `page_get_unchecked()` checks dirty pages before falling back to explicit
-  committed-page reads, so uncommitted/new pages are not fetched from disk. The
-  remaining `pg[]` search hits must stay limited to helper internals,
+  `page_submit_get_unchecked()` checks dirty pages before falling back to
+  explicit committed-page reads, so uncommitted/new pages are not fetched from
+  disk. The remaining `pg[]` search hits must stay limited to helper internals,
   comparisons, assertions, and comments.
 - `page_alloc_finalize()` now asserts that `MDBX_WRITEMAP` is absent. Accepted
   write transactions allocate new pages only as transaction-owned dirty
@@ -12192,6 +12193,26 @@ including tool roundtrips, forced tiny-cache fault injection, the ASAN build
 ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.097` batch, `1.142` crud, `0.804` iterate,
 `1.048` get, and `1.060` delete.
+
+A later defrag page-get submission cleanup removed the last direct
+`page_get_unchecked()` call site from the source. The defrag page-get payload
+now carries a nested `dxb_page_get_submit_io_t` built by
+`page_make_get_submit_io()`, validates the page I/O coordinates alongside the
+defrag snapshot fields, and submits through `page_submit_get_unchecked()`
+while preserving `MDBX_ENABLE_PGET_STAT` accounting. With no callers left, the
+old `page_get_unchecked()` / `page_get_unchecked_ex()` wrapper was removed, and
+the remaining unchecked page access is expressed as explicit submit payloads.
+Verification passed `git diff --check`, source scans confirming only the
+generic unchecked submit helpers remain and no `page_get_unchecked()` symbol is
+left in `mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.122`
+batch, `1.151` crud, `0.851` iterate, `1.000` get, and `1.070` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
