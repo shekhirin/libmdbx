@@ -147,6 +147,9 @@ typedef struct dxb_stat_submit_io {
 
 typedef struct dxb_sysinfo_submit_io {
   bool fetch;
+#if !defined(_WIN32) && !defined(_WIN64)
+  dxb_stat_submit_io_t stat;
+#endif /* !Windows */
 } dxb_sysinfo_submit_io_t;
 
 typedef struct dxb_incore_submit_io {
@@ -2278,12 +2281,29 @@ static inline int dxb_storage_make_sysinfo_submit_io(dxb_sysinfo_submit_io_t *io
   if (unlikely(!io))
     return MDBX_EINVAL;
   io->fetch = true;
+#if !defined(_WIN32) && !defined(_WIN64)
+  int rc = dxb_storage_make_stat_submit_io(&io->stat);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+#endif /* !Windows */
   return MDBX_SUCCESS;
 }
 
 static inline int dxb_storage_sysinfo_submit_io_validate(const dxb_sysinfo_submit_io_t *io) {
   if (unlikely(!io || !io->fetch))
     return MDBX_EINVAL;
+#if !defined(_WIN32) && !defined(_WIN64)
+  int rc = dxb_storage_stat_submit_io_validate(&io->stat);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_sysinfo_submit_io_t checked;
+  rc = dxb_storage_make_sysinfo_submit_io(&checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.fetch != io->fetch || checked.stat.fetch != io->stat.fetch))
+    return MDBX_EINVAL;
+#endif /* !Windows */
   return MDBX_SUCCESS;
 }
 
@@ -4517,7 +4537,8 @@ MDBX_INTERNAL dxb_deinit_result_t dxb_storage_submit_deinit(dxb_storage_t *stora
 static dxb_stat_result_t dxb_storage_stat(const dxb_storage_t *storage);
 static dxb_stat_result_t dxb_storage_submit_stat(const dxb_storage_t *storage, const dxb_stat_submit_io_t *io);
 #endif /* !Windows */
-static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *storage);
+static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *storage,
+                                                      const dxb_sysinfo_submit_io_t *io);
 static dxb_sysinfo_result_t dxb_storage_submit_fetch_sysinfo(const dxb_storage_t *storage,
                                                              const dxb_sysinfo_submit_io_t *io);
 static dxb_readonly_result_t dxb_storage_check_readonly(const dxb_storage_t *storage, const pathchar_t *pathname,
@@ -13716,6 +13737,10 @@ static inline int env_sysinfo_submit_io_validate(const dxb_env_sysinfo_submit_io
   if (unlikely(checked.env != io->env || checked.storage != io->storage ||
                checked.sysinfo.fetch != io->sysinfo.fetch))
     return MDBX_EINVAL;
+#if !defined(_WIN32) && !defined(_WIN64)
+  if (unlikely(checked.sysinfo.stat.fetch != io->sysinfo.stat.fetch))
+    return MDBX_EINVAL;
+#endif /* !Windows */
 
   return MDBX_SUCCESS;
 }
@@ -29103,7 +29128,12 @@ static inline dxb_sysinfo_result_t dxb_sysinfo_completed(uint64_t filesize, uint
   return dxb_sysinfo_result(MDBX_SUCCESS, filesize, allocated, io_block, true, true);
 }
 
-static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *storage) {
+static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *storage,
+                                                      const dxb_sysinfo_submit_io_t *io) {
+  int rc = dxb_storage_sysinfo_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_sysinfo_error(rc, false);
+
   const mdbx_filehandle_t dxb_fd = dxb_storage_data_fd(storage);
   if (dxb_fd == INVALID_HANDLE_VALUE)
     return dxb_sysinfo_noop_completed();
@@ -29140,11 +29170,7 @@ static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *stora
   }
   return dxb_sysinfo_error(GetLastError(), true);
 #else
-  dxb_stat_submit_io_t stat_submit;
-  int rc = dxb_storage_make_stat_submit_io(&stat_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_sysinfo_error(rc, false);
-  dxb_stat_result_t stat_result = dxb_storage_submit_stat(storage, &stat_submit);
+  dxb_stat_result_t stat_result = dxb_storage_submit_stat(storage, &io->stat);
   if (unlikely(stat_result.err != MDBX_SUCCESS))
     return dxb_sysinfo_from_stat_error(stat_result);
   return dxb_sysinfo_completed(stat_result.st.st_size, UINT64_C(512) * stat_result.st.st_blocks,
@@ -29157,7 +29183,7 @@ static dxb_sysinfo_result_t dxb_storage_submit_fetch_sysinfo(const dxb_storage_t
   int rc = dxb_storage_sysinfo_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_sysinfo_error(rc, false);
-  return dxb_storage_fetch_sysinfo(storage);
+  return dxb_storage_fetch_sysinfo(storage, io);
 }
 
 static inline dxb_readonly_result_t dxb_readonly_result(int err, int source_err, bool submitted, bool completed) {
