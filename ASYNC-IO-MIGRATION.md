@@ -5833,6 +5833,24 @@ CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
 passed with forced/default ratios of `1.121` batch, `1.151` crud, `1.021`
 iterate, `0.990` get, and `1.066` delete.
 
+A later direct data-write descriptor cleanup split single-buffer data-file
+writes from metadata byte writes. Defrag page moves, initial meta-triplet
+creation, and page-kill poison writes now build checked `dxb_data_write_io_t`
+descriptors from their page spans before submitting to `dxb_storage_write_data()`
+or `dxb_storage_writev_data()`. Metadata subrange writes keep the byte-oriented
+`dxb_storage_write_meta_bytes()` path, and source scans now prove no direct
+data-channel call remains through a generic byte writer. Verification passed
+`git diff --check`, source scans proving `dxb_storage_writev_bytes()` and
+data-channel `dxb_storage_write_bytes()` calls are gone from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke`
+CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
+passed with forced/default ratios of `1.153` batch, `1.163` crud, `0.800`
+iterate, `0.992` get, and `1.079` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
