@@ -11315,6 +11315,33 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.092`
 batch, `1.132` crud, `0.797` iterate, `0.954` get, and `1.080` delete.
 
+A later environment sysinfo cleanup added `dxb_env_sysinfo_submit_io_t`,
+`env_make_sysinfo_submit_io()`, `env_sysinfo_submit_io_validate()`, and
+`env_submit_sysinfo()` for `env_info_sys()`. The request captures the const
+environment, bound data storage handle, and generic sysinfo descriptor.
+Validation rechecks environment/storage identity, generic sysinfo descriptor
+validity, and a rebuilt request before submitting. Submit delegates to
+`dxb_storage_submit_fetch_sysinfo()`, preserving bootid/pagesize/upcblk
+initialization, zeroing of DXB size/allocation/ioblk before fetch, propagation
+of sysinfo errors, and filling of `mi_dxb_fsize`, `mi_dxb_fallocated`, and
+`mi_sys_ioblk`. This removes the remaining direct higher-level
+`dxb_storage_make_sysinfo_submit_io()` /
+`dxb_storage_submit_fetch_sysinfo()` construction from `env_info_sys()`,
+leaving only the generic sysinfo helper/submitter and this env-level wrapper.
+Verification passed `git diff --check`, source scans covering
+`dxb_env_sysinfo_submit_io_t`, `env_make_sysinfo_submit_io()`,
+`env_sysinfo_submit_io_validate()`, `env_submit_sysinfo()`, the updated
+`env_info_sys()` path, and the remaining direct sysinfo-submit matches, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.098` batch, `1.163` crud, `0.980`
+iterate, `0.991` get, and `1.083` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

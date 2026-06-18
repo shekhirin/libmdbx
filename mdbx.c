@@ -13427,8 +13427,56 @@ __cold int mdbx_env_close_ex(MDBX_env *env, bool dont_sync) {
 
 /*----------------------------------------------------------------------------*/
 
+typedef struct dxb_env_sysinfo_submit_io {
+  const MDBX_env *env;
+  const dxb_storage_t *storage;
+  dxb_sysinfo_submit_io_t sysinfo;
+} dxb_env_sysinfo_submit_io_t;
+
+static inline int env_make_sysinfo_submit_io(const MDBX_env *env, dxb_env_sysinfo_submit_io_t *io) {
+  if (unlikely(!env || !io))
+    return MDBX_EINVAL;
+
+  dxb_sysinfo_submit_io_t sysinfo;
+  int rc = dxb_storage_make_sysinfo_submit_io(&sysinfo);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->env = env;
+  io->storage = &env->dxb_storage;
+  io->sysinfo = sysinfo;
+  return MDBX_SUCCESS;
+}
+
+static inline int env_sysinfo_submit_io_validate(const dxb_env_sysinfo_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_sysinfo_submit_io_validate(&io->sysinfo);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_env_sysinfo_submit_io_t checked;
+  rc = env_make_sysinfo_submit_io(io->env, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env != io->env || checked.storage != io->storage ||
+               checked.sysinfo.fetch != io->sysinfo.fetch))
+    return MDBX_EINVAL;
+
+  return MDBX_SUCCESS;
+}
+
+static dxb_sysinfo_result_t env_submit_sysinfo(const dxb_env_sysinfo_submit_io_t *io) {
+  int rc = env_sysinfo_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    const dxb_sysinfo_result_t result = {rc, 0, 0, 0, false, false};
+    return result;
+  }
+  return dxb_storage_submit_fetch_sysinfo(io->storage, &io->sysinfo);
+}
+
 __must_check_result static int env_info_sys(const MDBX_env *env, MDBX_envinfo *out) {
-  const dxb_storage_t *const storage = &env->dxb_storage;
   out->mi_bootid.current.x = globals.bootid.x;
   out->mi_bootid.current.y = globals.bootid.y;
   out->mi_sys_pagesize = globals.sys_pagesize;
@@ -13445,11 +13493,11 @@ __must_check_result static int env_info_sys(const MDBX_env *env, MDBX_envinfo *o
   out->mi_dxb_fsize = 0;
   out->mi_dxb_fallocated = 0;
   out->mi_sys_ioblk = 0;
-  dxb_sysinfo_submit_io_t sysinfo_submit;
-  int err = dxb_storage_make_sysinfo_submit_io(&sysinfo_submit);
+  dxb_env_sysinfo_submit_io_t sysinfo_submit;
+  int err = env_make_sysinfo_submit_io(env, &sysinfo_submit);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  dxb_sysinfo_result_t sysinfo = dxb_storage_submit_fetch_sysinfo(storage, &sysinfo_submit);
+  dxb_sysinfo_result_t sysinfo = env_submit_sysinfo(&sysinfo_submit);
   if (unlikely(sysinfo.err != MDBX_SUCCESS))
     return sysinfo.err;
   out->mi_dxb_fsize = sysinfo.filesize;
