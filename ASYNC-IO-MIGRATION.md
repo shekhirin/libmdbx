@@ -6274,6 +6274,26 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.104` batch, `1.166`
 crud, `0.857` iterate, `1.027` get, and `1.077` delete.
 
+A later queued-write walk cleanup made `osal_ioring_walk()` descriptor-native.
+Queued ring items already retain `dxb_data_write_io_t`, so the walk callback
+now receives checked data-write descriptor subranges instead of byte ranges.
+`dxb_data_write_subrange_io()` derives each callback request from the retained
+queue item descriptor, validating the byte subrange and matching page coverage
+before dirty-page completion sees it. The old byte-only
+`osal_ioring_walk_bytes()` helper, `walk_write_callback` trampoline state, and
+private `dxb_storage_queued_write_callback_t` boundary are gone; source scans
+prove those old callback/trampoline names have no remaining references.
+Verification passed `git diff --check`, source scans covering the
+descriptor-native queued-write walk helpers and stale callback names, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.100` batch, `1.162`
+crud, `1.176` iterate, `1.042` get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

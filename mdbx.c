@@ -108,8 +108,6 @@ typedef struct dxb_data_read_io {
   dxb_byte_io_t bytes;
 } dxb_data_read_io_t;
 
-typedef void (*dxb_storage_queued_write_callback_t)(iov_ctx_t *ctx, const dxb_data_write_io_t *io, void *data);
-
 typedef struct dxb_data_copy_io {
   dxb_page_io_t src_pages;
   dxb_page_io_t dst_pages;
@@ -4515,7 +4513,6 @@ MDBX_INTERNAL int meta_wipe_steady(MDBX_env *env, txnid_t inclusive_upto);
 struct iov_ctx {
   MDBX_env *env;
   dxb_storage_t *storage;
-  dxb_storage_queued_write_callback_t walk_write_callback;
   enum dxb_io_channel channel;
   int err;
 #ifndef MDBX_NEED_WRITTEN_RANGE
@@ -21781,37 +21778,16 @@ static inline int dxb_storage_add_queued_write(dxb_storage_t *storage, const dxb
   return osal_ioring_add(dxb_storage_write_queue(storage), io, data);
 }
 
-static void dxb_storage_walk_queued_write_bytes(iov_ctx_t *ctx, const dxb_byte_io_t *io, void *data) {
-  if (unlikely(!ctx->storage || !ctx->walk_write_callback)) {
-    if (ctx->err == MDBX_SUCCESS)
-      ctx->err = MDBX_EINVAL;
-    return;
-  }
-
-  dxb_data_write_io_t queued;
-  int rc = dxb_storage_make_data_write_io(ctx->storage, io, &queued);
-  if (likely(rc == MDBX_SUCCESS) && unlikely(queued.pages.npages == 0))
-    rc = MDBX_EINVAL;
-  if (unlikely(rc != MDBX_SUCCESS)) {
-    if (ctx->err == MDBX_SUCCESS)
-      ctx->err = rc;
-    return;
-  }
-
-  ctx->walk_write_callback(ctx, &queued, data);
-}
-
 static inline void dxb_storage_walk_write_queue(dxb_storage_t *storage, iov_ctx_t *ctx,
-                                                dxb_storage_queued_write_callback_t callback) {
-  if (unlikely(ctx->storage != storage || ctx->walk_write_callback || !callback)) {
+                                                void (*callback)(iov_ctx_t *ctx, const dxb_data_write_io_t *io,
+                                                                 void *data)) {
+  if (unlikely(ctx->storage != storage || !callback)) {
     if (ctx->err == MDBX_SUCCESS)
       ctx->err = MDBX_EINVAL;
     return;
   }
 
-  ctx->walk_write_callback = callback;
-  osal_ioring_walk(dxb_storage_write_queue(storage), ctx, dxb_storage_walk_queued_write_bytes);
-  ctx->walk_write_callback = nullptr;
+  osal_ioring_walk(dxb_storage_write_queue(storage), ctx, callback);
 }
 
 static inline bool dxb_storage_can_lazy_meta_sync_with_data(const dxb_storage_t *storage) {
@@ -31825,11 +31801,50 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *dat
   return MDBX_SUCCESS;
 }
 
-static void osal_ioring_walk_bytes(iov_ctx_t *ctx,
-                                   void (*callback)(iov_ctx_t *ctx, const dxb_byte_io_t *io, void *data),
-                                   const dxb_byte_io_t *base, size_t offset, size_t bytes, void *data) {
-  dxb_byte_io_t request;
-  const int err = dxb_storage_byte_subrange_io(base, offset, bytes, &request);
+static int dxb_data_write_subrange_io(const dxb_data_write_io_t *base, size_t offset, size_t bytes,
+                                      dxb_data_write_io_t *io) {
+  int rc = dxb_storage_byte_io_validate(&base->bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(base->pages.npages == 0 || base->pages.bytes != base->bytes.bytes ||
+               base->pages.offset != base->bytes.offset || base->pages.bytes % base->pages.npages != 0))
+    return MDBX_EINVAL;
+
+  const size_t pagesize = base->pages.bytes / base->pages.npages;
+  if (unlikely(pagesize == 0 || offset % pagesize != 0 || bytes % pagesize != 0))
+    return MDBX_EINVAL;
+
+  dxb_byte_io_t subrange;
+  rc = dxb_storage_byte_subrange_io(&base->bytes, offset, bytes, &subrange);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  const size_t offset_pages = offset / pagesize;
+  const size_t npages = bytes / pagesize;
+  if (unlikely(offset_pages > UINT32_MAX - base->pages.pgno ||
+               offset > UINT64_MAX - base->pages.offset))
+    return MDBX_EINVAL;
+  const uint32_t pgno = base->pages.pgno + (uint32_t)offset_pages;
+  if (unlikely(npages > UINT32_MAX - pgno))
+    return MDBX_EINVAL;
+
+  dxb_page_io_t pages;
+  pages.pgno = pgno;
+  pages.end_pgno = pages.pgno + (uint32_t)npages;
+  pages.npages = npages;
+  pages.offset = base->pages.offset + offset;
+  pages.bytes = bytes;
+
+  io->pages = pages;
+  io->bytes = subrange;
+  return MDBX_SUCCESS;
+}
+
+static void osal_ioring_walk_write_io(iov_ctx_t *ctx,
+                                      void (*callback)(iov_ctx_t *ctx, const dxb_data_write_io_t *io, void *data),
+                                      const dxb_data_write_io_t *base, size_t offset, size_t bytes, void *data) {
+  dxb_data_write_io_t request;
+  const int err = dxb_data_write_subrange_io(base, offset, bytes, &request);
   if (unlikely(err != MDBX_SUCCESS)) {
     if (ctx->err == MDBX_SUCCESS)
       ctx->err = err;
@@ -31839,7 +31854,7 @@ static void osal_ioring_walk_bytes(iov_ctx_t *ctx,
 }
 
 void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
-                      void (*callback)(iov_ctx_t *ctx, const dxb_byte_io_t *io, void *data)) {
+                      void (*callback)(iov_ctx_t *ctx, const dxb_data_write_io_t *io, void *data)) {
   for (ior_item_t *item = ior->pool; item <= ior->last;) {
 #if defined(_WIN32) || defined(_WIN64)
     size_t offset = 0;
@@ -31853,7 +31868,7 @@ void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
       MDBX_SUPPRESS_GOOFY_MSVC_ANALYZER(6385);
       while (item->sgv[i].Buffer) {
         if (data + ior->pagesize != item->sgv[i].Buffer) {
-          osal_ioring_walk_bytes(ctx, callback, &item->io.bytes, offset, bytes, data);
+          osal_ioring_walk_write_io(ctx, callback, &item->io, offset, bytes, data);
           offset += bytes;
           data = Ptr64ToPtr(item->sgv[i].Buffer);
           bytes = 0;
@@ -31863,19 +31878,18 @@ void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
       }
     }
     ASSERT(bytes < MAX_WRITE);
-    osal_ioring_walk_bytes(ctx, callback, &item->io.bytes, offset, bytes, data);
+    osal_ioring_walk_write_io(ctx, callback, &item->io, offset, bytes, data);
 #elif MDBX_HAVE_PWRITEV
     ASSERT(item->sgvcnt > 0);
     size_t offset = 0;
     size_t i = 0;
     do {
-      osal_ioring_walk_bytes(ctx, callback, &item->io.bytes, offset, item->sgv[i].iov_len,
-                             item->sgv[i].iov_base);
+      osal_ioring_walk_write_io(ctx, callback, &item->io, offset, item->sgv[i].iov_len, item->sgv[i].iov_base);
       offset += item->sgv[i].iov_len;
     } while (++i != item->sgvcnt);
 #else
     const size_t i = 1;
-    osal_ioring_walk_bytes(ctx, callback, &item->io.bytes, 0, item->single.iov_len, item->single.iov_base);
+    osal_ioring_walk_write_io(ctx, callback, &item->io, 0, item->single.iov_len, item->single.iov_base);
 #endif
     item = ior_next(item, i);
   }
@@ -34997,7 +35011,6 @@ pgr_t page_get_large(const MDBX_cursor *const mc, const pgno_t pgno, const txnid
 int iov_init(MDBX_txn *const txn, iov_ctx_t *ctx, size_t items, size_t npages, enum dxb_io_channel channel) {
   ctx->env = txn->env;
   ctx->storage = &ctx->env->dxb_storage;
-  ctx->walk_write_callback = nullptr;
   ctx->channel = channel;
   if (unlikely(!dxb_storage_io_channel_valid(channel)))
     return ctx->err = MDBX_EINVAL;

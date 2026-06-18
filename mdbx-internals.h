@@ -1435,7 +1435,7 @@ typedef struct osal_ioring_write_result {
 MDBX_INTERNAL osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, mdbx_filehandle_t fd);
 
 MDBX_INTERNAL void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
-                                    void (*callback)(iov_ctx_t *ctx, const dxb_byte_io_t *io, void *data));
+                                    void (*callback)(iov_ctx_t *ctx, const dxb_data_write_io_t *io, void *data));
 
 MDBX_MAYBE_UNUSED static inline unsigned osal_ioring_left(const osal_ioring_t *ior) { return ior->slots_left; }
 
