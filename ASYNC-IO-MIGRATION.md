@@ -5953,6 +5953,24 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.089` batch, `1.158` crud, `1.008` iterate,
 `1.000` get, and `1.069` delete.
 
+A later startup metadata read descriptor cleanup added `dxb_meta_read_io_t` for
+the initial header probe loop. `dxb_read_header()` now builds checked meta-read
+descriptors from the meta number and probed page size before calling
+`dxb_storage_read_meta()`, preserving the double-read/retry behavior while
+removing the last direct startup `dxb_storage_read_bytes()` submissions from
+the header path. These descriptors intentionally record the guessed page size
+instead of using the normal page-span helper, because the stored page size has
+not been validated yet during this phase. Verification passed
+`git diff --check`, source scans proving the startup meta probe no longer calls
+`dxb_storage_read_bytes()` directly, the GNUmake `mdbx_migration_smoke` target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite, forced tiny-cache
+fault injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.148` batch, `1.155`
+crud, `0.888` iterate, `1.013` get, and `1.065` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

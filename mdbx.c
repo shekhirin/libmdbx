@@ -120,6 +120,12 @@ typedef struct dxb_data_write_io {
   dxb_byte_io_t bytes;
 } dxb_data_write_io_t;
 
+typedef struct dxb_meta_read_io {
+  dxb_byte_io_t bytes;
+  unsigned number;
+  size_t probe_pagesize;
+} dxb_meta_read_io_t;
+
 typedef struct dxb_meta_write_io {
   dxb_page_io_t page;
   dxb_byte_io_t bytes;
@@ -1573,6 +1579,38 @@ static inline int dxb_storage_data_read_io_validate(const dxb_storage_t *storage
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_make_meta_probe_read_io(unsigned number, size_t probe_pagesize,
+                                                      dxb_meta_read_io_t *io) {
+  if (unlikely(number >= NUM_METAS || probe_pagesize < MDBX_MIN_PAGESIZE))
+    return MDBX_EINVAL;
+  if (unlikely(number && (uint64_t)probe_pagesize > UINT64_MAX / number))
+    return MDBX_EINVAL;
+  const uint64_t probe_offset = (uint64_t)probe_pagesize * number;
+  if (unlikely(MDBX_MIN_PAGESIZE > UINT64_MAX - probe_offset))
+    return MDBX_EINVAL;
+
+  dxb_byte_io_t bytes;
+  int rc = dxb_storage_byte_span_io(probe_offset, probe_offset + MDBX_MIN_PAGESIZE, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->bytes = bytes;
+  io->number = number;
+  io->probe_pagesize = probe_pagesize;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_meta_read_io_validate(const dxb_meta_read_io_t *io) {
+  dxb_meta_read_io_t checked;
+  int rc = dxb_storage_make_meta_probe_read_io(io->number, io->probe_pagesize, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.bytes.offset != io->bytes.offset || checked.bytes.bytes != io->bytes.bytes ||
+               checked.number != io->number || checked.probe_pagesize != io->probe_pagesize))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_make_data_write_io_from_page(const dxb_storage_t *storage, const dxb_page_io_t *pages,
                                                           dxb_data_write_io_t *io) {
   int rc = dxb_storage_page_io_validate(storage, pages);
@@ -2095,6 +2133,7 @@ MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
 static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *io, void *buf);
 static int dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_read_io_t *io, void *buf);
+static int dxb_storage_read_meta(const dxb_storage_t *storage, const dxb_meta_read_io_t *io, void *buf);
 static int dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_io_t *io, const void *buf);
 static int dxb_storage_write_meta_bytes(dxb_storage_t *storage, const dxb_byte_io_t *io, const void *buf);
 static int dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_write_io_t *io, const void *buf);
@@ -22143,6 +22182,13 @@ static int dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_re
   return dxb_storage_read_bytes(storage, &io->bytes, buf);
 }
 
+static int dxb_storage_read_meta(const dxb_storage_t *storage, const dxb_meta_read_io_t *io, void *buf) {
+  int rc = dxb_storage_meta_read_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_read_bytes(storage, &io->bytes, buf);
+}
+
 static int dxb_storage_write_bytes_to_channel(dxb_storage_t *storage, enum dxb_io_channel channel,
                                               const dxb_byte_io_t *io, const void *buf) {
   if (unlikely(!dxb_storage_io_channel_valid(channel)))
@@ -22447,26 +22493,19 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
                                   : (loop_count > NUM_METAS) ? env->ps
                                                              : globals.sys_pagesize;
 
-    if (unlikely(meta_number >= NUM_METAS || probe_pagesize < MDBX_MIN_PAGESIZE))
-      return MDBX_EINVAL;
-    if (unlikely(meta_number && (uint64_t)probe_pagesize > UINT64_MAX / meta_number))
-      return MDBX_EINVAL;
-    const uint64_t probe_offset = (uint64_t)probe_pagesize * meta_number;
-    if (unlikely(MDBX_MIN_PAGESIZE > UINT64_MAX - probe_offset))
-      return MDBX_EINVAL;
-
-    dxb_byte_io_t request;
-    int err = dxb_storage_byte_span_io(probe_offset, probe_offset + MDBX_MIN_PAGESIZE, &request);
+    dxb_meta_read_io_t request;
+    int err = dxb_storage_make_meta_probe_read_io(meta_number, probe_pagesize, &request);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
     char buffer[MDBX_MIN_PAGESIZE];
     unsigned retryleft = 42;
     while (1) {
-      TRACE("reading meta[%d]: offset %" PRIu64 ", bytes %zu, retry-left %u", meta_number, request.offset,
-            request.bytes, retryleft);
-      err = dxb_storage_read_bytes(storage, &request, buffer);
-      if (err == MDBX_ENODATA && request.offset == 0 && loop_count == 0 && dxb_storage_filesize(storage) == 0 &&
+      TRACE("reading meta[%d]: offset %" PRIu64 ", bytes %zu, retry-left %u", meta_number, request.bytes.offset,
+            request.bytes.bytes, retryleft);
+      err = dxb_storage_read_meta(storage, &request, buffer);
+      if (err == MDBX_ENODATA && request.bytes.offset == 0 && loop_count == 0 &&
+          dxb_storage_filesize(storage) == 0 &&
           mode_bits /* non-zero for DB creation */ != 0) {
         NOTICE("read meta: empty file (%d, %s)", err, mdbx_strerror(err));
         return err;
@@ -22474,32 +22513,36 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
 #if defined(_WIN32) || defined(_WIN64)
       if (err == ERROR_LOCK_VIOLATION) {
         SleepEx(0, true);
-        err = dxb_storage_read_bytes(storage, &request, buffer);
+        err = dxb_storage_read_meta(storage, &request, buffer);
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
-          WARNING("read meta[%" PRIu64 ",%zu]: %i, %s", request.offset, request.bytes, err, mdbx_strerror(err));
+          WARNING("read meta[%" PRIu64 ",%zu]: %i, %s", request.bytes.offset, request.bytes.bytes, err,
+                  mdbx_strerror(err));
           continue;
         }
       }
 #endif /* Windows */
       if (err != MDBX_SUCCESS) {
-        ERROR("read meta[%" PRIu64 ",%zu]: %i, %s", request.offset, request.bytes, err, mdbx_strerror(err));
+        ERROR("read meta[%" PRIu64 ",%zu]: %i, %s", request.bytes.offset, request.bytes.bytes, err,
+              mdbx_strerror(err));
         return err;
       }
 
       char again[MDBX_MIN_PAGESIZE];
-      err = dxb_storage_read_bytes(storage, &request, again);
+      err = dxb_storage_read_meta(storage, &request, again);
 #if defined(_WIN32) || defined(_WIN64)
       if (err == ERROR_LOCK_VIOLATION) {
         SleepEx(0, true);
-        err = dxb_storage_read_bytes(storage, &request, again);
+        err = dxb_storage_read_meta(storage, &request, again);
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
-          WARNING("read meta[%" PRIu64 ",%zu]: %i, %s", request.offset, request.bytes, err, mdbx_strerror(err));
+          WARNING("read meta[%" PRIu64 ",%zu]: %i, %s", request.bytes.offset, request.bytes.bytes, err,
+                  mdbx_strerror(err));
           continue;
         }
       }
 #endif /* Windows */
       if (err != MDBX_SUCCESS) {
-        ERROR("read meta[%" PRIu64 ",%zu]: %i, %s", request.offset, request.bytes, err, mdbx_strerror(err));
+        ERROR("read meta[%" PRIu64 ",%zu]: %i, %s", request.bytes.offset, request.bytes.bytes, err,
+              mdbx_strerror(err));
         return err;
       }
 
