@@ -1616,8 +1616,8 @@ MDBX_INTERNAL int osal_ioring_create(osal_ioring_t *
 );
 MDBX_INTERNAL int osal_ioring_resize(osal_ioring_t *, size_t items);
 MDBX_INTERNAL void osal_ioring_destroy(osal_ioring_t *);
-MDBX_INTERNAL void osal_ioring_reset(osal_ioring_t *);
-MDBX_INTERNAL int osal_ioring_add(osal_ioring_t *ctx, const dxb_dirty_queued_write_io_t *io);
+MDBX_INTERNAL dxb_queue_op_result_t osal_ioring_reset(osal_ioring_t *);
+MDBX_INTERNAL dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ctx, const dxb_dirty_queued_write_io_t *io);
 typedef struct osal_ioring_write_result {
   int err;
   unsigned wops;
@@ -1628,7 +1628,8 @@ typedef struct osal_ioring_write_result {
 MDBX_INTERNAL osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior,
                                                            const dxb_queued_write_io_t *io);
 
-MDBX_INTERNAL void osal_ioring_walk(osal_ioring_t *ior, const dxb_dirty_write_walk_io_t *io);
+MDBX_INTERNAL dxb_queue_op_result_t osal_ioring_walk(osal_ioring_t *ior,
+                                                     const dxb_dirty_write_walk_io_t *io);
 
 MDBX_MAYBE_UNUSED static inline unsigned osal_ioring_left(const osal_ioring_t *ior) { return ior->slots_left; }
 

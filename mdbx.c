@@ -22232,8 +22232,7 @@ static dxb_queue_result_t dxb_storage_destroy_write_queue(dxb_storage_t *storage
 }
 
 static inline dxb_queue_op_result_t dxb_storage_reset_write_queue(dxb_storage_t *storage) {
-  osal_ioring_reset(dxb_storage_write_queue(storage));
-  return dxb_queue_op_result(MDBX_SUCCESS, dxb_storage_write_queue_const(storage), false, false, false, true);
+  return osal_ioring_reset(dxb_storage_write_queue(storage));
 }
 
 static inline mdbx_filehandle_t dxb_storage_lock_fd(const dxb_storage_t *storage) {
@@ -22360,8 +22359,7 @@ static inline dxb_queue_op_result_t dxb_storage_add_queued_write(dxb_storage_t *
   int rc = dxb_storage_dirty_queued_write_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false);
-  rc = osal_ioring_add(dxb_storage_write_queue(storage), io);
-  return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, rc == MDBX_SUCCESS, false, false);
+  return osal_ioring_add(dxb_storage_write_queue(storage), io);
 }
 
 static inline int dxb_storage_make_dirty_write_walk_io(const dxb_storage_t *storage, iov_ctx_t *ctx,
@@ -22399,9 +22397,7 @@ static inline dxb_queue_op_result_t dxb_storage_walk_write_queue(dxb_storage_t *
     return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false);
   }
 
-  osal_ioring_walk(dxb_storage_write_queue(storage), io);
-  return dxb_queue_op_result(io->ctx ? io->ctx->err : MDBX_SUCCESS, dxb_storage_write_queue_const(storage),
-                             false, false, true, false);
+  return osal_ioring_walk(dxb_storage_write_queue(storage), io);
 }
 
 static inline int dxb_storage_make_queued_write_io(const dxb_storage_t *storage, enum dxb_io_channel channel,
@@ -32601,19 +32597,23 @@ static inline int ior_item_make_merged_io(const ior_item_t *item, const dxb_data
   return dxb_data_write_io_validate_queued(merged, merged->bytes.bytes);
 }
 
-int osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued_write_io_t *io) {
-  if (unlikely(!io || !io->buffer))
-    return MDBX_EINVAL;
+static inline dxb_queue_op_result_t osal_ioring_add_result(osal_ioring_t *ior, int err, bool enqueued) {
+  return dxb_queue_op_result(err, ior, false, enqueued, false, false);
+}
+
+dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued_write_io_t *io) {
+  if (unlikely(!ior || !io || !io->buffer))
+    return osal_ioring_add_result(ior, MDBX_EINVAL, false);
   const dxb_data_write_io_t *const data_io = &io->data;
   void *data = io->buffer;
   int rc = dxb_data_write_io_validate_queued(data_io, data_io->bytes.bytes);
   if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+    return osal_ioring_add_result(ior, rc, false);
 
   if (unlikely(data_io->bytes.offset > SIZE_MAX || data_io->bytes.bytes > MAX_WRITE ||
                data_io->bytes.bytes > SIZE_MAX - (size_t)data_io->bytes.offset ||
                data_io->bytes.offset + data_io->bytes.bytes > MAX_MAPSIZE))
-    return MDBX_EINVAL;
+    return osal_ioring_add_result(ior, MDBX_EINVAL, false);
 
   const size_t offset = (size_t)data_io->bytes.offset;
   const size_t bytes = data_io->bytes.bytes;
@@ -32632,7 +32632,7 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued_write_io_t *io) {
     dxb_data_write_io_t merged_io;
     const int merge_rc = ior_item_make_merged_io(item, data_io, &merged_io);
     if (unlikely(MDBX_IS_ERROR(merge_rc)))
-      return merge_rc;
+      return osal_ioring_add_result(ior, merge_rc, false);
     if (unlikely(merge_rc == MDBX_SUCCESS) && likely(ior_last_bytes(ior, item) + bytes <= MAX_WRITE)) {
 #if defined(_WIN32) || defined(_WIN64)
       if (use_gather &&
@@ -32651,14 +32651,14 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued_write_io_t *io) {
         ior->slots_left -= segments;
         item->sgv[ior->last_sgvcnt += segments].Buffer = 0;
         ASSERT((item->single.iov_len & ior_WriteFile_flag) == 0);
-        return MDBX_SUCCESS;
+        return osal_ioring_add_result(ior, MDBX_SUCCESS, true);
       }
       const void *end = ptr_disp(item->single.iov_base, item->single.iov_len - ior_WriteFile_flag);
       if (unlikely(end == data)) {
         ASSERT((item->single.iov_len & ior_WriteFile_flag) != 0);
         item->single.iov_len += bytes;
         item->io = merged_io;
-        return MDBX_SUCCESS;
+        return osal_ioring_add_result(ior, MDBX_SUCCESS, true);
       }
 #elif MDBX_HAVE_PWRITEV
       ASSERT((int)item->sgvcnt > 0);
@@ -32666,24 +32666,24 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued_write_io_t *io) {
       if (unlikely(end == data)) {
         item->sgv[item->sgvcnt - 1].iov_len += bytes;
         item->io = merged_io;
-        return MDBX_SUCCESS;
+        return osal_ioring_add_result(ior, MDBX_SUCCESS, true);
       }
       if (likely(item->sgvcnt < OSAL_IOV_MAX)) {
         if (unlikely(ior->slots_left < 1))
-          return MDBX_RESULT_TRUE;
+          return osal_ioring_add_result(ior, MDBX_RESULT_TRUE, false);
         item->sgv[item->sgvcnt].iov_base = data;
         item->sgv[item->sgvcnt].iov_len = bytes;
         item->io = merged_io;
         item->sgvcnt += 1;
         ior->slots_left -= 1;
-        return MDBX_SUCCESS;
+        return osal_ioring_add_result(ior, MDBX_SUCCESS, true);
       }
 #else
       const void *end = ptr_disp(item->single.iov_base, item->single.iov_len);
       if (unlikely(end == data)) {
         item->single.iov_len += bytes;
         item->io = merged_io;
-        return MDBX_SUCCESS;
+        return osal_ioring_add_result(ior, MDBX_SUCCESS, true);
       }
 #endif
     }
@@ -32691,7 +32691,7 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued_write_io_t *io) {
   }
 
   if (unlikely(ior->slots_left < 1))
-    return MDBX_RESULT_TRUE;
+    return osal_ioring_add_result(ior, MDBX_RESULT_TRUE, false);
 
   unsigned slots_used = 1;
 #if defined(_WIN32) || defined(_WIN64)
@@ -32729,7 +32729,7 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued_write_io_t *io) {
 #endif /* !Windows */
   ior->slots_left -= slots_used;
   ior->last = item;
-  return MDBX_SUCCESS;
+  return osal_ioring_add_result(ior, MDBX_SUCCESS, true);
 }
 
 static int dxb_data_write_subrange_io(const dxb_data_write_io_t *base, size_t offset, size_t bytes,
@@ -32780,11 +32780,11 @@ static void osal_ioring_walk_write_io(const dxb_dirty_write_walk_io_t *walk_io,
   walk_io->callback(walk_io->ctx, &request, data);
 }
 
-void osal_ioring_walk(osal_ioring_t *ior, const dxb_dirty_write_walk_io_t *io) {
-  if (unlikely(!io || !io->ctx || !io->callback)) {
+dxb_queue_op_result_t osal_ioring_walk(osal_ioring_t *ior, const dxb_dirty_write_walk_io_t *io) {
+  if (unlikely(!ior || !io || !io->ctx || !io->callback)) {
     if (io && io->ctx && io->ctx->err == MDBX_SUCCESS)
       io->ctx->err = MDBX_EINVAL;
-    return;
+    return dxb_queue_op_result(MDBX_EINVAL, ior, false, false, false, false);
   }
 
   for (ior_item_t *item = ior->pool; item <= ior->last;) {
@@ -32825,6 +32825,7 @@ void osal_ioring_walk(osal_ioring_t *ior, const dxb_dirty_write_walk_io_t *io) {
 #endif
     item = ior_next(item, i);
   }
+  return dxb_queue_op_result(io->ctx->err, ior, false, false, true, false);
 }
 
 static int osal_ioring_item_io_validate(const ior_item_t *item, size_t bytes) {
@@ -33208,7 +33209,9 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, const dxb_queue
   return r;
 }
 
-void osal_ioring_reset(osal_ioring_t *ior) {
+dxb_queue_op_result_t osal_ioring_reset(osal_ioring_t *ior) {
+  if (unlikely(!ior))
+    return dxb_queue_op_result(MDBX_EINVAL, nullptr, false, false, false, false);
 #if defined(_WIN32) || defined(_WIN64)
   if (ior->last) {
     for (ior_item_t *item = ior->pool; item <= ior->last;) {
@@ -33234,10 +33237,11 @@ void osal_ioring_reset(osal_ioring_t *ior) {
 #endif /* !Windows */
   ior->slots_left = ior->allocated;
   ior->last = nullptr;
+  return dxb_queue_op_result(MDBX_SUCCESS, ior, false, false, false, true);
 }
 
 static void ior_cleanup(osal_ioring_t *ior, const size_t since) {
-  osal_ioring_reset(ior);
+  (void)osal_ioring_reset(ior);
 #if defined(_WIN32) || defined(_WIN64)
   for (size_t i = since; i < ior->event_stack; ++i) {
     /* Zap: Using uninitialized memory '**ior.event_pool' */
