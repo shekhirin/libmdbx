@@ -11276,6 +11276,45 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.092` batch, `1.144` crud, `1.158` iterate,
 `0.979` get, and `1.082` delete.
 
+A later storage lifecycle cleanup added
+`dxb_env_storage_init_submit_io_t`, `env_make_storage_init_submit_io()`,
+`env_storage_init_submit_io_validate()`, and `env_submit_storage_init()` for
+`mdbx_env_create()`, plus `dxb_env_storage_deinit_submit_io_t`,
+`env_make_storage_deinit_submit_io()`,
+`env_storage_deinit_submit_io_validate()`, and
+`env_submit_storage_deinit()` for create-bailout and `mdbx_env_close_ex()`
+teardown. The init request captures the environment, bound data storage, and
+generic init descriptor. The deinit request captures the environment, bound
+data storage, explicit `env_active` request state, and generic deinit
+descriptor; create-bailout and close teardown continue to submit deinit with
+`env_active=false`, preserving the previous storage reset/release behavior.
+Validation rechecks environment/storage identity, generic descriptor validity,
+the explicit active/deinit state, and rebuilt requests before submitting.
+Submit delegates to `dxb_storage_submit_init()` and
+`dxb_storage_submit_deinit()`, preserving create-time page-cache lock
+initialization, bailout deinit best-effort handling, and close-time
+`ENSURE_OBJ()` teardown semantics. This removes the remaining direct
+higher-level `dxb_storage_make_init_submit_io()` /
+`dxb_storage_submit_init()` and `dxb_storage_make_deinit_submit_io()` /
+`dxb_storage_submit_deinit()` construction from environment create/close paths,
+leaving only the generic lifecycle helper/submitter and these env-level
+wrappers. Verification passed `git diff --check`, source scans covering
+`dxb_env_storage_init_submit_io_t`, `env_make_storage_init_submit_io()`,
+`env_storage_init_submit_io_validate()`, `env_submit_storage_init()`,
+`dxb_env_storage_deinit_submit_io_t`,
+`env_make_storage_deinit_submit_io()`,
+`env_storage_deinit_submit_io_validate()`, `env_submit_storage_deinit()`, the
+updated `mdbx_env_create()` and `mdbx_env_close_ex()` lifecycle paths, and the
+remaining direct lifecycle-submit matches, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.092`
+batch, `1.132` crud, `0.797` iterate, `0.954` get, and `1.080` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
