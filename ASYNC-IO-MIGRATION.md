@@ -7465,6 +7465,27 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.120` batch, `1.162` crud, `1.016` iterate, `1.024`
 get, and `1.074` delete.
 
+A later direct-read result cleanup extended `dxb_read_result_t` with
+`submitted` and `completed` flags, matching the async-facing completion shape
+already used by queued dirty writes. Synchronous `dxb_storage_read_data()` and
+`dxb_storage_read_meta()` now return completed read results on success and
+unsubmitted results on error. Page-cache miss fills and overflow materialization
+now validate that successful storage reads were submitted, completed, and
+reported the expected payload size before exposing their buffers as page-cache
+entries. This gives a later async read backend explicit submission/completion
+state at the same boundary where page buffers become cursor-visible.
+Verification passed `git diff --check`, source scans covering
+`dxb_read_result_t`, `dxb_read_result()`, `dxb_read_error()`,
+`dxb_read_completed()`, and the cache read-result checks, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.129` batch, `1.149`
+crud, `0.864` iterate, `1.045` get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -21724,6 +21724,11 @@ static dxb_cache_page_result_t dxb_storage_read_cached_page(dxb_storage_t *stora
   err = read_result.err;
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
+  if (unlikely(!read_result.submitted || !read_result.completed ||
+               read_result.payload_bytes != io->data.bytes.bytes)) {
+    err = MDBX_EIO;
+    goto bailout;
+  }
 
   if (io->tracked) {
     page_cache_t *const cache = &storage->page_cache;
@@ -21840,6 +21845,11 @@ static dxb_cache_result_t dxb_storage_materialize_cached_large_page(dxb_storage_
   if (unlikely(err != MDBX_SUCCESS)) {
     osal_memalign_free(large);
     return dxb_cache_error(err);
+  }
+  if (unlikely(!read_result.submitted || !read_result.completed ||
+               read_result.payload_bytes != materialize.data.bytes.bytes)) {
+    osal_memalign_free(large);
+    return dxb_cache_error(MDBX_EIO);
   }
 
   if (entry->owner) {
@@ -22957,17 +22967,17 @@ static dxb_sync_result_t dxb_storage_sync_io(const dxb_storage_t *storage, const
   return dxb_sync_completed(io->bytes.bytes);
 }
 
-static inline dxb_read_result_t dxb_read_result(int err, size_t payload_bytes) {
-  const dxb_read_result_t result = {err, payload_bytes};
+static inline dxb_read_result_t dxb_read_result(int err, size_t payload_bytes, bool submitted, bool completed) {
+  const dxb_read_result_t result = {err, payload_bytes, submitted, completed};
   return result;
 }
 
 static inline dxb_read_result_t dxb_read_error(int err) {
-  return dxb_read_result(err, 0);
+  return dxb_read_result(err, 0, false, false);
 }
 
 static inline dxb_read_result_t dxb_read_completed(size_t payload_bytes) {
-  return dxb_read_result(MDBX_SUCCESS, payload_bytes);
+  return dxb_read_result(MDBX_SUCCESS, payload_bytes, true, true);
 }
 
 static dxb_read_result_t dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_read_io_t *io, void *buf) {

@@ -1351,6 +1351,8 @@ typedef struct dxb_data_write_io {
 typedef struct dxb_read_result {
   int err;
   size_t payload_bytes;
+  bool submitted;
+  bool completed;
 } dxb_read_result_t;
 
 typedef struct dxb_write_result {
