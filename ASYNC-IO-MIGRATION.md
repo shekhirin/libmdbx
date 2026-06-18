@@ -10316,6 +10316,37 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.107` batch, `1.157` crud, `0.983` iterate,
 `1.072` get, and `1.094` delete.
 
+A later defrag extent-copy cleanup added
+`dxb_defrag_extent_copy_submit_io_t`, `defrag_submit_extent_copy()`, and
+`defrag_copy_extent()` for the same-file `copy_file_range()` tail in
+`defrag_move()`. The request captures the defrag context, transaction, data
+storage handle, source and destination page numbers, page count,
+`first_unallocated`, `defrag_edge`, rebuilt source/destination page spans,
+rebuilt data-copy descriptor, and generic copy-submit descriptor. Validation
+rechecks transaction/storage identity, defrag bounds, live geometry snapshots,
+source/destination span shape, data-copy and copy-submit descriptors, and a
+rebuilt request before submitting. Submit still delegates to
+`dxb_storage_submit_copy_data()`, preserving destination cache invalidation,
+copy result accounting, and the fallback non-`copy_file_range()` page read/write
+loop. This removes the inline same-file copy request build/submit sequence from
+`defrag_move()` and gives defrag multi-page relocation an explicit
+async-capable request point. Verification passed `git diff --check`, source
+scans covering `dxb_defrag_extent_copy_submit_io_t`,
+`defrag_make_extent_copy_submit_io()`,
+`defrag_extent_copy_submit_io_validate()`, `defrag_submit_extent_copy()`,
+`defrag_copy_extent()`, the updated `defrag_move()` copy-file-range tail, and
+the absence of the old inline
+`dxb_storage_submit_copy_data(storage, &copy_submit)` call, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.110` batch, `1.152` crud, `1.004` iterate,
+`1.014` get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
