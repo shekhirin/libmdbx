@@ -21958,7 +21958,6 @@ static inline ssize_t dxb_storage_sendfile_to_fd_raw(const dxb_storage_t *storag
 #endif /* MDBX_USE_SENDFILE */
 
 static int dxb_fault_inject(const char *operation);
-static int dxb_storage_sync(const dxb_storage_t *storage, enum osal_syncmode_bits mode_bits);
 static int dxb_storage_sync_io(const dxb_storage_t *storage, const dxb_sync_io_t *io);
 
 static inline void dxb_note_fsync_pgop(const MDBX_env *env, enum osal_syncmode_bits mode_bits) {
@@ -22100,24 +22099,22 @@ static inline int dxb_fault_inject_after_partial_writev(const char *operation, m
 static inline enum dxb_fault_write_order dxb_fault_write_order(void) { return dxb_fault_write_order_forward; }
 #endif /* MDBX_ENABLE_DXB_FAULT_INJECTION */
 
-static int dxb_storage_sync(const dxb_storage_t *storage, enum osal_syncmode_bits mode_bits) {
-  const bool has_sync_work = (mode_bits & (MDBX_SYNC_DATA | MDBX_SYNC_IODQ | MDBX_SYNC_SIZE)) != 0;
-  if (has_sync_work) {
-    int rc = dxb_fault_inject("sync");
-    if (unlikely(rc != MDBX_SUCCESS))
-      return rc;
-  }
-  int rc = dxb_storage_fsync(storage, mode_bits);
-  if (unlikely(rc != MDBX_SUCCESS) || !has_sync_work)
-    return rc;
-  return dxb_fault_inject("sync-complete");
-}
-
 static int dxb_storage_sync_io(const dxb_storage_t *storage, const dxb_sync_io_t *io) {
   int rc = dxb_storage_sync_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return dxb_storage_sync(storage, io->mode_bits);
+
+  const enum osal_syncmode_bits mode_bits = io->mode_bits;
+  const bool has_sync_work = (mode_bits & (MDBX_SYNC_DATA | MDBX_SYNC_IODQ | MDBX_SYNC_SIZE)) != 0;
+  if (has_sync_work) {
+    rc = dxb_fault_inject("sync");
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+  }
+  rc = dxb_storage_fsync(storage, mode_bits);
+  if (unlikely(rc != MDBX_SUCCESS) || !has_sync_work)
+    return rc;
+  return dxb_fault_inject("sync-complete");
 }
 
 static int dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_read_io_t *io, void *buf) {

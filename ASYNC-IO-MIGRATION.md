@@ -6044,6 +6044,23 @@ CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
 passed with forced/default ratios of `1.110` batch, `1.161` crud, `0.836`
 iterate, `1.077` get, and `1.059` delete.
 
+A later sync submission cleanup removed the raw mode-only
+`dxb_storage_sync()` helper from the C source. `dxb_storage_sync_io()` now
+validates the caller's checked `dxb_sync_io_t` descriptor itself, preserves the
+same sync fault-injection hooks, and then submits the existing whole-file
+`fsync()`/`fdatasync()` backend using the descriptor's mode bits. This leaves
+data and metadata sync callers behind one descriptor-validated storage boundary
+instead of dropping through a private untyped sync primitive. Verification
+passed `git diff --check`, source scans proving `dxb_storage_sync()` is gone
+from `mdbx.c`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.132` batch, `1.155`
+crud, `1.249` iterate, `0.974` get, and `1.067` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
