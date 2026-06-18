@@ -30623,12 +30623,17 @@ static dxb_copy_result_t dxb_storage_submit_sendfile_data_to_fd(const dxb_storag
 }
 #endif /* MDBX_USE_SENDFILE */
 
-static dxb_resize_result_t dxb_storage_setup_size(dxb_storage_t *storage, const dxb_setup_size_submit_io_t *io) {
+static dxb_resize_result_t dxb_storage_submit_setup_size(dxb_storage_t *storage,
+                                                         const dxb_setup_size_submit_io_t *io) {
+  int rc = dxb_storage_setup_size_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS || !storage))
+    return storage ? dxb_resize_error(storage, (rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL)
+                   : dxb_resize_unsubmitted_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
   ASSERT(dxb_storage_pagesize_ln(storage) > 0);
   const dxb_size_io_t *const target = &io->target;
   const unsigned flags = io->flags;
   const unsigned options = io->options;
-  int rc = dxb_storage_size_io_validate(target);
+  rc = dxb_storage_size_io_validate(target);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_resize_error(storage, rc);
   if ((flags & MDBX_RDONLY) == 0 && (options & MMAP_OPTION_SETLENGTH) != 0) {
@@ -30669,19 +30674,15 @@ static dxb_resize_result_t dxb_storage_setup_size(dxb_storage_t *storage, const 
   }
 }
 
-static dxb_resize_result_t dxb_storage_submit_setup_size(dxb_storage_t *storage,
-                                                         const dxb_setup_size_submit_io_t *io) {
-  int rc = dxb_storage_setup_size_submit_io_validate(io);
+static dxb_resize_result_t dxb_storage_submit_resize_size(dxb_storage_t *storage,
+                                                          const dxb_resize_size_submit_io_t *io) {
+  int rc = dxb_storage_resize_size_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS || !storage))
     return storage ? dxb_resize_error(storage, (rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL)
                    : dxb_resize_unsubmitted_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
-  return dxb_storage_setup_size(storage, io);
-}
-
-static dxb_resize_result_t dxb_storage_resize_size(dxb_storage_t *storage, const dxb_resize_size_submit_io_t *io) {
   const dxb_size_io_t *const target = &io->target;
   const unsigned flags = io->flags;
-  int rc = dxb_storage_size_io_validate(target);
+  rc = dxb_storage_size_io_validate(target);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_resize_error(storage, rc);
 
@@ -30736,15 +30737,6 @@ static dxb_resize_result_t dxb_storage_resize_size(dxb_storage_t *storage, const
   if (likely(rc == MDBX_SUCCESS))
     rc = dxb_storage_submit_size_state(storage, &size_state_submit).err;
   return dxb_resize_after_filesize(storage, rc, filesize_result);
-}
-
-static dxb_resize_result_t dxb_storage_submit_resize_size(dxb_storage_t *storage,
-                                                          const dxb_resize_size_submit_io_t *io) {
-  int rc = dxb_storage_resize_size_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS || !storage))
-    return storage ? dxb_resize_error(storage, (rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL)
-                   : dxb_resize_unsubmitted_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
-  return dxb_storage_resize_size(storage, io);
 }
 
 typedef struct dxb_resize_tail_discard_submit_io {
