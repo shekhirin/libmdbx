@@ -318,6 +318,7 @@ typedef struct dxb_page_get_with_ref_submit_io {
   page_ref_t *ref;
   pgno_t pgno;
   txnid_t front;
+  dxb_cursor_page_get_submit_io_t get;
   bool retain_ref;
 } dxb_page_get_with_ref_submit_io_t;
 
@@ -444,6 +445,7 @@ typedef struct dxb_cursor_stack_page_get_submit_io {
   MDBX_cursor *cursor;
   pgno_t pgno;
   txnid_t front;
+  dxb_cursor_page_get_submit_io_t get;
   intptr_t slot;
   intptr_t captured_top;
 } dxb_cursor_stack_page_get_submit_io_t;
@@ -8655,17 +8657,27 @@ MDBX_INTERNAL pgr_t page_get_three(const MDBX_cursor *const mc, const pgno_t pgn
 
 MDBX_INTERNAL pgr_t page_get_large(const MDBX_cursor *const mc, const pgno_t pgno, const txnid_t front);
 
+static inline int page_make_cursor_get_submit_io(const MDBX_cursor *mc, const uint16_t ill, const pgno_t pgno,
+                                                 const txnid_t front, dxb_cursor_page_get_submit_io_t *io);
+static __always_inline pgr_t page_submit_cursor_get(const dxb_cursor_page_get_submit_io_t *io);
+
 static inline int page_make_get_with_ref_submit_io(const MDBX_cursor *mc, const pgno_t pgno, page_t **mp,
                                                    page_ref_t *ref, const txnid_t front,
                                                    dxb_page_get_with_ref_submit_io_t *io) {
   if (unlikely(!mc || !mc->txn || !mp || !io))
     return MDBX_EINVAL;
 
+  dxb_cursor_page_get_submit_io_t get;
+  int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_LARGE, pgno, front, &get);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
   io->cursor = mc;
   io->page = mp;
   io->ref = ref;
-  io->pgno = pgno;
-  io->front = front;
+  io->pgno = get.get.request.pgno;
+  io->front = get.get.front;
+  io->get = get;
   io->retain_ref = ref != nullptr;
   return MDBX_SUCCESS;
 }
@@ -8679,7 +8691,16 @@ static inline int page_get_with_ref_submit_io_validate(const dxb_page_get_with_r
   if (unlikely(err != MDBX_SUCCESS))
     return err;
   if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.ref != io->ref ||
-               checked.pgno != io->pgno || checked.front != io->front || checked.retain_ref != io->retain_ref))
+               checked.pgno != io->pgno || checked.front != io->front ||
+               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
+               checked.get.get.request.pgno != io->get.get.request.pgno ||
+               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
+               checked.get.get.request.npages != io->get.get.request.npages ||
+               checked.get.get.request.offset != io->get.get.request.offset ||
+               checked.get.get.request.bytes != io->get.get.request.bytes ||
+               checked.get.get.front != io->get.get.front ||
+               checked.get.get.track_private != io->get.get.track_private ||
+               checked.retain_ref != io->retain_ref))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -8689,7 +8710,7 @@ static inline int page_submit_get_with_ref(const dxb_page_get_with_ref_submit_io
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  pgr_t ret = page_get_three(io->cursor, io->pgno, io->front);
+  pgr_t ret = page_submit_cursor_get(&io->get);
   *io->page = ret.page;
   if (io->retain_ref)
     *io->ref = ret.ref;
@@ -8718,9 +8739,15 @@ static inline int cursor_make_stack_page_get_submit_io(MDBX_cursor *mc, intptr_t
                pgno >= mc->txn->geo.first_unallocated))
     return MDBX_EINVAL;
 
+  dxb_cursor_page_get_submit_io_t get;
+  int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_LARGE, pgno, front, &get);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
   io->cursor = mc;
-  io->pgno = pgno;
-  io->front = front;
+  io->pgno = get.get.request.pgno;
+  io->front = get.get.front;
+  io->get = get;
   io->slot = slot;
   io->captured_top = mc->top;
   return MDBX_SUCCESS;
@@ -8738,6 +8765,14 @@ static inline int cursor_stack_page_get_submit_io_validate(const dxb_cursor_stac
   if (unlikely(err != MDBX_SUCCESS))
     return err;
   if (unlikely(checked.cursor != io->cursor || checked.pgno != io->pgno || checked.front != io->front ||
+               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
+               checked.get.get.request.pgno != io->get.get.request.pgno ||
+               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
+               checked.get.get.request.npages != io->get.get.request.npages ||
+               checked.get.get.request.offset != io->get.get.request.offset ||
+               checked.get.get.request.bytes != io->get.get.request.bytes ||
+               checked.get.get.front != io->get.get.front ||
+               checked.get.get.track_private != io->get.get.track_private ||
                checked.slot != io->slot || checked.captured_top != io->captured_top))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
@@ -8748,7 +8783,7 @@ static inline int cursor_submit_stack_page_get(const dxb_cursor_stack_page_get_s
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  pgr_t pgr = page_get_three(io->cursor, io->pgno, io->front);
+  pgr_t pgr = page_submit_cursor_get(&io->get);
   err = pgr.err;
   if (unlikely(err != MDBX_SUCCESS)) {
     pgr_release(io->cursor, &pgr);
