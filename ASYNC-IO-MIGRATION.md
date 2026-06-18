@@ -7443,6 +7443,28 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.111` batch, `1.148` crud, `1.171` iterate, `0.931`
 get, and `1.073` delete.
 
+A later overflow materialization completion cleanup made
+`dxb_storage_materialize_cached_large_page()` preserve the
+`dxb_storage_read_data()` completion payload. `dxb_cache_materialized()` now
+receives the actual read `payload_bytes`, and
+`dxb_storage_detach_materialized_large_page()` threads that value through when a
+shared pinned overflow header must detach into a private buffer. Existing
+callers still unwrap only `.err`, but the async-facing materialization result
+now reports the completed read size consistently for both in-place cache
+expansion and detached-buffer completion. Verification passed `git diff
+--check`, source scans covering `dxb_cache_materialized()`,
+`dxb_storage_materialize_cached_large_page()`,
+`dxb_storage_detach_materialized_large_page()`, and `read_result.payload_bytes`,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.120` batch, `1.162` crud, `1.016` iterate, `1.024`
+get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
