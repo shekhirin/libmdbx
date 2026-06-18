@@ -6879,6 +6879,26 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.112` batch, `1.154`
 crud, `1.421` iterate, `1.155` get, and `1.080` delete.
 
+A later direct-sync cleanup added `dxb_sync_result_t` for storage syncs.
+`dxb_storage_sync_io()` now returns an explicit result containing the error code
+and synchronized payload byte count instead of returning only `int`. Existing
+callers still unwrap the same `.err` value, preserving current durability
+control flow, while successful syncs now report the checked descriptor byte span
+after the existing `sync-complete` fault-injection point. No-op sync modes
+report zero payload bytes on success. This gives future async sync backends a
+completion-shaped boundary beside direct reads, direct writes, and queued
+writes. Verification passed `git diff --check`, source scans covering
+`dxb_sync_result_t`, the direct storage sync wrapper, and every
+`dxb_storage_sync_io()` call site, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.125` batch, `1.140` crud, `0.960` iterate,
+`1.019` get, and `1.075` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

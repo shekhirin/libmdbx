@@ -22479,7 +22479,7 @@ static int dxb_storage_set_readahead(const dxb_storage_t *storage, bool enable) 
 }
 
 static int dxb_fault_inject(const char *operation);
-static int dxb_storage_sync_io(const dxb_storage_t *storage, const dxb_sync_io_t *io);
+static dxb_sync_result_t dxb_storage_sync_io(const dxb_storage_t *storage, const dxb_sync_io_t *io);
 
 static inline void dxb_note_fsync_pgop(const MDBX_env *env, enum osal_syncmode_bits mode_bits) {
   if (MDBX_ENABLE_PGOP_STAT)
@@ -22620,22 +22620,40 @@ static inline int dxb_fault_inject_after_partial_writev(const char *operation, m
 static inline enum dxb_fault_write_order dxb_fault_write_order(void) { return dxb_fault_write_order_forward; }
 #endif /* MDBX_ENABLE_DXB_FAULT_INJECTION */
 
-static int dxb_storage_sync_io(const dxb_storage_t *storage, const dxb_sync_io_t *io) {
+static inline dxb_sync_result_t dxb_sync_result(int err, size_t payload_bytes) {
+  const dxb_sync_result_t result = {err, payload_bytes};
+  return result;
+}
+
+static inline dxb_sync_result_t dxb_sync_error(int err) {
+  return dxb_sync_result(err, 0);
+}
+
+static inline dxb_sync_result_t dxb_sync_completed(size_t payload_bytes) {
+  return dxb_sync_result(MDBX_SUCCESS, payload_bytes);
+}
+
+static dxb_sync_result_t dxb_storage_sync_io(const dxb_storage_t *storage, const dxb_sync_io_t *io) {
   int rc = dxb_storage_sync_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+    return dxb_sync_error(rc);
 
   const enum osal_syncmode_bits mode_bits = io->mode_bits;
   const bool has_sync_work = (mode_bits & (MDBX_SYNC_DATA | MDBX_SYNC_IODQ | MDBX_SYNC_SIZE)) != 0;
   if (has_sync_work) {
     rc = dxb_fault_inject("sync");
     if (unlikely(rc != MDBX_SUCCESS))
-      return rc;
+      return dxb_sync_error(rc);
   }
   rc = osal_fsync(dxb_storage_data_fd(storage), mode_bits);
-  if (unlikely(rc != MDBX_SUCCESS) || !has_sync_work)
-    return rc;
-  return dxb_fault_inject("sync-complete");
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_sync_error(rc);
+  if (!has_sync_work)
+    return dxb_sync_completed(0);
+  rc = dxb_fault_inject("sync-complete");
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_sync_error(rc);
+  return dxb_sync_completed(io->bytes.bytes);
 }
 
 static inline dxb_read_result_t dxb_read_result(int err, size_t payload_bytes) {
@@ -23947,7 +23965,7 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
     if (unlikely(rc != MDBX_SUCCESS))
       goto fail;
     dxb_note_fsync_pgop(env, mode_bits);
-    rc = dxb_storage_sync_io(storage, &sync_io);
+    rc = dxb_storage_sync_io(storage, &sync_io).err;
     if (unlikely(rc != MDBX_SUCCESS))
       goto fail;
     rc = (flags & MDBX_SAFE_NOSYNC) ? MDBX_RESULT_TRUE /* carry non-steady */
@@ -24052,7 +24070,7 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
       rc = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &meta_sync_io);
       if (unlikely(rc != MDBX_SUCCESS))
         goto undo;
-      rc = dxb_storage_sync_io(storage, &meta_sync_io);
+      rc = dxb_storage_sync_io(storage, &meta_sync_io).err;
       if (rc != MDBX_SUCCESS)
         goto undo;
     }
@@ -24245,7 +24263,7 @@ retry:;
         if (unlikely(err != MDBX_SUCCESS))
           return err;
         dxb_note_fsync_pgop(env, MDBX_SYNC_DATA);
-        err = dxb_storage_sync_io(storage, &sync_io);
+        err = dxb_storage_sync_io(storage, &sync_io).err;
 
         if (unlikely(err != MDBX_SUCCESS))
           return err;
@@ -30457,7 +30475,7 @@ __cold int meta_wipe_steady(MDBX_env *env, txnid_t inclusive_upto) {
       dxb_sync_io_t sync_io;
       err = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_io);
       if (likely(err == MDBX_SUCCESS))
-        err = dxb_storage_sync_io(storage, &sync_io);
+        err = dxb_storage_sync_io(storage, &sync_io).err;
     }
   }
 
@@ -30486,7 +30504,7 @@ int meta_sync(const MDBX_env *env, const meta_ptr_t head) {
   dxb_sync_io_t sync_io;
   int rc = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_io);
   if (likely(rc == MDBX_SUCCESS))
-    rc = dxb_storage_sync_io(storage, &sync_io);
+    rc = dxb_storage_sync_io(storage, &sync_io).err;
 
   if (likely(rc == MDBX_SUCCESS))
     env->lck->meta_sync_txnid.weak = (uint32_t)head.txnid;
@@ -30621,7 +30639,7 @@ __cold int __must_check_result meta_override(MDBX_env *env, size_t target, txnid
     dxb_sync_io_t sync_io;
     rc = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_io);
     if (likely(rc == MDBX_SUCCESS))
-      rc = dxb_storage_sync_io(storage, &sync_io);
+      rc = dxb_storage_sync_io(storage, &sync_io).err;
   }
   eASSERT0(env,
            (!env->txn && (env->flags & ENV_ACTIVE) == 0) ||

@@ -1359,6 +1359,11 @@ typedef struct dxb_write_result {
   size_t payload_bytes;
 } dxb_write_result_t;
 
+typedef struct dxb_sync_result {
+  int err;
+  size_t payload_bytes;
+} dxb_sync_result_t;
+
 typedef struct dxb_dirty_write_queue_io {
   enum dxb_io_channel channel;
   size_t items;
