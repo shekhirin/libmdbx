@@ -115,6 +115,10 @@ typedef struct dxb_cache_read_io {
   bool tracked;
 } dxb_cache_read_io_t;
 
+typedef struct dxb_cache_materialize_io {
+  dxb_data_read_io_t data;
+} dxb_cache_materialize_io_t;
+
 typedef struct dxb_data_copy_io {
   dxb_page_io_t src_pages;
   dxb_page_io_t dst_pages;
@@ -1785,6 +1789,45 @@ static inline int dxb_storage_page_ref_span_io(const dxb_storage_t *storage, con
 
 static inline int dxb_storage_page_ref_io(const dxb_storage_t *storage, const page_ref_t *ref, dxb_page_io_t *io) {
   return dxb_storage_page_ref_span_io(storage, ref, ref->npages ? ref->npages : 1, io);
+}
+
+static inline int dxb_storage_make_cache_materialize_io(const dxb_storage_t *storage, const page_ref_t *ref,
+                                                        size_t npages, dxb_cache_materialize_io_t *io) {
+  if (unlikely(npages <= 1))
+    return MDBX_EINVAL;
+
+  dxb_page_io_t pages;
+  int rc = dxb_storage_page_ref_span_io(storage, ref, npages, &pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_data_read_io_t data;
+  rc = dxb_storage_make_data_read_io(storage, &pages, &data);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->data = data;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_cache_materialize_io_validate(const dxb_storage_t *storage,
+                                                            const dxb_cache_materialize_io_t *io) {
+  if (unlikely(io->data.pages.npages <= 1))
+    return MDBX_EINVAL;
+
+  dxb_data_read_io_t checked;
+  int rc = dxb_storage_make_data_read_io(storage, &io->data.pages, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.pages.pgno != io->data.pages.pgno ||
+               checked.pages.end_pgno != io->data.pages.end_pgno ||
+               checked.pages.npages != io->data.pages.npages ||
+               checked.pages.offset != io->data.pages.offset ||
+               checked.pages.bytes != io->data.pages.bytes ||
+               checked.bytes.offset != io->data.bytes.offset ||
+               checked.bytes.bytes != io->data.bytes.bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
 }
 
 static inline bool dxb_storage_io_channel_valid(enum dxb_io_channel channel) {
@@ -21490,7 +21533,13 @@ bailout:
 }
 
 static int dxb_storage_detach_materialized_large_page(dxb_storage_t *storage, pgr_t *pgr, page_t *large,
-                                                      const dxb_page_io_t *io, const uint8_t pagesize_ln) {
+                                                      const dxb_cache_materialize_io_t *io) {
+  int err = dxb_storage_cache_materialize_io_validate(storage, io);
+  if (unlikely(err != MDBX_SUCCESS)) {
+    osal_memalign_free(large);
+    return err;
+  }
+
   page_cache_entry_t *const detached = osal_calloc(1, sizeof(*detached));
   if (unlikely(!detached)) {
     osal_memalign_free(large);
@@ -21502,14 +21551,14 @@ static int dxb_storage_detach_materialized_large_page(dxb_storage_t *storage, pg
   detached->storage = storage;
   detached->page = large;
   detached->snapshot_txnid = old.cache->snapshot_txnid;
-  detached->io = *io;
+  detached->io = io->data.pages;
   detached->pins = 1;
-  detached->pagesize_ln = pagesize_ln;
+  detached->pagesize_ln = old.cache->pagesize_ln;
 
   pgr->page = large;
   pgr->ref.page = large;
   pgr->ref.cache = detached;
-  pgr->ref.npages = io->npages;
+  pgr->ref.npages = io->data.pages.npages;
   cursor_ref_release(nullptr, &old);
   return MDBX_SUCCESS;
 }
@@ -21541,22 +21590,17 @@ static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr
   page_cache_entry_t *const entry = pgr->ref.cache;
   ASSERT(entry != nullptr && entry->storage == storage);
   const size_t npages = pgr->page->pages;
-  const uint8_t pagesize_ln = entry->pagesize_ln;
-  dxb_page_io_t io;
-  int err = dxb_storage_page_ref_span_io(storage, &pgr->ref, npages, &io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  dxb_data_read_io_t read_io;
-  err = dxb_storage_make_data_read_io(storage, &io, &read_io);
+  dxb_cache_materialize_io_t materialize;
+  int err = dxb_storage_make_cache_materialize_io(storage, &pgr->ref, npages, &materialize);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
   page_t *large = nullptr;
-  err = osal_memalign_alloc(globals.sys_pagesize, read_io.bytes.bytes, (void **)&large);
+  err = osal_memalign_alloc(globals.sys_pagesize, materialize.data.bytes.bytes, (void **)&large);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  err = dxb_storage_read_data(storage, &read_io, large);
+  err = dxb_storage_read_data(storage, &materialize.data, large);
   if (unlikely(err != MDBX_SUCCESS)) {
     osal_memalign_free(large);
     return err;
@@ -21566,25 +21610,25 @@ static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr
     page_cache_lock(storage);
     if (entry->pins > 1) {
       page_cache_unlock(storage);
-      return dxb_storage_detach_materialized_large_page(storage, pgr, large, &read_io.pages, pagesize_ln);
+      return dxb_storage_detach_materialized_large_page(storage, pgr, large, &materialize);
     }
     osal_memalign_free(entry->page);
     entry->page = large;
-    storage->page_cache.pages += read_io.pages.npages - entry->io.npages;
-    storage->page_cache.bytes += read_io.pages.bytes - entry->io.bytes;
-    entry->io = read_io.pages;
+    storage->page_cache.pages += materialize.data.pages.npages - entry->io.npages;
+    storage->page_cache.bytes += materialize.data.pages.bytes - entry->io.bytes;
+    entry->io = materialize.data.pages;
     pgr->page = large;
     pgr->ref.page = large;
-    pgr->ref.npages = read_io.pages.npages;
+    pgr->ref.npages = materialize.data.pages.npages;
     page_cache_prune_locked(storage);
     page_cache_unlock(storage);
   } else {
     osal_memalign_free(entry->page);
     entry->page = large;
-    entry->io = read_io.pages;
+    entry->io = materialize.data.pages;
     pgr->page = large;
     pgr->ref.page = large;
-    pgr->ref.npages = read_io.pages.npages;
+    pgr->ref.npages = materialize.data.pages.npages;
   }
   return MDBX_SUCCESS;
 }

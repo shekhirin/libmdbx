@@ -6372,6 +6372,26 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.146` batch, `1.150`
 crud, `1.198` iterate, `0.949` get, and `1.084` delete.
 
+A later overflow materialization cleanup added `dxb_cache_materialize_io_t`.
+When a cached single-page overflow header must be expanded into its full
+large-page span, `dxb_storage_materialize_cached_large_page()` now constructs a
+checked cache materialization descriptor from the pinned page ref and validates
+that descriptor before the detached-ref path consumes it. The allocation,
+explicit data read, cache accounting, reusable entry update, and detached
+private entry now all use the descriptor's data-read span instead of a loose
+`dxb_page_io_t` rebuilt inside the materialization helper. This keeps the
+remaining pinned overflow read path descriptor-shaped for future async read
+completion. Verification passed `git diff --check`, source scans covering the
+cache materialization descriptor and stale loose materialization calls, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.121` batch, `1.157`
+crud, `0.913` iterate, `0.957` get, and `1.072` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
