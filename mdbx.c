@@ -9596,8 +9596,14 @@ static inline int cache_entry_io(const MDBX_cache_entry_t *entry, dxb_byte_io_t 
   return dxb_storage_byte_span_io(offset, offset + entry->length, io);
 }
 
+typedef struct cache_value_io {
+  dxb_page_io_t pages;
+  dxb_byte_io_t bytes;
+  size_t page_offset;
+} cache_value_io_t;
+
 static inline int cache_value_io_from_ref(const dxb_storage_t *storage, const page_ref_t *ref, const MDBX_val *data,
-                                          dxb_byte_io_t *io) {
+                                          cache_value_io_t *io) {
   if (!ref->page || !data->iov_base)
     return MDBX_NOTFOUND;
 
@@ -9613,10 +9619,18 @@ static inline int cache_value_io_from_ref(const dxb_storage_t *storage, const pa
   err = dxb_storage_byte_io_from_page(&pages, &page_bytes);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  return dxb_storage_byte_subrange_io(&page_bytes, (size_t)inside, data->iov_len, io);
+  dxb_byte_io_t bytes;
+  err = dxb_storage_byte_subrange_io(&page_bytes, (size_t)inside, data->iov_len, &bytes);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  io->pages = pages;
+  io->bytes = bytes;
+  io->page_offset = (size_t)inside;
+  return MDBX_SUCCESS;
 }
 
-static int cache_value_io(const MDBX_cursor *mc, const MDBX_val *data, dxb_byte_io_t *io) {
+static int cache_value_io(const MDBX_cursor *mc, const MDBX_val *data, cache_value_io_t *io) {
   const dxb_storage_t *const storage = &mc->txn->env->dxb_storage;
   int err = cache_value_io_from_ref(storage, &mc->value_ref, data, io);
   if (err == MDBX_SUCCESS)
@@ -9690,17 +9704,11 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
       goto bailout;
   }
 
-  dxb_byte_io_t materialized_value;
-  dxb_page_io_t pgr_pages;
-  err = dxb_storage_page_ref_io(storage, &pgr.ref, &pgr_pages);
-  if (likely(err == MDBX_SUCCESS)) {
-    dxb_byte_io_t pgr_bytes;
-    err = dxb_storage_byte_io_from_page(&pgr_pages, &pgr_bytes);
-    if (likely(err == MDBX_SUCCESS))
-      err = dxb_storage_byte_subrange_io(&pgr_bytes, page_offset, value_io.bytes, &materialized_value);
-  }
-  if (unlikely(err != MDBX_SUCCESS || materialized_value.offset != value_io.offset ||
-               materialized_value.bytes != value_io.bytes)) {
+  const MDBX_val materialized_data = {.iov_base = ptr_disp(pgr.page, page_offset), .iov_len = value_io.bytes};
+  cache_value_io_t materialized_value;
+  err = cache_value_io_from_ref(storage, &pgr.ref, &materialized_data, &materialized_value);
+  if (unlikely(err != MDBX_SUCCESS || materialized_value.bytes.offset != value_io.offset ||
+               materialized_value.bytes.bytes != value_io.bytes || materialized_value.page_offset != page_offset)) {
     err = MDBX_INVALID;
     goto bailout;
   }
@@ -9714,8 +9722,7 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
     ((MDBX_txn *)txn)->retained_refs[((MDBX_txn *)txn)->retained_refs_count++] =
         cursor_ref_retain(nullptr, pgr.ref);
 
-  data->iov_base = ptr_disp(pgr.page, page_offset);
-  data->iov_len = value_io.bytes;
+  *data = materialized_data;
 
 bailout:
   pgr_release(nullptr, &pgr);
@@ -9781,14 +9788,14 @@ static MDBX_cache_result_t cache_get_nommap_refresh(const MDBX_txn *txn, MDBX_db
         goto bailout;
       result = cache_result(MDBX_SUCCESS, MDBX_CACHE_DIRTY);
     } else {
-      dxb_byte_io_t value_io;
+      cache_value_io_t value_io;
       err = cache_value_io(&cx.outer, data, &value_io);
       if (unlikely(err != MDBX_SUCCESS))
         goto bailout;
       err = cursor_couple_capture_txn_pins(&cx);
       if (unlikely(err != MDBX_SUCCESS))
         goto bailout;
-      err = cache_store_entry_io(entry, &value_io, trunk_txnid, committed_snapshot_txnid);
+      err = cache_store_entry_io(entry, &value_io.bytes, trunk_txnid, committed_snapshot_txnid);
       if (unlikely(err == MDBX_RESULT_TRUE)) {
         err = MDBX_SUCCESS;
         result = cache_result(MDBX_SUCCESS, MDBX_CACHE_UNABLE);

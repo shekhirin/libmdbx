@@ -5777,6 +5777,25 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.111` batch, `1.158` crud, `1.021` iterate,
 `1.023` get, and `1.084` delete.
 
+A later public-cache value descriptor cleanup added `cache_value_io_t` so
+cache refresh and cache-hit materialization keep a returned `MDBX_val`'s
+backing page span, byte span, and page offset together. Refresh still stores
+only the public offset/length pair into `MDBX_cache_entry_t`, but it now derives
+that pair from a descriptor tied to a retained cursor page reference. Cache-hit
+materialization now validates the returned pointer through the same
+page-ref-backed descriptor before retaining the page and returning the value to
+the caller. Verification passed `git diff --check`, source scans proving
+`dxb_storage_read_page_span()`, `dxb_storage_page_io_from_bytes()`, and the
+earlier removed storage adapters are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.098` batch, `1.163` crud, `1.163` iterate,
+`0.948` get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
