@@ -30022,6 +30022,103 @@ static dxb_write_result_t dxb_setup_submit_meta_pages_write(
   return dxb_storage_submit_write_data(storage, &io->write);
 }
 
+typedef struct dxb_setup_stale_tail_discard_submit_io {
+  MDBX_env *env;
+  dxb_storage_t *storage;
+  size_t begin_bytes;
+  size_t end_bytes;
+  dxb_byte_io_t bytes;
+  dxb_discard_io_t discard;
+  dxb_discard_submit_io_t submit;
+} dxb_setup_stale_tail_discard_submit_io_t;
+
+static inline int dxb_setup_make_stale_tail_discard_submit_io(MDBX_env *env, size_t begin_bytes, size_t end_bytes,
+                                                              dxb_setup_stale_tail_discard_submit_io_t *io) {
+  if (unlikely(!env || !io || begin_bytes >= end_bytes))
+    return MDBX_EINVAL;
+
+  dxb_storage_t *const storage = &env->dxb_storage;
+  dxb_byte_io_t bytes;
+  int rc = dxb_storage_byte_span_io(begin_bytes, end_bytes, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_discard_io_t discard;
+  rc = dxb_storage_make_discard_io(storage, &bytes, dxb_discard_clean, &discard);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_discard_submit_io_t submit;
+  rc = dxb_storage_make_discard_submit_io(storage, &discard, &submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->env = env;
+  io->storage = storage;
+  io->begin_bytes = begin_bytes;
+  io->end_bytes = end_bytes;
+  io->bytes = bytes;
+  io->discard = discard;
+  io->submit = submit;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_setup_stale_tail_discard_submit_io_validate(
+    const dxb_setup_stale_tail_discard_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage ||
+               io->begin_bytes >= io->end_bytes))
+    return MDBX_EINVAL;
+  if (unlikely(io->bytes.offset != io->begin_bytes ||
+               io->bytes.bytes != (size_t)(io->end_bytes - io->begin_bytes) ||
+               io->discard.mode != dxb_discard_clean ||
+               io->discard.range.request.offset != io->bytes.offset ||
+               io->discard.range.request.bytes != io->bytes.bytes ||
+               io->submit.discard.range.request.offset != io->discard.range.request.offset ||
+               io->submit.discard.range.request.bytes != io->discard.range.request.bytes ||
+               io->submit.discard.mode != io->discard.mode))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_discard_submit_io_validate(io->storage, &io->submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_setup_stale_tail_discard_submit_io_t checked;
+  rc = dxb_setup_make_stale_tail_discard_submit_io(io->env, io->begin_bytes, io->end_bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env != io->env || checked.storage != io->storage ||
+               checked.begin_bytes != io->begin_bytes || checked.end_bytes != io->end_bytes ||
+               checked.bytes.offset != io->bytes.offset || checked.bytes.bytes != io->bytes.bytes ||
+               checked.discard.range.request.offset != io->discard.range.request.offset ||
+               checked.discard.range.request.bytes != io->discard.range.request.bytes ||
+               checked.discard.range.pages.pgno != io->discard.range.pages.pgno ||
+               checked.discard.range.pages.end_pgno != io->discard.range.pages.end_pgno ||
+               checked.discard.range.pages.npages != io->discard.range.pages.npages ||
+               checked.discard.range.pages.offset != io->discard.range.pages.offset ||
+               checked.discard.range.pages.bytes != io->discard.range.pages.bytes ||
+               checked.discard.range.page_bytes.offset != io->discard.range.page_bytes.offset ||
+               checked.discard.range.page_bytes.bytes != io->discard.range.page_bytes.bytes ||
+               checked.discard.mode != io->discard.mode ||
+               checked.submit.discard.range.request.offset != io->submit.discard.range.request.offset ||
+               checked.submit.discard.range.request.bytes != io->submit.discard.range.request.bytes ||
+               checked.submit.discard.range.pages.pgno != io->submit.discard.range.pages.pgno ||
+               checked.submit.discard.range.pages.end_pgno != io->submit.discard.range.pages.end_pgno ||
+               checked.submit.discard.range.pages.npages != io->submit.discard.range.pages.npages ||
+               checked.submit.discard.range.pages.offset != io->submit.discard.range.pages.offset ||
+               checked.submit.discard.range.pages.bytes != io->submit.discard.range.pages.bytes ||
+               checked.submit.discard.range.page_bytes.offset != io->submit.discard.range.page_bytes.offset ||
+               checked.submit.discard.range.page_bytes.bytes != io->submit.discard.range.page_bytes.bytes ||
+               checked.submit.discard.mode != io->submit.discard.mode))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static dxb_range_result_t dxb_setup_submit_stale_tail_discard(
+    const dxb_setup_stale_tail_discard_submit_io_t *io) {
+  int rc = dxb_setup_stale_tail_discard_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_range_error(rc);
+  return dxb_storage_submit_discard_io(io->storage, &io->submit);
+}
+
 __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bits) {
   dxb_storage_t *const storage = &env->dxb_storage;
   meta_t header;
@@ -30479,18 +30576,10 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
 #if defined(POSIX_FADV_DONTNEED)
     NOTICE("open-FADV_%s %u..%u", "DONTNEED", env->lck->discarded_tail.weak,
            (pgno_t)dxb_storage_bytes2pgno(storage, current_size));
-    dxb_byte_io_t discard_bytes;
-    err = dxb_storage_byte_span_io(allocated_aligned2os_bytes, current_size, &discard_bytes);
-    if (likely(err == MDBX_SUCCESS)) {
-      dxb_discard_io_t discard_io;
-      err = dxb_storage_make_discard_io(storage, &discard_bytes, dxb_discard_clean, &discard_io);
-      if (likely(err == MDBX_SUCCESS)) {
-        dxb_discard_submit_io_t discard_submit;
-        err = dxb_storage_make_discard_submit_io(storage, &discard_io, &discard_submit);
-        if (likely(err == MDBX_SUCCESS))
-          err = dxb_storage_submit_discard_io(storage, &discard_submit).err;
-      }
-    }
+    dxb_setup_stale_tail_discard_submit_io_t discard_submit;
+    err = dxb_setup_make_stale_tail_discard_submit_io(env, allocated_aligned2os_bytes, current_size, &discard_submit);
+    if (likely(err == MDBX_SUCCESS))
+      err = dxb_setup_submit_stale_tail_discard(&discard_submit).err;
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
 #endif /* POSIX_FADV_DONTNEED */
