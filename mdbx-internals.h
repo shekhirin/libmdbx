@@ -1373,6 +1373,8 @@ typedef struct dxb_sync_result {
 typedef struct dxb_filesize_result {
   int err;
   uint64_t filesize;
+  bool submitted;
+  bool completed;
 } dxb_filesize_result_t;
 
 #if !defined(_WIN32) && !defined(_WIN64)

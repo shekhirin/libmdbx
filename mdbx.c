@@ -23126,17 +23126,25 @@ static dxb_write_result_t dxb_storage_writev_data(dxb_storage_t *storage, const 
   return dxb_write_completed(io->bytes.bytes);
 }
 
-static inline dxb_filesize_result_t dxb_filesize_result(int err, uint64_t filesize) {
-  const dxb_filesize_result_t result = {err, filesize};
+static inline dxb_filesize_result_t dxb_filesize_result(int err, uint64_t filesize, bool submitted, bool completed) {
+  const dxb_filesize_result_t result = {err, filesize, submitted, completed};
   return result;
 }
 
 static inline dxb_filesize_result_t dxb_filesize_error(int err) {
-  return dxb_filesize_result(err, 0);
+  return dxb_filesize_result(err, 0, false, false);
+}
+
+static inline dxb_filesize_result_t dxb_filesize_submitted_error(int err) {
+  return dxb_filesize_result(err, 0, true, false);
+}
+
+static inline dxb_filesize_result_t dxb_filesize_completed_error(int err, uint64_t filesize) {
+  return dxb_filesize_result(err, filesize, true, true);
 }
 
 static inline dxb_filesize_result_t dxb_filesize_completed(uint64_t filesize) {
-  return dxb_filesize_result(MDBX_SUCCESS, filesize);
+  return dxb_filesize_result(MDBX_SUCCESS, filesize, true, true);
 }
 
 static dxb_filesize_result_t dxb_storage_set_filesize_on_disk(const dxb_storage_t *storage, uint64_t target) {
@@ -23145,10 +23153,10 @@ static dxb_filesize_result_t dxb_storage_set_filesize_on_disk(const dxb_storage_
     return dxb_filesize_error(rc);
   rc = osal_fsetsize(dxb_storage_data_fd(storage), target);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_error(rc);
+    return dxb_filesize_submitted_error(rc);
   rc = dxb_fault_inject("setsize-complete");
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_error(rc);
+    return dxb_filesize_submitted_error(rc);
   return dxb_filesize_completed(target);
 }
 
@@ -23176,17 +23184,17 @@ static dxb_filesize_result_t dxb_storage_set_filesize_bytes(dxb_storage_t *stora
   }
   rc = dxb_storage_set_filesize(storage, setsize.filesize).err;
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_error(rc);
+    return dxb_filesize_completed_error(rc, setsize.filesize);
   return setsize;
 }
 
 static dxb_filesize_result_t dxb_storage_set_filesize_as_current(dxb_storage_t *storage, uint64_t target) {
   dxb_filesize_result_t setsize = dxb_storage_set_filesize_bytes(storage, target);
-  int rc = setsize.err;
-  if (likely(rc == MDBX_SUCCESS))
-    rc = dxb_storage_set_current(storage, setsize.filesize).err;
+  if (unlikely(setsize.err != MDBX_SUCCESS))
+    return setsize;
+  int rc = dxb_storage_set_current(storage, setsize.filesize).err;
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_error(rc);
+    return dxb_filesize_completed_error(rc, setsize.filesize);
   return setsize;
 }
 
@@ -23198,15 +23206,15 @@ static dxb_filesize_result_t dxb_storage_fetch_filesize(dxb_storage_t *storage) 
   uint64_t filesize = 0;
   rc = osal_filesize(dxb_storage_data_fd(storage), &filesize);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_error(rc);
+    return dxb_filesize_submitted_error(rc);
 
   rc = dxb_fault_inject("filesize-complete");
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_error(rc);
+    return dxb_filesize_submitted_error(rc);
 
   rc = dxb_storage_note_filesize(storage, filesize).err;
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_error(rc);
+    return dxb_filesize_completed_error(rc, filesize);
   return dxb_filesize_completed(filesize);
 }
 
