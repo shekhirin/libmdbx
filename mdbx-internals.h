@@ -1369,6 +1369,13 @@ typedef struct dxb_filesize_result {
   uint64_t filesize;
 } dxb_filesize_result_t;
 
+typedef struct dxb_resize_result {
+  int err;
+  size_t current;
+  size_t limit;
+  uint64_t filesize;
+} dxb_resize_result_t;
+
 typedef struct dxb_range_result {
   int err;
   size_t payload_bytes;

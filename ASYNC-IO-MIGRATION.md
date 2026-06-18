@@ -6964,6 +6964,26 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.124` batch, `1.144`
 crud, `1.280` iterate, `0.924` get, and `1.073` delete.
 
+A later resize/setup cleanup added `dxb_resize_result_t` for storage geometry
+operations. `dxb_storage_setup_size()` and `dxb_storage_resize_size()` now
+return an explicit result containing the error code, current byte size, limit
+byte size, and observed file size instead of returning only `int`. Existing
+callers still unwrap the same `.err` value in `dxb_setup()` and `dxb_resize()`,
+preserving setup, grow, shrink, and read-only resize behavior while making the
+post-operation storage geometry available as completion data. This gives future
+async resize backends a single return object for state reporting after file
+size changes and geometry refreshes. Verification passed `git diff --check`,
+source scans covering `dxb_resize_result_t`, resize result helpers, and every
+`dxb_storage_setup_size()` and `dxb_storage_resize_size()` call site, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six focused
+ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The
+paired benchmark gate passed with forced/default ratios of `1.101` batch,
+`1.128` crud, `0.903` iterate, `1.047` get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
