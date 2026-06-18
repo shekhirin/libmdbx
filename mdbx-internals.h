@@ -1503,6 +1503,8 @@ typedef struct dxb_resize_result {
 typedef struct dxb_range_result {
   int err;
   size_t payload_bytes;
+  bool submitted;
+  bool completed;
 } dxb_range_result_t;
 
 typedef struct dxb_readahead_result {

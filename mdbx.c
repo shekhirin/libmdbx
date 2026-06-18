@@ -22648,17 +22648,29 @@ static dxb_readonly_result_t dxb_storage_check_readonly(const dxb_storage_t *sto
   return dxb_readonly_result(osal_check_fs_rdonly(dxb_storage_data_fd(storage), pathname, err), err);
 }
 
-static inline dxb_range_result_t dxb_range_result(int err, size_t payload_bytes) {
-  const dxb_range_result_t result = {err, payload_bytes};
+static inline dxb_range_result_t dxb_range_result(int err, size_t payload_bytes, bool submitted, bool completed) {
+  const dxb_range_result_t result = {err, payload_bytes, submitted, completed};
   return result;
 }
 
 static inline dxb_range_result_t dxb_range_error(int err) {
-  return dxb_range_result(err, 0);
+  return dxb_range_result(err, 0, false, false);
+}
+
+static inline dxb_range_result_t dxb_range_submitted_error(int err) {
+  return dxb_range_result(err, 0, true, false);
+}
+
+static inline dxb_range_result_t dxb_range_noop_completed(void) {
+  return dxb_range_result(MDBX_SUCCESS, 0, false, true);
+}
+
+static inline dxb_range_result_t dxb_range_unavailable(void) {
+  return dxb_range_result(MDBX_RESULT_TRUE, 0, false, true);
 }
 
 static inline dxb_range_result_t dxb_range_completed(size_t payload_bytes) {
-  return dxb_range_result(MDBX_SUCCESS, payload_bytes);
+  return dxb_range_result(MDBX_SUCCESS, payload_bytes, true, true);
 }
 
 static dxb_range_result_t dxb_storage_advise_io(const dxb_storage_t *storage, const dxb_advice_io_t *io) {
@@ -22667,7 +22679,7 @@ static dxb_range_result_t dxb_storage_advise_io(const dxb_storage_t *storage, co
     return dxb_range_error(rc);
   const dxb_byte_io_t *const range = &io->range.request;
   if (range->bytes == 0)
-    return dxb_range_completed(0);
+    return dxb_range_noop_completed();
 
 #if defined(F_RDADVISE)
   if (io->advice == dxb_advice_willneed) {
@@ -22702,17 +22714,17 @@ static dxb_range_result_t dxb_storage_advise_io(const dxb_storage_t *storage, co
     break;
 #endif /* POSIX_FADV_RANDOM */
   default:
-    return dxb_range_completed(0);
+    return dxb_range_noop_completed();
   }
   if (unlikely(range->offset > (uint64_t)OFF_T_MAX || range->bytes > (uint64_t)OFF_T_MAX))
     return dxb_range_error(MDBX_EINVAL);
   rc = ignore_enosys(posix_fadvise(dxb_storage_data_fd(storage), (off_t)range->offset, (off_t)range->bytes, hint));
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_range_error(rc);
+    return dxb_range_submitted_error(rc);
   return dxb_range_completed(range->bytes);
 #else
   (void)storage;
-  return dxb_range_completed(0);
+  return dxb_range_noop_completed();
 #endif /* POSIX_FADV_* */
 }
 
@@ -22723,7 +22735,7 @@ static dxb_range_result_t dxb_storage_discard_io(dxb_storage_t *storage, const d
 
   const dxb_byte_io_t *const range = &io->range.request;
   if (range->bytes == 0)
-    return dxb_range_completed(0);
+    return dxb_range_noop_completed();
 
   switch (io->mode) {
   case dxb_discard_clean:
@@ -22736,7 +22748,9 @@ static dxb_range_result_t dxb_storage_discard_io(dxb_storage_t *storage, const d
       if (likely(rc == MDBX_SUCCESS))
         dxb_storage_invalidate_cached_io(storage, &invalidate);
     }
-    return dxb_range_result(rc, rc == MDBX_SUCCESS ? range->bytes : 0);
+    if (rc == MDBX_SUCCESS)
+      return dxb_range_completed(range->bytes);
+    return rc == MDBX_RESULT_TRUE ? dxb_range_unavailable() : dxb_range_error(rc);
   }
   case dxb_discard_remove_or_clean: {
     rc = MDBX_RESULT_TRUE;
@@ -22747,7 +22761,7 @@ static dxb_range_result_t dxb_storage_discard_io(dxb_storage_t *storage, const d
         dxb_storage_invalidate_cached_io(storage, &invalidate);
     }
     if (rc != MDBX_RESULT_TRUE)
-      return dxb_range_result(rc, rc == MDBX_SUCCESS ? range->bytes : 0);
+      return rc == MDBX_SUCCESS ? dxb_range_completed(range->bytes) : dxb_range_error(rc);
     break;
   }
   }
@@ -22757,11 +22771,11 @@ static dxb_range_result_t dxb_storage_discard_io(dxb_storage_t *storage, const d
   rc = ignore_enosys(
       posix_fadvise(dxb_storage_data_fd(storage), (off_t)range->offset, (off_t)range->bytes, POSIX_FADV_DONTNEED));
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_range_error(rc);
+    return dxb_range_submitted_error(rc);
   return dxb_range_completed(range->bytes);
 #else
   (void)storage;
-  return dxb_range_result(MDBX_RESULT_TRUE, 0);
+  return dxb_range_unavailable();
 #endif /* POSIX_FADV_DONTNEED */
 }
 

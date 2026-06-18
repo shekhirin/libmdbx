@@ -7549,6 +7549,28 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.101` batch, `1.141`
 crud, `0.928` iterate, `1.016` get, and `1.084` delete.
 
+A later range-operation result cleanup extended `dxb_range_result_t` with
+`submitted` and `completed` flags, matching the async-facing state used by the
+other explicit storage operations. Data-file advice and discard paths now
+distinguish validation and zero-length no-ops from submitted
+`posix_fadvise()`/`F_RDADVISE` operations, and unsupported discard fallbacks
+report a completed unsubmitted `MDBX_RESULT_TRUE` result instead of looking
+like an attempted range operation. This keeps readahead, DONTNEED, and
+discard/resize-advice boundaries explicit for future async range handling
+without changing current callers that still unwrap only `.err`. Verification
+passed `git diff --check`, source scans covering `dxb_range_result_t`,
+`dxb_range_result()`, `dxb_range_error()`, `dxb_range_submitted_error()`,
+`dxb_range_noop_completed()`, `dxb_range_unavailable()`,
+`dxb_range_completed()`, and the storage advice/discard paths, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.105` batch, `1.154`
+crud, `0.881` iterate, `1.030` get, and `1.079` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
