@@ -6157,6 +6157,27 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.121` batch, `1.164` crud, `0.901` iterate, `1.068`
 get, and `1.076` delete.
 
+A later outbound export descriptor cleanup added `dxb_data_export_io_t` for
+environment-copy fast paths. `copy_asis()` now builds a checked export
+descriptor from the remaining source byte range before attempting outbound
+`sendfile()` or `copy_file_range()` acceleration. The descriptor carries both
+the exact source byte request and its page coverage, plus the destination
+offset used by same-filesystem regular-file copies. The storage helpers are
+now `dxb_storage_sendfile_data_to_fd()` and
+`dxb_storage_copy_data_to_fd()`, both of which validate the checked export
+descriptor before submitting the syscall, and the old
+`dxb_storage_sendfile_bytes_to_fd()` and `dxb_storage_copy_bytes_to_fd()`
+helpers are gone from `mdbx.c`. Verification passed `git diff --check`, source
+scans proving the old byte-export helper names are gone from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.133` batch, `1.159`
+crud, `0.848` iterate, `1.062` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
