@@ -7405,6 +7405,26 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.091` batch, `1.186` crud, `0.951` iterate, `0.979`
 get, and `1.077` delete.
 
+A later committed-read result cleanup propagated `dxb_cache_page_result_t`
+through `page_cache_read_io()`, `page_cache_read()`, and
+`page_get_committed()`. The broader cursor and public cache paths still unwrap
+the same `pgr_t`, preserving page lifetime and error behavior, but cache-hit,
+miss-fill, and tracked-entry metadata now survives up to the committed-page
+lookup boundary instead of being collapsed inside the cache helper. This gives a
+future async read backend a cleaner completion shape for distinguishing reusable
+hits from submitted storage reads without changing cursor-visible page APIs.
+Verification passed `git diff --check`, source scans covering
+`dxb_cache_page_result_t`, `page_cache_read_io()`, `page_cache_read()`,
+`page_get_committed()`, and the public cache materialization caller, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six focused
+ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The
+paired benchmark gate passed with forced/default ratios of `1.108` batch,
+`1.158` crud, `1.211` iterate, `0.949` get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
