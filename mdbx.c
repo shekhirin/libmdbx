@@ -2131,7 +2131,6 @@ static int dxb_storage_fetch_filesize(dxb_storage_t *storage);
 MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno_t used_pgno, const pgno_t size_pgno,
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
-static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *io, void *buf);
 static int dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_read_io_t *io, void *buf);
 static int dxb_storage_read_meta(const dxb_storage_t *storage, const dxb_meta_read_io_t *io, void *buf);
 static int dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_io_t *io, const void *buf);
@@ -22112,31 +22111,30 @@ static int dxb_storage_sync_io(const dxb_storage_t *storage, const dxb_sync_io_t
   return dxb_storage_sync(storage, io->mode_bits);
 }
 
-static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *io, void *buf) {
-  int rc = dxb_storage_byte_io_validate(io);
+static int dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_read_io_t *io, void *buf) {
+  int rc = dxb_storage_data_read_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   rc = dxb_fault_inject("read");
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  rc = dxb_storage_pread(storage, io, buf);
+  rc = dxb_storage_pread(storage, &io->bytes, buf);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   return dxb_fault_inject("read-complete");
-}
-
-static int dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_read_io_t *io, void *buf) {
-  int rc = dxb_storage_data_read_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_read_bytes(storage, &io->bytes, buf);
 }
 
 static int dxb_storage_read_meta(const dxb_storage_t *storage, const dxb_meta_read_io_t *io, void *buf) {
   int rc = dxb_storage_meta_read_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return dxb_storage_read_bytes(storage, &io->bytes, buf);
+  rc = dxb_fault_inject("read");
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_pread(storage, &io->bytes, buf);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_fault_inject("read-complete");
 }
 
 static int dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_io_t *io, const void *buf) {

@@ -6009,6 +6009,24 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.163` batch, `1.164` crud, `1.021` iterate, `0.998`
 get, and `1.078` delete.
 
+A later typed read submission cleanup removed the private
+`dxb_storage_read_bytes()` shim. `dxb_storage_read_data()` and
+`dxb_storage_read_meta()` now validate their `dxb_data_read_io_t` and
+`dxb_meta_read_io_t` descriptors, preserve the same `read` and `read-complete`
+fault-injection hooks, and submit directly to `dxb_storage_pread()`. This keeps
+data and startup metadata reads descriptor-typed all the way to the primitive
+storage operation instead of dropping through an intermediate untyped byte
+request wrapper. Verification passed `git diff --check`, source scans proving
+the removed byte-read helper is gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.115` batch, `1.165` crud, `1.239` iterate,
+`0.973` get, and `1.075` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
