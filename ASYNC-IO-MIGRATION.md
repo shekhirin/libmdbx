@@ -6115,6 +6115,27 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.134` batch, `1.154` crud, `0.996` iterate, `1.038`
 get, and `1.074` delete.
 
+A later typed submission cleanup removed the private
+`dxb_storage_pread()`, `dxb_storage_pwrite()`, and `dxb_storage_pwritev()`
+wrappers from the C source. `dxb_storage_read_data()`,
+`dxb_storage_read_meta()`, `dxb_storage_write_data()`,
+`dxb_storage_write_meta()`, and `dxb_storage_writev_data()` still validate
+their checked read/write descriptors and preserve the same fault-injection
+hooks, but now submit directly to the corresponding `osal_pread()`,
+`osal_pwrite()`, or `osal_pwritev()` call at the typed storage boundary. This
+removes another redundant byte-level validation hop after descriptor validation
+and leaves no references to the removed primitive wrappers in `mdbx.c`.
+Verification passed `git diff --check`, source scans proving the removed
+primitive wrappers are gone from `mdbx.c`, the GNUmake `mdbx_migration_smoke`
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.104` batch, `1.176` crud, `0.968` iterate, `0.988`
+get, and `1.072` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
