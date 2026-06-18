@@ -12546,6 +12546,29 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.139` batch, `1.140` crud, `0.995` iterate,
 `1.015` get, and `1.070` delete.
 
+A later storage write submit-boundary cleanup folded the raw
+`dxb_storage_write_data()`, `dxb_storage_write_meta()`, and
+`dxb_storage_writev_data()` helpers into `dxb_storage_submit_write_data()`,
+`dxb_storage_submit_write_meta()`, and `dxb_storage_submit_writev_data()`. The
+write submitters now validate the full submit descriptors, run the write/writev
+fault-injection hooks, issue `osal_pwrite()` or `osal_pwritev()` directly, run
+data-cache invalidation through the nested submit payloads for data and writev
+requests, and return completed-byte results from the submit boundary. This
+leaves data writes, meta writes, and vectored data writes with one
+descriptor-shaped storage entry point each and no parallel raw write helper
+path in the C source or public/internal headers. Verification passed
+`git diff --check`, source scans confirming no raw data/meta/writev storage
+write helpers remain in `mdbx.c` or the public/internal headers, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.091` batch, `1.146` crud, `0.818`
+iterate, `1.069` get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

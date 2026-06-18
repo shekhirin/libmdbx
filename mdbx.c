@@ -4676,17 +4676,9 @@ static dxb_read_result_t dxb_storage_submit_read_data(const dxb_storage_t *stora
                                                       const dxb_read_submit_io_t *io);
 static dxb_read_result_t dxb_storage_submit_read_meta(const dxb_storage_t *storage,
                                                       const dxb_meta_read_submit_io_t *io);
-static dxb_write_result_t dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_io_t *io,
-                                                 const void *buf,
-                                                 const dxb_write_cache_invalidate_submit_io_t *invalidate_submit);
 static dxb_write_result_t dxb_storage_submit_write_data(dxb_storage_t *storage, const dxb_write_submit_io_t *io);
-static dxb_write_result_t dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_write_io_t *io,
-                                                 const void *buf);
 static dxb_write_result_t dxb_storage_submit_write_meta(dxb_storage_t *storage,
                                                         const dxb_meta_write_submit_io_t *io);
-static dxb_write_result_t dxb_storage_writev_data(dxb_storage_t *storage, const dxb_data_write_io_t *io,
-                                                  struct iovec *iov, size_t sgvcnt,
-                                                  const dxb_write_cache_invalidate_submit_io_t *invalidate_submit);
 static dxb_write_result_t dxb_storage_submit_writev_data(dxb_storage_t *storage, const dxb_writev_submit_io_t *io);
 #if MDBX_USE_COPYFILERANGE
 static dxb_copy_result_t dxb_storage_copy_data(dxb_storage_t *storage, const dxb_data_copy_io_t *io,
@@ -30070,54 +30062,25 @@ static dxb_cache_result_t dxb_storage_submit_write_cache_invalidate(
   return dxb_storage_submit_invalidate_cached_io(storage, &io->submit);
 }
 
-static dxb_write_result_t dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_io_t *io,
-                                                 const void *buf,
-                                                 const dxb_write_cache_invalidate_submit_io_t *invalidate_submit) {
-  int rc = dxb_storage_data_write_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
-  rc = dxb_storage_write_cache_invalidate_submit_io_validate(storage, invalidate_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
-  if (unlikely(!dxb_write_cache_invalidate_data_io_equal(&invalidate_submit->write, io)))
-    return dxb_write_error(MDBX_EINVAL);
-  rc = dxb_fault_inject("write");
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
-  rc = osal_pwrite(dxb_storage_fd(storage, dxb_io_data), buf, io->bytes.bytes, io->bytes.offset);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_submitted_error(rc);
-  rc = dxb_fault_inject("write-complete");
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_submitted_error(rc);
-  dxb_cache_result_t invalidate = dxb_storage_submit_write_cache_invalidate(storage, invalidate_submit);
-  if (unlikely(invalidate.err != MDBX_SUCCESS))
-    return dxb_write_completed_error(invalidate.err, io->bytes.bytes);
-  return dxb_write_completed(io->bytes.bytes);
-}
-
 static dxb_write_result_t dxb_storage_submit_write_data(dxb_storage_t *storage, const dxb_write_submit_io_t *io) {
   int rc = dxb_storage_write_submit_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_error(rc);
-  return dxb_storage_write_data(storage, &io->data, io->buffer, &io->invalidate);
-}
 
-static dxb_write_result_t dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_write_io_t *io,
-                                                 const void *buf) {
-  int rc = dxb_storage_meta_write_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
+  const dxb_data_write_io_t *const data = &io->data;
   rc = dxb_fault_inject("write");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_error(rc);
-  rc = osal_pwrite(dxb_storage_fd(storage, dxb_io_meta), buf, io->bytes.bytes, io->bytes.offset);
+  rc = osal_pwrite(dxb_storage_fd(storage, dxb_io_data), io->buffer, data->bytes.bytes, data->bytes.offset);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_submitted_error(rc);
   rc = dxb_fault_inject("write-complete");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_submitted_error(rc);
-  return dxb_write_completed(io->payload_bytes);
+  dxb_cache_result_t invalidate = dxb_storage_submit_write_cache_invalidate(storage, &io->invalidate);
+  if (unlikely(invalidate.err != MDBX_SUCCESS))
+    return dxb_write_completed_error(invalidate.err, data->bytes.bytes);
+  return dxb_write_completed(data->bytes.bytes);
 }
 
 static dxb_write_result_t dxb_storage_submit_write_meta(dxb_storage_t *storage,
@@ -30125,7 +30088,18 @@ static dxb_write_result_t dxb_storage_submit_write_meta(dxb_storage_t *storage,
   int rc = dxb_storage_meta_write_submit_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_error(rc);
-  return dxb_storage_write_meta(storage, &io->meta, io->buffer);
+
+  const dxb_meta_write_io_t *const meta = &io->meta;
+  rc = dxb_fault_inject("write");
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_write_error(rc);
+  rc = osal_pwrite(dxb_storage_fd(storage, dxb_io_meta), io->buffer, meta->bytes.bytes, meta->bytes.offset);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_write_submitted_error(rc);
+  rc = dxb_fault_inject("write-complete");
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_write_submitted_error(rc);
+  return dxb_write_completed(meta->payload_bytes);
 }
 
 static int dxb_storage_iov_bytes(const struct iovec *iov, size_t sgvcnt, size_t *bytes) {
@@ -30139,49 +30113,30 @@ static int dxb_storage_iov_bytes(const struct iovec *iov, size_t sgvcnt, size_t 
   return MDBX_SUCCESS;
 }
 
-static dxb_write_result_t dxb_storage_writev_data(dxb_storage_t *storage, const dxb_data_write_io_t *io,
-                                                  struct iovec *iov, size_t sgvcnt,
-                                                  const dxb_write_cache_invalidate_submit_io_t *invalidate_submit) {
-  int rc = dxb_storage_data_write_io_validate(storage, io);
+static dxb_write_result_t dxb_storage_submit_writev_data(dxb_storage_t *storage, const dxb_writev_submit_io_t *io) {
+  int rc = dxb_storage_writev_submit_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_error(rc);
-  rc = dxb_storage_write_cache_invalidate_submit_io_validate(storage, invalidate_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
-  if (unlikely(!dxb_write_cache_invalidate_data_io_equal(&invalidate_submit->write, io)))
-    return dxb_write_error(MDBX_EINVAL);
-  size_t bytes;
-  rc = dxb_storage_iov_bytes(iov, sgvcnt, &bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
-  if (unlikely(bytes != io->bytes.bytes))
-    return dxb_write_error(MDBX_EINVAL);
 
+  const dxb_data_write_io_t *const data = &io->data;
   const mdbx_filehandle_t fd = dxb_storage_fd(storage, dxb_io_data);
-  rc = dxb_fault_inject_after_partial_writev("writev-partial", fd, iov, sgvcnt, io);
+  rc = dxb_fault_inject_after_partial_writev("writev-partial", fd, io->iov, io->sgvcnt, data);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_submitted_error(rc);
   rc = dxb_fault_inject("writev");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_error(rc);
-  rc = osal_pwritev(dxb_storage_fd(storage, dxb_io_data), iov, sgvcnt, io->bytes.offset);
+  rc = osal_pwritev(fd, io->iov, io->sgvcnt, data->bytes.offset);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_submitted_error(rc);
   rc = dxb_fault_inject("writev-complete");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_submitted_error(rc);
 
-  dxb_cache_result_t invalidate = dxb_storage_submit_write_cache_invalidate(storage, invalidate_submit);
+  dxb_cache_result_t invalidate = dxb_storage_submit_write_cache_invalidate(storage, &io->invalidate);
   if (unlikely(invalidate.err != MDBX_SUCCESS))
-    return dxb_write_completed_error(invalidate.err, io->bytes.bytes);
-  return dxb_write_completed(io->bytes.bytes);
-}
-
-static dxb_write_result_t dxb_storage_submit_writev_data(dxb_storage_t *storage, const dxb_writev_submit_io_t *io) {
-  int rc = dxb_storage_writev_submit_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
-  return dxb_storage_writev_data(storage, &io->data, io->iov, io->sgvcnt, &io->invalidate);
+    return dxb_write_completed_error(invalidate.err, data->bytes.bytes);
+  return dxb_write_completed(data->bytes.bytes);
 }
 
 static inline dxb_filesize_result_t dxb_filesize_result(int err, uint64_t filesize, bool submitted, bool completed) {
