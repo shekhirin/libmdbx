@@ -12329,6 +12329,27 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 forced/default ratios of `0.999` batch, `0.986` crud, `1.006` iterate,
 `1.028` get, and `0.982` delete.
 
+A later committed-page cache-read submission cleanup moved cache-read request
+construction into the committed-page submit payload.
+`dxb_committed_page_submit_io_t` now carries the derived
+`dxb_cache_read_io_t` alongside the validated one-page request and
+`track_private` policy. `page_submit_committed_read()` validates both shapes
+and submits through `page_cache_read_io()`, so the old single-use
+`page_cache_read()` wrapper was removed. This keeps committed-page lookup on a
+fully materialized cache-read descriptor before the completion path chooses a
+cache hit or fill. Verification passed `git diff --check`, source scans
+confirming no `page_cache_read()` wrapper calls remain in `mdbx.c` or the
+public/internal headers, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+in an isolated run with forced/default ratios of `1.098` batch, `1.142` crud,
+`0.849` iterate, `0.941` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

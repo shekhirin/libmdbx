@@ -297,6 +297,7 @@ typedef struct dxb_cache_fill_read_submit_io {
 
 typedef struct dxb_committed_page_submit_io {
   dxb_page_io_t request;
+  dxb_cache_read_io_t read;
   bool track_private;
 } dxb_committed_page_submit_io_t;
 
@@ -15157,8 +15158,6 @@ __cold int mdbx_env_defrag(MDBX_env *env, size_t defrag_atleast, size_t time_atl
 static MDBX_cache_result_t cache_get(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *data,
                                      MDBX_cache_entry_t *entry);
 static dxb_cache_page_result_t page_cache_read_io(MDBX_txn *txn, const dxb_cache_read_io_t *io);
-static dxb_cache_page_result_t page_cache_read(MDBX_txn *txn, const dxb_page_io_t *request,
-                                               const bool track_private);
 static dxb_cache_result_t page_cache_read_large(MDBX_txn *txn, pgr_t *pgr);
 
 static inline MDBX_cache_result_t cache_result(int err, MDBX_cache_status_t status) {
@@ -27995,24 +27994,6 @@ static dxb_cache_page_result_t page_cache_read_io(MDBX_txn *txn, const dxb_cache
     return dxb_cache_page_error(err);
   dxb_cache_page_result_t filled = dxb_storage_submit_read_cached_page(storage, &fill_submit);
   return filled;
-}
-
-static dxb_cache_page_result_t page_cache_read(MDBX_txn *txn, const dxb_page_io_t *request,
-                                               const bool track_private) {
-  ASSERT(request->npages == 1);
-  MDBX_env *const env = txn->env;
-  dxb_storage_t *const storage = &env->dxb_storage;
-
-  const bool reusable = page_cache_can_reuse(txn);
-  const txnid_t snapshot = reusable ? txn_basis_snapshot(txn) : 0;
-  const bool tracked = reusable || track_private || CHECKS0_ENABLED();
-
-  dxb_cache_read_io_t read;
-  int err = dxb_storage_make_cache_read_io(storage, request, snapshot, reusable, tracked, &read);
-  if (unlikely(err != MDBX_SUCCESS))
-    return dxb_cache_page_error(err);
-
-  return page_cache_read_io(txn, &read);
 }
 
 static dxb_cache_result_t dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr_t *pgr,
@@ -46281,7 +46262,17 @@ static inline int page_make_committed_read_submit_io(MDBX_txn *txn, const dxb_pa
   int err = dxb_storage_page_io_validate(&txn->env->dxb_storage, request);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
+
+  const bool reusable = page_cache_can_reuse(txn);
+  const txnid_t snapshot = reusable ? txn_basis_snapshot(txn) : 0;
+  const bool tracked = reusable || track_private || CHECKS0_ENABLED();
+  dxb_cache_read_io_t read;
+  err = dxb_storage_make_cache_read_io(&txn->env->dxb_storage, request, snapshot, reusable, tracked, &read);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
   io->request = *request;
+  io->read = read;
   io->track_private = track_private;
   return MDBX_SUCCESS;
 }
@@ -46300,6 +46291,16 @@ static inline int page_committed_read_submit_io_validate(MDBX_txn *txn,
                checked.request.npages != io->request.npages ||
                checked.request.offset != io->request.offset ||
                checked.request.bytes != io->request.bytes ||
+               checked.read.data.pages.pgno != io->read.data.pages.pgno ||
+               checked.read.data.pages.end_pgno != io->read.data.pages.end_pgno ||
+               checked.read.data.pages.npages != io->read.data.pages.npages ||
+               checked.read.data.pages.offset != io->read.data.pages.offset ||
+               checked.read.data.pages.bytes != io->read.data.pages.bytes ||
+               checked.read.data.bytes.offset != io->read.data.bytes.offset ||
+               checked.read.data.bytes.bytes != io->read.data.bytes.bytes ||
+               checked.read.snapshot != io->read.snapshot ||
+               checked.read.reusable != io->read.reusable ||
+               checked.read.tracked != io->read.tracked ||
                checked.track_private != io->track_private))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
@@ -46310,7 +46311,7 @@ static dxb_cache_page_result_t page_submit_committed_read(MDBX_txn *txn,
   int err = page_committed_read_submit_io_validate(txn, io);
   if (unlikely(err != MDBX_SUCCESS))
     return dxb_cache_page_error(err);
-  return page_cache_read(txn, &io->request, io->track_private);
+  return page_cache_read_io(txn, &io->read);
 }
 
 static inline dxb_cache_page_result_t page_get_committed(MDBX_txn *txn, const dxb_page_io_t *request,
