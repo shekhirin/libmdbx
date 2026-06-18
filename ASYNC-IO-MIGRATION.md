@@ -11866,6 +11866,30 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.110` batch, `1.132` crud, `0.997` iterate,
 `1.000` get, and `1.073` delete.
 
+A later discard submission cleanup moved remove-mode page-cache invalidation
+into caller-built discard submit descriptors. `dxb_discard_submit_io_t` now
+carries a `has_invalidate` flag plus a prepared
+`dxb_discard_cache_invalidate_submit_io_t` for `dxb_discard_remove` and
+`dxb_discard_remove_or_clean` requests, while clean-only discard descriptors
+carry a zeroed invalidation payload. `dxb_storage_discard_io()` now validates
+and consumes the full submit descriptor instead of constructing the cache
+invalidation request inside the raw discard backend. Verification passed
+`git diff --check`, source scans covering `dxb_discard_submit_io_t`,
+`dxb_discard_cache_invalidate_submit_io_t`,
+`dxb_storage_make_discard_submit_io()`,
+`dxb_storage_discard_submit_io_validate()`, `dxb_storage_discard_io()`,
+`dxb_storage_submit_discard_io()`, and
+`dxb_storage_make_discard_cache_invalidate_submit_io()`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.088` batch, `1.142` crud, `0.921`
+iterate, `1.059` get, and `1.065` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
