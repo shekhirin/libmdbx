@@ -121,6 +121,8 @@ typedef struct dxb_data_write_io {
   dxb_byte_io_t bytes;
 } dxb_data_write_io_t;
 
+typedef void (*dxb_storage_queued_write_callback_t)(iov_ctx_t *ctx, const dxb_data_write_io_t *io, void *data);
+
 typedef struct dxb_data_copy_io {
   dxb_page_io_t src_pages;
   dxb_page_io_t dst_pages;
@@ -4526,6 +4528,7 @@ MDBX_INTERNAL int meta_wipe_steady(MDBX_env *env, txnid_t inclusive_upto);
 struct iov_ctx {
   MDBX_env *env;
   dxb_storage_t *storage;
+  dxb_storage_queued_write_callback_t walk_write_callback;
   enum dxb_io_channel channel;
   int err;
 #ifndef MDBX_NEED_WRITTEN_RANGE
@@ -21791,10 +21794,37 @@ static inline int dxb_storage_add_queued_write(dxb_storage_t *storage, const dxb
   return osal_ioring_add(dxb_storage_write_queue(storage), &io->bytes, data);
 }
 
+static void dxb_storage_walk_queued_write_bytes(iov_ctx_t *ctx, const dxb_byte_io_t *io, void *data) {
+  if (unlikely(!ctx->storage || !ctx->walk_write_callback)) {
+    if (ctx->err == MDBX_SUCCESS)
+      ctx->err = MDBX_EINVAL;
+    return;
+  }
+
+  dxb_data_write_io_t queued;
+  int rc = dxb_storage_make_data_write_io(ctx->storage, io, &queued);
+  if (likely(rc == MDBX_SUCCESS) && unlikely(queued.pages.npages == 0))
+    rc = MDBX_EINVAL;
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    if (ctx->err == MDBX_SUCCESS)
+      ctx->err = rc;
+    return;
+  }
+
+  ctx->walk_write_callback(ctx, &queued, data);
+}
+
 static inline void dxb_storage_walk_write_queue(dxb_storage_t *storage, iov_ctx_t *ctx,
-                                                void (*callback)(iov_ctx_t *ctx, const dxb_byte_io_t *io,
-                                                                 void *data)) {
-  osal_ioring_walk(dxb_storage_write_queue(storage), ctx, callback);
+                                                dxb_storage_queued_write_callback_t callback) {
+  if (unlikely(ctx->storage != storage || ctx->walk_write_callback || !callback)) {
+    if (ctx->err == MDBX_SUCCESS)
+      ctx->err = MDBX_EINVAL;
+    return;
+  }
+
+  ctx->walk_write_callback = callback;
+  osal_ioring_walk(dxb_storage_write_queue(storage), ctx, dxb_storage_walk_queued_write_bytes);
+  ctx->walk_write_callback = nullptr;
 }
 
 static inline bool dxb_storage_can_lazy_meta_sync_with_data(const dxb_storage_t *storage) {
@@ -34965,6 +34995,7 @@ pgr_t page_get_large(const MDBX_cursor *const mc, const pgno_t pgno, const txnid
 int iov_init(MDBX_txn *const txn, iov_ctx_t *ctx, size_t items, size_t npages, enum dxb_io_channel channel) {
   ctx->env = txn->env;
   ctx->storage = &ctx->env->dxb_storage;
+  ctx->walk_write_callback = nullptr;
   ctx->channel = channel;
   if (unlikely(!dxb_storage_io_channel_valid(channel)))
     return ctx->err = MDBX_EINVAL;
@@ -34992,41 +35023,33 @@ static bool iov_empty(const iov_ctx_t *ctx) {
   return dxb_storage_write_queue_is_empty(ctx->storage);
 }
 
-static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_byte_io_t *io, void *data) {
+static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_data_write_io_t *queued, void *data) {
   MDBX_env *const env = ctx->env;
   dxb_storage_t *const storage = ctx->storage;
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
 
-  dxb_data_write_io_t queued;
-  int err = dxb_storage_make_data_write_io(storage, io, &queued);
-  if (likely(err == MDBX_SUCCESS) && unlikely(queued.pages.npages == 0))
-    err = MDBX_EINVAL;
-  if (unlikely(err != MDBX_SUCCESS)) {
-    if (ctx->err == MDBX_SUCCESS)
-      ctx->err = err;
-    return;
-  }
-
-  pgno_t pgno = queued.pages.pgno;
-  size_t bytes = queued.pages.bytes;
+  pgno_t pgno = queued->pages.pgno;
+  size_t bytes = queued->pages.bytes;
   page_t *wp = (page_t *)data;
   eASSERT0(env, wp->pgno == pgno);
-  eASSERT0(env, queued.pages.npages >= (is_largepage(wp) ? wp->pages : 1u));
+  eASSERT0(env, queued->pages.npages >= (is_largepage(wp) ? wp->pages : 1u));
   eASSERT0(env, (wp->flags & P_ILL_BITS) == 0);
 
   if (ctx->err == MDBX_SUCCESS && dxb_io_channel_is_data(ctx->channel))
-    dxb_storage_invalidate_cached_io(storage, &queued.pages, false);
+    dxb_storage_invalidate_cached_io(storage, &queued->pages, false);
 
-  if (likely(queued.pages.npages == 1))
+  if (likely(queued->pages.npages == 1))
     page_shadow_release(env, wp, 1);
   else {
+    int err;
     do {
       eASSERT0(env, wp->pgno == pgno);
       eASSERT0(env, (wp->flags & P_ILL_BITS) == 0);
       size_t npages = is_largepage(wp) ? wp->pages : 1u;
       dxb_page_io_t chunk_pages;
       err = dxb_storage_page_io(storage, pgno, npages, &chunk_pages);
-      if (unlikely(err != MDBX_SUCCESS || chunk_pages.bytes > bytes || chunk_pages.end_pgno > queued.pages.end_pgno)) {
+      if (unlikely(err != MDBX_SUCCESS || chunk_pages.bytes > bytes ||
+                   chunk_pages.end_pgno > queued->pages.end_pgno)) {
         if (ctx->err == MDBX_SUCCESS)
           ctx->err = (err != MDBX_SUCCESS) ? err : MDBX_EINVAL;
         return;

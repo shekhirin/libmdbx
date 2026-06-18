@@ -6235,6 +6235,26 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.110` batch, `1.178`
 crud, `0.968` iterate, `1.169` get, and `1.066` delete.
 
+A later write-queue walk cleanup added a typed
+`dxb_storage_queued_write_callback_t` boundary. The low-level `osal_ioring`
+still stores byte spans, but `dxb_storage_walk_write_queue()` now converts each
+walked byte segment back into a checked `dxb_data_write_io_t` before invoking
+dirty-page completion. As a result, `iov_callback4dirtypages()` receives the
+same typed data-write descriptor used by queue submission instead of accepting
+raw `dxb_byte_io_t` ranges and reconstructing them itself. This keeps queued
+write completion behind the storage descriptor layer, which is the boundary
+that future async write completion should preserve. Verification passed `git
+diff --check`, source scans proving the old dirty-page byte-callback shape and
+callback-local `dxb_storage_make_data_write_io(storage, io, ...)` rebuild are
+gone from `mdbx.c`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.146` batch, `1.152`
+crud, `0.997` iterate, `0.994` get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
