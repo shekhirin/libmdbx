@@ -5796,6 +5796,24 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.098` batch, `1.163` crud, `1.163` iterate,
 `0.948` get, and `1.068` delete.
 
+A later page-coverage descriptor cleanup removed the loose
+`dxb_storage_page_coverage_io_from_bytes()` helper from the C source.
+Readahead prefetch, discard, shrink-tail invalidation, and readahead logging
+now build a `dxb_page_coverage_io_t` carrying the original byte request,
+rounded page coverage, and full page-byte coverage. Advisory and discard calls
+keep using the original byte request, while cache invalidation and will-need
+prefetch use the rounded page span/page bytes. Verification passed
+`git diff --check`, source scans proving the old page-coverage helper and the
+earlier removed storage adapters are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke`
+CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
+passed with forced/default ratios of `1.131` batch, `1.150` crud, `0.975`
+iterate, `1.004` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -120,6 +120,12 @@ typedef struct dxb_data_write_io {
   dxb_byte_io_t bytes;
 } dxb_data_write_io_t;
 
+typedef struct dxb_page_coverage_io {
+  dxb_byte_io_t request;
+  dxb_page_io_t pages;
+  dxb_byte_io_t page_bytes;
+} dxb_page_coverage_io_t;
+
 struct page_cache_entry {
   page_cache_entry_t *next;
   page_cache_t *owner;
@@ -1581,8 +1587,8 @@ static inline uint64_t dxb_storage_bytes2pgno(const dxb_storage_t *storage, uint
   return bytes >> dxb_storage_pagesize_ln(storage);
 }
 
-static inline int dxb_storage_page_coverage_io_from_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *bytes,
-                                                          dxb_page_io_t *io) {
+static inline int dxb_storage_make_page_coverage_io(const dxb_storage_t *storage, const dxb_byte_io_t *bytes,
+                                                    dxb_page_coverage_io_t *io) {
   int rc = dxb_storage_byte_io_validate(bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
@@ -1604,7 +1610,20 @@ static inline int dxb_storage_page_coverage_io_from_bytes(const dxb_storage_t *s
   if (unlikely(end < begin))
     end = begin;
 
-  return dxb_storage_page_io(storage, (pgno_t)begin, (size_t)(end - begin), io);
+  dxb_page_io_t pages;
+  rc = dxb_storage_page_io(storage, (pgno_t)begin, (size_t)(end - begin), &pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_byte_io_t page_bytes;
+  rc = dxb_storage_byte_io_from_page(&pages, &page_bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->request = *bytes;
+  io->pages = pages;
+  io->page_bytes = page_bytes;
+  return MDBX_SUCCESS;
 }
 
 static inline int dxb_storage_make_data_write_io(const dxb_storage_t *storage, const dxb_byte_io_t *bytes,
@@ -21659,17 +21678,13 @@ static int dxb_storage_advise_range(const dxb_storage_t *storage, const dxb_byte
 }
 
 static int dxb_storage_prefetch_readahead_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
-  dxb_page_io_t pages;
-  int rc = dxb_storage_page_coverage_io_from_bytes(storage, io, &pages);
+  dxb_page_coverage_io_t coverage;
+  int rc = dxb_storage_make_page_coverage_io(storage, io, &coverage);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  if (pages.npages == 0)
+  if (coverage.pages.npages == 0)
     return MDBX_SUCCESS;
-  dxb_byte_io_t bytes;
-  rc = dxb_storage_byte_io_from_page(&pages, &bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_advise_range(storage, &bytes, dxb_advice_willneed);
+  return dxb_storage_advise_range(storage, &coverage.page_bytes, dxb_advice_willneed);
 }
 
 static int dxb_storage_discard_clean_range(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
@@ -21700,28 +21715,28 @@ static int dxb_storage_discard_range(dxb_storage_t *storage, const dxb_byte_io_t
   if (unlikely(!dxb_discard_mode_valid(mode)))
     return MDBX_EINVAL;
 
-  dxb_page_io_t pages;
-  int rc = dxb_storage_page_coverage_io_from_bytes(storage, io, &pages);
+  dxb_page_coverage_io_t coverage;
+  int rc = dxb_storage_make_page_coverage_io(storage, io, &coverage);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  if (io->bytes == 0)
+  if (coverage.request.bytes == 0)
     return MDBX_SUCCESS;
 
   switch (mode) {
   case dxb_discard_clean:
-    return dxb_storage_discard_clean_range(storage, io);
+    return dxb_storage_discard_clean_range(storage, &coverage.request);
   case dxb_discard_remove: {
-    rc = dxb_storage_discard_remove_range(storage, io);
+    rc = dxb_storage_discard_remove_range(storage, &coverage.request);
     if (rc == MDBX_SUCCESS)
-      dxb_storage_invalidate_cached_io(storage, &pages, true);
+      dxb_storage_invalidate_cached_io(storage, &coverage.pages, true);
     return rc;
   }
   case dxb_discard_remove_or_clean: {
-    rc = dxb_storage_discard_remove_range(storage, io);
+    rc = dxb_storage_discard_remove_range(storage, &coverage.request);
     if (rc == MDBX_SUCCESS)
-      dxb_storage_invalidate_cached_io(storage, &pages, true);
-    return (rc == MDBX_RESULT_TRUE) ? dxb_storage_discard_clean_range(storage, io) : rc;
+      dxb_storage_invalidate_cached_io(storage, &coverage.pages, true);
+    return (rc == MDBX_RESULT_TRUE) ? dxb_storage_discard_clean_range(storage, &coverage.request) : rc;
   }
   }
   return MDBX_RESULT_TRUE;
@@ -22090,10 +22105,10 @@ static int dxb_storage_set_filesize_bytes(dxb_storage_t *storage, uint64_t targe
     const size_t bytes = tail_bytes > SIZE_MAX ? SIZE_MAX : (size_t)tail_bytes;
     int err = dxb_storage_byte_span_io(target, target + bytes, &stale);
     if (likely(err == MDBX_SUCCESS)) {
-      dxb_page_io_t stale_pages;
-      err = dxb_storage_page_coverage_io_from_bytes(storage, &stale, &stale_pages);
+      dxb_page_coverage_io_t stale_coverage;
+      err = dxb_storage_make_page_coverage_io(storage, &stale, &stale_coverage);
       if (likely(err == MDBX_SUCCESS))
-        dxb_storage_invalidate_cached_io(storage, &stale_pages, true);
+        dxb_storage_invalidate_cached_io(storage, &stale_coverage.pages, true);
     }
   }
   return dxb_storage_set_filesize(storage, target);
@@ -22548,12 +22563,13 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
   if (window.bytes == 0)
     return MDBX_SUCCESS;
 
-  dxb_page_io_t window_pages;
-  err = dxb_storage_page_coverage_io_from_bytes(storage, &window, &window_pages);
+  dxb_page_coverage_io_t window_coverage;
+  err = dxb_storage_make_page_coverage_io(storage, &window, &window_coverage);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  NOTICE("readahead %s %u..%u", enable ? "ON" : "OFF", window_pages.pgno, window_pages.end_pgno);
+  NOTICE("readahead %s %u..%u", enable ? "ON" : "OFF", window_coverage.pages.pgno,
+         window_coverage.pages.end_pgno);
 
   if (toggle) {
     int err = dxb_storage_set_readahead(storage, enable);
