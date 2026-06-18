@@ -10676,6 +10676,51 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.113` batch, `1.164` crud, `0.968` iterate,
 `1.061` get, and `1.076` delete.
 
+A later readahead/advice cleanup added
+`dxb_readahead_toggle_submit_io_t`,
+`dxb_readahead_make_toggle_submit_io()`,
+`dxb_readahead_toggle_submit_io_validate()`,
+`dxb_readahead_submit_toggle()`,
+`dxb_readahead_advice_submit_io_t`,
+`dxb_readahead_make_advice_submit_io()`,
+`dxb_readahead_advice_submit_io_validate()`, and
+`dxb_readahead_submit_advice()` for the `dxb_set_readahead()` policy path. The
+toggle request captures the environment, data storage handle, requested
+enable/disable state, and generic readahead submit descriptor. The advice
+request captures the environment, data storage handle, byte range, advice mode,
+rebuilt advice descriptor, and generic advice-submit descriptor. Validation
+rechecks environment/storage identity, normalized toggle state, generic
+readahead-submit descriptor, byte-range shape, advice mode, advice page
+coverage, generic advice-submit descriptor, and rebuilt requests before
+submitting. Submit delegates to `dxb_storage_submit_readahead()` and
+`dxb_storage_submit_advise_io()`, preserving the existing readahead window
+calculation, zero-window no-op, page-coverage logging, toggle decision, Mach
+`WILLNEED` workaround, `env_clear_incore_cache()` on disable, and
+`readahead_anchor` update. This removes inline
+`dxb_storage_make_readahead_submit_io()` / `dxb_storage_submit_readahead()` and
+`dxb_storage_make_advice_io()` / `dxb_storage_make_advice_submit_io()` /
+`dxb_storage_submit_advise_io()` construction from `dxb_set_readahead()`.
+Verification passed `git diff --check`, source scans covering
+`dxb_readahead_toggle_submit_io_t`,
+`dxb_readahead_make_toggle_submit_io()`,
+`dxb_readahead_toggle_submit_io_validate()`,
+`dxb_readahead_submit_toggle()`,
+`dxb_readahead_advice_submit_io_t`,
+`dxb_readahead_make_advice_submit_io()`,
+`dxb_readahead_advice_submit_io_validate()`,
+`dxb_readahead_submit_advice()`, the updated `dxb_set_readahead()` path, and
+the absence of old inline readahead/advice storage submit construction in that
+function, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment.
+The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
+of `1.102` batch, `1.153` crud, `1.013` iterate, `1.079` get, and `1.079`
+delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
