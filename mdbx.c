@@ -2535,7 +2535,7 @@ MDBX_INTERNAL dxb_open_result_t dxb_storage_open_dsync(dxb_storage_t *storage, c
                                                        const pathchar_t *pathname, bool meta_sync);
 MDBX_INTERNAL void dxb_storage_park_data(const dxb_storage_t *storage, const dxb_byte_io_t *position);
 MDBX_INTERNAL void dxb_storage_park_dsync(const dxb_storage_t *storage, const dxb_byte_io_t *position);
-MDBX_INTERNAL int dxb_storage_close(dxb_storage_t *storage, bool env_active);
+MDBX_INTERNAL dxb_close_result_t dxb_storage_close(dxb_storage_t *storage, bool env_active);
 MDBX_INTERNAL int dxb_storage_deinit(dxb_storage_t *storage, bool env_active);
 #if !defined(_WIN32) && !defined(_WIN64)
 static int dxb_storage_stat(const dxb_storage_t *storage, struct stat *st);
@@ -21926,31 +21926,50 @@ void dxb_storage_park_dsync(const dxb_storage_t *storage, const dxb_byte_io_t *p
   dxb_storage_park_fd(storage->dsync_fd, position);
 }
 
-static int dxb_storage_close_handles(dxb_storage_t *storage, bool *had_data_fd) {
+static inline dxb_close_result_t dxb_close_result(int err, bool had_data, bool had_dsync, bool closed_data,
+                                                  bool closed_dsync, bool reset) {
+  const dxb_close_result_t result = {err, had_data, had_dsync, closed_data, closed_dsync, reset};
+  return result;
+}
+
+static inline dxb_close_result_t dxb_close_with_reset(dxb_close_result_t result) {
+  result.reset = true;
+  return result;
+}
+
+static dxb_close_result_t dxb_storage_close_handles(dxb_storage_t *storage) {
   int rc = MDBX_SUCCESS;
   const mdbx_filehandle_t data_fd = storage->data_fd;
   const mdbx_filehandle_t dsync_fd = storage->dsync_fd;
-  if (had_data_fd)
-    *had_data_fd = data_fd != INVALID_HANDLE_VALUE;
+  const bool had_data = data_fd != INVALID_HANDLE_VALUE;
+  const bool had_dsync = dsync_fd != INVALID_HANDLE_VALUE;
+  bool closed_data = false;
+  bool closed_dsync = false;
 
   if (dsync_fd != INVALID_HANDLE_VALUE && dsync_fd != data_fd) {
     const int err = osal_closefile(dsync_fd);
-    if (unlikely(err != MDBX_SUCCESS) && rc == MDBX_SUCCESS)
+    if (likely(err == MDBX_SUCCESS))
+      closed_dsync = true;
+    else if (rc == MDBX_SUCCESS)
       rc = err;
   }
 
   if (data_fd != INVALID_HANDLE_VALUE) {
     const int err = osal_closefile(data_fd);
-    if (unlikely(err != MDBX_SUCCESS) && rc == MDBX_SUCCESS)
+    if (likely(err == MDBX_SUCCESS)) {
+      closed_data = true;
+      if (dsync_fd == data_fd)
+        closed_dsync = true;
+    } else if (rc == MDBX_SUCCESS)
       rc = err;
   }
-  return rc;
+  return dxb_close_result(rc, had_data, had_dsync, closed_data, closed_dsync, false);
 }
 
-int dxb_storage_close(dxb_storage_t *storage, bool env_active) {
-  const int rc = dxb_storage_close_handles(storage, nullptr);
+dxb_close_result_t dxb_storage_close(dxb_storage_t *storage, bool env_active) {
+  dxb_close_result_t result = dxb_storage_close_handles(storage);
   dxb_storage_reset(storage, env_active);
-  return rc;
+  return dxb_close_with_reset(result);
 }
 
 int dxb_storage_deinit(dxb_storage_t *storage, bool env_active) {
@@ -28902,11 +28921,11 @@ __cold int lck_destroy(MDBX_env *env, MDBX_env *inprocess_neighbor, const mdbx_p
    * locks should be released here explicitly with properly order. */
 
   /* close dxb and restore lock */
-  bool had_dxb_handle = false;
-  const int close_dxb_rc = dxb_storage_close_handles(storage, &had_dxb_handle);
+  dxb_close_result_t close_dxb = dxb_storage_close_handles(storage);
+  const int close_dxb_rc = close_dxb.err;
   if (unlikely(close_dxb_rc != MDBX_SUCCESS) && rc == MDBX_SUCCESS)
     rc = close_dxb_rc;
-  if (had_dxb_handle && op_setlk == F_SETLK && inprocess_neighbor && rc == MDBX_SUCCESS) {
+  if (close_dxb.had_data && op_setlk == F_SETLK && inprocess_neighbor && rc == MDBX_SUCCESS) {
     const dxb_storage_t *const neighbor_storage = &inprocess_neighbor->dxb_storage;
     dxb_lock_io_t restore_dxb;
     rc = dxb_storage_lock_io((inprocess_neighbor->flags & MDBX_EXCLUSIVE) ? 0 : inprocess_neighbor->pid,

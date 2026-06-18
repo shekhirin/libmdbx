@@ -1398,6 +1398,15 @@ typedef struct dxb_open_result {
   bool meta_uses_dsync;
 } dxb_open_result_t;
 
+typedef struct dxb_close_result {
+  int err;
+  bool had_data;
+  bool had_dsync;
+  bool closed_data;
+  bool closed_dsync;
+  bool reset;
+} dxb_close_result_t;
+
 typedef struct dxb_resize_result {
   int err;
   size_t current;

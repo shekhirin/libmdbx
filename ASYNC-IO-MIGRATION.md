@@ -394,7 +394,7 @@ int dxb_storage_prefetch_pages(dxb_storage_t *storage, pgno_t pgno,
 int dxb_storage_sync(dxb_storage_t *storage, enum osal_syncmode_bits mode);
 int dxb_storage_resize(dxb_storage_t *storage, size_t size_bytes,
                        size_t limit_bytes);
-void dxb_storage_close(dxb_storage_t *storage, bool env_active);
+dxb_close_result_t dxb_storage_close(dxb_storage_t *storage, bool env_active);
 ```
 
 The first backend should use `pread()`, `pwrite()`/`pwritev()`,
@@ -2611,11 +2611,11 @@ get, and `1.071` delete.
 A later POSIX DXB close-teardown cleanup added `dxb_storage_close_handles()` so
 the special `lck_destroy()` close sequence is storage-owned too. Normal
 `dxb_storage_close()` now reuses the same helper, while `lck_destroy()` asks it
-whether a data handle was present before restoring the in-process neighbor's
-fcntl lock. This preserves the required order, close dsync first, close DXB
-second, restore the neighbor lock after the current DXB handle is closed, then
-reset storage, without pulling DXB/dsync descriptors apart in the lock teardown
-code. The now-unused `dxb_storage_dsync_fd()` accessor was removed, and
+for close completion state before restoring the in-process neighbor's fcntl
+lock. This preserves the required order, close dsync first, close DXB second,
+restore the neighbor lock after the current DXB handle is closed, then reset
+storage, without pulling DXB/dsync descriptors apart in the lock teardown code.
+The now-unused `dxb_storage_dsync_fd()` accessor was removed, and
 `mdbx_env_get_fd()` remained the only environment-level DXB descriptor bridge at
 that checkpoint. Verification passed `git diff --check`, stale data-file mmap
 symbol scans, DXB close/lock routing scans, `make -f GNUmakefile
@@ -7124,6 +7124,27 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 `mdbx_migration_bench_lazy`. The paired benchmark gate passed with
 forced/default ratios of `1.096` batch, `1.152` crud, `0.969` iterate,
 `0.985` get, and `1.078` delete.
+
+A later data-file close cleanup added `dxb_close_result_t` for storage
+descriptor teardown. `dxb_storage_close_handles()` and `dxb_storage_close()`
+now return an explicit result with the error code, whether data/dsync handles
+were present, which handles closed successfully, and whether the public close
+wrapper reset storage state. The normal `env_close()` path still ignores close
+errors as before, while `lck_destroy()` now uses `close_result.had_data` in
+place of the previous boolean out parameter when deciding whether to restore
+POSIX data-file locks. This preserves lock restoration and teardown control
+flow while making descriptor close completion data available for future
+async-capable storage backends. Verification passed `git diff --check`, source
+scans covering `dxb_close_result_t`, close result helpers, and every
+`dxb_storage_close_handles()` and `dxb_storage_close()` call site, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.127` batch, `1.154`
+crud, `0.781` iterate, `1.038` get, and `1.079` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
