@@ -4672,10 +4672,8 @@ static dxb_filesize_result_t dxb_storage_submit_fetch_filesize(dxb_storage_t *st
 MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno_t used_pgno, const pgno_t size_pgno,
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
-static dxb_read_result_t dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_read_io_t *io, void *buf);
 static dxb_read_result_t dxb_storage_submit_read_data(const dxb_storage_t *storage,
                                                       const dxb_read_submit_io_t *io);
-static dxb_read_result_t dxb_storage_read_meta(const dxb_storage_t *storage, const dxb_meta_read_io_t *io, void *buf);
 static dxb_read_result_t dxb_storage_submit_read_meta(const dxb_storage_t *storage,
                                                       const dxb_meta_read_submit_io_t *io);
 static dxb_write_result_t dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_io_t *io,
@@ -29931,44 +29929,23 @@ static inline dxb_read_result_t dxb_read_completed(size_t payload_bytes) {
   return dxb_read_result(MDBX_SUCCESS, payload_bytes, true, true);
 }
 
-static dxb_read_result_t dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_read_io_t *io, void *buf) {
-  int rc = dxb_storage_data_read_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_read_error(rc);
-  rc = dxb_fault_inject("read");
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_read_error(rc);
-  rc = osal_pread(dxb_storage_data_fd(storage), buf, io->bytes.bytes, io->bytes.offset);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_read_submitted_error(rc);
-  rc = dxb_fault_inject("read-complete");
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_read_submitted_error(rc);
-  return dxb_read_completed(io->bytes.bytes);
-}
-
 static dxb_read_result_t dxb_storage_submit_read_data(const dxb_storage_t *storage,
                                                       const dxb_read_submit_io_t *io) {
   int rc = dxb_storage_read_submit_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_read_error(rc);
-  return dxb_storage_read_data(storage, &io->data, io->buffer);
-}
 
-static dxb_read_result_t dxb_storage_read_meta(const dxb_storage_t *storage, const dxb_meta_read_io_t *io, void *buf) {
-  int rc = dxb_storage_meta_read_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_read_error(rc);
+  const dxb_data_read_io_t *const data = &io->data;
   rc = dxb_fault_inject("read");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_read_error(rc);
-  rc = osal_pread(dxb_storage_data_fd(storage), buf, io->bytes.bytes, io->bytes.offset);
+  rc = osal_pread(dxb_storage_data_fd(storage), io->buffer, data->bytes.bytes, data->bytes.offset);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_read_submitted_error(rc);
   rc = dxb_fault_inject("read-complete");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_read_submitted_error(rc);
-  return dxb_read_completed(io->bytes.bytes);
+  return dxb_read_completed(data->bytes.bytes);
 }
 
 static dxb_read_result_t dxb_storage_submit_read_meta(const dxb_storage_t *storage,
@@ -29976,7 +29953,18 @@ static dxb_read_result_t dxb_storage_submit_read_meta(const dxb_storage_t *stora
   int rc = dxb_storage_meta_read_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_read_error(rc);
-  return dxb_storage_read_meta(storage, &io->meta, io->buffer);
+
+  const dxb_meta_read_io_t *const meta = &io->meta;
+  rc = dxb_fault_inject("read");
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_read_error(rc);
+  rc = osal_pread(dxb_storage_data_fd(storage), io->buffer, meta->bytes.bytes, meta->bytes.offset);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_read_submitted_error(rc);
+  rc = dxb_fault_inject("read-complete");
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_read_submitted_error(rc);
+  return dxb_read_completed(meta->bytes.bytes);
 }
 
 static inline dxb_write_result_t dxb_write_result(int err, unsigned wops, size_t payload_bytes, bool submitted,

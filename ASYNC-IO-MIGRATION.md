@@ -12526,6 +12526,26 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.109` batch, `1.146` crud, `1.186`
 iterate, `1.019` get, and `1.066` delete.
 
+A later storage read submit-boundary cleanup folded the raw
+`dxb_storage_read_data()` and `dxb_storage_read_meta()` helpers into
+`dxb_storage_submit_read_data()` and `dxb_storage_submit_read_meta()`. The data
+and meta read submitters now validate the full submit descriptors, run the read
+fault-injection hooks, issue the `osal_pread()` calls, and return submitted
+completion results directly from the submit boundary. This leaves lower-level
+read callers with a single descriptor-shaped storage read entry point for both
+ordinary data pages and metadata probes. Verification passed `git diff --check`,
+source scans confirming no raw data/meta storage read helpers remain in
+`mdbx.c` or the public/internal headers, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.139` batch, `1.140` crud, `0.995` iterate,
+`1.015` get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
