@@ -21076,23 +21076,6 @@ static int page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
   return dxb_storage_materialize_cached_large_page(entry->storage, pgr);
 }
 
-MDBX_MAYBE_UNUSED static bool dxb_storage_cached_page_contains(const dxb_storage_t *storage, const page_t *page) {
-  const uintptr_t addr = (uintptr_t)page;
-  page_cache_lock(storage);
-  bool found = false;
-  for (const page_cache_entry_t *entry = storage->page_cache.entries; entry; entry = entry->next) {
-    const size_t pagesize = (size_t)1 << entry->pagesize_ln;
-    const uintptr_t begin = (uintptr_t)entry->page;
-    const uintptr_t end = begin + entry->io.bytes;
-    if (addr >= begin && addr < end && ((addr - begin) & (pagesize - 1)) == 0) {
-      found = true;
-      break;
-    }
-  }
-  page_cache_unlock(storage);
-  return found;
-}
-
 int dxb_storage_init(dxb_storage_t *storage) {
   memset(storage, 0, sizeof(*storage));
   storage->page_cache_limit = page_cache_limit_from_env();

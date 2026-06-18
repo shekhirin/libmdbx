@@ -5706,6 +5706,21 @@ focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
 The paired benchmark gate passed with forced/default ratios of `1.085` batch,
 `1.153` crud, `0.997` iterate, `1.027` get, and `1.079` delete.
 
+A later cached-page pointer cleanup removed the unused
+`dxb_storage_cached_page_contains()` helper from the C source. The active
+public `mdbx_is_dirty()` pointer resolution still uses explicit page-cache and
+dirty-list spans, but the dead helper that scanned cached page memory by raw
+address is gone. Verification passed `git diff --check`, source scans proving
+the cached-page containment helper and the earlier removed storage adapters are
+gone from `mdbx.c`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache
+fault injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.137` batch, `1.175`
+crud, `1.231` iterate, `0.945` get, and `1.087` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
