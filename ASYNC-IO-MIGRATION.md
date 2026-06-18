@@ -12167,6 +12167,32 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.084`
 batch, `1.127` crud, `0.971` iterate, `1.022` get, and `0.982` delete.
 
+A later transaction setup limit-state submission cleanup moved the
+shrink-refresh current-size update behind a transaction-owned submit payload.
+`dxb_txn_setup_limit_size_state_submit_io_t` now captures the env-owned storage
+handle, current limit, observed filesize, and derived
+`dxb_size_state_submit_io_t`; `txn_setup_primal()` uses
+`dxb_txn_setup_make_limit_size_state_submit_io()` and
+`dxb_txn_setup_submit_limit_size_state()` after its filesize refresh instead of
+constructing and submitting the storage size-state descriptor inline. The
+validator rebuilds the descriptor against the live storage state, so this
+completion-driven branch keeps its dependency on the just-observed filesize
+while exposing the storage mutation as an explicit submit boundary.
+Verification passed `git diff --check`, source scans covering
+`dxb_txn_setup_limit_size_state_submit_io_t`,
+`dxb_txn_setup_make_limit_size_state_submit_io()`,
+`dxb_txn_setup_submit_limit_size_state()`, and the remaining direct
+limit-size state call sites, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.097` batch, `1.142` crud, `0.804` iterate,
+`1.048` get, and `1.060` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -30926,6 +30926,68 @@ static dxb_filesize_result_t dxb_env_submit_filesize_fetch(const dxb_env_filesiz
   return dxb_storage_submit_fetch_filesize(io->storage, &io->submit);
 }
 
+typedef struct dxb_txn_setup_limit_size_state_submit_io {
+  MDBX_env *env;
+  dxb_storage_t *storage;
+  size_t limit;
+  uint64_t filesize;
+  dxb_size_state_submit_io_t submit;
+} dxb_txn_setup_limit_size_state_submit_io_t;
+
+static inline int
+dxb_txn_setup_make_limit_size_state_submit_io(MDBX_env *env,
+                                              dxb_txn_setup_limit_size_state_submit_io_t *io) {
+  if (unlikely(!env || !io))
+    return MDBX_EINVAL;
+
+  dxb_storage_t *const storage = &env->dxb_storage;
+  const size_t limit = dxb_storage_limit_size(storage);
+  dxb_size_state_submit_io_t submit;
+  int rc = dxb_storage_make_limit_size_state_submit_io(storage, limit, &submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->env = env;
+  io->storage = storage;
+  io->limit = limit;
+  io->filesize = dxb_storage_filesize(storage);
+  io->submit = submit;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_txn_setup_limit_size_state_submit_io_validate(
+    const dxb_txn_setup_limit_size_state_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage))
+    return MDBX_EINVAL;
+  if (unlikely(io->limit != dxb_storage_limit_size(io->storage) ||
+               io->filesize != dxb_storage_filesize(io->storage)))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_size_state_submit_io_validate(&io->submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_txn_setup_limit_size_state_submit_io_t checked;
+  rc = dxb_txn_setup_make_limit_size_state_submit_io(io->env, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return likely(checked.env == io->env && checked.storage == io->storage &&
+                checked.limit == io->limit && checked.filesize == io->filesize &&
+                checked.submit.size.current == io->submit.size.current &&
+                checked.submit.size.limit == io->submit.size.limit &&
+                checked.submit.filesize == io->submit.filesize)
+             ? MDBX_SUCCESS
+             : MDBX_EINVAL;
+}
+
+static dxb_state_result_t
+dxb_txn_setup_submit_limit_size_state(const dxb_txn_setup_limit_size_state_submit_io_t *io) {
+  int rc = dxb_txn_setup_limit_size_state_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_state_error(rc);
+  return dxb_storage_submit_size_state(io->storage, &io->submit);
+}
+
 typedef struct dxb_header_meta_read_submit_io {
   const dxb_storage_t *storage;
   dxb_meta_read_io_t request;
@@ -55611,11 +55673,10 @@ int txn_setup_primal(MDBX_txn *txn) {
     if (likely(err == MDBX_SUCCESS)) {
       eASSERT0(env, dxb_storage_filesize_covers(storage, required_bytes));
       if (dxb_storage_current_size(storage) > dxb_storage_filesize(storage)) {
-        dxb_size_state_submit_io_t limit_state_submit;
-        err = dxb_storage_make_limit_size_state_submit_io(storage, dxb_storage_limit_size(storage),
-                                                          &limit_state_submit);
+        dxb_txn_setup_limit_size_state_submit_io_t limit_state_submit;
+        err = dxb_txn_setup_make_limit_size_state_submit_io(env, &limit_state_submit);
         if (likely(err == MDBX_SUCCESS))
-          err = dxb_storage_submit_size_state(storage, &limit_state_submit).err;
+          err = dxb_txn_setup_submit_limit_size_state(&limit_state_submit).err;
       }
     }
 #if defined(_WIN32) || defined(_WIN64)
