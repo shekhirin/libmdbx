@@ -96,21 +96,24 @@ typedef struct dxb_size_io {
   size_t limit;
 } dxb_size_io_t;
 
+typedef struct dxb_filesize_submit_io {
+  uint64_t target;
+  bool set;
+} dxb_filesize_submit_io_t;
+
 typedef struct dxb_setup_size_submit_io {
   dxb_size_io_t target;
   unsigned flags;
   unsigned options;
+  dxb_filesize_submit_io_t filesize;
 } dxb_setup_size_submit_io_t;
 
 typedef struct dxb_resize_size_submit_io {
   dxb_size_io_t target;
   unsigned flags;
+  dxb_filesize_submit_io_t filesize_fetch;
+  dxb_filesize_submit_io_t filesize_set;
 } dxb_resize_size_submit_io_t;
-
-typedef struct dxb_filesize_submit_io {
-  uint64_t target;
-  bool set;
-} dxb_filesize_submit_io_t;
 
 typedef struct dxb_filesize_state_submit_io {
   uint64_t filesize;
@@ -2128,55 +2131,6 @@ static inline int dxb_storage_size_io_validate(const dxb_size_io_t *io) {
   return MDBX_SUCCESS;
 }
 
-static inline int dxb_storage_make_setup_size_submit_io(const dxb_size_io_t *target, unsigned flags, unsigned options,
-                                                        dxb_setup_size_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-  int rc = dxb_storage_size_io_validate(target);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  io->target = *target;
-  io->flags = flags;
-  io->options = options;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_setup_size_submit_io_validate(const dxb_setup_size_submit_io_t *io) {
-  dxb_setup_size_submit_io_t checked;
-  int rc = unlikely(!io) ? MDBX_EINVAL
-                         : dxb_storage_make_setup_size_submit_io(&io->target, io->flags, io->options, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return likely(checked.target.current == io->target.current && checked.target.limit == io->target.limit &&
-                checked.flags == io->flags && checked.options == io->options)
-             ? MDBX_SUCCESS
-             : MDBX_EINVAL;
-}
-
-static inline int dxb_storage_make_resize_size_submit_io(const dxb_size_io_t *target, unsigned flags,
-                                                         dxb_resize_size_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-  int rc = dxb_storage_size_io_validate(target);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  io->target = *target;
-  io->flags = flags;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_resize_size_submit_io_validate(const dxb_resize_size_submit_io_t *io) {
-  dxb_resize_size_submit_io_t checked;
-  int rc =
-      unlikely(!io) ? MDBX_EINVAL : dxb_storage_make_resize_size_submit_io(&io->target, io->flags, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return likely(checked.target.current == io->target.current && checked.target.limit == io->target.limit &&
-                checked.flags == io->flags)
-             ? MDBX_SUCCESS
-             : MDBX_EINVAL;
-}
-
 static inline int dxb_storage_make_filesize_fetch_submit_io(dxb_filesize_submit_io_t *io) {
   if (unlikely(!io))
     return MDBX_EINVAL;
@@ -2203,6 +2157,76 @@ static inline int dxb_storage_filesize_set_submit_io_validate(const dxb_filesize
   if (unlikely(!io || !io->set))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_setup_size_submit_io(const dxb_size_io_t *target, unsigned flags, unsigned options,
+                                                        dxb_setup_size_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_size_io_validate(target);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_filesize_submit_io_t filesize;
+  rc = ((flags & MDBX_RDONLY) == 0 && (options & MMAP_OPTION_SETLENGTH) != 0)
+           ? dxb_storage_make_filesize_set_submit_io(target->current, &filesize)
+           : dxb_storage_make_filesize_fetch_submit_io(&filesize);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  io->target = *target;
+  io->flags = flags;
+  io->options = options;
+  io->filesize = filesize;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_setup_size_submit_io_validate(const dxb_setup_size_submit_io_t *io) {
+  dxb_setup_size_submit_io_t checked;
+  int rc = unlikely(!io) ? MDBX_EINVAL
+                         : dxb_storage_make_setup_size_submit_io(&io->target, io->flags, io->options, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return likely(checked.target.current == io->target.current && checked.target.limit == io->target.limit &&
+                checked.flags == io->flags && checked.options == io->options &&
+                checked.filesize.target == io->filesize.target && checked.filesize.set == io->filesize.set)
+             ? MDBX_SUCCESS
+             : MDBX_EINVAL;
+}
+
+static inline int dxb_storage_make_resize_size_submit_io(const dxb_size_io_t *target, unsigned flags,
+                                                         dxb_resize_size_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_size_io_validate(target);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_filesize_submit_io_t filesize_fetch;
+  rc = dxb_storage_make_filesize_fetch_submit_io(&filesize_fetch);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_filesize_submit_io_t filesize_set;
+  rc = dxb_storage_make_filesize_set_submit_io(target->current, &filesize_set);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  io->target = *target;
+  io->flags = flags;
+  io->filesize_fetch = filesize_fetch;
+  io->filesize_set = filesize_set;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_resize_size_submit_io_validate(const dxb_resize_size_submit_io_t *io) {
+  dxb_resize_size_submit_io_t checked;
+  int rc =
+      unlikely(!io) ? MDBX_EINVAL : dxb_storage_make_resize_size_submit_io(&io->target, io->flags, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return likely(checked.target.current == io->target.current && checked.target.limit == io->target.limit &&
+                checked.flags == io->flags && checked.filesize_fetch.target == io->filesize_fetch.target &&
+                checked.filesize_fetch.set == io->filesize_fetch.set &&
+                checked.filesize_set.target == io->filesize_set.target &&
+                checked.filesize_set.set == io->filesize_set.set)
+             ? MDBX_SUCCESS
+             : MDBX_EINVAL;
 }
 
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -30222,18 +30246,16 @@ static dxb_copy_result_t dxb_storage_submit_sendfile_data_to_fd(const dxb_storag
 }
 #endif /* MDBX_USE_SENDFILE */
 
-static dxb_resize_result_t dxb_storage_setup_size(dxb_storage_t *storage, const dxb_size_io_t *target,
-                                                  const unsigned flags, const unsigned options) {
+static dxb_resize_result_t dxb_storage_setup_size(dxb_storage_t *storage, const dxb_setup_size_submit_io_t *io) {
   ASSERT(dxb_storage_pagesize_ln(storage) > 0);
+  const dxb_size_io_t *const target = &io->target;
+  const unsigned flags = io->flags;
+  const unsigned options = io->options;
   int rc = dxb_storage_size_io_validate(target);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_resize_error(storage, rc);
   if ((flags & MDBX_RDONLY) == 0 && (options & MMAP_OPTION_SETLENGTH) != 0) {
-    dxb_filesize_submit_io_t setsize_submit;
-    rc = dxb_storage_make_filesize_set_submit_io(target->current, &setsize_submit);
-    if (unlikely(rc != MDBX_SUCCESS))
-      return dxb_resize_after_filesize(storage, rc, dxb_filesize_error(rc));
-    dxb_filesize_result_t setsize = dxb_storage_submit_set_filesize_bytes(storage, &setsize_submit);
+    dxb_filesize_result_t setsize = dxb_storage_submit_set_filesize_bytes(storage, &io->filesize);
     rc = setsize.err;
     if (unlikely(rc != MDBX_SUCCESS))
       return dxb_resize_after_filesize(storage, rc, setsize);
@@ -30242,11 +30264,7 @@ static dxb_resize_result_t dxb_storage_setup_size(dxb_storage_t *storage, const 
       return dxb_resize_after_filesize(storage, rc, setsize);
     return dxb_resize_after_filesize(storage, MDBX_SUCCESS, setsize);
   } else {
-    dxb_filesize_submit_io_t filesize_submit;
-    rc = dxb_storage_make_filesize_fetch_submit_io(&filesize_submit);
-    if (unlikely(rc != MDBX_SUCCESS))
-      return dxb_resize_after_filesize(storage, rc, dxb_filesize_error(rc));
-    dxb_filesize_result_t filesize = dxb_storage_submit_fetch_filesize(storage, &filesize_submit);
+    dxb_filesize_result_t filesize = dxb_storage_submit_fetch_filesize(storage, &io->filesize);
     rc = filesize.err;
     if (unlikely(rc != MDBX_SUCCESS))
       return dxb_resize_after_filesize(storage, rc, filesize);
@@ -30263,20 +30281,17 @@ static dxb_resize_result_t dxb_storage_submit_setup_size(dxb_storage_t *storage,
   if (unlikely(rc != MDBX_SUCCESS || !storage))
     return storage ? dxb_resize_error(storage, (rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL)
                    : dxb_resize_unsubmitted_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
-  return dxb_storage_setup_size(storage, &io->target, io->flags, io->options);
+  return dxb_storage_setup_size(storage, io);
 }
 
-static dxb_resize_result_t dxb_storage_resize_size(dxb_storage_t *storage, const dxb_size_io_t *target,
-                                                   const unsigned flags) {
+static dxb_resize_result_t dxb_storage_resize_size(dxb_storage_t *storage, const dxb_resize_size_submit_io_t *io) {
+  const dxb_size_io_t *const target = &io->target;
+  const unsigned flags = io->flags;
   int rc = dxb_storage_size_io_validate(target);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_resize_error(storage, rc);
 
-  dxb_filesize_submit_io_t filesize_submit;
-  rc = dxb_storage_make_filesize_fetch_submit_io(&filesize_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_resize_after_filesize(storage, rc, dxb_filesize_error(rc));
-  dxb_filesize_result_t filesize_result = dxb_storage_submit_fetch_filesize(storage, &filesize_submit);
+  dxb_filesize_result_t filesize_result = dxb_storage_submit_fetch_filesize(storage, &io->filesize_fetch);
   rc = filesize_result.err;
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_resize_after_filesize(storage, rc, filesize_result);
@@ -30296,11 +30311,7 @@ static dxb_resize_result_t dxb_storage_resize_size(dxb_storage_t *storage, const
   const uint64_t observed_filesize = dxb_storage_filesize(storage);
   if (observed_filesize != target->current) {
     if (target->current > observed_filesize || (flags & txn_shrink_allowed)) {
-      dxb_filesize_submit_io_t setsize_submit;
-      rc = dxb_storage_make_filesize_set_submit_io(target->current, &setsize_submit);
-      if (unlikely(rc != MDBX_SUCCESS))
-        return dxb_resize_after_filesize(storage, rc, dxb_filesize_error(rc));
-      filesize_result = dxb_storage_submit_set_filesize_bytes(storage, &setsize_submit);
+      filesize_result = dxb_storage_submit_set_filesize_bytes(storage, &io->filesize_set);
       rc = filesize_result.err;
       if (unlikely(rc != MDBX_SUCCESS))
         return dxb_resize_after_filesize(storage, rc, filesize_result);
@@ -30317,7 +30328,7 @@ static dxb_resize_result_t dxb_storage_submit_resize_size(dxb_storage_t *storage
   if (unlikely(rc != MDBX_SUCCESS || !storage))
     return storage ? dxb_resize_error(storage, (rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL)
                    : dxb_resize_unsubmitted_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
-  return dxb_storage_resize_size(storage, &io->target, io->flags);
+  return dxb_storage_resize_size(storage, io);
 }
 
 typedef struct dxb_resize_tail_discard_submit_io {
@@ -30533,7 +30544,13 @@ static inline int dxb_setup_storage_size_submit_io_validate(
                io->submit.target.current != io->target.current ||
                io->submit.target.limit != io->target.limit ||
                io->submit.flags != io->flags ||
-               io->submit.options != io->options))
+               io->submit.options != io->options ||
+               io->submit.filesize.target !=
+                   (((io->flags & MDBX_RDONLY) == 0 && (io->options & MMAP_OPTION_SETLENGTH) != 0)
+                        ? io->target.current
+                        : 0) ||
+               io->submit.filesize.set !=
+                   ((io->flags & MDBX_RDONLY) == 0 && (io->options & MMAP_OPTION_SETLENGTH) != 0)))
     return MDBX_EINVAL;
 
   int rc = dxb_storage_setup_size_submit_io_validate(&io->submit);
@@ -30552,7 +30569,9 @@ static inline int dxb_setup_storage_size_submit_io_validate(
                checked.submit.target.current != io->submit.target.current ||
                checked.submit.target.limit != io->submit.target.limit ||
                checked.submit.flags != io->submit.flags ||
-               checked.submit.options != io->submit.options))
+               checked.submit.options != io->submit.options ||
+               checked.submit.filesize.target != io->submit.filesize.target ||
+               checked.submit.filesize.set != io->submit.filesize.set))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -30932,7 +30951,11 @@ static inline int dxb_resize_storage_size_submit_io_validate(
                io->target.limit != io->limit_bytes ||
                io->submit.target.current != io->target.current ||
                io->submit.target.limit != io->target.limit ||
-               io->submit.flags != io->flags))
+               io->submit.flags != io->flags ||
+               io->submit.filesize_fetch.target != 0 ||
+               io->submit.filesize_fetch.set ||
+               io->submit.filesize_set.target != io->target.current ||
+               !io->submit.filesize_set.set))
     return MDBX_EINVAL;
 
   int rc = dxb_storage_resize_size_submit_io_validate(&io->submit);
@@ -30954,7 +30977,11 @@ static inline int dxb_resize_storage_size_submit_io_validate(
                checked.target.limit != io->target.limit ||
                checked.submit.target.current != io->submit.target.current ||
                checked.submit.target.limit != io->submit.target.limit ||
-               checked.submit.flags != io->submit.flags))
+               checked.submit.flags != io->submit.flags ||
+               checked.submit.filesize_fetch.target != io->submit.filesize_fetch.target ||
+               checked.submit.filesize_fetch.set != io->submit.filesize_fetch.set ||
+               checked.submit.filesize_set.target != io->submit.filesize_set.target ||
+               checked.submit.filesize_set.set != io->submit.filesize_set.set))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
