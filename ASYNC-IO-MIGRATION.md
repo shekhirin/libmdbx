@@ -12116,6 +12116,34 @@ and the six focused ASAN `migration_smoke` entries with
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.115`
 batch, `1.135` crud, `0.951` iterate, `1.029` get, and `0.989` delete.
 
+A later env-level filesize-fetch submission cleanup added
+`dxb_env_filesize_fetch_submit_io_t` to carry the deterministic storage
+filesize fetch request through validated environment-owned payloads. Open-time
+header probing in `dxb_read_header()`, the meta-validation shrink-race
+recheck, and the transaction setup current-size shrink path now use
+`dxb_env_make_filesize_fetch_submit_io()` and
+`dxb_env_submit_filesize_fetch()` instead of constructing raw storage
+filesize-fetch descriptors at those call sites. Result-dependent
+`dxb_storage_submit_fetch_filesize()` completion handling and limit-size state
+updates remain completion-driven. A source scan still shows the earlier
+`coherency_fetch_head()` direct fetch site, which sits before the new helper
+definition and remains a separate cleanup candidate. Verification passed
+`git diff --check`, source scans covering
+`dxb_env_filesize_fetch_submit_io_t`,
+`dxb_env_make_filesize_fetch_submit_io()`,
+`dxb_env_submit_filesize_fetch()`, the remaining direct
+`dxb_storage_make_filesize_fetch_submit_io()` /
+`dxb_storage_submit_fetch_filesize()` call sites, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.096` batch, `1.137` crud, `0.759`
+iterate, `0.993` get, and `1.034` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
