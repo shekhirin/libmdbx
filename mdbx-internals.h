@@ -1346,6 +1346,10 @@ typedef struct dxb_data_write_io {
   dxb_byte_io_t bytes;
 } dxb_data_write_io_t;
 
+typedef struct dxb_queued_write_io {
+  mdbx_filehandle_t fd;
+} dxb_queued_write_io_t;
+
 typedef struct ior_item {
 #if defined(_WIN32) || defined(_WIN64)
   OVERLAPPED ov;
@@ -1432,7 +1436,8 @@ typedef struct osal_ioring_write_result {
   int err;
   unsigned wops;
 } osal_ioring_write_result_t;
-MDBX_INTERNAL osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, mdbx_filehandle_t fd);
+MDBX_INTERNAL osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior,
+                                                           const dxb_queued_write_io_t *io);
 
 MDBX_INTERNAL void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
                                     void (*callback)(iov_ctx_t *ctx, const dxb_data_write_io_t *io, void *data));

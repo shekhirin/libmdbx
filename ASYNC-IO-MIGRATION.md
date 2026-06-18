@@ -6313,6 +6313,26 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.131` batch, `1.157`
 crud, `0.842` iterate, `1.045` get, and `1.076` delete.
 
+A later queued-write submission cleanup added `dxb_queued_write_io_t` for the
+write-queue flush target. `dxb_storage_write_queued()` now constructs and
+validates that descriptor from the storage channel before calling
+`osal_ioring_write()`, and OSAL queue execution consumes the descriptor instead
+of accepting a bare file handle. This keeps fd resolution at the storage
+boundary while preserving the existing synchronous POSIX and Windows queue
+submission behavior; future async submit/completion code can hang the backend
+state from this descriptor boundary. Source scans prove the old
+`osal_ioring_write(..., fd)` and POSIX `osal_ioring_write_item(..., fd)` call
+shapes are gone. Verification passed `git diff --check`, source scans covering
+queued-write submission descriptors and stale raw-fd queue submission shapes,
+the GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.099` batch, `1.158`
+crud, `1.168` iterate, `0.973` get, and `1.086` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
