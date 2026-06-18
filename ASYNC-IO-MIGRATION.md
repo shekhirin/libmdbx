@@ -6817,6 +6817,26 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.128` batch, `1.173`
 crud, `1.112` iterate, `0.964` get, and `1.080` delete.
 
+A later queued-write result cleanup added `write_items` to
+`osal_ioring_write_result_t`. `osal_ioring_write()` now reports the submitted
+logical item count only after a queued batch completes successfully, and the
+storage wrapper validates that item completion count against the checked submit
+descriptor. `iov_write()` rejects zero-item successful results separately from
+zero `wops`, so logical queue completion accounting is no longer overloaded on
+the physical write-operation statistic. This lets future async backends report
+completed queue items independently from the number of write operations used to
+submit or complete them. Verification passed `git diff --check`, source scans
+covering the result initializer updates, `write_items`, the storage result
+check, and the OSAL write boundary, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.117` batch, `1.158` crud, `0.968` iterate,
+`1.005` get, and `1.081` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
