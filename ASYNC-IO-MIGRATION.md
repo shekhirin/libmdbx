@@ -12064,6 +12064,33 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.111` batch, `1.146` crud, `0.999`
 iterate, `1.072` get, and `1.067` delete.
 
+A later resize-size state submission cleanup moved the deterministic target
+size-state descriptor into the caller-built resize-size request.
+`dxb_resize_size_submit_io_t` now carries a nested
+`dxb_size_state_submit_io_t` for the target current/limit/filesize state,
+`dxb_storage_make_resize_size_submit_io()` builds it beside the fetch/set
+filesize descriptors, resize validators check it against the page-derived
+target, and writable `dxb_storage_resize_size()` consumes it whenever the
+post-fetch or post-set storage filesize equals the requested current size.
+The observed-filesize fallback remains completion-driven for the case where
+shrink is not allowed and final filesize intentionally differs from target
+current.
+Verification passed `git diff --check`, source scans covering
+`dxb_resize_size_submit_io_t`, `target_size_state`,
+`dxb_storage_make_resize_size_submit_io()`,
+`dxb_storage_resize_size_submit_io_validate()`,
+`dxb_storage_resize_size()`, and
+`dxb_resize_storage_size_submit_io_validate()`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.128` batch, `1.145` crud, `0.961`
+iterate, `1.011` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
