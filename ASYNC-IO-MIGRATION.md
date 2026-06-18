@@ -6735,6 +6735,26 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.116` batch, `1.158` crud, `1.000` iterate,
 `0.991` get, and `1.070` delete.
 
+A later queued-write submission cleanup added `payload_bytes` to
+`dxb_queued_write_io_t`. Storage now walks the prepared OSAL ring when building
+the submit descriptor, captures both the used slot count and the total queued
+payload bytes, and rejects empty or overflowed submit batches. Storage
+revalidation and `osal_ioring_write()` now compare the descriptor's byte total
+against the live ring before issuing writes. This makes the submitted batch
+shape explicit enough for future async backends to size and validate completion
+accounting without rediscovering byte totals from loop locals. Verification
+passed `git diff --check`, source scans covering `payload_bytes`, the new ring
+payload-byte helper, queued-write submit validation, and the OSAL write
+boundary, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.160` batch, `1.133` crud, `1.048` iterate,
+`1.038` get, and `1.075` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

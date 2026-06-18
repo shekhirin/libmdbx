@@ -1372,6 +1372,7 @@ typedef struct dxb_queued_write_io {
   enum dxb_io_channel channel;
   mdbx_filehandle_t fd;
   unsigned used_slots;
+  size_t payload_bytes;
 } dxb_queued_write_io_t;
 
 typedef struct ior_item {
