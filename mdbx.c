@@ -22344,10 +22344,24 @@ static int dxb_storage_stat(const dxb_storage_t *storage, struct stat *st) {
 }
 #endif /* !Windows */
 
-static inline int dxb_storage_check_incore(const dxb_storage_t *storage, bool *incore) {
+static inline dxb_incore_result_t dxb_incore_result(int err, bool incore) {
+  const dxb_incore_result_t result = {err, incore};
+  return result;
+}
+
+static inline dxb_incore_result_t dxb_incore_error(int err) {
+  return dxb_incore_result(err, false);
+}
+
+static inline dxb_incore_result_t dxb_incore_completed(bool incore) {
+  return dxb_incore_result(MDBX_SUCCESS, incore);
+}
+
+static inline dxb_incore_result_t dxb_storage_check_incore(const dxb_storage_t *storage) {
   const int rc = osal_check_fs_incore(dxb_storage_data_fd(storage));
-  *incore = (rc == MDBX_RESULT_TRUE);
-  return *incore ? MDBX_SUCCESS : rc;
+  if (rc == MDBX_RESULT_TRUE)
+    return dxb_incore_completed(true);
+  return likely(rc == MDBX_SUCCESS) ? dxb_incore_completed(false) : dxb_incore_error(rc);
 }
 
 static inline dxb_sysinfo_result_t dxb_sysinfo_result(int err, uint64_t filesize, uint64_t allocated,
@@ -24636,7 +24650,9 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   if (MDBX_IS_ERROR(dxb_rc))
     return dxb_rc;
 
-  rc = dxb_storage_check_incore(storage, &env->incore);
+  dxb_incore_result_t incore_result = dxb_storage_check_incore(storage);
+  rc = incore_result.err;
+  env->incore = incore_result.incore;
   if (env->incore) {
     NOTICE("%s", "in-core database");
   } else if (unlikely(rc != MDBX_SUCCESS)) {

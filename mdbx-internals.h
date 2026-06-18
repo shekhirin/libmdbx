@@ -1376,6 +1376,11 @@ typedef struct dxb_sysinfo_result {
   uint32_t io_block;
 } dxb_sysinfo_result_t;
 
+typedef struct dxb_incore_result {
+  int err;
+  bool incore;
+} dxb_incore_result_t;
+
 typedef struct dxb_resize_result {
   int err;
   size_t current;

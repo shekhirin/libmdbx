@@ -7064,6 +7064,26 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.140` batch, `1.174` crud, `0.984` iterate,
 `1.036` get, and `1.075` delete.
 
+A later in-core detection cleanup added `dxb_incore_result_t` for the
+data-file descriptor check that detects fully in-core database files.
+`dxb_storage_check_incore()` now returns an explicit result containing the
+normalized error code and detected in-core state instead of returning `int`
+through a boolean out parameter. The `env_open()` caller still assigns
+`env->incore`, emits the same notice for in-core databases, and fails on the
+same `osal_check_fs_incore()` errors, preserving open behavior while making the
+descriptor classification result explicit for future async-capable storage
+setup. Verification passed `git diff --check`, source scans covering
+`dxb_incore_result_t`, incore result helpers, and every
+`dxb_storage_check_incore()` call site, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.109` batch, `1.149` crud, `0.772` iterate,
+`1.074` get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
