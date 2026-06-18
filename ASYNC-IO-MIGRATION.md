@@ -6673,6 +6673,28 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.073` batch, `1.166`
 crud, `1.033` iterate, `0.998` get, and `1.087` delete.
 
+A later OSAL queue-preparation cleanup moved `dxb_dirty_write_queue_io_t` into
+the internal header, added the rounded `reserve_bytes` budget to the
+descriptor, and changed `osal_ioring_prepare()` to accept that descriptor
+directly. Storage still validates the data-channel queue descriptor and derives
+the reserve budget with the previous `ceil_powerof2(..., globals.sys_pagesize)`
+semantics before OSAL sizing. OSAL now receives one object carrying channel
+intent, item capacity, byte reserve, and data-file span instead of separate
+`items` and byte-budget arguments. This makes the final queue-preparation
+boundary descriptor-shaped before future async backends size submission rings
+or direct-I/O segment arrays. Verification passed `git diff --check`, source
+scans covering the header-level queue descriptor, `reserve_bytes`, the new
+`osal_ioring_prepare()` signature, removal of the stale split-signature call,
+and the remaining queue-preparation users, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.110` batch, `1.152`
+crud, `1.375` iterate, `1.005` get, and `1.067` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

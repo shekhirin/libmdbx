@@ -1348,6 +1348,13 @@ typedef struct dxb_data_write_io {
   dxb_byte_io_t bytes;
 } dxb_data_write_io_t;
 
+typedef struct dxb_dirty_write_queue_io {
+  enum dxb_io_channel channel;
+  size_t items;
+  size_t reserve_bytes;
+  dxb_data_write_io_t data;
+} dxb_dirty_write_queue_io_t;
+
 typedef struct dxb_dirty_queued_write_io {
   dxb_data_write_io_t data;
   void *buffer;
@@ -1463,15 +1470,19 @@ MDBX_MAYBE_UNUSED static inline unsigned osal_ioring_used(const osal_ioring_t *i
   return ior->allocated - ior->slots_left;
 }
 
-MDBX_MAYBE_UNUSED static inline int osal_ioring_prepare(osal_ioring_t *ior, size_t items, size_t bytes) {
-  items = (items > 32) ? items : 32;
+MDBX_MAYBE_UNUSED static inline int osal_ioring_prepare(osal_ioring_t *ior,
+                                                        const dxb_dirty_write_queue_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+
+  size_t items = (io->items > 32) ? io->items : 32;
 #if defined(_WIN32) || defined(_WIN64)
   if (ior->direct) {
-    const size_t npages = bytes >> ior->pagesize_ln2;
+    const size_t npages = io->reserve_bytes >> ior->pagesize_ln2;
     items = (items > npages) ? items : npages;
   }
 #else
-  (void)bytes;
+  (void)ior;
 #endif
   items = (items < 65536) ? items : 65536;
   if (likely(ior->allocated >= items))

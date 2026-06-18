@@ -107,12 +107,6 @@ typedef struct dxb_data_read_io {
   dxb_byte_io_t bytes;
 } dxb_data_read_io_t;
 
-typedef struct dxb_dirty_write_queue_io {
-  enum dxb_io_channel channel;
-  size_t items;
-  dxb_data_write_io_t data;
-} dxb_dirty_write_queue_io_t;
-
 typedef struct dxb_cache_read_io {
   dxb_data_read_io_t data;
   txnid_t snapshot;
@@ -22122,6 +22116,7 @@ static inline int dxb_storage_make_dirty_write_queue_io(const dxb_storage_t *sto
 
   io->channel = channel;
   io->items = items;
+  io->reserve_bytes = ceil_powerof2(data.bytes.bytes, globals.sys_pagesize);
   io->data = data;
   return MDBX_SUCCESS;
 }
@@ -22136,6 +22131,7 @@ static inline int dxb_storage_dirty_write_queue_io_validate(const dxb_storage_t 
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (unlikely(checked.channel != io->channel || checked.items != io->items ||
+               checked.reserve_bytes != io->reserve_bytes ||
                checked.data.pages.pgno != io->data.pages.pgno ||
                checked.data.pages.end_pgno != io->data.pages.end_pgno ||
                checked.data.pages.npages != io->data.pages.npages ||
@@ -22151,8 +22147,7 @@ static inline int dxb_storage_prepare_write_queue(dxb_storage_t *storage, const 
   int rc = dxb_storage_dirty_write_queue_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return osal_ioring_prepare(dxb_storage_write_queue(storage), io->items,
-                             ceil_powerof2(io->data.bytes.bytes, globals.sys_pagesize));
+  return osal_ioring_prepare(dxb_storage_write_queue(storage), io);
 }
 
 static inline int dxb_storage_make_dirty_queued_write_io(const dxb_storage_t *storage, pgno_t pgno, size_t npages,
