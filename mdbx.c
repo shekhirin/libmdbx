@@ -8654,8 +8654,6 @@ MDBX_NOTHROW_PURE_FUNCTION static inline bool is_modifable(const MDBX_txn *txn, 
 
 MDBX_INTERNAL int __must_check_result page_check(const MDBX_cursor *const mc, const page_t *const mp);
 
-MDBX_INTERNAL pgr_t page_get_any(const MDBX_cursor *const mc, const pgno_t pgno, const txnid_t front);
-
 static inline int page_make_cursor_get_submit_io(const MDBX_cursor *mc, const uint16_t ill, const pgno_t pgno,
                                                  const txnid_t front, dxb_cursor_page_get_submit_io_t *io);
 static __always_inline pgr_t page_submit_cursor_get(const dxb_cursor_page_get_submit_io_t *io);
@@ -46580,22 +46578,6 @@ static __always_inline pgr_t page_submit_cursor_get(const dxb_cursor_page_get_su
   return pgr_error(err);
 }
 
-static __always_inline pgr_t page_get_inline(const uint16_t ILL, const MDBX_cursor *const mc, const pgno_t pgno,
-                                             const txnid_t front) {
-  dxb_cursor_page_get_submit_io_t submit;
-  const int err = page_make_cursor_get_submit_io(mc, ILL, pgno, front, &submit);
-  if (unlikely(err != MDBX_SUCCESS)) {
-    if (mc && mc->txn)
-      mc->txn->flags |= MDBX_TXN_ERROR;
-    return pgr_error(err);
-  }
-  return page_submit_cursor_get(&submit);
-}
-
-pgr_t page_get_any(const MDBX_cursor *const mc, const pgno_t pgno, const txnid_t front) {
-  return page_get_inline(P_ILL_BITS, mc, pgno, front);
-}
-
 typedef struct dxb_iov_queue_prepare_submit_io {
   iov_ctx_t *ctx;
   dxb_storage_t *storage;
@@ -47809,6 +47791,7 @@ typedef struct dxb_page_retire_page_get_submit_io {
   MDBX_txn *txn;
   pgno_t pgno;
   txnid_t front;
+  dxb_cursor_page_get_submit_io_t get;
   unsigned pageflags;
   bool check_pageflags;
 } dxb_page_retire_page_get_submit_io_t;
@@ -47821,10 +47804,16 @@ static inline int page_retire_make_page_get_submit_io(MDBX_cursor *mc, pgno_t pg
   if (unlikely(check_pageflags && !pageflags))
     return MDBX_EINVAL;
 
+  dxb_cursor_page_get_submit_io_t get;
+  int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS, pgno, mc->txn->front_txnid, &get);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
   io->cursor = mc;
   io->txn = mc->txn;
-  io->pgno = pgno;
-  io->front = mc->txn->front_txnid;
+  io->pgno = get.get.request.pgno;
+  io->front = get.get.front;
+  io->get = get;
   io->pageflags = pageflags;
   io->check_pageflags = check_pageflags;
   return MDBX_SUCCESS;
@@ -47842,6 +47831,14 @@ static inline int page_retire_page_get_submit_io_validate(const dxb_page_retire_
     return err;
   if (unlikely(checked.cursor != io->cursor || checked.txn != io->txn || checked.pgno != io->pgno ||
                checked.front != io->front || checked.pageflags != io->pageflags ||
+               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
+               checked.get.get.request.pgno != io->get.get.request.pgno ||
+               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
+               checked.get.get.request.npages != io->get.get.request.npages ||
+               checked.get.get.request.offset != io->get.get.request.offset ||
+               checked.get.get.request.bytes != io->get.get.request.bytes ||
+               checked.get.get.front != io->get.get.front ||
+               checked.get.get.track_private != io->get.get.track_private ||
                checked.check_pageflags != io->check_pageflags))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
@@ -47852,7 +47849,7 @@ static inline pgr_t page_retire_submit_page_get(const dxb_page_retire_page_get_s
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
 
-  pgr_t pgr = page_get_any(io->cursor, io->pgno, io->front);
+  pgr_t pgr = page_submit_cursor_get(&io->get);
   if (likely(pgr.err == MDBX_SUCCESS) && io->check_pageflags) {
     cASSERT0(io->txn, ((unsigned)pgr.page->flags & ~P_SPILLED) == (io->pageflags & ~P_FROZEN));
     cASSERT0(io->txn, !(io->pageflags & P_FROZEN) || is_frozen(io->txn, pgr.page));

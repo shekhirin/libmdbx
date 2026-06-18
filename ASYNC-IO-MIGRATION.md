@@ -12307,6 +12307,28 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.085`
 batch, `1.163` crud, `0.934` iterate, `0.892` get, and `1.049` delete.
 
+A later final cursor page-get wrapper cleanup moved the page-retirement helper
+onto a nested cursor page-get payload. `dxb_page_retire_page_get_submit_io_t`
+now carries the `dxb_cursor_page_get_submit_io_t` built from the retire target
+pgno and the transaction front id, validates the nested request with its
+captured page-flag checks, and submits through `page_submit_cursor_get()`
+instead of `page_get_any()`. With no callers left, the old `page_get_any()`
+wrapper and its `page_get_inline()` helper were removed; the earlier
+`page_get_three()` and `page_get_large()` wrappers are also absent from source.
+Verification passed `git diff --check`, source scans confirming no
+`page_get_any()`, `page_get_inline()`, `page_get_three()`, or
+`page_get_large()` callers remain in `mdbx.c` or the public/internal headers,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed in an isolated rerun with
+forced/default ratios of `0.999` batch, `0.986` crud, `1.006` iterate,
+`1.028` get, and `0.982` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
