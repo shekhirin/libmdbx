@@ -1617,6 +1617,8 @@ MDBX_INTERNAL int osal_ioring_create(osal_ioring_t *
 MDBX_INTERNAL int osal_ioring_resize(osal_ioring_t *, size_t items);
 MDBX_INTERNAL void osal_ioring_destroy(osal_ioring_t *);
 MDBX_INTERNAL dxb_queue_op_result_t osal_ioring_reset(osal_ioring_t *);
+MDBX_INTERNAL dxb_queue_op_result_t osal_ioring_prepare(osal_ioring_t *,
+                                                        const dxb_dirty_write_queue_io_t *io);
 MDBX_INTERNAL dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ctx, const dxb_dirty_queued_write_io_t *io);
 typedef struct osal_ioring_write_result {
   int err;
@@ -1635,26 +1637,6 @@ MDBX_MAYBE_UNUSED static inline unsigned osal_ioring_left(const osal_ioring_t *i
 
 MDBX_MAYBE_UNUSED static inline unsigned osal_ioring_used(const osal_ioring_t *ior) {
   return ior->allocated - ior->slots_left;
-}
-
-MDBX_MAYBE_UNUSED static inline int osal_ioring_prepare(osal_ioring_t *ior,
-                                                        const dxb_dirty_write_queue_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-
-  size_t items = (io->items > 32) ? io->items : 32;
-#if defined(_WIN32) || defined(_WIN64)
-  if (ior->direct) {
-    const size_t npages = io->reserve_bytes >> ior->pagesize_ln2;
-    items = (items > npages) ? items : npages;
-  }
-#else
-  (void)ior;
-#endif
-  items = (items < 65536) ? items : 65536;
-  if (likely(ior->allocated >= items))
-    return MDBX_SUCCESS;
-  return osal_ioring_resize(ior, items);
 }
 
 /*----------------------------------------------------------------------------*/

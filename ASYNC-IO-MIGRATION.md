@@ -7320,6 +7320,27 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.078` batch, `1.163`
 crud, `1.006` iterate, `0.977` get, and `1.084` delete.
 
+A later OSAL write-ring prepare cleanup moved `osal_ioring_prepare()` out of
+the internal header and changed it to return `dxb_queue_op_result_t` directly.
+The full OSAL write-ring operation set (`prepare`, `add`, `walk`, and `reset`)
+now reports queue operation completion with the same allocated/used slot, write
+item, queued payload, and operation-state fields, while
+`dxb_storage_prepare_write_queue()` still performs descriptor validation before
+forwarding the OSAL result. This removes the last header-inline write-ring
+operation that returned a bare `int`, leaving queue capacity reservation ready
+to become a submit/completion-backed backend step. Verification passed `git diff
+--check`, source scans covering `dxb_queue_op_result_t`,
+`osal_ioring_prepare()`, storage prepare forwarding, and each
+`.err`-unwrapping caller, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.090` batch, `1.162` crud, `1.028` iterate, `1.011`
+get, and `1.066` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

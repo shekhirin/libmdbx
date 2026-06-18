@@ -22209,6 +22209,25 @@ static inline dxb_queue_op_result_t dxb_queue_op_result(int err, const osal_iori
   return result;
 }
 
+dxb_queue_op_result_t osal_ioring_prepare(osal_ioring_t *ior, const dxb_dirty_write_queue_io_t *io) {
+  if (unlikely(!ior || !io))
+    return dxb_queue_op_result(MDBX_EINVAL, ior, false, false, false, false);
+
+  size_t items = (io->items > 32) ? io->items : 32;
+#if defined(_WIN32) || defined(_WIN64)
+  if (ior->direct) {
+    const size_t npages = io->reserve_bytes >> ior->pagesize_ln2;
+    items = (items > npages) ? items : npages;
+  }
+#endif /* Windows */
+  items = (items < 65536) ? items : 65536;
+  if (likely(ior->allocated >= items))
+    return dxb_queue_op_result(MDBX_SUCCESS, ior, true, false, false, false);
+
+  const int rc = osal_ioring_resize(ior, items);
+  return dxb_queue_op_result(rc, ior, rc == MDBX_SUCCESS, false, false, false);
+}
+
 static dxb_queue_result_t dxb_storage_create_write_queue(dxb_storage_t *storage, bool readonly) {
   if (readonly)
     return dxb_queue_completed(nullptr, true, false);
@@ -22309,8 +22328,7 @@ static inline dxb_queue_op_result_t dxb_storage_prepare_write_queue(dxb_storage_
   int rc = dxb_storage_dirty_write_queue_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false);
-  rc = osal_ioring_prepare(dxb_storage_write_queue(storage), io);
-  return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), rc == MDBX_SUCCESS, false, false, false);
+  return osal_ioring_prepare(dxb_storage_write_queue(storage), io);
 }
 
 static inline int dxb_storage_make_dirty_queued_write_io(const dxb_storage_t *storage, pgno_t pgno, size_t npages,
