@@ -6491,6 +6491,24 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.107` batch, `1.154` crud, `0.949` iterate,
 `0.993` get, and `1.077` delete.
 
+A later queued-write submission validation cleanup added
+`dxb_queued_write_io_validate()`. Storage-side submission validation now
+rejects null submit descriptors before comparing the resolved channel fd, and
+`osal_ioring_write()` validates the queued-submit descriptor before any write
+execution reads its fd. This keeps the final queued-write submission boundary
+descriptor-checked even when future async backends submit the batch from the
+OSAL layer. Verification passed `git diff --check`, source scans covering
+queued-submit descriptor validation and stale direct fd checks, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.122` batch, `1.154` crud, `0.779` iterate,
+`0.968` get, and `1.081` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

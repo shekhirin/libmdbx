@@ -2151,6 +2151,10 @@ static inline int dxb_storage_queued_data_write_io_validate(const dxb_storage_t 
   return dxb_data_write_io_validate_queued(io, io->bytes.bytes);
 }
 
+static inline int dxb_queued_write_io_validate(const dxb_queued_write_io_t *io) {
+  return likely(io && io->fd != INVALID_HANDLE_VALUE) ? MDBX_SUCCESS : MDBX_EINVAL;
+}
+
 static inline int dxb_storage_make_cache_invalidate_io(const dxb_storage_t *storage, const dxb_page_io_t *pages,
                                                        bool include_reusable,
                                                        dxb_cache_invalidate_io_t *io) {
@@ -22139,8 +22143,12 @@ static inline int dxb_storage_make_queued_write_io(const dxb_storage_t *storage,
 
 static inline int dxb_storage_queued_write_io_validate(const dxb_storage_t *storage, enum dxb_io_channel channel,
                                                        const dxb_queued_write_io_t *io) {
+  int rc = dxb_queued_write_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
   dxb_queued_write_io_t checked;
-  int rc = dxb_storage_make_queued_write_io(storage, channel, &checked);
+  rc = dxb_storage_make_queued_write_io(storage, channel, &checked);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   return likely(checked.fd == io->fd) ? MDBX_SUCCESS : MDBX_EINVAL;
@@ -32343,10 +32351,9 @@ static ior_item_t *osal_ioring_previous_item(const osal_ioring_t *ior, const ior
 
 osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, const dxb_queued_write_io_t *io) {
   osal_ioring_write_result_t r = {MDBX_SUCCESS, 0};
-  if (unlikely(io->fd == INVALID_HANDLE_VALUE)) {
-    r.err = MDBX_EINVAL;
+  r.err = dxb_queued_write_io_validate(io);
+  if (unlikely(r.err != MDBX_SUCCESS))
     return r;
-  }
 
 #if defined(_WIN32) || defined(_WIN64)
   const mdbx_filehandle_t fd = io->fd;
