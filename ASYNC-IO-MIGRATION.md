@@ -7726,6 +7726,27 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.091` batch, `1.149` crud, `0.872` iterate, `1.035`
 get, and `1.074` delete.
 
+A later descriptor close result cleanup extended `dxb_close_result_t` with
+`submitted` and `completed` flags, matching the async-facing state used by the
+other explicit storage result types. Descriptor teardown now reports
+missing-handle closes as unsubmitted completed no-ops, reports actual
+`osal_closefile()` attempts as submitted, and marks completion only when every
+present data/dsync handle closed successfully. Existing callers still unwrap
+only `.err`, `.had_data`, and the existing descriptor-state fields, preserving
+environment close and POSIX lock-restore behavior while giving a future
+async-capable backend a concrete lifecycle state for descriptor-close
+completion. Verification passed `git diff --check`, source scans covering
+`dxb_close_result_t`, `dxb_close_result()`, `dxb_close_with_reset()`,
+`dxb_storage_close_handles()`, and `dxb_storage_close()` call sites, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six focused
+ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The
+paired benchmark gate passed with forced/default ratios of `1.086` batch,
+`1.155` crud, `1.262` iterate, `0.954` get, and `1.053` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -1489,6 +1489,8 @@ typedef struct dxb_close_result {
   bool closed_data;
   bool closed_dsync;
   bool reset;
+  bool submitted;
+  bool completed;
 } dxb_close_result_t;
 
 typedef struct dxb_init_result {

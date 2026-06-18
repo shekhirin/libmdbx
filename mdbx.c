@@ -22032,8 +22032,9 @@ dxb_park_result_t dxb_storage_park_dsync(const dxb_storage_t *storage, const dxb
 }
 
 static inline dxb_close_result_t dxb_close_result(int err, bool had_data, bool had_dsync, bool closed_data,
-                                                  bool closed_dsync, bool reset) {
-  const dxb_close_result_t result = {err, had_data, had_dsync, closed_data, closed_dsync, reset};
+                                                  bool closed_dsync, bool reset, bool submitted, bool completed) {
+  const dxb_close_result_t result = {err,        had_data,  had_dsync, closed_data,
+                                     closed_dsync, reset,   submitted, completed};
   return result;
 }
 
@@ -22068,7 +22069,9 @@ static dxb_close_result_t dxb_storage_close_handles(dxb_storage_t *storage) {
     } else if (rc == MDBX_SUCCESS)
       rc = err;
   }
-  return dxb_close_result(rc, had_data, had_dsync, closed_data, closed_dsync, false);
+  const bool submitted = had_data || (had_dsync && dsync_fd != data_fd);
+  const bool completed = (!had_data || closed_data) && (!had_dsync || closed_dsync);
+  return dxb_close_result(rc, had_data, had_dsync, closed_data, closed_dsync, false, submitted, completed);
 }
 
 dxb_close_result_t dxb_storage_close(dxb_storage_t *storage, bool env_active) {
