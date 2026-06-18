@@ -6433,6 +6433,25 @@ CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
 passed with forced/default ratios of `1.008` batch, `0.995` crud, `1.112`
 iterate, `0.989` get, and `0.998` delete.
 
+A later queued-write merge cleanup replaced piecemeal write-ring descriptor
+extension with `ior_item_make_merged_io()`. Adjacent OSAL write-ring entries
+now build and validate a merged `dxb_data_write_io_t` before updating the queue
+item, checking byte contiguity, page-span contiguity, page-size agreement, and
+overflow bounds in one request shape. This keeps dirty-write coalescing aligned
+with the descriptor that later write completion and future async submission
+will observe, instead of mutating the byte and page spans field-by-field.
+Verification passed `git diff --check`, source scans proving the old
+`ior_item_append_io()` and `ior_item_io_contiguous()` helpers are gone from
+`mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.135` batch, `1.145` crud, `1.165` iterate,
+`1.045` get, and `1.082` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

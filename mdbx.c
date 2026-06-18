@@ -31993,17 +31993,37 @@ static inline ior_item_t *ior_next(ior_item_t *item, size_t sgvcnt) {
 #endif
 }
 
-static inline void ior_item_append_io(ior_item_t *item, const dxb_data_write_io_t *io) {
-  item->io.bytes.bytes += io->bytes.bytes;
-  item->io.pages.end_pgno = io->pages.end_pgno;
-  item->io.pages.npages += io->pages.npages;
-  item->io.pages.bytes += io->pages.bytes;
-}
+static inline int ior_item_make_merged_io(const ior_item_t *item, const dxb_data_write_io_t *io,
+                                          dxb_data_write_io_t *merged) {
+  const dxb_data_write_io_t *base = &item->io;
+  int rc = dxb_data_write_io_validate_queued(base, base->bytes.bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_data_write_io_validate_queued(io, io->bytes.bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
 
-static inline bool ior_item_io_contiguous(const ior_item_t *item, const dxb_data_write_io_t *io) {
-  return item->io.bytes.offset + item->io.bytes.bytes == io->bytes.offset &&
-         item->io.pages.end_pgno == io->pages.pgno &&
-         item->io.pages.offset + item->io.pages.bytes == io->pages.offset;
+  if (unlikely(base->bytes.offset > UINT64_MAX - base->bytes.bytes ||
+               base->pages.offset > UINT64_MAX - base->pages.bytes))
+    return MDBX_EINVAL;
+  if (base->bytes.offset + base->bytes.bytes != io->bytes.offset ||
+      base->pages.end_pgno != io->pages.pgno || base->pages.offset + base->pages.bytes != io->pages.offset)
+    return MDBX_RESULT_TRUE;
+
+  const size_t base_pagesize = base->pages.bytes / base->pages.npages;
+  const size_t io_pagesize = io->pages.bytes / io->pages.npages;
+  if (unlikely(base_pagesize != io_pagesize ||
+               base->bytes.bytes > SIZE_MAX - io->bytes.bytes ||
+               base->pages.npages > SIZE_MAX - io->pages.npages ||
+               base->pages.bytes > SIZE_MAX - io->pages.bytes))
+    return MDBX_EINVAL;
+
+  *merged = *base;
+  merged->bytes.bytes += io->bytes.bytes;
+  merged->pages.end_pgno = io->pages.end_pgno;
+  merged->pages.npages += io->pages.npages;
+  merged->pages.bytes += io->pages.bytes;
+  return dxb_data_write_io_validate_queued(merged, merged->bytes.bytes);
 }
 
 int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *data) {
@@ -32023,8 +32043,11 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *dat
   ior_item_t *item = ior->pool;
   if (likely(ior->last)) {
     item = ior->last;
-    if (unlikely(ior_item_io_contiguous(item, io)) &&
-        likely(ior_last_bytes(ior, item) + bytes <= MAX_WRITE)) {
+    dxb_data_write_io_t merged_io;
+    const int merge_rc = ior_item_make_merged_io(item, io, &merged_io);
+    if (unlikely(MDBX_IS_ERROR(merge_rc)))
+      return merge_rc;
+    if (unlikely(merge_rc == MDBX_SUCCESS) && likely(ior_last_bytes(ior, item) + bytes <= MAX_WRITE)) {
 #if defined(_WIN32) || defined(_WIN64)
       if (use_gather &&
           ((bytes | (uintptr_t)data | item->io.bytes.bytes | (uintptr_t)(uint64_t)item->sgv[0].Buffer) &
@@ -32033,7 +32056,7 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *dat
         ASSERT(ior->overlapped_fd);
         ASSERT((item->single.iov_len & ior_WriteFile_flag) == 0);
         ASSERT(item->sgv[ior->last_sgvcnt].Buffer == 0);
-        ior_item_append_io(item, io);
+        item->io = merged_io;
         size_t i = 0;
         do {
           item->sgv[ior->last_sgvcnt + i].Buffer = PtrToPtr64(data);
@@ -32048,7 +32071,7 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *dat
       if (unlikely(end == data)) {
         ASSERT((item->single.iov_len & ior_WriteFile_flag) != 0);
         item->single.iov_len += bytes;
-        ior_item_append_io(item, io);
+        item->io = merged_io;
         return MDBX_SUCCESS;
       }
 #elif MDBX_HAVE_PWRITEV
@@ -32056,7 +32079,7 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *dat
       const void *end = ptr_disp(item->sgv[item->sgvcnt - 1].iov_base, item->sgv[item->sgvcnt - 1].iov_len);
       if (unlikely(end == data)) {
         item->sgv[item->sgvcnt - 1].iov_len += bytes;
-        ior_item_append_io(item, io);
+        item->io = merged_io;
         return MDBX_SUCCESS;
       }
       if (likely(item->sgvcnt < OSAL_IOV_MAX)) {
@@ -32064,7 +32087,7 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *dat
           return MDBX_RESULT_TRUE;
         item->sgv[item->sgvcnt].iov_base = data;
         item->sgv[item->sgvcnt].iov_len = bytes;
-        ior_item_append_io(item, io);
+        item->io = merged_io;
         item->sgvcnt += 1;
         ior->slots_left -= 1;
         return MDBX_SUCCESS;
@@ -32073,7 +32096,7 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *dat
       const void *end = ptr_disp(item->single.iov_base, item->single.iov_len);
       if (unlikely(end == data)) {
         item->single.iov_len += bytes;
-        ior_item_append_io(item, io);
+        item->io = merged_io;
         return MDBX_SUCCESS;
       }
 #endif
