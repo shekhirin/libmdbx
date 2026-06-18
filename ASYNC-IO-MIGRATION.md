@@ -6612,6 +6612,26 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.116` batch, `1.152` crud, `1.266` iterate,
 `0.954` get, and `1.086` delete.
 
+A later dirty queued-write insertion cleanup added
+`dxb_dirty_queued_write_io_t`. `iov_page()` now builds one descriptor carrying
+the dirty data-file write span and the page-buffer pointer before asking
+storage to enqueue it, and `dxb_storage_add_queued_write()` validates that
+descriptor before forwarding the low-level `dxb_data_write_io_t` plus buffer to
+`osal_ioring_add()`. This keeps the storage-facing enqueue boundary explicit
+about both the file range and the memory backing the future async write
+submission, while leaving the OSAL ring primitive as the final platform-level
+descriptor split. Verification passed `git diff --check`, source scans covering
+`dxb_dirty_queued_write_io_t`, its builder/validator, the new enqueue
+signature, and the remaining direct `osal_ioring_add()` boundary, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.130` batch, `1.161`
+crud, `0.794` iterate, `1.051` get, and `1.065` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
