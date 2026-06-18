@@ -6392,6 +6392,27 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.121` batch, `1.157`
 crud, `0.913` iterate, `0.957` get, and `1.072` delete.
 
+A later public cache materialization cleanup added
+`dxb_cache_entry_read_io_t` for `MDBX_cache_entry_t` hit reconstruction. The
+cached-entry path now derives and validates one descriptor carrying the public
+value byte range, its page-cache read descriptor, and the in-page value offset
+before pinning returned `MDBX_val` data. A new `page_cache_read_io()` helper
+submits prebuilt `dxb_cache_read_io_t` descriptors, while the existing
+`page_cache_read()` wrapper now just builds that descriptor for ordinary page
+requests and delegates. This keeps the cache-hit value materialization path
+descriptor-shaped from public offset lookup through page-cache read submission,
+which is the boundary future async read completion must preserve. Verification
+passed `git diff --check`, source scans covering cached-entry read descriptors
+and stale loose materialization calls, the GNUmake `mdbx_migration_smoke`
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest
+suite, forced tiny-cache fault injection, `cmake --build @cmake-asan-build`,
+the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.130` batch, `1.170` crud, `0.869` iterate,
+`1.050` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
