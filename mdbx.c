@@ -32259,6 +32259,52 @@ static int env_submit_mode_stat(const dxb_env_mode_stat_submit_io_t *io, mdbx_mo
 }
 #endif /* !Windows */
 
+typedef struct dxb_env_incore_submit_io {
+  MDBX_env *env;
+  const dxb_storage_t *storage;
+  dxb_incore_submit_io_t incore;
+} dxb_env_incore_submit_io_t;
+
+static inline int env_make_incore_submit_io(MDBX_env *env, dxb_env_incore_submit_io_t *io) {
+  if (unlikely(!env || !io))
+    return MDBX_EINVAL;
+
+  dxb_incore_submit_io_t incore;
+  int rc = dxb_storage_make_incore_submit_io(&incore);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->env = env;
+  io->storage = &env->dxb_storage;
+  io->incore = incore;
+  return MDBX_SUCCESS;
+}
+
+static inline int env_incore_submit_io_validate(const dxb_env_incore_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_incore_submit_io_validate(&io->incore);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_env_incore_submit_io_t checked;
+  rc = env_make_incore_submit_io(io->env, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env != io->env || checked.storage != io->storage || checked.incore.probe != io->incore.probe))
+    return MDBX_EINVAL;
+
+  return MDBX_SUCCESS;
+}
+
+static dxb_incore_result_t env_submit_incore_probe(const dxb_env_incore_submit_io_t *io) {
+  int rc = env_incore_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_incore_result(rc, false, false, false);
+  return dxb_storage_submit_check_incore(io->storage, &io->incore);
+}
+
 __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   /* Использование O_DSYNC или FILE_FLAG_WRITE_THROUGH:
    *
@@ -32469,11 +32515,11 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   if (MDBX_IS_ERROR(dxb_rc))
     return dxb_rc;
 
-  dxb_incore_submit_io_t incore_submit;
-  rc = dxb_storage_make_incore_submit_io(&incore_submit);
+  dxb_env_incore_submit_io_t incore_submit;
+  rc = env_make_incore_submit_io(env, &incore_submit);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  dxb_incore_result_t incore_result = dxb_storage_submit_check_incore(storage, &incore_submit);
+  dxb_incore_result_t incore_result = env_submit_incore_probe(&incore_submit);
   rc = incore_result.err;
   env->incore = incore_result.incore;
   if (env->incore) {

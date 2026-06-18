@@ -11044,6 +11044,33 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.097`
 batch, `1.141` crud, `1.022` iterate, `0.976` get, and `1.073` delete.
 
+A later `env_open()` incore-probe cleanup added
+`dxb_env_incore_submit_io_t`, `env_make_incore_submit_io()`,
+`env_incore_submit_io_validate()`, and `env_submit_incore_probe()` for the
+data-file `check_fs_incore()` probe after `dxb_setup()`. The request captures
+the environment, bound data storage handle, and generic incore-submit
+descriptor. Validation rechecks environment/storage identity, generic
+incore-submit descriptor, and a rebuilt request before submitting. Submit
+delegates to `dxb_storage_submit_check_incore()` and returns the existing
+`dxb_incore_result_t`, preserving the make-error return, `env->incore`
+assignment, in-core notice, `check_fs_incore()` error logging, and open
+sequencing before recovery-mode and write-queue setup. This removes inline
+`dxb_storage_make_incore_submit_io()` /
+`dxb_storage_submit_check_incore()` construction from the build-covered
+`env_open()` incore probe path. Verification passed `git diff --check`, source
+scans covering `dxb_env_incore_submit_io_t`,
+`env_make_incore_submit_io()`, `env_incore_submit_io_validate()`,
+`env_submit_incore_probe()`, the updated `env_open()` incore path, and the
+remaining direct incore-submit matches, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.099`
+batch, `1.155` crud, `1.189` iterate, `0.954` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
