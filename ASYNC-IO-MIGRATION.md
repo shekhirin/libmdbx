@@ -11342,6 +11342,55 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.098` batch, `1.163` crud, `0.980`
 iterate, `0.991` get, and `1.083` delete.
 
+A later Windows overlapped `env_open()` cleanup added
+`env_overlapped_open_flags()`, `env_overlapped_open_needed()`,
+`dxb_env_overlapped_open_submit_io_t`,
+`env_make_overlapped_open_submit_io()`,
+`env_overlapped_open_submit_io_validate()`,
+`env_submit_overlapped_open()`, `dxb_env_overlapped_park_submit_io_t`,
+`env_make_overlapped_park_submit_io()`,
+`env_overlapped_park_submit_io_validate()`, and
+`env_submit_overlapped_park()` for the Windows data-file handle opened with
+`MDBX_OPEN_DXB_OVERLAPPED` and parked at the safe offset. The open request
+captures the environment, bound data storage handle, DXB pathname, overlapped
+eligibility flag snapshot, and generic open-submit descriptor. The park request
+captures the environment, bound data storage handle, zero-byte safe parking
+position, and generic park-submit descriptor. Validation rechecks
+environment/storage/path identity, live overlapped eligibility, generic open
+descriptor validity, overlapped purpose, zero mode bits, false meta-sync state,
+generic park descriptor validity, `dxb_io_data` channel selection, zero-byte
+position shape, and rebuilt requests before submitting. Submit delegates to
+`dxb_storage_submit_open_overlapped()` and
+`dxb_storage_submit_park_overlapped()`, preserving Windows event creation
+ordering, the existing skip policy for read-only, safe-nosync, nometasync, and
+exclusive opens, open-result error propagation, safe parking-lot reuse, and
+ignored park-result semantics. This removes inline
+`dxb_storage_make_open_submit_io()` /
+`dxb_storage_submit_open_overlapped()` and
+`dxb_storage_make_park_submit_io()` /
+`dxb_storage_submit_park_overlapped()` construction from the Windows
+`env_open()` overlapped branch, leaving only the generic storage submitters and
+the env-level wrappers. Verification passed `git diff --check`, source scans
+covering `dxb_env_overlapped_open_submit_io_t`,
+`env_make_overlapped_open_submit_io()`,
+`env_overlapped_open_submit_io_validate()`,
+`env_submit_overlapped_open()`, `dxb_env_overlapped_park_submit_io_t`,
+`env_make_overlapped_park_submit_io()`,
+`env_overlapped_park_submit_io_validate()`,
+`env_submit_overlapped_park()`, the updated Windows `env_open()` branch, and
+the remaining generic overlapped submitter definitions, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.119` batch, `1.167` crud, `0.975` iterate,
+`1.029` get, and `1.078` delete. These Linux gates do not compile the
+Windows-only overlapped branch; a Windows toolchain build remains required for
+compile coverage of that branch when available.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
