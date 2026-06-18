@@ -4681,8 +4681,6 @@ static dxb_write_result_t dxb_storage_submit_write_meta(dxb_storage_t *storage,
                                                         const dxb_meta_write_submit_io_t *io);
 static dxb_write_result_t dxb_storage_submit_writev_data(dxb_storage_t *storage, const dxb_writev_submit_io_t *io);
 #if MDBX_USE_COPYFILERANGE
-static dxb_copy_result_t dxb_storage_copy_data(dxb_storage_t *storage, const dxb_data_copy_io_t *io,
-                                               const dxb_copy_cache_invalidate_submit_io_t *invalidate_submit);
 static dxb_copy_result_t dxb_storage_submit_copy_data(dxb_storage_t *storage, const dxb_data_copy_submit_io_t *io);
 static dxb_copy_result_t dxb_storage_copy_data_to_fd(const dxb_storage_t *storage, const dxb_data_export_io_t *io,
                                                      mdbx_filehandle_t dst_fd);
@@ -30638,29 +30636,24 @@ static dxb_copy_result_t dxb_storage_submit_copy_data_to_fd(const dxb_storage_t 
   return dxb_storage_copy_data_to_fd(storage, &io->export, io->dst_fd);
 }
 
-static dxb_copy_result_t dxb_storage_copy_data(dxb_storage_t *storage, const dxb_data_copy_io_t *io,
-                                               const dxb_copy_cache_invalidate_submit_io_t *invalidate_submit) {
-  int rc = dxb_storage_data_copy_io_validate(storage, io);
+static dxb_copy_result_t dxb_storage_submit_copy_data(dxb_storage_t *storage, const dxb_data_copy_submit_io_t *io) {
+  int rc = dxb_storage_data_copy_submit_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_copy_error(rc);
-  rc = dxb_storage_copy_cache_invalidate_submit_io_validate(storage, invalidate_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_copy_error(rc);
-  if (unlikely(!dxb_copy_cache_invalidate_copy_io_equal(&invalidate_submit->copy, io)))
-    return dxb_copy_error(MDBX_EINVAL);
 
+  const dxb_data_copy_io_t *const copy = &io->copy;
   rc = dxb_fault_inject("copy");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_copy_error(rc);
-  if (unlikely(io->src_bytes.bytes > SSIZE_MAX || io->src_bytes.offset > (uint64_t)OFF_T_MAX ||
-               io->dst_bytes.offset > (uint64_t)OFF_T_MAX))
+  if (unlikely(copy->src_bytes.bytes > SSIZE_MAX || copy->src_bytes.offset > (uint64_t)OFF_T_MAX ||
+               copy->dst_bytes.offset > (uint64_t)OFF_T_MAX))
     return dxb_copy_error(MDBX_EINVAL);
 
-  off_t src_offset = (off_t)io->src_bytes.offset;
-  off_t dst_offset = (off_t)io->dst_bytes.offset;
+  off_t src_offset = (off_t)copy->src_bytes.offset;
+  off_t dst_offset = (off_t)copy->dst_bytes.offset;
   const mdbx_filehandle_t data_fd = dxb_storage_data_fd(storage);
-  const ssize_t copied = copy_file_range(data_fd, &src_offset, data_fd, &dst_offset, io->src_bytes.bytes, 0);
-  if (unlikely(copied != (ssize_t)io->src_bytes.bytes)) {
+  const ssize_t copied = copy_file_range(data_fd, &src_offset, data_fd, &dst_offset, copy->src_bytes.bytes, 0);
+  if (unlikely(copied != (ssize_t)copy->src_bytes.bytes)) {
     if (copied > 0)
       return dxb_copy_incomplete_error(MDBX_EIO, (size_t)copied);
     return dxb_copy_submitted_error((copied < 0) ? errno : MDBX_EIO);
@@ -30668,17 +30661,10 @@ static dxb_copy_result_t dxb_storage_copy_data(dxb_storage_t *storage, const dxb
   rc = dxb_fault_inject("copy-complete");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_copy_submitted_error(rc);
-  dxb_cache_result_t invalidate = dxb_storage_submit_copy_cache_invalidate(storage, invalidate_submit);
+  dxb_cache_result_t invalidate = dxb_storage_submit_copy_cache_invalidate(storage, &io->invalidate);
   if (unlikely(invalidate.err != MDBX_SUCCESS))
-    return dxb_copy_completed_error(invalidate.err, io->src_bytes.bytes);
-  return dxb_copy_completed(io->src_bytes.bytes);
-}
-
-static dxb_copy_result_t dxb_storage_submit_copy_data(dxb_storage_t *storage, const dxb_data_copy_submit_io_t *io) {
-  int rc = dxb_storage_data_copy_submit_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_copy_error(rc);
-  return dxb_storage_copy_data(storage, &io->copy, &io->invalidate);
+    return dxb_copy_completed_error(invalidate.err, copy->src_bytes.bytes);
+  return dxb_copy_completed(copy->src_bytes.bytes);
 }
 
 #endif /* MDBX_USE_COPYFILERANGE */

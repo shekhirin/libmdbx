@@ -12569,6 +12569,27 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.091` batch, `1.146` crud, `0.818`
 iterate, `1.069` get, and `1.074` delete.
 
+A later same-file copy submit-boundary cleanup folded the raw
+`dxb_storage_copy_data()` helper into `dxb_storage_submit_copy_data()`. The copy
+submitter now validates the full `dxb_data_copy_submit_io_t` payload, runs the
+copy fault-injection hooks, issues `copy_file_range()` directly against the
+storage-owned data descriptor, invalidates destination cache state through the
+nested submit payload, and returns completed copy results from the submit
+boundary. This leaves defrag page moves with a single descriptor-shaped
+same-file copy entry point and no parallel raw data-copy helper path in the C
+source or public/internal headers. Verification passed `git diff --check`,
+source scans confirming no raw same-file storage copy helper remains in
+`mdbx.c` or the public/internal headers, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.136` batch, `1.136` crud, `0.862` iterate,
+`0.951` get, and `1.072` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
