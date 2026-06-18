@@ -11524,6 +11524,41 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.103` batch, `1.136` crud, `1.147` iterate,
 `1.064` get, and `1.058` delete.
 
+A later post-write cache-invalidation cleanup added
+`dxb_write_cache_invalidate_submit_io_t`,
+`dxb_storage_make_write_cache_invalidate_submit_io()`,
+`dxb_storage_write_cache_invalidate_submit_io_validate()`, and
+`dxb_storage_submit_write_cache_invalidate()` for the central
+`dxb_storage_write_data()` and `dxb_storage_writev_data()` completion paths.
+The request captures the completed data-write span, derived cache-invalidation
+request, and generic cache-invalidation submit descriptor. Validation rechecks
+data-write span validity, cache-invalidation descriptor validity, submit
+descriptor validity, data-write/invalidate range correspondence, false
+reusable-entry invalidation policy, and a rebuilt request before submitting.
+Submit delegates to `dxb_storage_submit_invalidate_cached_io()`, preserving
+cache invalidation after successful `pwrite()`/`pwritev()` completion while
+surfacing any invalidation-submit error as a completed-write error. This
+removes inline `dxb_storage_make_cache_invalidate_io()` /
+`dxb_storage_submit_invalidate_cached_request()` construction from the central
+single-buffer and vector data-write completion paths, leaving the generic
+cache-invalidation storage submitter plus the post-write wrapper. Verification
+passed `git diff --check`, source scans covering
+`dxb_write_cache_invalidate_submit_io_t`,
+`dxb_storage_make_write_cache_invalidate_submit_io()`,
+`dxb_storage_write_cache_invalidate_submit_io_validate()`,
+`dxb_storage_submit_write_cache_invalidate()`, the updated
+`dxb_storage_write_data()` and `dxb_storage_writev_data()` paths, and the
+remaining generic cache-invalidation submitter definitions, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.113` batch, `1.139` crud, `1.312` iterate,
+`0.946` get, and `1.066` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
