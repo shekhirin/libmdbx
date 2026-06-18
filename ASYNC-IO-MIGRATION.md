@@ -11421,6 +11421,37 @@ entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment.
 The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios of
 `1.065` batch, `1.171` crud, `0.997` iterate, `1.037` get, and `1.074` delete.
 
+A later `iov_page()` dirty-page enqueue cleanup added
+`dxb_iov_page_submit_io_t`, `iov_make_page_submit_io()`,
+`iov_page_submit_io_validate()`, and `iov_submit_page()` for dirty-page queue
+insertion. The request captures the transaction, write context, bound data
+storage handle, page pointer, page number and count, generic dirty queued-write
+descriptor, and generic dirty queued-write submit descriptor. Validation
+rechecks transaction/context/environment/storage identity, successful context
+state, data-channel eligibility, page-number stability, dirty queued-write
+descriptor validity, submit descriptor validity, descriptor correspondence, and
+a rebuilt request before submitting. Submit delegates to
+`dxb_storage_submit_add_queued_write()`, preserving shadow-page checks, channel
+checks, full-queue `MDBX_RESULT_TRUE` handling, `iov_write()` flush/retry
+behavior, `iov_complete()` bailout behavior, and flush-range updates. This
+removes inline `dxb_storage_make_dirty_queued_write_io()`,
+`dxb_storage_make_dirty_queued_write_submit_io()`, and direct
+`dxb_storage_submit_add_queued_write()` construction from `iov_page()`, leaving
+the generic queued-write storage submitter plus the iov-level wrapper.
+Verification passed `git diff --check`, source scans covering
+`dxb_iov_page_submit_io_t`, `iov_make_page_submit_io()`,
+`iov_page_submit_io_validate()`, `iov_submit_page()`, the updated `iov_page()`
+path, and the remaining generic queued-write submitter definitions, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.080` batch, `1.145` crud, `1.196` iterate,
+`0.934` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
