@@ -21727,18 +21727,6 @@ static inline osal_ioring_write_result_t dxb_storage_write_queued(dxb_storage_t 
   return osal_ioring_write(dxb_storage_write_queue(storage), dxb_storage_iov_fd(storage, channel));
 }
 
-static inline int dxb_storage_fsync(const dxb_storage_t *storage, enum osal_syncmode_bits mode_bits) {
-  return osal_fsync(dxb_storage_data_fd(storage), mode_bits);
-}
-
-static inline int dxb_storage_read_filesize_from_disk(const dxb_storage_t *storage, uint64_t *filesize) {
-  return osal_filesize(dxb_storage_data_fd(storage), filesize);
-}
-
-static inline int dxb_storage_fsetsize(const dxb_storage_t *storage, uint64_t target) {
-  return osal_fsetsize(dxb_storage_data_fd(storage), target);
-}
-
 #if !defined(_WIN32) && !defined(_WIN64)
 static int dxb_storage_stat(const dxb_storage_t *storage, struct stat *st) {
   return unlikely(fstat(dxb_storage_data_fd(storage), st)) ? errno : MDBX_SUCCESS;
@@ -22096,7 +22084,7 @@ static int dxb_storage_sync_io(const dxb_storage_t *storage, const dxb_sync_io_t
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
   }
-  rc = dxb_storage_fsync(storage, mode_bits);
+  rc = osal_fsync(dxb_storage_data_fd(storage), mode_bits);
   if (unlikely(rc != MDBX_SUCCESS) || !has_sync_work)
     return rc;
   return dxb_fault_inject("sync-complete");
@@ -22203,7 +22191,7 @@ static int dxb_storage_set_filesize_on_disk(const dxb_storage_t *storage, uint64
   int rc = dxb_fault_inject("setsize");
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  rc = dxb_storage_fsetsize(storage, target);
+  rc = osal_fsetsize(dxb_storage_data_fd(storage), target);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   return dxb_fault_inject("setsize-complete");
@@ -22242,7 +22230,7 @@ static int dxb_storage_fetch_filesize(dxb_storage_t *storage) {
     return rc;
 
   uint64_t filesize = 0;
-  rc = dxb_storage_read_filesize_from_disk(storage, &filesize);
+  rc = osal_filesize(dxb_storage_data_fd(storage), &filesize);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 

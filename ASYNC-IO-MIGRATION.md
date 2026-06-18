@@ -6136,6 +6136,27 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.104` batch, `1.176` crud, `0.968` iterate, `0.988`
 get, and `1.072` delete.
 
+A later sync/size/filesize submission cleanup removed the private
+`dxb_storage_fsync()`, `dxb_storage_fsetsize()`, and
+`dxb_storage_read_filesize_from_disk()` wrappers from the C source.
+`dxb_storage_sync_io()` still validates the checked sync descriptor and
+preserves sync fault injection before submitting directly to `osal_fsync()`.
+The filesize grow/shrink and refresh paths likewise keep their existing
+fault-injection and storage-state updates, but submit directly to
+`osal_fsetsize()` and `osal_filesize()` at the storage boundary. This removes
+the last redundant single-call primitive wrappers from this part of the
+data-file storage path and leaves no references to those helper names in
+`mdbx.c`. Verification passed `git diff --check`, source scans proving the
+removed wrappers are gone from `mdbx.c`, the GNUmake `mdbx_migration_smoke`
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.121` batch, `1.164` crud, `0.901` iterate, `1.068`
+get, and `1.076` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
