@@ -6178,6 +6178,27 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.133` batch, `1.159`
 crud, `0.848` iterate, `1.062` get, and `1.069` delete.
 
+A later discard descriptor cleanup added `dxb_discard_io_t` for tail-discard
+requests used by resize, open-time stale-tail cleanup, and commit-time shrink
+cleanup. Those paths still derive byte spans from storage geometry, but now
+construct a checked discard descriptor before submitting `POSIX_FADV_DONTNEED`
+or future remove-style discard work. The descriptor carries the exact requested
+byte range, page coverage for cache invalidation, and the discard mode. The old
+loose `dxb_storage_discard_range()`, `dxb_storage_discard_clean_range()`,
+`dxb_storage_discard_remove_range()`, and unused `dxb_discard_mode_valid()`
+helpers are gone from `mdbx.c`; `dxb_storage_discard_io()` now validates the
+descriptor at the storage boundary before applying the same advice and cache
+invalidation behavior. Verification passed `git diff --check`, source scans
+proving the old discard helper names are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke`
+CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
+passed with forced/default ratios of `1.122` batch, `1.144` crud, `1.333`
+iterate, `1.127` get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
