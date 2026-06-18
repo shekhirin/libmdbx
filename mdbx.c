@@ -8655,8 +8655,6 @@ MDBX_INTERNAL int __must_check_result page_check(const MDBX_cursor *const mc, co
 
 MDBX_INTERNAL pgr_t page_get_any(const MDBX_cursor *const mc, const pgno_t pgno, const txnid_t front);
 
-MDBX_INTERNAL pgr_t page_get_three(const MDBX_cursor *const mc, const pgno_t pgno, const txnid_t front);
-
 MDBX_INTERNAL pgr_t page_get_large(const MDBX_cursor *const mc, const pgno_t pgno, const txnid_t front);
 
 static inline int page_make_cursor_get_submit_io(const MDBX_cursor *mc, const uint16_t ill, const pgno_t pgno,
@@ -9130,6 +9128,7 @@ typedef struct dxb_walk_page_get_submit_io {
   MDBX_cursor *cursor;
   pgno_t pgno;
   txnid_t front;
+  dxb_cursor_page_get_submit_io_t get;
   unsigned deep;
 } dxb_walk_page_get_submit_io_t;
 
@@ -9139,11 +9138,17 @@ static inline int walk_make_page_get_submit_io(walk_ctx_t *ctx, pgno_t pgno, txn
                pgno >= ctx->txn->geo.first_unallocated))
     return MDBX_EINVAL;
 
+  dxb_cursor_page_get_submit_io_t get;
+  int err = page_make_cursor_get_submit_io(ctx->cursor, P_ILL_BITS | P_LARGE, pgno, front, &get);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
   io->ctx = ctx;
   io->txn = ctx->txn;
   io->cursor = ctx->cursor;
-  io->pgno = pgno;
-  io->front = front;
+  io->pgno = get.get.request.pgno;
+  io->front = get.get.front;
+  io->get = get;
   io->deep = ctx->deep;
   return MDBX_SUCCESS;
 }
@@ -9160,7 +9165,16 @@ static inline int walk_page_get_submit_io_validate(const dxb_walk_page_get_submi
   if (unlikely(err != MDBX_SUCCESS))
     return err;
   if (unlikely(checked.ctx != io->ctx || checked.txn != io->txn || checked.cursor != io->cursor ||
-               checked.pgno != io->pgno || checked.front != io->front || checked.deep != io->deep))
+               checked.pgno != io->pgno || checked.front != io->front ||
+               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
+               checked.get.get.request.pgno != io->get.get.request.pgno ||
+               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
+               checked.get.get.request.npages != io->get.get.request.npages ||
+               checked.get.get.request.offset != io->get.get.request.offset ||
+               checked.get.get.request.bytes != io->get.get.request.bytes ||
+               checked.get.get.front != io->get.get.front ||
+               checked.get.get.track_private != io->get.get.track_private ||
+               checked.deep != io->deep))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -9170,7 +9184,7 @@ static inline pgr_t walk_submit_page_get(const dxb_walk_page_get_submit_io_t *io
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
 
-  return page_get_three(io->cursor, io->pgno, io->front);
+  return page_submit_cursor_get(&io->get);
 }
 
 static inline pgr_t walk_page_get(walk_ctx_t *ctx, pgno_t pgno, txnid_t front) {
@@ -46487,10 +46501,6 @@ pgr_t page_get_any(const MDBX_cursor *const mc, const pgno_t pgno, const txnid_t
   return page_get_inline(P_ILL_BITS, mc, pgno, front);
 }
 
-__hot pgr_t page_get_three(const MDBX_cursor *const mc, const pgno_t pgno, const txnid_t front) {
-  return page_get_inline(P_ILL_BITS | P_LARGE, mc, pgno, front);
-}
-
 pgr_t page_get_large(const MDBX_cursor *const mc, const pgno_t pgno, const txnid_t front) {
   return page_get_inline(P_ILL_BITS | P_BRANCH | P_LEAF | P_DUPFIX, mc, pgno, front);
 }
@@ -51234,6 +51244,7 @@ typedef struct dxb_tree_cutoff_page_get_submit_io {
   tree_t *tree;
   pgno_t pgno;
   txnid_t front;
+  dxb_cursor_page_get_submit_io_t get;
   size_t deep;
   intptr_t top;
   uint8_t checking;
@@ -51245,11 +51256,17 @@ static inline int tree_cutoff_make_page_get_submit_io(MDBX_cursor *mc, pgno_t pg
   if (unlikely(!mc || !mc->txn || !mc->tree || !io || pgno == P_INVALID))
     return MDBX_EINVAL;
 
+  dxb_cursor_page_get_submit_io_t get;
+  int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_LARGE, pgno, front, &get);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
   io->cursor = mc;
   io->txn = mc->txn;
   io->tree = mc->tree;
-  io->pgno = pgno;
-  io->front = front;
+  io->pgno = get.get.request.pgno;
+  io->front = get.get.front;
+  io->get = get;
   io->deep = deep;
   io->top = mc->top;
   io->checking = mc->checking;
@@ -51270,7 +51287,16 @@ static inline int tree_cutoff_page_get_submit_io_validate(const dxb_tree_cutoff_
   if (unlikely(err != MDBX_SUCCESS))
     return err;
   if (unlikely(checked.cursor != io->cursor || checked.txn != io->txn || checked.tree != io->tree ||
-               checked.pgno != io->pgno || checked.front != io->front || checked.deep != io->deep ||
+               checked.pgno != io->pgno || checked.front != io->front ||
+               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
+               checked.get.get.request.pgno != io->get.get.request.pgno ||
+               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
+               checked.get.get.request.npages != io->get.get.request.npages ||
+               checked.get.get.request.offset != io->get.get.request.offset ||
+               checked.get.get.request.bytes != io->get.get.request.bytes ||
+               checked.get.get.front != io->get.get.front ||
+               checked.get.get.track_private != io->get.get.track_private ||
+               checked.deep != io->deep ||
                checked.top != io->top || checked.checking != io->checking || checked.whole_tree != io->whole_tree))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
@@ -51281,7 +51307,7 @@ static inline pgr_t tree_cutoff_submit_page_get(const dxb_tree_cutoff_page_get_s
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
 
-  return page_get_three(io->cursor, io->pgno, io->front);
+  return page_submit_cursor_get(&io->get);
 }
 
 static inline pgr_t tree_cutoff_page_get(MDBX_cursor *mc, pgno_t pgno, size_t deep, txnid_t front, bool whole_tree) {

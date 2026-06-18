@@ -12263,6 +12263,27 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.095` batch, `1.146` crud, `0.955`
 iterate, `0.993` get, and `1.068` delete.
 
+A later walk/tree-cutoff page-get submission cleanup moved the remaining
+`page_get_three()` submit handlers onto nested cursor page-get payloads.
+`dxb_walk_page_get_submit_io_t` and
+`dxb_tree_cutoff_page_get_submit_io_t` now carry a
+`dxb_cursor_page_get_submit_io_t` built by
+`page_make_cursor_get_submit_io()`, validate the nested page I/O coordinates
+with their traversal snapshots, and submit through `page_submit_cursor_get()`
+instead of calling the wrapper. With no source callers left, the old
+`page_get_three()` wrapper was removed. Verification passed `git diff
+--check`, source scans confirming no `page_get_three()` callers remain in
+`mdbx.c` or the public/internal headers, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.094` batch, `1.145` crud, `1.013` iterate,
+`0.909` get, and `0.993` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
