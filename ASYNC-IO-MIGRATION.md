@@ -7044,6 +7044,26 @@ ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The
 paired benchmark gate passed with forced/default ratios of `1.077` batch,
 `1.145` crud, `0.991` iterate, `0.961` get, and `1.068` delete.
 
+A later descriptor-sysinfo cleanup added `dxb_sysinfo_result_t` for public
+environment information queries that read data-file descriptor metadata.
+`dxb_storage_fetch_sysinfo()` now returns an explicit result containing the
+error code, observed data-file size, filesystem allocation, and filesystem I/O
+block size instead of writing directly into `MDBX_envinfo`. The public
+`env_info_sys()` wrapper still initializes and fills the same ABI fields after
+successful completion, preserving existing `mdbx_env_info_ex()` behavior while
+giving future async-capable metadata backends a single completion boundary for
+descriptor stat information. Verification passed `git diff --check`, source
+scans covering `dxb_sysinfo_result_t`, sysinfo result helpers, and every
+`dxb_storage_fetch_sysinfo()` call site, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.140` batch, `1.174` crud, `0.984` iterate,
+`1.036` get, and `1.075` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

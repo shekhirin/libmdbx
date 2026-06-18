@@ -1369,6 +1369,13 @@ typedef struct dxb_filesize_result {
   uint64_t filesize;
 } dxb_filesize_result_t;
 
+typedef struct dxb_sysinfo_result {
+  int err;
+  uint64_t filesize;
+  uint64_t allocated;
+  uint32_t io_block;
+} dxb_sysinfo_result_t;
+
 typedef struct dxb_resize_result {
   int err;
   size_t current;

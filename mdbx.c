@@ -2539,7 +2539,7 @@ MDBX_INTERNAL int dxb_storage_deinit(dxb_storage_t *storage, bool env_active);
 #if !defined(_WIN32) && !defined(_WIN64)
 static int dxb_storage_stat(const dxb_storage_t *storage, struct stat *st);
 #endif /* !Windows */
-static int dxb_storage_fetch_sysinfo(const dxb_storage_t *storage, MDBX_envinfo *out);
+static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *storage);
 static int dxb_storage_check_readonly(const dxb_storage_t *storage, const pathchar_t *pathname, int err);
 static inline int dxb_storage_set_filesize(dxb_storage_t *storage, uint64_t filesize);
 static inline int dxb_storage_set_current(dxb_storage_t *storage, uint64_t filesize);
@@ -9026,7 +9026,13 @@ __must_check_result static int env_info_sys(const MDBX_env *env, MDBX_envinfo *o
   out->mi_dxb_fsize = 0;
   out->mi_dxb_fallocated = 0;
   out->mi_sys_ioblk = 0;
-  return dxb_storage_fetch_sysinfo(storage, out);
+  dxb_sysinfo_result_t sysinfo = dxb_storage_fetch_sysinfo(storage);
+  if (unlikely(sysinfo.err != MDBX_SUCCESS))
+    return sysinfo.err;
+  out->mi_dxb_fsize = sysinfo.filesize;
+  out->mi_dxb_fallocated = sysinfo.allocated;
+  out->mi_sys_ioblk = sysinfo.io_block;
+  return MDBX_SUCCESS;
 }
 
 __must_check_result static int env_info_snap(const MDBX_env *env, const MDBX_txn *txn, MDBX_envinfo *out,
@@ -22344,10 +22350,24 @@ static inline int dxb_storage_check_incore(const dxb_storage_t *storage, bool *i
   return *incore ? MDBX_SUCCESS : rc;
 }
 
-static int dxb_storage_fetch_sysinfo(const dxb_storage_t *storage, MDBX_envinfo *out) {
+static inline dxb_sysinfo_result_t dxb_sysinfo_result(int err, uint64_t filesize, uint64_t allocated,
+                                                      uint32_t io_block) {
+  const dxb_sysinfo_result_t result = {err, filesize, allocated, io_block};
+  return result;
+}
+
+static inline dxb_sysinfo_result_t dxb_sysinfo_error(int err) {
+  return dxb_sysinfo_result(err, 0, 0, 0);
+}
+
+static inline dxb_sysinfo_result_t dxb_sysinfo_completed(uint64_t filesize, uint64_t allocated, uint32_t io_block) {
+  return dxb_sysinfo_result(MDBX_SUCCESS, filesize, allocated, io_block);
+}
+
+static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *storage) {
   const mdbx_filehandle_t dxb_fd = dxb_storage_data_fd(storage);
   if (dxb_fd == INVALID_HANDLE_VALUE)
-    return MDBX_SUCCESS;
+    return dxb_sysinfo_completed(0, 0, 0);
 
 #if defined(_WIN32) || defined(_WIN64)
   union {
@@ -22357,34 +22377,36 @@ static int dxb_storage_fetch_sysinfo(const dxb_storage_t *storage, MDBX_envinfo 
     FILE_STORAGE_INFO storage;
 #endif
   } sys_finfo;
+  uint64_t filesize = 0;
+  uint64_t allocated = 0;
+  uint32_t io_block = 0;
   if (imports.GetFileInformationByHandleEx &&
       imports.GetFileInformationByHandleEx(dxb_fd, FileStandardInfo, &sys_finfo.std, sizeof(sys_finfo.std))) {
-    out->mi_dxb_fsize = sys_finfo.std.EndOfFile.QuadPart;
-    out->mi_dxb_fallocated = sys_finfo.std.AllocationSize.QuadPart;
+    filesize = sys_finfo.std.EndOfFile.QuadPart;
+    allocated = sys_finfo.std.AllocationSize.QuadPart;
 #if _WIN32_WINNT >= _WIN32_WINNT_WIN8
     if (imports.GetFileInformationByHandleEx(dxb_fd, FileStorageInfo, &sys_finfo.storage,
                                              sizeof(sys_finfo.storage))) {
-      out->mi_sys_ioblk = (sys_finfo.storage.FileSystemEffectivePhysicalBytesPerSectorForAtomicity >
-                           sys_finfo.storage.LogicalBytesPerSector)
-                              ? sys_finfo.storage.FileSystemEffectivePhysicalBytesPerSectorForAtomicity
-                              : sys_finfo.storage.LogicalBytesPerSector;
+      io_block = (sys_finfo.storage.FileSystemEffectivePhysicalBytesPerSectorForAtomicity >
+                  sys_finfo.storage.LogicalBytesPerSector)
+                     ? sys_finfo.storage.FileSystemEffectivePhysicalBytesPerSectorForAtomicity
+                     : sys_finfo.storage.LogicalBytesPerSector;
     }
 #endif
-  } else if (GetFileInformationByHandle(dxb_fd, &sys_finfo.bh)) {
-    out->mi_dxb_fsize = sys_finfo.bh.nFileSizeLow | (uint64_t)sys_finfo.bh.nFileSizeHigh << 32;
-  } else
-    return GetLastError();
+    return dxb_sysinfo_completed(filesize, allocated, io_block);
+  }
+  if (GetFileInformationByHandle(dxb_fd, &sys_finfo.bh)) {
+    filesize = sys_finfo.bh.nFileSizeLow | (uint64_t)sys_finfo.bh.nFileSizeHigh << 32;
+    return dxb_sysinfo_completed(filesize, 0, 0);
+  }
+  return dxb_sysinfo_error(GetLastError());
 #else
   struct stat sys_fstat;
   int rc = dxb_storage_stat(storage, &sys_fstat);
   if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  out->mi_dxb_fsize = sys_fstat.st_size;
-  out->mi_dxb_fallocated = UINT64_C(512) * sys_fstat.st_blocks;
-  out->mi_sys_ioblk = sys_fstat.st_blksize;
+    return dxb_sysinfo_error(rc);
+  return dxb_sysinfo_completed(sys_fstat.st_size, UINT64_C(512) * sys_fstat.st_blocks, sys_fstat.st_blksize);
 #endif /* !Windows */
-
-  return MDBX_SUCCESS;
 }
 
 static int dxb_storage_check_readonly(const dxb_storage_t *storage, const pathchar_t *pathname, int err) {
