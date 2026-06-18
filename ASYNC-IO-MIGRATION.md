@@ -11242,6 +11242,40 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.098` batch, `1.135` crud, `1.005` iterate,
 `0.953` get, and `1.099` delete.
 
+A later `lck_setup()` readonly-filesystem fallback cleanup added
+`dxb_env_lck_readonly_probe_submit_io_t`,
+`env_make_lck_readonly_probe_submit_io()`,
+`env_lck_readonly_probe_submit_io_validate()`, and
+`env_submit_lck_readonly_probe()` for the lock-file open failure path that
+checks whether a read-only environment is on a read-only filesystem. The
+request captures the environment, bound data storage handle, lock-file
+pathname, source open error, and the `MDBX_RDONLY`/`MDBX_EXCLUSIVE` flags used
+by the fallback decision. Validation rechecks environment/storage identity,
+lock-file path identity, saved flag state, generic readonly descriptor
+validity, source error propagation, and a rebuilt request before submitting.
+Submit delegates to `dxb_storage_submit_check_readonly()`, preserving the
+existing decision to continue without a lock file when the filesystem is
+readonly or when readonly probing is unsupported in exclusive mode, and
+preserving the original open error otherwise. This removes the remaining direct
+higher-level `dxb_storage_make_readonly_submit_io()` /
+`dxb_storage_submit_check_readonly()` construction from `lck_setup()`, leaving
+only the generic readonly helper/submitter and this env-level wrapper.
+Verification passed `git diff --check`, source scans covering
+`dxb_env_lck_readonly_probe_submit_io_t`,
+`env_make_lck_readonly_probe_submit_io()`,
+`env_lck_readonly_probe_submit_io_validate()`,
+`env_submit_lck_readonly_probe()`, the updated `lck_setup()` readonly fallback,
+and the remaining direct readonly-submit matches, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.092` batch, `1.144` crud, `1.158` iterate,
+`0.979` get, and `1.082` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
