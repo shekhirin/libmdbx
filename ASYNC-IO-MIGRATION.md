@@ -5595,6 +5595,24 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.115` batch, `1.165` crud, `1.056` iterate, `1.020`
 get, and `1.087` delete.
 
+A later meta-triplet byte adapter cleanup removed
+`dxb_storage_meta_pages_bytes_io()` from the C source. Meta-shadow allocation
+and refresh, environment-copy buffer sizing, new-database meta initialization,
+post-setup meta coverage checks, and aux-page buffer allocation now build
+checked `dxb_page_io_t` coverage for the first `NUM_METAS` pages before
+converting that coverage to a `dxb_byte_io_t`. Verification passed
+`git diff --check`, source scans proving the meta-triplet byte adapter,
+page-ref byte adapter, page-subrange adapter, read/write page-span wrappers,
+and the unused `dxb_storage_meta_pages_io()` helper are gone from `mdbx.c`,
+the GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.135` batch, `1.172` crud, `0.865` iterate, `0.960`
+get, and `1.077` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
