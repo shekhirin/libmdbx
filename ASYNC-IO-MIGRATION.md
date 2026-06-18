@@ -10721,6 +10721,39 @@ The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
 of `1.102` batch, `1.153` crud, `1.013` iterate, `1.079` get, and `1.079`
 delete.
 
+A later open-time setup-size cleanup added
+`dxb_setup_storage_size_submit_io_t`,
+`dxb_setup_make_storage_size_submit_io()`,
+`dxb_setup_storage_size_submit_io_validate()`, and
+`dxb_setup_submit_storage_size()` for the `dxb_setup()` storage sizing step
+that establishes the explicit data-file current/limit state after metadata
+geometry selection. The request captures the environment, data storage handle,
+current geometry bytes, upper geometry bytes, env flags, setup options, checked
+size descriptor, and generic setup-size submit descriptor. Validation rechecks
+environment/storage identity, live geometry/flag identity, target size shape,
+generic setup-size descriptor, and a rebuilt request before submitting. Submit
+delegates to `dxb_storage_submit_setup_size()`, preserving the existing
+`MMAP_OPTION_SETLENGTH` selection, no-data-mmap open notice, geometry
+assertion, setup-size error handling, storage current/limit/filesize updates,
+and the following meta-shadow refresh. This removes inline
+`dxb_storage_size_io()`, `dxb_storage_make_setup_size_submit_io()`, and
+`dxb_storage_submit_setup_size()` construction from the `dxb_setup()` open path.
+Verification passed `git diff --check`, source scans covering
+`dxb_setup_storage_size_submit_io_t`,
+`dxb_setup_make_storage_size_submit_io()`,
+`dxb_setup_storage_size_submit_io_validate()`,
+`dxb_setup_submit_storage_size()`, the updated `dxb_setup()` path, and the
+absence of old inline setup-size storage request construction in that block, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.164` batch, `1.150` crud, `0.996`
+iterate, `0.964` get, and `1.079` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

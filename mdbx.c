@@ -29543,6 +29543,91 @@ static dxb_read_result_t dxb_header_submit_meta_read(const dxb_header_meta_read_
   return dxb_storage_submit_read_meta(io->storage, &io->submit);
 }
 
+typedef struct dxb_setup_storage_size_submit_io {
+  MDBX_env *env;
+  dxb_storage_t *storage;
+  size_t current;
+  size_t limit;
+  unsigned flags;
+  unsigned options;
+  dxb_size_io_t target;
+  dxb_setup_size_submit_io_t submit;
+} dxb_setup_storage_size_submit_io_t;
+
+static inline int dxb_setup_make_storage_size_submit_io(
+    MDBX_env *env, unsigned options, dxb_setup_storage_size_submit_io_t *io) {
+  if (unlikely(!env || !io))
+    return MDBX_EINVAL;
+
+  dxb_storage_t *const storage = &env->dxb_storage;
+  const size_t current = env->geo_in_bytes.now;
+  const size_t limit = env->geo_in_bytes.upper;
+  dxb_size_io_t target;
+  int rc = dxb_storage_size_io(current, limit, &target);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_setup_size_submit_io_t submit;
+  rc = dxb_storage_make_setup_size_submit_io(&target, env->flags, options, &submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->env = env;
+  io->storage = storage;
+  io->current = current;
+  io->limit = limit;
+  io->flags = env->flags;
+  io->options = options;
+  io->target = target;
+  io->submit = submit;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_setup_storage_size_submit_io_validate(
+    const dxb_setup_storage_size_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage ||
+               io->storage != &io->env->dxb_storage ||
+               io->current != io->env->geo_in_bytes.now ||
+               io->limit != io->env->geo_in_bytes.upper ||
+               io->flags != io->env->flags))
+    return MDBX_EINVAL;
+  if (unlikely(io->target.current != io->current ||
+               io->target.limit != io->limit ||
+               io->submit.target.current != io->target.current ||
+               io->submit.target.limit != io->target.limit ||
+               io->submit.flags != io->flags ||
+               io->submit.options != io->options))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_setup_size_submit_io_validate(&io->submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_setup_storage_size_submit_io_t checked;
+  rc = dxb_setup_make_storage_size_submit_io(io->env, io->options, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env != io->env || checked.storage != io->storage ||
+               checked.current != io->current || checked.limit != io->limit ||
+               checked.flags != io->flags || checked.options != io->options ||
+               checked.target.current != io->target.current ||
+               checked.target.limit != io->target.limit ||
+               checked.submit.target.current != io->submit.target.current ||
+               checked.submit.target.limit != io->submit.target.limit ||
+               checked.submit.flags != io->submit.flags ||
+               checked.submit.options != io->submit.options))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static dxb_resize_result_t dxb_setup_submit_storage_size(
+    const dxb_setup_storage_size_submit_io_t *io) {
+  int rc = dxb_setup_storage_size_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return io && io->storage ? dxb_resize_error(io->storage, rc)
+                             : dxb_resize_unsubmitted_error(rc);
+  return dxb_storage_submit_setup_size(io->storage, &io->submit);
+}
+
 __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive, const mdbx_mode_t mode_bits) {
   dxb_storage_t *const storage = &env->dxb_storage;
   memset(dest, 0, sizeof(meta_t));
@@ -30485,15 +30570,11 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   const unsigned storage_options = (lck_rc && env->stuck_meta < 0) ? MMAP_OPTION_SETLENGTH : 0;
   NOTICE("%s", "open without data-file mmap");
   eASSERT0(env, env->geo_in_bytes.now <= env->geo_in_bytes.upper);
-  dxb_size_io_t target_size;
-  err = dxb_storage_size_io(env->geo_in_bytes.now, env->geo_in_bytes.upper, &target_size);
+  dxb_setup_storage_size_submit_io_t setup_submit;
+  err = dxb_setup_make_storage_size_submit_io(env, storage_options, &setup_submit);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  dxb_setup_size_submit_io_t setup_submit;
-  err = dxb_storage_make_setup_size_submit_io(&target_size, env->flags, storage_options, &setup_submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  dxb_resize_result_t setup_size = dxb_storage_submit_setup_size(storage, &setup_submit);
+  dxb_resize_result_t setup_size = dxb_setup_submit_storage_size(&setup_submit);
   err = setup_size.err;
   if (unlikely(err != MDBX_SUCCESS))
     return err;
