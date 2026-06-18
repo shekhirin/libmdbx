@@ -10507,6 +10507,40 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.099` batch, `1.149` crud, `0.960`
 iterate, `0.986` get, and `1.073` delete.
 
+A later coherency root-probe cleanup added
+`dxb_coherency_root_probe_read_io_t`,
+`coherency_make_root_probe_read_io()`,
+`coherency_root_probe_read_io_validate()`, and
+`coherency_submit_root_probe_read()` for the root-page availability probe in
+`coherency_probe_root_txnid()`. The request captures the data storage handle,
+root page number, current-size snapshot, rebuilt one-page root read descriptor,
+computed root-buffer byte count, and whether the captured file view covers the
+read. Validation rechecks storage identity, the one-page root descriptor shape,
+the captured coverage calculation, buffer sizing, and a rebuilt deterministic
+page-read descriptor without requiring a later storage current-size read to
+match the snapshot. Submit returns only availability and buffer size; the actual
+page read still goes through the existing
+`dxb_coherency_root_read_submit_io_t` and `coherency_submit_root_read()` path.
+This removes the inline root-page descriptor build, current-size coverage check,
+and buffer-size derivation from `coherency_probe_root_txnid()` while preserving
+the coherency warning paths, root-buffer allocation/free, current-file-view
+check, and txnid extraction. Verification passed `git diff --check`, source
+scans covering `dxb_coherency_root_probe_read_io_t`,
+`coherency_make_root_probe_read_io()`,
+`coherency_root_probe_read_io_validate()`,
+`coherency_submit_root_probe_read()`, the updated
+`coherency_probe_root_txnid()` path, and the absence of the old inline root
+probe request construction in that function, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.007` batch, `0.997` crud, `0.967` iterate,
+`1.007` get, and `0.993` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

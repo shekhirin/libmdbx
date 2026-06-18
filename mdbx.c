@@ -20013,6 +20013,88 @@ typedef struct coherency_root_probe {
   txnid_t txnid;
 } coherency_root_probe_t;
 
+typedef struct dxb_coherency_root_probe_read_io {
+  const dxb_storage_t *storage;
+  pgno_t root_pgno;
+  uint64_t current_size;
+  dxb_data_read_io_t root_read;
+  size_t buffer_bytes;
+  bool storage_read_possible;
+} dxb_coherency_root_probe_read_io_t;
+
+static inline int coherency_make_root_probe_read_io(const dxb_storage_t *storage, pgno_t root_pgno,
+                                                    dxb_coherency_root_probe_read_io_t *io) {
+  if (unlikely(!storage || !io))
+    return MDBX_EINVAL;
+
+  dxb_page_io_t root_page;
+  int rc = dxb_storage_page_io(storage, root_pgno, 1, &root_page);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_data_read_io_t root_read;
+  rc = dxb_storage_make_data_read_io(storage, &root_page, &root_read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  const uint64_t current_size = dxb_storage_current_size(storage);
+  const bool storage_read_possible =
+      root_read.bytes.offset <= current_size && root_read.bytes.bytes <= current_size - root_read.bytes.offset;
+  if (unlikely(storage_read_possible && root_read.bytes.bytes > SIZE_MAX))
+    return MDBX_EINVAL;
+
+  io->storage = storage;
+  io->root_pgno = root_pgno;
+  io->current_size = current_size;
+  io->root_read = root_read;
+  io->buffer_bytes = storage_read_possible ? (size_t)root_read.bytes.bytes : 0;
+  io->storage_read_possible = storage_read_possible;
+  return MDBX_SUCCESS;
+}
+
+static inline int coherency_root_probe_read_io_validate(const dxb_coherency_root_probe_read_io_t *io) {
+  if (unlikely(!io || !io->storage))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_data_read_io_validate(io->storage, &io->root_read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(io->root_read.pages.pgno != io->root_pgno || io->root_read.pages.npages != 1 ||
+               io->root_read.bytes.bytes > SIZE_MAX ||
+               io->storage_read_possible !=
+                   (io->root_read.bytes.offset <= io->current_size &&
+                    io->root_read.bytes.bytes <= io->current_size - io->root_read.bytes.offset) ||
+               io->buffer_bytes != (io->storage_read_possible ? (size_t)io->root_read.bytes.bytes : 0)))
+    return MDBX_EINVAL;
+
+  dxb_coherency_root_probe_read_io_t checked;
+  rc = coherency_make_root_probe_read_io(io->storage, io->root_pgno, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  /* current_size is a captured file-view snapshot for this probe; a
+   * later storage size change must not invalidate the descriptor. */
+  if (unlikely(checked.storage != io->storage || checked.root_pgno != io->root_pgno ||
+               checked.root_read.pages.pgno != io->root_read.pages.pgno ||
+               checked.root_read.pages.end_pgno != io->root_read.pages.end_pgno ||
+               checked.root_read.pages.npages != io->root_read.pages.npages ||
+               checked.root_read.pages.offset != io->root_read.pages.offset ||
+               checked.root_read.pages.bytes != io->root_read.pages.bytes ||
+               checked.root_read.bytes.offset != io->root_read.bytes.offset ||
+               checked.root_read.bytes.bytes != io->root_read.bytes.bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static int coherency_submit_root_probe_read(const dxb_coherency_root_probe_read_io_t *io,
+                                            bool *storage_read_possible, size_t *buffer_bytes) {
+  if (unlikely(!storage_read_possible || !buffer_bytes))
+    return MDBX_EINVAL;
+  int rc = coherency_root_probe_read_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  *storage_read_possible = io->storage_read_possible;
+  *buffer_bytes = io->buffer_bytes;
+  return MDBX_SUCCESS;
+}
+
 typedef struct dxb_coherency_root_read_submit_io {
   const dxb_storage_t *storage;
   pgno_t root_pgno;
@@ -20121,24 +20203,18 @@ static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, co
   probe->present = true;
 
   const dxb_storage_t *const storage = &env->dxb_storage;
-  dxb_page_io_t root_page;
-  int err = dxb_storage_page_io(storage, root_pgno, 1, &root_page);
-  dxb_data_read_io_t root_read;
-  if (likely(err == MDBX_SUCCESS))
-    err = dxb_storage_make_data_read_io(storage, &root_page, &root_read);
   bool storage_probe_possible = false;
-  if (likely(err == MDBX_SUCCESS)) {
-    const uint64_t current = dxb_storage_current_size(storage);
-    storage_probe_possible =
-        root_read.bytes.offset <= current && root_read.bytes.bytes <= current - root_read.bytes.offset;
-  }
+  size_t root_buffer_bytes = 0;
+  dxb_coherency_root_probe_read_io_t root_probe;
+  int err = coherency_make_root_probe_read_io(storage, root_pgno, &root_probe);
+  if (likely(err == MDBX_SUCCESS))
+    err = coherency_submit_root_probe_read(&root_probe, &storage_probe_possible, &root_buffer_bytes);
   if (likely(storage_probe_possible)) {
     void *root_buffer = nullptr;
-    err = osal_memalign_alloc(globals.sys_pagesize, root_read.bytes.bytes, &root_buffer);
+    err = osal_memalign_alloc(globals.sys_pagesize, root_buffer_bytes, &root_buffer);
     if (likely(err == MDBX_SUCCESS)) {
       dxb_coherency_root_read_submit_io_t submit;
-      err = coherency_make_root_read_submit_io(storage, root_pgno, root_buffer, (size_t)root_read.bytes.bytes,
-                                               &submit);
+      err = coherency_make_root_read_submit_io(storage, root_pgno, root_buffer, root_buffer_bytes, &submit);
       if (likely(err == MDBX_SUCCESS))
         err = coherency_submit_root_read(&submit);
       if (likely(err == MDBX_SUCCESS))
