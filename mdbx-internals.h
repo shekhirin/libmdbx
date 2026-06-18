@@ -1348,6 +1348,11 @@ typedef struct dxb_data_write_io {
   dxb_byte_io_t bytes;
 } dxb_data_write_io_t;
 
+typedef struct dxb_dirty_queued_write_io {
+  dxb_data_write_io_t data;
+  void *buffer;
+} dxb_dirty_queued_write_io_t;
+
 typedef struct dxb_queued_write_io {
   enum dxb_io_channel channel;
   mdbx_filehandle_t fd;
@@ -1434,7 +1439,7 @@ MDBX_INTERNAL int osal_ioring_create(osal_ioring_t *
 MDBX_INTERNAL int osal_ioring_resize(osal_ioring_t *, size_t items);
 MDBX_INTERNAL void osal_ioring_destroy(osal_ioring_t *);
 MDBX_INTERNAL void osal_ioring_reset(osal_ioring_t *);
-MDBX_INTERNAL int osal_ioring_add(osal_ioring_t *ctx, const dxb_data_write_io_t *io, void *data);
+MDBX_INTERNAL int osal_ioring_add(osal_ioring_t *ctx, const dxb_dirty_queued_write_io_t *io);
 typedef struct osal_ioring_write_result {
   int err;
   unsigned wops;

@@ -113,11 +113,6 @@ typedef struct dxb_dirty_write_queue_io {
   dxb_data_write_io_t data;
 } dxb_dirty_write_queue_io_t;
 
-typedef struct dxb_dirty_queued_write_io {
-  dxb_data_write_io_t data;
-  void *buffer;
-} dxb_dirty_queued_write_io_t;
-
 typedef void (*dxb_dirty_write_walk_callback_t)(iov_ctx_t *ctx, const dxb_data_write_io_t *io, void *data);
 
 typedef struct dxb_dirty_write_walk_io {
@@ -22213,7 +22208,7 @@ static inline int dxb_storage_add_queued_write(dxb_storage_t *storage, const dxb
   int rc = dxb_storage_dirty_queued_write_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return osal_ioring_add(dxb_storage_write_queue(storage), &io->data, io->buffer);
+  return osal_ioring_add(dxb_storage_write_queue(storage), io);
 }
 
 static inline int dxb_storage_make_dirty_write_walk_io(const dxb_storage_t *storage, iov_ctx_t *ctx,
@@ -32175,20 +32170,22 @@ static inline int ior_item_make_merged_io(const ior_item_t *item, const dxb_data
   return dxb_data_write_io_validate_queued(merged, merged->bytes.bytes);
 }
 
-int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *data) {
-  if (unlikely(!io || !data))
+int osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued_write_io_t *io) {
+  if (unlikely(!io || !io->buffer))
     return MDBX_EINVAL;
-  int rc = dxb_data_write_io_validate_queued(io, io->bytes.bytes);
+  const dxb_data_write_io_t *const data_io = &io->data;
+  void *data = io->buffer;
+  int rc = dxb_data_write_io_validate_queued(data_io, data_io->bytes.bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  if (unlikely(io->bytes.offset > SIZE_MAX || io->bytes.bytes > MAX_WRITE ||
-               io->bytes.bytes > SIZE_MAX - (size_t)io->bytes.offset ||
-               io->bytes.offset + io->bytes.bytes > MAX_MAPSIZE))
+  if (unlikely(data_io->bytes.offset > SIZE_MAX || data_io->bytes.bytes > MAX_WRITE ||
+               data_io->bytes.bytes > SIZE_MAX - (size_t)data_io->bytes.offset ||
+               data_io->bytes.offset + data_io->bytes.bytes > MAX_MAPSIZE))
     return MDBX_EINVAL;
 
-  const size_t offset = (size_t)io->bytes.offset;
-  const size_t bytes = io->bytes.bytes;
+  const size_t offset = (size_t)data_io->bytes.offset;
+  const size_t bytes = data_io->bytes.bytes;
   ASSERT(bytes);
   ASSERT(bytes % MDBX_MIN_PAGESIZE == 0 && bytes <= MAX_WRITE);
   ASSERT(offset % MDBX_MIN_PAGESIZE == 0 && offset + (uint64_t)bytes <= MAX_MAPSIZE);
@@ -32202,7 +32199,7 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *dat
   if (likely(ior->last)) {
     item = ior->last;
     dxb_data_write_io_t merged_io;
-    const int merge_rc = ior_item_make_merged_io(item, io, &merged_io);
+    const int merge_rc = ior_item_make_merged_io(item, data_io, &merged_io);
     if (unlikely(MDBX_IS_ERROR(merge_rc)))
       return merge_rc;
     if (unlikely(merge_rc == MDBX_SUCCESS) && likely(ior_last_bytes(ior, item) + bytes <= MAX_WRITE)) {
@@ -32271,7 +32268,7 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *dat
   item->ov.Offset = (DWORD)offset;
   item->ov.OffsetHigh = HIGH_DWORD(offset);
   item->ov.hEvent = 0;
-  item->io = *io;
+  item->io = *data_io;
   if (!use_gather || ((bytes | (uintptr_t)(data)) & ior_alignment_mask) != 0 || segments > OSAL_IOV_MAX) {
     /* WriteFile() */
     item->single.iov_base = data;
@@ -32290,12 +32287,12 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *dat
   }
   ior_last_sgvcnt(ior, item) = slots_used;
 #elif MDBX_HAVE_PWRITEV
-  item->io = *io;
+  item->io = *data_io;
   item->sgv[0].iov_base = data;
   item->sgv[0].iov_len = bytes;
   ior_last_sgvcnt(ior, item) = slots_used;
 #else
-  item->io = *io;
+  item->io = *data_io;
   item->single.iov_base = data;
   item->single.iov_len = bytes;
 #endif /* !Windows */
