@@ -10476,6 +10476,37 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.096` batch, `1.161` crud, `0.772` iterate,
 `1.000` get, and `1.079` delete.
 
+A later data-prefix sync cleanup added `dxb_data_prefix_sync_submit_io_t`,
+`dxb_data_make_prefix_sync_submit_io()`,
+`dxb_data_prefix_sync_submit_io_validate()`, and
+`dxb_data_submit_prefix_sync()` for syncs over a `0..end_pgno` data-file prefix.
+The request captures the environment, data storage handle, prefix end page, sync
+mode bits, rebuilt prefix page span, generic sync descriptor, and generic sync
+submit descriptor. Validation rechecks environment/storage identity, prefix page
+span shape, sync mode bits, generic sync and sync-submit descriptors, and a
+rebuilt request before submitting. Submit still delegates to
+`dxb_storage_submit_sync_io()`, while callers keep their existing
+`dxb_note_fsync_pgop()` placement and error handling. The wrapper now covers the
+commit data sync before metadata publication in `dxb_sync_locked()` and the
+writer-latency pre-sync in `env_sync()`. This removes the remaining inline
+generic sync request build/submit sequences from the commit-sync paths and gives
+data-file prefix durability an explicit async-capable request point.
+Verification passed `git diff --check`, source scans covering
+`dxb_data_prefix_sync_submit_io_t`,
+`dxb_data_make_prefix_sync_submit_io()`,
+`dxb_data_prefix_sync_submit_io_validate()`,
+`dxb_data_submit_prefix_sync()`, the updated `dxb_sync_locked()` and
+`env_sync()` paths, and the absence of old inline generic sync submit sequences,
+the GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.099` batch, `1.149` crud, `0.960`
+iterate, `0.986` get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
