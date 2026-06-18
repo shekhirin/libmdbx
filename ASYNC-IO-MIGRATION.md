@@ -7660,6 +7660,30 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.131` batch, `1.157`
 crud, `1.071` iterate, `1.060` get, and `1.077` delete.
 
+A later filesystem probe cleanup extended `dxb_incore_result_t` and
+`dxb_readonly_result_t` with `submitted` and `completed` flags, matching the
+async-facing state used by the other explicit storage probes. In-core checks
+now report submitted/completed successful probes, submitted/not-completed probe
+errors, and unsubmitted completed unsupported probes. Read-only filesystem
+checks now preserve the original source error while distinguishing successful
+submitted probes, unsupported unsubmitted fallbacks, and submitted probe
+failures. Current callers still unwrap only `.err`, `.incore`, `.readonly`, and
+`.supported`. Verification passed `git diff --check`, source scans covering
+`dxb_incore_result_t`, `dxb_incore_result()`,
+`dxb_incore_submitted_error()`, `dxb_incore_unavailable()`,
+`dxb_incore_completed()`, `dxb_readonly_result_t`,
+`dxb_readonly_result()`, `dxb_readonly_completed()`,
+`dxb_readonly_unavailable()`, `dxb_readonly_submitted_error()`,
+`dxb_readonly_from_probe()`, and the incore/readonly callers, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.121` batch, `1.176`
+crud, `0.992` iterate, `0.970` get, and `1.106` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

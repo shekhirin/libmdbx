@@ -1398,6 +1398,8 @@ typedef struct dxb_sysinfo_result {
 typedef struct dxb_incore_result {
   int err;
   bool incore;
+  bool submitted;
+  bool completed;
 } dxb_incore_result_t;
 
 typedef struct dxb_readonly_result {
@@ -1405,6 +1407,8 @@ typedef struct dxb_readonly_result {
   int source_err;
   bool readonly;
   bool supported;
+  bool submitted;
+  bool completed;
 } dxb_readonly_result_t;
 
 typedef struct dxb_park_result {

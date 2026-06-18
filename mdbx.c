@@ -22569,24 +22569,30 @@ static dxb_stat_result_t dxb_storage_stat(const dxb_storage_t *storage) {
 }
 #endif /* !Windows */
 
-static inline dxb_incore_result_t dxb_incore_result(int err, bool incore) {
-  const dxb_incore_result_t result = {err, incore};
+static inline dxb_incore_result_t dxb_incore_result(int err, bool incore, bool submitted, bool completed) {
+  const dxb_incore_result_t result = {err, incore, submitted, completed};
   return result;
 }
 
-static inline dxb_incore_result_t dxb_incore_error(int err) {
-  return dxb_incore_result(err, false);
+static inline dxb_incore_result_t dxb_incore_submitted_error(int err) {
+  return dxb_incore_result(err, false, true, false);
+}
+
+static inline dxb_incore_result_t dxb_incore_unavailable(int err) {
+  return dxb_incore_result(err, false, false, true);
 }
 
 static inline dxb_incore_result_t dxb_incore_completed(bool incore) {
-  return dxb_incore_result(MDBX_SUCCESS, incore);
+  return dxb_incore_result(MDBX_SUCCESS, incore, true, true);
 }
 
 static inline dxb_incore_result_t dxb_storage_check_incore(const dxb_storage_t *storage) {
   const int rc = osal_check_fs_incore(dxb_storage_data_fd(storage));
   if (rc == MDBX_RESULT_TRUE)
     return dxb_incore_completed(true);
-  return likely(rc == MDBX_SUCCESS) ? dxb_incore_completed(false) : dxb_incore_error(rc);
+  if (likely(rc == MDBX_SUCCESS))
+    return dxb_incore_completed(false);
+  return (rc == MDBX_ENOSYS) ? dxb_incore_unavailable(rc) : dxb_incore_submitted_error(rc);
 }
 
 static inline dxb_sysinfo_result_t dxb_sysinfo_result(int err, uint64_t filesize, uint64_t allocated,
@@ -22658,14 +22664,35 @@ static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *stora
 #endif /* !Windows */
 }
 
-static inline dxb_readonly_result_t dxb_readonly_result(int err, int source_err) {
-  const dxb_readonly_result_t result = {err, source_err, err == MDBX_SUCCESS, err != MDBX_ENOSYS};
+static inline dxb_readonly_result_t dxb_readonly_result(int err, int source_err, bool submitted, bool completed) {
+  const dxb_readonly_result_t result = {err, source_err, err == MDBX_SUCCESS, err != MDBX_ENOSYS, submitted,
+                                        completed};
   return result;
+}
+
+static inline dxb_readonly_result_t dxb_readonly_completed(int source_err) {
+  return dxb_readonly_result(MDBX_SUCCESS, source_err, true, true);
+}
+
+static inline dxb_readonly_result_t dxb_readonly_unavailable(int source_err) {
+  return dxb_readonly_result(MDBX_ENOSYS, source_err, false, true);
+}
+
+static inline dxb_readonly_result_t dxb_readonly_submitted_error(int err, int source_err) {
+  return dxb_readonly_result(err, source_err, true, false);
+}
+
+static inline dxb_readonly_result_t dxb_readonly_from_probe(int err, int source_err) {
+  if (likely(err == MDBX_SUCCESS))
+    return dxb_readonly_completed(source_err);
+  if (err == MDBX_ENOSYS)
+    return dxb_readonly_unavailable(source_err);
+  return dxb_readonly_submitted_error(err, source_err);
 }
 
 static dxb_readonly_result_t dxb_storage_check_readonly(const dxb_storage_t *storage, const pathchar_t *pathname,
                                                         int err) {
-  return dxb_readonly_result(osal_check_fs_rdonly(dxb_storage_data_fd(storage), pathname, err), err);
+  return dxb_readonly_from_probe(osal_check_fs_rdonly(dxb_storage_data_fd(storage), pathname, err), err);
 }
 
 static inline dxb_range_result_t dxb_range_result(int err, size_t payload_bytes, bool submitted, bool completed) {
