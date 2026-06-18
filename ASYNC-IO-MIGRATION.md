@@ -5721,6 +5721,24 @@ fault injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.137` batch, `1.175`
 crud, `1.231` iterate, `0.945` get, and `1.087` delete.
 
+A later sync descriptor cleanup restored an explicit `dxb_sync_io_t` request
+for data sync. Commit-time data sync and writer-free pre-sync still derive
+checked `dxb_page_io_t` prefixes from transaction geometry, but now build a
+`dxb_sync_io_t` carrying the page coverage, derived byte coverage, and sync mode
+before calling `dxb_storage_sync_io()`. The current backend still performs the
+same whole-file `fsync()` underneath, but the sync boundary again carries a
+validated descriptor that a future range-aware or async completion backend can
+consume. Verification passed `git diff --check`, source scans proving
+`dxb_storage_sync_bytes()` and the earlier removed storage adapters are gone
+from `mdbx.c`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.130` batch, `1.154`
+crud, `1.204` iterate, `0.959` get, and `1.079` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
