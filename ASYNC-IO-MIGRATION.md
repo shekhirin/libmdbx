@@ -11890,6 +11890,31 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.088` batch, `1.142` crud, `0.921`
 iterate, `1.059` get, and `1.065` delete.
 
+A later same-file copy submission cleanup moved destination page-cache
+invalidation into caller-built copy submit descriptors.
+`dxb_data_copy_submit_io_t` now carries a prepared
+`dxb_copy_cache_invalidate_submit_io_t` derived from the destination page
+span, and `dxb_storage_copy_data()` validates and consumes that descriptor
+after successful same-file copy completion instead of constructing it in the
+raw copy backend. This preserves short-copy and destination cache-invalidation
+behavior while making post-copy cache maintenance part of the explicit copy
+submission payload. Verification passed `git diff --check`, source scans
+covering `dxb_data_copy_submit_io_t`,
+`dxb_copy_cache_invalidate_submit_io_t`,
+`dxb_storage_make_data_copy_submit_io()`,
+`dxb_storage_data_copy_submit_io_validate()`,
+`dxb_storage_make_copy_cache_invalidate_submit_io()`,
+`dxb_storage_copy_data()`, and `dxb_storage_submit_copy_data()`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.110` batch, `1.137` crud, `1.015`
+iterate, `1.016` get, and `1.065` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
