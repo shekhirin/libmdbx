@@ -581,8 +581,17 @@ typedef struct dxb_node_read_submit_io {
   bool bigdata;
 } dxb_node_read_submit_io_t;
 
+typedef struct dxb_cache_materialize_io {
+  dxb_data_read_io_t data;
+} dxb_cache_materialize_io_t;
+
+typedef struct dxb_cache_materialize_submit_io {
+  dxb_cache_materialize_io_t materialize;
+} dxb_cache_materialize_submit_io_t;
+
 typedef struct dxb_large_page_read_submit_io {
   dxb_page_io_t span;
+  dxb_cache_materialize_submit_io_t materialize_submit;
   bool cache_backed;
   bool materialize;
 } dxb_large_page_read_submit_io_t;
@@ -591,14 +600,6 @@ typedef struct dxb_cache_insert_submit_io {
   dxb_cache_read_io_t read;
   page_cache_entry_t *entry;
 } dxb_cache_insert_submit_io_t;
-
-typedef struct dxb_cache_materialize_io {
-  dxb_data_read_io_t data;
-} dxb_cache_materialize_io_t;
-
-typedef struct dxb_cache_materialize_submit_io {
-  dxb_cache_materialize_io_t materialize;
-} dxb_cache_materialize_submit_io_t;
 
 typedef struct dxb_cache_materialize_read_submit_io {
   dxb_cache_materialize_io_t materialize;
@@ -697,11 +698,18 @@ typedef struct dxb_cache_release_all_submit_io {
   bool release_all;
 } dxb_cache_release_all_submit_io_t;
 
+static inline bool dxb_page_io_equal(const dxb_page_io_t *a, const dxb_page_io_t *b) {
+  return a->pgno == b->pgno && a->end_pgno == b->end_pgno && a->npages == b->npages &&
+         a->offset == b->offset && a->bytes == b->bytes;
+}
+
+static inline bool dxb_data_read_io_equal(const dxb_data_read_io_t *a, const dxb_data_read_io_t *b) {
+  return dxb_page_io_equal(&a->pages, &b->pages) && a->bytes.offset == b->bytes.offset &&
+         a->bytes.bytes == b->bytes.bytes;
+}
+
 static inline bool dxb_cache_read_io_equal(const dxb_cache_read_io_t *a, const dxb_cache_read_io_t *b) {
-  return a->data.pages.pgno == b->data.pages.pgno && a->data.pages.end_pgno == b->data.pages.end_pgno &&
-         a->data.pages.npages == b->data.pages.npages && a->data.pages.offset == b->data.pages.offset &&
-         a->data.pages.bytes == b->data.pages.bytes && a->data.bytes.offset == b->data.bytes.offset &&
-         a->data.bytes.bytes == b->data.bytes.bytes && a->snapshot == b->snapshot &&
+  return dxb_data_read_io_equal(&a->data, &b->data) && a->snapshot == b->snapshot &&
          a->reusable == b->reusable && a->tracked == b->tracked;
 }
 
@@ -715,6 +723,23 @@ static inline bool dxb_page_cache_read_submit_io_equal(const dxb_page_cache_read
   return dxb_cache_read_io_equal(&a->read, &b->read) &&
          dxb_cache_page_submit_io_equal(&a->lookup, &b->lookup) &&
          dxb_cache_page_submit_io_equal(&a->fill, &b->fill);
+}
+
+static inline bool dxb_cache_materialize_io_equal(const dxb_cache_materialize_io_t *a,
+                                                  const dxb_cache_materialize_io_t *b) {
+  return dxb_data_read_io_equal(&a->data, &b->data);
+}
+
+static inline bool dxb_cache_materialize_submit_io_equal(const dxb_cache_materialize_submit_io_t *a,
+                                                        const dxb_cache_materialize_submit_io_t *b) {
+  return dxb_cache_materialize_io_equal(&a->materialize, &b->materialize);
+}
+
+static inline bool dxb_large_page_read_submit_io_equal(const dxb_large_page_read_submit_io_t *a,
+                                                       const dxb_large_page_read_submit_io_t *b) {
+  return dxb_page_io_equal(&a->span, &b->span) &&
+         dxb_cache_materialize_submit_io_equal(&a->materialize_submit, &b->materialize_submit) &&
+         a->cache_backed == b->cache_backed && a->materialize == b->materialize;
 }
 
 typedef struct dxb_advice_io {
@@ -15186,7 +15211,10 @@ static MDBX_cache_result_t cache_get(const MDBX_txn *txn, MDBX_dbi dbi, const MD
 static inline int page_cache_make_read_submit_io(const MDBX_txn *txn, const dxb_cache_read_io_t *read,
                                                  dxb_page_cache_read_submit_io_t *io);
 static dxb_cache_page_result_t page_cache_submit_read(MDBX_txn *txn, const dxb_page_cache_read_submit_io_t *io);
-static dxb_cache_result_t page_cache_read_large(MDBX_txn *txn, pgr_t *pgr);
+static inline int page_make_large_page_read_submit_io(MDBX_txn *txn, const pgr_t *pgr,
+                                                      dxb_large_page_read_submit_io_t *io);
+static dxb_cache_result_t page_submit_large_read(MDBX_txn *txn, pgr_t *pgr,
+                                                 const dxb_large_page_read_submit_io_t *io);
 
 static inline MDBX_cache_result_t cache_result(int err, MDBX_cache_status_t status) {
   MDBX_cache_result_t result = {.errcode = err, .status = status};
@@ -15246,7 +15274,7 @@ typedef struct dxb_cache_entry_read_submit_io {
 
 typedef struct dxb_cache_entry_large_submit_io {
   dxb_cache_entry_read_io_t read;
-  size_t npages;
+  dxb_large_page_read_submit_io_t large;
 } dxb_cache_entry_large_submit_io_t;
 
 static inline int cache_make_entry_read_io(const MDBX_txn *txn, const MDBX_cache_entry_t *entry,
@@ -15380,8 +15408,13 @@ static inline int cache_make_entry_large_submit_io(const MDBX_txn *txn, const MD
   if (unlikely(offset_in_large > large_bytes.bytes || read->value.bytes > large_bytes.bytes - offset_in_large))
     return MDBX_INVALID;
 
+  dxb_large_page_read_submit_io_t large;
+  err = page_make_large_page_read_submit_io((MDBX_txn *)txn, pgr, &large);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
   io->read = *read;
-  io->npages = pgr->page->pages;
+  io->large = large;
   return MDBX_SUCCESS;
 }
 
@@ -15410,7 +15443,8 @@ static inline int cache_entry_large_submit_io_validate(const MDBX_txn *txn, cons
                checked.read.page.tracked != io->read.page.tracked ||
                checked.read.value.offset != io->read.value.offset ||
                checked.read.value.bytes != io->read.value.bytes ||
-               checked.read.page_offset != io->read.page_offset || checked.npages != io->npages))
+               checked.read.page_offset != io->read.page_offset ||
+               !dxb_large_page_read_submit_io_equal(&checked.large, &io->large)))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -15421,7 +15455,7 @@ static dxb_cache_result_t cache_submit_entry_large_read(const MDBX_txn *txn, con
   int err = cache_entry_large_submit_io_validate(txn, entry, pgr, io);
   if (unlikely(err != MDBX_SUCCESS))
     return dxb_cache_error(err);
-  return page_cache_read_large((MDBX_txn *)txn, pgr);
+  return page_submit_large_read((MDBX_txn *)txn, pgr, &io->large);
 }
 
 static inline int cache_value_io_from_ref(const dxb_storage_t *storage, const page_ref_t *ref, const MDBX_val *data,
@@ -27746,9 +27780,9 @@ static inline bool page_cache_entry_can_reuse(const page_cache_entry_t *entry, c
     return true;
 
   /* A pinned single-page overflow entry may still be expanded in-place by
-   * page_cache_read_large(), which would invalidate existing ref->page values.
-   * Branch/leaf pages and already-expanded overflow spans are immutable for the
-   * snapshot and can safely share the same cache entry while pinned. */
+   * large-page materialization, which would invalidate existing ref->page
+   * values. Branch/leaf pages and already-expanded overflow spans are immutable
+   * for the snapshot and can safely share the same cache entry while pinned. */
   return entry->io.npages > 1 || !is_largepage(entry->page);
 }
 
@@ -28129,20 +28163,6 @@ static dxb_cache_result_t dxb_storage_submit_materialize_cached_large_page(
   if (unlikely(err != MDBX_SUCCESS))
     return dxb_cache_error(err);
   return dxb_storage_materialize_cached_large_page(storage, pgr, &io->materialize);
-}
-
-static dxb_cache_result_t page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
-  page_cache_entry_t *const entry = pgr->ref.cache;
-  if (!entry || !is_largepage(pgr->page) || entry->io.npages >= pgr->page->pages)
-    return dxb_cache_success();
-
-  const size_t npages = pgr->page->pages;
-  tASSERT0(txn, npages > 1 && (size_t)pgr->page->pgno + npages <= txn->geo.first_unallocated);
-  dxb_cache_materialize_submit_io_t materialize_submit;
-  int err = dxb_storage_make_cache_materialize_submit_io(entry->storage, &pgr->ref, npages, &materialize_submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return dxb_cache_error(err);
-  return dxb_storage_submit_materialize_cached_large_page(entry->storage, pgr, &materialize_submit);
 }
 
 static inline dxb_init_result_t dxb_init_result(int err, const dxb_storage_t *storage, bool reset, bool submitted) {
@@ -46399,6 +46419,7 @@ static inline int page_make_large_page_read_submit_io(MDBX_txn *txn, const pgr_t
 
   const bool cache_backed = (pgr->ref.flags & PAGE_REF_CACHE) != 0;
   bool materialize = false;
+  dxb_cache_materialize_submit_io_t materialize_submit = {0};
   if (cache_backed) {
     page_cache_entry_t *const entry = pgr->ref.cache;
     if (unlikely(!entry || entry->storage != storage || entry->page != pgr->page ||
@@ -46409,11 +46430,18 @@ static inline int page_make_large_page_read_submit_io(MDBX_txn *txn, const pgr_t
     if (unlikely(err != MDBX_SUCCESS))
       return err;
     materialize = entry->io.npages < span.npages;
+    if (materialize) {
+      tASSERT0(txn, span.npages > 1 && (size_t)pgr->page->pgno + span.npages <= txn->geo.first_unallocated);
+      err = dxb_storage_make_cache_materialize_submit_io(storage, &pgr->ref, span.npages, &materialize_submit);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+    }
   } else if (unlikely(pgr->ref.cache || pgr->ref.npages > span.npages)) {
     return MDBX_EINVAL;
   }
 
   io->span = span;
+  io->materialize_submit = materialize_submit;
   io->cache_backed = cache_backed;
   io->materialize = materialize;
   return MDBX_SUCCESS;
@@ -46431,7 +46459,8 @@ static inline int page_large_read_submit_io_validate(MDBX_txn *txn, const pgr_t 
   if (unlikely(checked.span.pgno != io->span.pgno || checked.span.end_pgno != io->span.end_pgno ||
                checked.span.npages != io->span.npages || checked.span.offset != io->span.offset ||
                checked.span.bytes != io->span.bytes || checked.cache_backed != io->cache_backed ||
-               checked.materialize != io->materialize))
+               checked.materialize != io->materialize ||
+               !dxb_cache_materialize_submit_io_equal(&checked.materialize_submit, &io->materialize_submit)))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -46443,7 +46472,10 @@ static dxb_cache_result_t page_submit_large_read(MDBX_txn *txn, pgr_t *pgr,
     return dxb_cache_error(err);
   if (!io->materialize)
     return dxb_cache_success();
-  return page_cache_read_large(txn, pgr);
+  page_cache_entry_t *const entry = pgr->ref.cache;
+  if (unlikely(!io->cache_backed || !entry))
+    return dxb_cache_error(MDBX_EINVAL);
+  return dxb_storage_submit_materialize_cached_large_page(entry->storage, pgr, &io->materialize_submit);
 }
 
 static inline dxb_cache_result_t page_read_large(MDBX_txn *txn, pgr_t *pgr) {

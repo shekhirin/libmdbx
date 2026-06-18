@@ -40,8 +40,8 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   snapshot_txnid)`.
   Unpinned entries are always reusable, and pinned entries are reusable when
   they are branch/leaf pages or already-expanded overflow spans. A pinned
-  single-page overflow header remains private because `page_cache_read_large()`
-  can replace the entry buffer while materializing the full span; if an
+  single-page overflow header remains private because large-page materialization
+  can replace the entry buffer while expanding the full span; if an
   expandable tracked entry ever has multiple pins at materialization time, the
   expanding result detaches into a private unlisted cache ref instead of
   replacing a shared buffer. Normal writer reads use private unlisted entries,
@@ -546,7 +546,7 @@ The exact representation can differ, but the contract must be explicit:
    inside one snapshot generation. Unpinned entries are always reusable, and
    pinned entries are reusable when they are branch/leaf pages or already
    expanded overflow spans. Pinned single-page overflow headers stay unshared
-   because `page_cache_read_large()` can replace that entry buffer when it
+   because large-page materialization can replace that entry buffer when it
    expands the cached page to the full overflow span. The reusable cache is
    protected by an environment fast mutex and capped by an env-owned runtime
    limit initialized from `MDBX_EXPLICIT_PAGE_CACHE_LIMIT`, which defaults to
@@ -12373,6 +12373,28 @@ including tool roundtrips, forced tiny-cache fault injection, the ASAN build
 ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `0.993` batch, `0.989` crud, `0.985` iterate,
 `0.975` get, and `1.003` delete.
+
+A later large-page materialization submission cleanup moved overflow-span
+materialization into the large-page read submit payload.
+`dxb_large_page_read_submit_io_t` now carries the derived
+`dxb_cache_materialize_submit_io_t` when the cache-backed overflow header must
+be expanded, and `dxb_cache_entry_large_submit_io_t` carries that nested
+large-page read payload for public-cache large-value fallback. Both ordinary
+large-page reads and public-cache large reads now submit through
+`page_submit_large_read()`, which validates the full payload and submits
+`dxb_storage_submit_materialize_cached_large_page()` directly. With no callers
+left, the old `page_cache_read_large()` helper was removed. Verification
+passed `git diff --check`, source scans confirming no
+`page_cache_read_large()` callers remain in `mdbx.c` or the public/internal
+headers, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.099`
+batch, `1.137` crud, `1.015` iterate, `1.013` get, and `1.074` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
