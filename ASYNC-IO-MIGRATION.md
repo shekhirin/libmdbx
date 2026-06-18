@@ -5884,6 +5884,22 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.095` batch, `1.168`
 crud, `0.796` iterate, `1.114` get, and `1.075` delete.
 
+A later coherency-root read descriptor cleanup moved the remaining root-page
+`mod_txnid` probe off field-sized byte reads. `coherency_probe_root_txnid()`
+now builds a checked one-page `dxb_data_read_io_t`, reads the full root page
+through `dxb_storage_read_data()` into a temporary aligned page buffer, and then
+extracts the page `txnid` for validation. Startup meta/header probes and
+portable env-copy/probe reads remain byte-oriented. Verification passed
+`git diff --check`, source scans proving the old coherency root byte read is
+gone from `mdbx.c`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.126` batch, `1.168`
+crud, `1.231` iterate, `1.028` get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

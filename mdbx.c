@@ -15062,20 +15062,24 @@ static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, co
   const dxb_storage_t *const storage = &env->dxb_storage;
   dxb_page_io_t root_page;
   int err = dxb_storage_page_io(storage, root_pgno, 1, &root_page);
-  dxb_byte_io_t bytes;
-  if (likely(err == MDBX_SUCCESS)) {
-    dxb_byte_io_t root_bytes;
-    err = dxb_storage_byte_io_from_page(&root_page, &root_bytes);
-    if (likely(err == MDBX_SUCCESS))
-      err = dxb_storage_byte_subrange_io(&root_bytes, offsetof(page_t, txnid), sizeof(probe->txnid), &bytes);
-  }
+  dxb_data_read_io_t root_read;
+  if (likely(err == MDBX_SUCCESS))
+    err = dxb_storage_make_data_read_io(storage, &root_page, &root_read);
   bool storage_probe_possible = false;
   if (likely(err == MDBX_SUCCESS)) {
     const uint64_t current = dxb_storage_current_size(storage);
-    storage_probe_possible = bytes.offset <= current && bytes.bytes <= current - bytes.offset;
+    storage_probe_possible =
+        root_read.bytes.offset <= current && root_read.bytes.bytes <= current - root_read.bytes.offset;
   }
   if (likely(storage_probe_possible)) {
-    err = dxb_storage_read_bytes(storage, &bytes, &probe->txnid);
+    void *root_buffer = nullptr;
+    err = osal_memalign_alloc(globals.sys_pagesize, root_read.bytes.bytes, &root_buffer);
+    if (likely(err == MDBX_SUCCESS)) {
+      err = dxb_storage_read_data(storage, &root_read, root_buffer);
+      if (likely(err == MDBX_SUCCESS))
+        probe->txnid = ((page_t *)root_buffer)->txnid;
+      osal_memalign_free(root_buffer);
+    }
     if (unlikely(err != MDBX_SUCCESS)) {
       if (report)
         WARNING("catch %s-db root %" PRIaPGNO " read error %d for meta_txnid %" PRIaTXN " %s", name, root_pgno, err,
