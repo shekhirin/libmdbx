@@ -32473,6 +32473,60 @@ static dxb_close_result_t env_submit_data_close(const dxb_env_data_close_submit_
   return dxb_storage_submit_close(io->storage, &io->close);
 }
 
+typedef struct dxb_env_data_reset_submit_io {
+  MDBX_env *env;
+  dxb_storage_t *storage;
+  bool env_active;
+  dxb_reset_submit_io_t reset;
+} dxb_env_data_reset_submit_io_t;
+
+static inline int env_make_data_reset_submit_io(MDBX_env *env, dxb_env_data_reset_submit_io_t *io) {
+  if (unlikely(!env || !io))
+    return MDBX_EINVAL;
+
+  const bool env_active = (env->flags & ENV_ACTIVE) != 0;
+  dxb_reset_submit_io_t reset;
+  int rc = dxb_storage_make_reset_submit_io(env_active, &reset);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->env = env;
+  io->storage = &env->dxb_storage;
+  io->env_active = env_active;
+  io->reset = reset;
+  return MDBX_SUCCESS;
+}
+
+static inline int env_data_reset_submit_io_validate(const dxb_env_data_reset_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage ||
+               io->env_active != ((io->env->flags & ENV_ACTIVE) != 0)))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_reset_submit_io_validate(&io->reset);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(io->reset.env_active != io->env_active || !io->reset.reset))
+    return MDBX_EINVAL;
+
+  dxb_env_data_reset_submit_io_t checked;
+  rc = env_make_data_reset_submit_io(io->env, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env != io->env || checked.storage != io->storage ||
+               checked.env_active != io->env_active || checked.reset.env_active != io->reset.env_active ||
+               checked.reset.reset != io->reset.reset))
+    return MDBX_EINVAL;
+
+  return MDBX_SUCCESS;
+}
+
+static dxb_state_result_t env_submit_data_reset(const dxb_env_data_reset_submit_io_t *io) {
+  int rc = env_data_reset_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_state_error(rc);
+  return dxb_storage_submit_reset(io->storage, &io->reset);
+}
+
 __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   /* Использование O_DSYNC или FILE_FLAG_WRITE_THROUGH:
    *
@@ -37036,11 +37090,10 @@ __cold int lck_destroy(MDBX_env *env, MDBX_env *inprocess_neighbor, const mdbx_p
                                            &restore_dxb)
                .err;
   }
-  dxb_reset_submit_io_t reset_submit;
-  int reset_submit_rc = dxb_storage_make_reset_submit_io((env->flags & ENV_ACTIVE) != 0, &reset_submit);
-  dxb_state_result_t reset_storage = likely(reset_submit_rc == MDBX_SUCCESS)
-                                         ? dxb_storage_submit_reset(storage, &reset_submit)
-                                         : dxb_state_error(reset_submit_rc);
+  dxb_env_data_reset_submit_io_t reset_submit;
+  int reset_submit_rc = env_make_data_reset_submit_io(env, &reset_submit);
+  dxb_state_result_t reset_storage =
+      likely(reset_submit_rc == MDBX_SUCCESS) ? env_submit_data_reset(&reset_submit) : dxb_state_error(reset_submit_rc);
   if (unlikely(reset_storage.err != MDBX_SUCCESS) && rc == MDBX_SUCCESS)
     rc = reset_storage.err;
 

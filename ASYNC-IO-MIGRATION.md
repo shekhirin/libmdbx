@@ -11184,6 +11184,34 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.109`
 batch, `1.141` crud, `0.914` iterate, `0.989` get, and `1.083` delete.
 
+A later `lck_destroy()` reset-submit cleanup added
+`dxb_env_data_reset_submit_io_t`, `env_make_data_reset_submit_io()`,
+`env_data_reset_submit_io_validate()`, and `env_submit_data_reset()` for the
+post-close data storage reset performed before closing the lock file and
+restoring lock-file state. The request captures the environment, bound data
+storage handle, current `ENV_ACTIVE` state, and generic reset-submit
+descriptor. Validation rechecks environment/storage identity, current active
+state, generic reset descriptor validity, `reset=true`, and a rebuilt request
+before submitting. Submit delegates to `dxb_storage_submit_reset()`, preserving
+the reset error propagation into `lck_destroy()`'s return code and the ordering
+after DXB close/neighbor lock restoration and before lock-file close. The
+scratch reset in `mdbx_preopen_snapinfoW()` remains a later checkpoint because
+it uses a stack-local preopen environment rather than a normal open/close
+lifecycle. Verification passed `git diff --check`, source scans covering
+`dxb_env_data_reset_submit_io_t`,
+`env_make_data_reset_submit_io()`, `env_data_reset_submit_io_validate()`,
+`env_submit_data_reset()`, the updated `lck_destroy()` storage reset path, and
+the remaining direct reset-submit matches, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.095` batch, `1.158` crud, `0.887` iterate,
+`1.001` get, and `1.082` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
