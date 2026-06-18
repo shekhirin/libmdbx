@@ -23012,17 +23012,26 @@ static dxb_read_result_t dxb_storage_read_meta(const dxb_storage_t *storage, con
   return dxb_read_completed(io->bytes.bytes);
 }
 
-static inline dxb_write_result_t dxb_write_result(int err, unsigned wops, size_t payload_bytes) {
-  const dxb_write_result_t result = {err, wops, payload_bytes};
+static inline dxb_write_result_t dxb_write_result(int err, unsigned wops, size_t payload_bytes, bool submitted,
+                                                  bool completed) {
+  const dxb_write_result_t result = {err, wops, payload_bytes, submitted, completed};
   return result;
 }
 
 static inline dxb_write_result_t dxb_write_error(int err) {
-  return dxb_write_result(err, 0, 0);
+  return dxb_write_result(err, 0, 0, false, false);
+}
+
+static inline dxb_write_result_t dxb_write_submitted_error(int err) {
+  return dxb_write_result(err, 0, 0, true, false);
+}
+
+static inline dxb_write_result_t dxb_write_completed_error(int err, size_t payload_bytes) {
+  return dxb_write_result(err, 1, payload_bytes, true, true);
 }
 
 static inline dxb_write_result_t dxb_write_completed(size_t payload_bytes) {
-  return dxb_write_result(MDBX_SUCCESS, 1, payload_bytes);
+  return dxb_write_result(MDBX_SUCCESS, 1, payload_bytes, true, true);
 }
 
 static dxb_write_result_t dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_io_t *io,
@@ -23035,14 +23044,14 @@ static dxb_write_result_t dxb_storage_write_data(dxb_storage_t *storage, const d
     return dxb_write_error(rc);
   rc = osal_pwrite(dxb_storage_fd(storage, dxb_io_data), buf, io->bytes.bytes, io->bytes.offset);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
+    return dxb_write_submitted_error(rc);
   rc = dxb_fault_inject("write-complete");
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
+    return dxb_write_submitted_error(rc);
   dxb_cache_invalidate_io_t invalidate;
   rc = dxb_storage_make_cache_invalidate_io(storage, &io->pages, false, &invalidate);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
+    return dxb_write_completed_error(rc, io->bytes.bytes);
   dxb_storage_invalidate_cached_io(storage, &invalidate);
   return dxb_write_completed(io->bytes.bytes);
 }
@@ -23057,10 +23066,10 @@ static dxb_write_result_t dxb_storage_write_meta(dxb_storage_t *storage, const d
     return dxb_write_error(rc);
   rc = osal_pwrite(dxb_storage_fd(storage, dxb_io_meta), buf, io->bytes.bytes, io->bytes.offset);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
+    return dxb_write_submitted_error(rc);
   rc = dxb_fault_inject("write-complete");
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
+    return dxb_write_submitted_error(rc);
   return dxb_write_completed(io->payload_bytes);
 }
 
@@ -23090,21 +23099,21 @@ static dxb_write_result_t dxb_storage_writev_data(dxb_storage_t *storage, const 
   const mdbx_filehandle_t fd = dxb_storage_fd(storage, dxb_io_data);
   rc = dxb_fault_inject_after_partial_writev("writev-partial", fd, iov, sgvcnt, io);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
+    return dxb_write_submitted_error(rc);
   rc = dxb_fault_inject("writev");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_error(rc);
   rc = osal_pwritev(dxb_storage_fd(storage, dxb_io_data), iov, sgvcnt, io->bytes.offset);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
+    return dxb_write_submitted_error(rc);
   rc = dxb_fault_inject("writev-complete");
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
+    return dxb_write_submitted_error(rc);
 
   dxb_cache_invalidate_io_t invalidate;
   rc = dxb_storage_make_cache_invalidate_io(storage, &io->pages, false, &invalidate);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
+    return dxb_write_completed_error(rc, io->bytes.bytes);
   dxb_storage_invalidate_cached_io(storage, &invalidate);
   return dxb_write_completed(io->bytes.bytes);
 }

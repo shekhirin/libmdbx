@@ -7486,6 +7486,27 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.129` batch, `1.149`
 crud, `0.864` iterate, `1.045` get, and `1.074` delete.
 
+A later direct-write result cleanup extended `dxb_write_result_t` with
+`submitted` and `completed` flags, matching the state already carried by queued
+dirty-write completions. Direct data, metadata, and writev writes now
+distinguish validation/pre-submit errors from submitted-but-not-completed
+write failures, while post-write cache-invalidation descriptor failures
+preserve completed write state and the written payload byte count. This keeps
+the direct synchronous write boundary shaped for a later async backend without
+changing existing callers that still unwrap only `.err`. Verification passed
+`git diff --check`, source scans covering `dxb_write_result_t`,
+`dxb_write_result()`, `dxb_write_error()`, `dxb_write_submitted_error()`,
+`dxb_write_completed_error()`, `dxb_write_completed()`, and the direct write
+paths, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.112` batch, `1.142` crud, `1.003` iterate, `0.914`
+get, and `1.079` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
