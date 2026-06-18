@@ -30383,6 +30383,92 @@ static dxb_write_result_t dxb_sync_submit_meta_payload_write(
   return dxb_storage_submit_write_meta(io->storage, &io->submit);
 }
 
+typedef struct dxb_meta_sync_submit_io {
+  const MDBX_env *env;
+  const dxb_storage_t *storage;
+  enum osal_syncmode_bits mode_bits;
+  dxb_sync_io_t sync;
+  dxb_sync_submit_io_t submit;
+} dxb_meta_sync_submit_io_t;
+
+static inline int dxb_meta_make_sync_submit_io(const MDBX_env *env, enum osal_syncmode_bits mode_bits,
+                                               dxb_meta_sync_submit_io_t *io) {
+  if (unlikely(!env || !io))
+    return MDBX_EINVAL;
+
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  dxb_sync_io_t sync;
+  int rc = dxb_storage_make_meta_sync_io(storage, mode_bits, &sync);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_sync_submit_io_t submit;
+  rc = dxb_storage_make_sync_submit_io(storage, &sync, &submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->env = env;
+  io->storage = storage;
+  io->mode_bits = mode_bits;
+  io->sync = sync;
+  io->submit = submit;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_meta_sync_submit_io_validate(const dxb_meta_sync_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_sync_io_validate(io->storage, &io->sync);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_sync_submit_io_validate(io->storage, &io->submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(io->sync.pages.pgno != 0 || io->sync.pages.end_pgno != NUM_METAS ||
+               io->sync.pages.npages != NUM_METAS || io->sync.mode_bits != io->mode_bits ||
+               io->submit.sync.pages.pgno != io->sync.pages.pgno ||
+               io->submit.sync.pages.end_pgno != io->sync.pages.end_pgno ||
+               io->submit.sync.pages.npages != io->sync.pages.npages ||
+               io->submit.sync.pages.offset != io->sync.pages.offset ||
+               io->submit.sync.pages.bytes != io->sync.pages.bytes ||
+               io->submit.sync.bytes.offset != io->sync.bytes.offset ||
+               io->submit.sync.bytes.bytes != io->sync.bytes.bytes ||
+               io->submit.sync.mode_bits != io->sync.mode_bits))
+    return MDBX_EINVAL;
+
+  dxb_meta_sync_submit_io_t checked;
+  rc = dxb_meta_make_sync_submit_io(io->env, io->mode_bits, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env != io->env || checked.storage != io->storage ||
+               checked.mode_bits != io->mode_bits ||
+               checked.sync.pages.pgno != io->sync.pages.pgno ||
+               checked.sync.pages.end_pgno != io->sync.pages.end_pgno ||
+               checked.sync.pages.npages != io->sync.pages.npages ||
+               checked.sync.pages.offset != io->sync.pages.offset ||
+               checked.sync.pages.bytes != io->sync.pages.bytes ||
+               checked.sync.bytes.offset != io->sync.bytes.offset ||
+               checked.sync.bytes.bytes != io->sync.bytes.bytes ||
+               checked.sync.mode_bits != io->sync.mode_bits ||
+               checked.submit.sync.pages.pgno != io->submit.sync.pages.pgno ||
+               checked.submit.sync.pages.end_pgno != io->submit.sync.pages.end_pgno ||
+               checked.submit.sync.pages.npages != io->submit.sync.pages.npages ||
+               checked.submit.sync.pages.offset != io->submit.sync.pages.offset ||
+               checked.submit.sync.pages.bytes != io->submit.sync.pages.bytes ||
+               checked.submit.sync.bytes.offset != io->submit.sync.bytes.offset ||
+               checked.submit.sync.bytes.bytes != io->submit.sync.bytes.bytes ||
+               checked.submit.sync.mode_bits != io->submit.sync.mode_bits))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static dxb_sync_result_t dxb_meta_submit_sync(const dxb_meta_sync_submit_io_t *io) {
+  int rc = dxb_meta_sync_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_sync_error(rc);
+  return dxb_storage_submit_sync_io(io->storage, &io->submit);
+}
+
 int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika_t *const troika) {
   eASSERT0(env, ((env->flags ^ flags) & MDBX_WRITEMAP) == 0);
   eASSERT0(env, (flags & MDBX_WRITEMAP) == 0);
@@ -30635,15 +30721,11 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
       env->lck->unsynced_pages.weak += 1;
     else {
       dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
-      dxb_sync_io_t meta_sync_io;
-      rc = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &meta_sync_io);
+      dxb_meta_sync_submit_io_t meta_sync_submit;
+      rc = dxb_meta_make_sync_submit_io(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &meta_sync_submit);
       if (unlikely(rc != MDBX_SUCCESS))
         goto undo;
-      dxb_sync_submit_io_t meta_sync_submit;
-      rc = dxb_storage_make_sync_submit_io(storage, &meta_sync_io, &meta_sync_submit);
-      if (unlikely(rc != MDBX_SUCCESS))
-        goto undo;
-      rc = dxb_storage_submit_sync_io(storage, &meta_sync_submit).err;
+      rc = dxb_meta_submit_sync(&meta_sync_submit).err;
       if (rc != MDBX_SUCCESS)
         goto undo;
     }
@@ -37296,14 +37378,10 @@ __cold int meta_wipe_steady(MDBX_env *env, txnid_t inclusive_upto) {
     err = MDBX_SUCCESS;
     if (dxb_storage_meta_write_uses_data_sync(storage)) {
       dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
-      dxb_sync_io_t sync_io;
-      err = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_io);
-      if (likely(err == MDBX_SUCCESS)) {
-        dxb_sync_submit_io_t sync_submit;
-        err = dxb_storage_make_sync_submit_io(storage, &sync_io, &sync_submit);
-        if (likely(err == MDBX_SUCCESS))
-          err = dxb_storage_submit_sync_io(storage, &sync_submit).err;
-      }
+      dxb_meta_sync_submit_io_t sync_submit;
+      err = dxb_meta_make_sync_submit_io(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_submit);
+      if (likely(err == MDBX_SUCCESS))
+        err = dxb_meta_submit_sync(&sync_submit).err;
     }
   }
 
@@ -37322,21 +37400,16 @@ __cold int meta_wipe_steady(MDBX_env *env, txnid_t inclusive_upto) {
 
 int meta_sync(const MDBX_env *env, const meta_ptr_t head) {
   eASSERT0(env, atomic_load32(&env->lck->meta_sync_txnid, mo_Relaxed) != (uint32_t)head.txnid);
-  const dxb_storage_t *const storage = &env->dxb_storage;
   /* Функция может вызываться (в том числе) при (env->flags & MDBX_NOMETASYNC) == 0,
    * когда мета-запись перенаправлена на dsync-дескриптор, например если предыдущая
    * транзакция была выполненна с флагом MDBX_NOMETASYNC. */
 
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
   dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
-  dxb_sync_io_t sync_io;
-  int rc = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_io);
-  if (likely(rc == MDBX_SUCCESS)) {
-    dxb_sync_submit_io_t sync_submit;
-    rc = dxb_storage_make_sync_submit_io(storage, &sync_io, &sync_submit);
-    if (likely(rc == MDBX_SUCCESS))
-      rc = dxb_storage_submit_sync_io(storage, &sync_submit).err;
-  }
+  dxb_meta_sync_submit_io_t sync_submit;
+  int rc = dxb_meta_make_sync_submit_io(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_submit);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = dxb_meta_submit_sync(&sync_submit).err;
 
   if (likely(rc == MDBX_SUCCESS))
     env->lck->meta_sync_txnid.weak = (uint32_t)head.txnid;
@@ -37584,14 +37657,10 @@ __cold int __must_check_result meta_override(MDBX_env *env, size_t target, txnid
   rc = target_result.err;
   if (rc == MDBX_SUCCESS && dxb_storage_meta_write_uses_data_sync(storage)) {
     dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
-    dxb_sync_io_t sync_io;
-    rc = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_io);
-    if (likely(rc == MDBX_SUCCESS)) {
-      dxb_sync_submit_io_t sync_submit;
-      rc = dxb_storage_make_sync_submit_io(storage, &sync_io, &sync_submit);
-      if (likely(rc == MDBX_SUCCESS))
-        rc = dxb_storage_submit_sync_io(storage, &sync_submit).err;
-    }
+    dxb_meta_sync_submit_io_t sync_submit;
+    rc = dxb_meta_make_sync_submit_io(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_submit);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = dxb_meta_submit_sync(&sync_submit).err;
   }
   eASSERT0(env,
            (!env->txn && (env->flags & ENV_ACTIVE) == 0) ||
