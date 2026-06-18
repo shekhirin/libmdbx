@@ -204,6 +204,26 @@ static inline pgr_t pgr_empty(void) {
   return pgr_make(nullptr, MDBX_SUCCESS, 0, 0, PAGE_REF_NONE);
 }
 
+typedef struct dxb_cache_page_result {
+  pgr_t page;
+  bool hit;
+  bool filled;
+  bool tracked;
+} dxb_cache_page_result_t;
+
+static inline dxb_cache_page_result_t dxb_cache_page_result(pgr_t page, bool hit, bool filled, bool tracked) {
+  const dxb_cache_page_result_t result = {page, hit, filled, tracked};
+  return result;
+}
+
+static inline dxb_cache_page_result_t dxb_cache_page_error(int err) {
+  return dxb_cache_page_result(pgr_error(err), false, false, false);
+}
+
+static inline dxb_cache_page_result_t dxb_cache_page_miss(void) {
+  return dxb_cache_page_error(MDBX_RESULT_TRUE);
+}
+
 static inline page_ref_t page_ref_empty(void) {
   page_ref_t ref;
   ref.page = nullptr;
@@ -21646,12 +21666,13 @@ static inline pgr_t dxb_storage_make_cached_pgr(page_cache_entry_t *entry) {
   return ret;
 }
 
-static pgr_t dxb_storage_lookup_cached_page(dxb_storage_t *storage, const dxb_cache_read_io_t *io) {
+static dxb_cache_page_result_t dxb_storage_lookup_cached_page(dxb_storage_t *storage,
+                                                              const dxb_cache_read_io_t *io) {
   int err = dxb_storage_cache_read_io_validate(storage, io);
   if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
+    return dxb_cache_page_error(err);
   if (!io->reusable)
-    return pgr_error(MDBX_RESULT_TRUE);
+    return dxb_cache_page_miss();
 
   page_cache_lock(storage);
   for (page_cache_entry_t *entry = storage->page_cache.entries; entry; entry = entry->next) {
@@ -21660,21 +21681,22 @@ static pgr_t dxb_storage_lookup_cached_page(dxb_storage_t *storage, const dxb_ca
       entry->owner->pinned += 1;
       pgr_t ret = dxb_storage_make_cached_pgr(entry);
       page_cache_unlock(storage);
-      return ret;
+      return dxb_cache_page_result(ret, true, false, entry->owner != nullptr);
     }
   }
   page_cache_unlock(storage);
-  return pgr_error(MDBX_RESULT_TRUE);
+  return dxb_cache_page_miss();
 }
 
-static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, const dxb_cache_read_io_t *io) {
+static dxb_cache_page_result_t dxb_storage_read_cached_page(dxb_storage_t *storage,
+                                                            const dxb_cache_read_io_t *io) {
   int err = dxb_storage_cache_read_io_validate(storage, io);
   if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
+    return dxb_cache_page_error(err);
 
   page_cache_entry_t *entry = osal_calloc(1, sizeof(*entry));
   if (unlikely(!entry))
-    return pgr_error(MDBX_ENOMEM);
+    return dxb_cache_page_error(MDBX_ENOMEM);
 
   const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
   entry->owner = io->tracked ? &storage->page_cache : nullptr;
@@ -21705,13 +21727,13 @@ static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, const dxb_cach
     page_cache_unlock(storage);
   }
 
-  return dxb_storage_make_cached_pgr(entry);
+  return dxb_cache_page_result(dxb_storage_make_cached_pgr(entry), false, true, io->tracked);
 
 bailout:
   if (entry->page)
     osal_memalign_free(entry->page);
   osal_free(entry);
-  return pgr_error(err);
+  return dxb_cache_page_error(err);
 }
 
 static dxb_cache_result_t dxb_storage_detach_materialized_large_page(dxb_storage_t *storage, pgr_t *pgr,
@@ -21758,13 +21780,14 @@ static pgr_t page_cache_read_io(MDBX_txn *txn, const dxb_cache_read_io_t *io) {
   if (unlikely(io->reusable != reusable || io->snapshot != snapshot))
     return pgr_error(MDBX_EINVAL);
 
-  pgr_t cached = dxb_storage_lookup_cached_page(storage, io);
-  if (cached.err == MDBX_SUCCESS)
-    return cached;
-  if (unlikely(cached.err != MDBX_RESULT_TRUE))
-    return cached;
+  dxb_cache_page_result_t cached = dxb_storage_lookup_cached_page(storage, io);
+  if (cached.page.err == MDBX_SUCCESS)
+    return cached.page;
+  if (unlikely(cached.page.err != MDBX_RESULT_TRUE))
+    return cached.page;
 
-  return dxb_storage_read_cached_page(storage, io);
+  dxb_cache_page_result_t filled = dxb_storage_read_cached_page(storage, io);
+  return filled.page;
 }
 
 static pgr_t page_cache_read(MDBX_txn *txn, const dxb_page_io_t *request, const bool track_private) {

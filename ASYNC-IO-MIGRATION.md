@@ -7362,6 +7362,28 @@ ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The
 paired benchmark gate passed with forced/default ratios of `1.079` batch,
 `1.174` crud, `1.007` iterate, `0.997` get, and `1.083` delete.
 
+A later page-cache read result cleanup added an internal
+`dxb_cache_page_result_t` around cached page references. `dxb_storage_lookup_cached_page()`
+and `dxb_storage_read_cached_page()` now report cache hit, miss-fill, and
+tracked-entry state explicitly instead of using only `pgr_t.err` to distinguish
+lookup hits from `MDBX_RESULT_TRUE` misses. `page_cache_read_io()` still unwraps
+the same `pgr_t` for callers, preserving page reference lifetime and error
+behavior, but the storage-cache boundary now exposes whether a page came from a
+reusable cache hit or from an explicit storage read. This gives a later
+async-capable read backend a place to report cache-hit versus submitted-read
+completion without changing cursor/page APIs. Verification passed `git diff
+--check`, source scans covering `dxb_cache_page_result_t`, cache hit/miss/fill
+helpers, `dxb_storage_lookup_cached_page()`, `dxb_storage_read_cached_page()`,
+and `page_cache_read_io()`, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.096` batch, `1.151` crud, `1.019` iterate, `1.004`
+get, and `1.075` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
