@@ -10856,6 +10856,40 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.093` batch, `1.159` crud, `0.950` iterate,
 `0.998` get, and `1.075` delete.
 
+A later preopen read-only data-open cleanup added
+`dxb_preopen_readonly_open_submit_io_t`,
+`preopen_make_readonly_open_submit_io()`,
+`preopen_readonly_open_submit_io_validate()`, and
+`preopen_submit_readonly_open()` for the `mdbx_preopen_snapinfo()` stack
+environment's read-only data-file open. The request captures the temporary
+environment, bound data storage handle, resolved DXB pathname, environment flag
+snapshot, and the generic open-submit descriptor. Validation rechecks
+environment/storage identity, pathname identity, live flag identity, read-only
+eligibility, generic open-submit descriptor, read-only purpose, zero mode bits,
+false meta-sync state, and a rebuilt request before submitting. Submit delegates
+to `dxb_storage_submit_open_data()`, preserving the existing temporary
+environment initialization, pathname resolution, reset/close sequencing,
+read-only header read, environment-info fallback in bailout, and API-visible
+return behavior. This removes inline `dxb_storage_make_open_submit_io()` /
+`dxb_storage_submit_open_data()` construction from the preopen snapinfo path;
+the Windows overlapped `env_open()` branch remains a future checkpoint.
+Verification passed `git diff --check`, source scans covering
+`dxb_preopen_readonly_open_submit_io_t`,
+`preopen_make_readonly_open_submit_io()`,
+`preopen_readonly_open_submit_io_validate()`,
+`preopen_submit_readonly_open()`, the updated `mdbx_preopen_snapinfo()` path,
+and the absence of stale inline preopen open construction, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, a targeted `mdbx_preopen_snapinfo()` public API exercise
+against a throwaway database, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.096` batch, `1.148` crud, `0.855`
+iterate, `1.021` get, and `1.085` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
