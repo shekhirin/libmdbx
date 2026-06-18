@@ -5739,6 +5739,25 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.130` batch, `1.154`
 crud, `1.204` iterate, `0.959` get, and `1.079` delete.
 
+A later data-write descriptor cleanup removed the ambiguous
+`dxb_storage_page_io_from_bytes()` helper from the C source. Advisory,
+discard, readahead, and stale-tail invalidation paths now call the explicitly
+rounded `dxb_storage_page_coverage_io_from_bytes()`, while data-channel writes
+and write-queue callbacks build a `dxb_data_write_io_t` that must round-trip
+the submitted byte span to an exact full-page `dxb_page_io_t` before cache
+invalidation. This leaves future async write submission with a checked
+data-write descriptor instead of a generic byte-to-page adapter. Verification
+passed `git diff --check`, source scans proving
+`dxb_storage_page_io_from_bytes()` and the earlier removed storage adapters are
+gone from `mdbx.c`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.141` batch, `1.199`
+crud, `1.044` iterate, `0.948` get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
