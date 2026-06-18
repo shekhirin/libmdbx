@@ -6452,6 +6452,24 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.135` batch, `1.145` crud, `1.165` iterate,
 `1.045` get, and `1.082` delete.
 
+A later queued-write insertion validation cleanup made `osal_ioring_add()`
+validate the full `dxb_data_write_io_t` before deriving offsets or touching ring
+state. Queue insertion now rejects null descriptors/data, invalid queued write
+spans, oversized writes beyond `MAX_WRITE`, and byte ranges that overflow the
+data-file limit before calculating the item slot. This keeps the queue-insert
+boundary on the same `dxb_data_write_io_validate_queued()` contract already
+used by queued-write merging, walking, and execution. Verification passed
+`git diff --check`, source scans covering queue insertion validation and stale
+loose insertion checks, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.109` batch, `1.153` crud, `1.004` iterate,
+`1.054` get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -32027,11 +32027,20 @@ static inline int ior_item_make_merged_io(const ior_item_t *item, const dxb_data
 }
 
 int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *data) {
-  if (unlikely(io->bytes.offset > SIZE_MAX || io->bytes.bytes != io->pages.bytes))
+  if (unlikely(!io || !data))
     return MDBX_EINVAL;
+  int rc = dxb_data_write_io_validate_queued(io, io->bytes.bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  if (unlikely(io->bytes.offset > SIZE_MAX || io->bytes.bytes > MAX_WRITE ||
+               io->bytes.bytes > SIZE_MAX - (size_t)io->bytes.offset ||
+               io->bytes.offset + io->bytes.bytes > MAX_MAPSIZE))
+    return MDBX_EINVAL;
+
   const size_t offset = (size_t)io->bytes.offset;
   const size_t bytes = io->bytes.bytes;
-  ASSERT(bytes && data);
+  ASSERT(bytes);
   ASSERT(bytes % MDBX_MIN_PAGESIZE == 0 && bytes <= MAX_WRITE);
   ASSERT(offset % MDBX_MIN_PAGESIZE == 0 && offset + (uint64_t)bytes <= MAX_MAPSIZE);
 
