@@ -1460,6 +1460,7 @@ MDBX_INTERNAL int osal_ioring_add(osal_ioring_t *ctx, const dxb_dirty_queued_wri
 typedef struct osal_ioring_write_result {
   int err;
   unsigned wops;
+  size_t payload_bytes;
 } osal_ioring_write_result_t;
 MDBX_INTERNAL osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior,
                                                            const dxb_queued_write_io_t *io);
