@@ -6078,6 +6078,24 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.136` batch, `1.179`
 crud, `1.181` iterate, `0.904` get, and `1.069` delete.
 
+A later outbound-copy submission cleanup removed the private raw
+`dxb_storage_copy_file_range_to_fd()` and
+`dxb_storage_sendfile_to_fd_raw()` wrappers from the C source. The existing
+environment-copy helpers still accept the checked `dxb_byte_io_t` source range
+from `copy_asis()`, but now validate descriptor coverage and submit
+`copy_file_range()` or `sendfile()` directly at that storage boundary. This
+keeps the current byte-range export shape while removing another untyped
+intermediate syscall wrapper. Verification passed `git diff --check`, source
+scans proving the removed outbound wrappers are gone from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke`
+CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
+passed with forced/default ratios of `1.152` batch, `1.158` crud, `0.979`
+iterate, `1.023` get, and `1.083` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
