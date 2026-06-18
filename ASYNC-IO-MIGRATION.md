@@ -5690,6 +5690,22 @@ The paired benchmark gate passed with
 forced/default ratios of `1.109` batch, `1.160` crud, `1.018` iterate, `0.989`
 get, and `1.078` delete.
 
+A later file-size coverage cleanup removed `dxb_storage_contains_range()` and
+`dxb_storage_fetch_filesize_for_bytes_if_needed()` from the C source. Root
+coherency probes now check the derived `page_t.txnid` byte request against the
+current storage size at the probe site, and head refresh now checks the
+required used-page byte range before fetching a fresh file size directly. This
+keeps explicit byte coverage checks beside the read paths they protect.
+Verification passed `git diff --check`, source scans proving the range
+containment and fetch-if-needed helpers are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`.
+The paired benchmark gate passed with forced/default ratios of `1.085` batch,
+`1.153` crud, `0.997` iterate, `1.027` get, and `1.079` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

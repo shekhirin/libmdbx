@@ -1583,13 +1583,6 @@ static inline pgno_t dxb_storage_pgno_ceil2os_pgno(const dxb_storage_t *storage,
   return (pgno_t)dxb_storage_bytes2pgno(storage, dxb_storage_pgno_ceil2os_bytes(storage, pgno));
 }
 
-static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
-  if (unlikely(dxb_storage_byte_io_validate(io) != MDBX_SUCCESS))
-    return false;
-  const uint64_t current = dxb_storage_current_size(storage);
-  return io->offset <= current && io->bytes <= current - io->offset;
-}
-
 /* The database environment. */
 struct MDBX_env {
   /* ----------------------------------------------------- mostly static part */
@@ -1865,7 +1858,6 @@ static int dxb_storage_check_readonly(const dxb_storage_t *storage, const pathch
 static inline int dxb_storage_set_filesize(dxb_storage_t *storage, uint64_t filesize);
 static inline int dxb_storage_set_current(dxb_storage_t *storage, uint64_t filesize);
 static int dxb_storage_fetch_filesize(dxb_storage_t *storage);
-static int dxb_storage_fetch_filesize_for_bytes_if_needed(dxb_storage_t *storage, const dxb_byte_io_t *io);
 MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno_t used_pgno, const pgno_t size_pgno,
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
@@ -14915,7 +14907,11 @@ static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, co
     if (likely(err == MDBX_SUCCESS))
       err = dxb_storage_byte_subrange_io(&root_bytes, offsetof(page_t, txnid), sizeof(probe->txnid), &bytes);
   }
-  const bool storage_probe_possible = likely(err == MDBX_SUCCESS) && dxb_storage_contains_range(storage, &bytes);
+  bool storage_probe_possible = false;
+  if (likely(err == MDBX_SUCCESS)) {
+    const uint64_t current = dxb_storage_current_size(storage);
+    storage_probe_possible = bytes.offset <= current && bytes.bytes <= current - bytes.offset;
+  }
   if (likely(storage_probe_possible)) {
     err = dxb_storage_read_bytes(storage, &bytes, &probe->txnid);
     if (unlikely(err != MDBX_SUCCESS)) {
@@ -15052,8 +15048,9 @@ __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *t
   err = dxb_storage_byte_io_from_page(&required, &required_bytes);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  if (unlikely(required_bytes.bytes > dxb_storage_current_size(storage))) {
-    err = dxb_storage_fetch_filesize_for_bytes_if_needed(storage, &required_bytes);
+  const uint64_t current_size = dxb_storage_current_size(storage);
+  if (unlikely(required_bytes.offset > current_size || required_bytes.bytes > current_size - required_bytes.offset)) {
+    err = dxb_storage_fetch_filesize(storage);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
@@ -22041,13 +22038,6 @@ static int dxb_storage_fetch_filesize(dxb_storage_t *storage) {
     return rc;
 
   return dxb_storage_note_filesize(storage, filesize);
-}
-
-static int dxb_storage_fetch_filesize_for_bytes_if_needed(dxb_storage_t *storage, const dxb_byte_io_t *io) {
-  int rc = dxb_storage_byte_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_contains_range(storage, io) ? MDBX_SUCCESS : dxb_storage_fetch_filesize(storage);
 }
 
 #if MDBX_USE_COPYFILERANGE
