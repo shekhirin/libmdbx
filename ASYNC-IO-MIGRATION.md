@@ -6860,6 +6860,25 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.142` batch, `1.165` crud, `1.211` iterate,
 `0.957` get, and `1.069` delete.
 
+A later direct-read cleanup added `dxb_read_result_t` for storage reads that
+pull data or metadata directly from the data file. `dxb_storage_read_data()` and
+`dxb_storage_read_meta()` now return an explicit result containing the error
+code and completed payload byte count instead of returning only `int`. Existing
+callers still unwrap the same `.err` value, preserving the current synchronous
+control flow, while successful direct reads now have a completion payload field
+that future async read backends can report without rediscovering byte counts at
+each call site. Verification passed `git diff --check`, source scans covering
+`dxb_read_result_t`, direct storage read wrappers, and every
+`dxb_storage_read_data()` and `dxb_storage_read_meta()` call site, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.112` batch, `1.154`
+crud, `1.421` iterate, `1.155` get, and `1.080` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

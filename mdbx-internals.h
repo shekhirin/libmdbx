@@ -1348,6 +1348,11 @@ typedef struct dxb_data_write_io {
   dxb_byte_io_t bytes;
 } dxb_data_write_io_t;
 
+typedef struct dxb_read_result {
+  int err;
+  size_t payload_bytes;
+} dxb_read_result_t;
+
 typedef struct dxb_write_result {
   int err;
   unsigned wops;
