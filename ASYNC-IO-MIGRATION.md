@@ -6899,6 +6899,28 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.125` batch, `1.140` crud, `0.960` iterate,
 `1.019` get, and `1.075` delete.
 
+A later file-size I/O cleanup added `dxb_filesize_result_t` for storage
+file-size operations. `dxb_storage_fetch_filesize()`,
+`dxb_storage_set_filesize_on_disk()`, `dxb_storage_set_filesize_bytes()`, and
+`dxb_storage_set_filesize_as_current()` now return an explicit result containing
+the error code and completed file size instead of returning only `int`.
+Existing callers still unwrap the same `.err` value, preserving setup, header
+read, validation, and resize control flow, while successful filesize and
+set-length operations now have a completion field that future async file-size
+backends can report without reading storage state back from side effects.
+Verification passed `git diff --check`, source scans covering
+`dxb_filesize_result_t`, file-size helper wrappers, and every
+`dxb_storage_fetch_filesize()`, `dxb_storage_set_filesize_bytes()`, and
+`dxb_storage_set_filesize_as_current()` call site, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.134` batch, `1.155`
+crud, `0.845` iterate, `1.001` get, and `1.076` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
