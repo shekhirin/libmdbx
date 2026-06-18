@@ -7747,6 +7747,2448 @@ ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The
 paired benchmark gate passed with forced/default ratios of `1.086` batch,
 `1.155` crud, `1.262` iterate, `0.954` get, and `1.053` delete.
 
+A later write-queue lifecycle result cleanup extended `dxb_queue_result_t` with
+`submitted` and `completed` flags, matching the async-facing state used by the
+other storage lifecycle and I/O results. Write-queue create and destroy now
+report readonly no-ops as unsubmitted completed results, successful queue
+creation/destruction as submitted completed results, and queue creation
+failures as submitted but not completed. Existing open/close callers still
+unwrap only `.err`, preserving the current synchronous behavior while giving a
+future async backend explicit lifecycle completion state for dirty-write queue
+setup and teardown. Verification passed `git diff --check`, source scans
+covering `dxb_queue_result_t`, `dxb_queue_result()`,
+`dxb_queue_submitted_error()`, `dxb_queue_noop_completed()`,
+`dxb_queue_completed()`, and every `dxb_storage_create_write_queue()` and
+`dxb_storage_destroy_write_queue()` call site, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, and `cmake --build @cmake-asan-build`. A plain focused ASAN
+`migration_smoke` CTest run reproduced a LeakSanitizer runtime teardown error
+(`LeakSanitizer does not work under ptrace`) after test execution in this
+environment; rerunning the same six focused ASAN entries with
+`LSAN_OPTIONS=detect_leaks=0` passed. The paired `mdbx_migration_bench_lazy`
+gate passed with forced/default ratios of `1.101` batch, `1.139` crud,
+`0.986` iterate, `0.964` get, and `1.063` delete.
+
+A later data-file lock result cleanup extended `dxb_lock_result_t` with a
+`submitted` flag while preserving the existing `.attempted` field for callers
+and diagnostics. POSIX DXB lock validation failures now report
+attempted/submitted/completed as false, actual `fcntl()` lock attempts report
+attempted/submitted as true, and completion is true only when the lock request
+returns success. This keeps lock seize, downgrade, upgrade, destroy, and
+neighbor lock restore behavior unchanged while matching the async-facing
+submitted/completed vocabulary used by the other descriptor operations.
+Verification passed `git diff --check`, source scans covering
+`dxb_lock_result_t`, `dxb_lock_result()`, `.attempted`, `.submitted`,
+`.completed`, and every `dxb_storage_lock_op()` and
+`dxb_storage_setlk_with3retries()` call site, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.152` batch, `1.181` crud, `1.286` iterate,
+`0.973` get, and `1.068` delete.
+
+A later storage lifecycle result cleanup extended `dxb_init_result_t` and
+`dxb_deinit_result_t` with `submitted` and `completed` flags. Storage
+initialization now reports the page-cache mutex initialization as the submitted
+lifecycle operation and marks completion only on success. Storage teardown now
+reports no-lock teardown as an unsubmitted completed no-op when reset succeeds,
+reset failures as unsubmitted incomplete results, and page-cache mutex destroy
+as submitted with completion only after successful destroy. Existing callers
+still unwrap only `.err` and the existing lifecycle fields, preserving
+environment create/close behavior while giving future async-capable storage
+setup/teardown the same terminal-state vocabulary as descriptor and queue
+operations. Verification passed `git diff --check`, source scans covering
+`dxb_init_result_t`, `dxb_deinit_result_t`, `dxb_init_result()`,
+`dxb_deinit_result()`, `dxb_storage_init()`, `dxb_storage_deinit()`, lifecycle
+cache-lock fields, `.submitted`, and `.completed`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.125` batch, `1.145` crud, `0.830` iterate,
+`0.910` get, and `1.056` delete.
+
+A later storage-state result cleanup extended `dxb_state_result_t` with
+`submitted` and `completed` flags. Reset and size/current/limit/filesize
+bookkeeping remains an in-memory storage-state operation, so successful state
+updates are reported as unsubmitted completed results, while validation and
+conversion errors are unsubmitted incomplete results. Existing callers still
+unwrap only `.err`, `.reset`, and the state values, preserving resize, open,
+close, lock teardown, and checker behavior while giving future async-capable
+storage code explicit terminal state for non-I/O bookkeeping boundaries.
+Verification passed `git diff --check`, source scans covering
+`dxb_state_result_t`, `dxb_state_result()`, `dxb_storage_reset()`,
+`dxb_storage_set_filesize()`, `dxb_storage_set_current()`,
+`dxb_storage_set_size()`, `dxb_storage_set_size_with_known_filesize()`,
+`dxb_storage_set_limit_from_filesize()`, `dxb_storage_note_filesize()`,
+`.submitted`, and `.completed`, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.129`
+batch, `1.137` crud, `0.990` iterate, `0.987` get, and `1.077` delete.
+
+A later dirty write-queue operation result cleanup extended
+`dxb_queue_op_result_t` with `submitted` and `completed` flags. Storage-side
+descriptor validation failures remain unsubmitted incomplete results, accepted
+queue prepare/enqueue/walk/reset operations report submitted state, successful
+queue mutations report completed state, and queue-capacity retry signals such
+as `MDBX_RESULT_TRUE` remain submitted but incomplete. The existing
+`.prepared`, `.enqueued`, `.walked`, and `.reset` flags are preserved for
+callers that need operation-specific detail, while future async queue backends
+also get generic terminal-state metadata at the same dirty-write queue
+boundary. Verification passed `git diff --check`, source scans covering
+`dxb_queue_op_result_t`, `dxb_queue_op_result()`, the storage queue-operation
+wrappers, `osal_ioring_prepare()`, `osal_ioring_add()`,
+`osal_ioring_walk()`, `osal_ioring_reset()`, `.prepared`, `.enqueued`,
+`.walked`, `.reset`, `.submitted`, and `.completed`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.096` batch, `1.136` crud, `0.928` iterate,
+`1.006` get, and `1.079` delete.
+
+A later cache result cleanup extended `dxb_cache_result_t` with `submitted` and
+`completed` flags. Cache-only invalidation and no-op success paths now report
+unsubmitted completed results, storage materialization reports submitted and
+completed only after the underlying explicit read succeeds with the expected
+payload size, and read failures preserve whether a storage read had been
+submitted before completion failed. Existing large-page callers still unwrap
+only `.err`, `.payload_bytes`, `.npages`, `.entries`, and `.detached`,
+preserving public cursor/value behavior while giving future async cache
+materialization an explicit terminal-state boundary. Verification passed `git
+diff --check`, source scans covering `dxb_cache_result_t`,
+`dxb_cache_result()`, `dxb_cache_submitted_error()`,
+`dxb_cache_success()`, `dxb_cache_invalidated()`,
+`dxb_cache_materialized()`, cache invalidation, large-page materialization,
+`.submitted`, and `.completed`, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.113`
+batch, `1.169` crud, `0.996` iterate, `0.990` get, and `1.072` delete.
+
+A later cache-page result cleanup extended `dxb_cache_page_result_t` with
+`submitted` and `completed` flags. Reusable cache hits and cache-miss lookup
+results now report unsubmitted completed cache operations, while miss fills
+report submitted and completed only after the explicit storage read completes
+with the expected payload size. Miss-fill failures preserve whether the
+underlying read had been submitted before the page buffer is discarded.
+Existing committed-page callers still unwrap the same `pgr_t`, cache
+hit/fill/tracking metadata, and payload byte count, preserving cursor-visible
+page lifetimes while giving future async cache reads a terminal-state boundary
+above `dxb_storage_read_data()`. Verification passed `git diff --check`,
+source scans covering `dxb_cache_page_result_t`,
+`dxb_cache_page_result()`, `dxb_cache_page_submitted_error()`,
+`dxb_cache_page_miss()`, cache hit/miss/fill paths, `page_cache_read_io()`,
+`page_cache_read()`, `page_get_committed()`, `.submitted`, and `.completed`,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.073`
+batch, `1.155` crud, `1.020` iterate, `1.004` get, and `1.075` delete.
+
+A later read-submission cleanup added `dxb_read_submit_io_t` for explicit
+data-page read submissions. Page-cache miss fills and overflow materialization
+now build a checked read-submission descriptor that pairs the validated
+`dxb_data_read_io_t` span with its destination buffer before calling
+`dxb_storage_submit_read_data()`. The current backend still completes that
+submission synchronously through `pread()`, but cache fill code no longer calls
+the raw data-read helper directly. The same cleanup split direct read failures
+into pre-submit errors and submitted-but-incomplete errors: descriptor
+validation and pre-read fault injection remain unsubmitted, while `pread()` and
+read-completion hook failures now preserve submitted state. This gives a later
+async read backend a concrete submission object and terminal-state vocabulary
+at the cache-fill boundary without changing current page lifetimes or public
+read behavior. Verification passed `git diff --check`, source scans covering
+`dxb_read_submit_io_t`, `dxb_storage_make_read_submit_io()`,
+`dxb_storage_read_submit_io_validate()`,
+`dxb_storage_submit_read_data()`, `dxb_read_submitted_error()`, cache fill and
+overflow materialization read-submit call sites, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.107` batch, `1.152` crud, `1.176` iterate,
+`0.951` get, and `1.068` delete.
+
+A later metadata read-submission cleanup added `dxb_meta_read_submit_io_t` for
+startup meta-page probe reads. `dxb_read_header()` now builds checked
+submission descriptors for both the first meta-page read and the verification
+read, reusing those descriptors across existing Windows lock-violation retry
+paths. `dxb_storage_submit_read_meta()` validates the descriptor before
+delegating to the current synchronous `pread()` backend, so accepted metadata
+reads now have the same explicit submit/complete boundary shape as cache miss
+data reads without changing the double-read selection logic. Verification
+passed `git diff --check`, source scans covering `dxb_meta_read_submit_io_t`,
+`dxb_storage_make_meta_read_submit_io()`,
+`dxb_storage_meta_read_submit_io_validate()`,
+`dxb_storage_submit_read_meta()`, and every `dxb_read_header()` metadata read
+call site, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.093`
+batch, `1.151` crud, `0.973` iterate, `0.981` get, and `1.090` delete.
+
+A later direct data-read submission cleanup routed the remaining higher-level
+`dxb_storage_read_data()` users through `dxb_read_submit_io_t`.
+`meta_shadow_refresh()`, forced warmup reads, portable environment-copy reads,
+coherency root probes, and defrag fallback reads now build checked
+data-read submission descriptors before calling
+`dxb_storage_submit_read_data()`. The raw `dxb_storage_read_data()` helper is
+now only used by the synchronous backend implementation inside the submit
+wrapper, so all accepted data-page reads above the backend expose the same
+submission/completion boundary. Verification passed `git diff --check`, source
+scans covering `dxb_read_submit_io_t`,
+`dxb_storage_make_read_submit_io()`, `dxb_storage_submit_read_data()`, every
+remaining `dxb_storage_read_data()` reference, direct data-read submit call
+sites, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.102`
+batch, `1.161` crud, `0.813` iterate, `1.029` get, and `1.078` delete.
+
+A later scalar write-submission cleanup added `dxb_write_submit_io_t` for
+page-aligned data writes and `dxb_meta_write_submit_io_t` for meta-page writes.
+Defrag page moves, initial meta-triplet creation, meta commit writes and their
+best-effort undo writes, steady-meta wipe writes, full-page meta overrides, and
+the direct page-kill write path now build checked write-submission descriptors
+before calling `dxb_storage_submit_write_data()` or
+`dxb_storage_submit_write_meta()`. The raw `dxb_storage_write_data()` and
+`dxb_storage_write_meta()` helpers are now only used by the synchronous backend
+implementations inside the submit wrappers, while `dxb_storage_writev_data()`
+and the dirty-page queued write path remain separate write-vector boundaries
+for a later checkpoint. Verification passed `git diff --check`, source scans
+covering `dxb_write_submit_io_t`, `dxb_meta_write_submit_io_t`,
+`dxb_storage_make_write_submit_io()`,
+`dxb_storage_write_submit_io_validate()`,
+`dxb_storage_submit_write_data()`,
+`dxb_storage_make_meta_write_submit_io()`,
+`dxb_storage_meta_write_submit_io_validate()`,
+`dxb_storage_submit_write_meta()`, every remaining raw scalar write helper
+reference, and the remaining raw `dxb_storage_writev_data()` reference, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.136` batch, `1.157` crud, `1.284`
+iterate, `1.031` get, and `1.067` delete.
+
+A later vector write-submission cleanup added `dxb_writev_submit_io_t` for
+scatter/gather data writes. The lone direct `dxb_storage_writev_data()` caller,
+`page_kill_writev()`, now builds a checked vector submission descriptor that
+pairs the validated data span with the `iovec` list and verifies that the iovec
+payload length matches the page-aligned write span before calling
+`dxb_storage_submit_writev_data()`. The raw `dxb_storage_writev_data()` helper
+is now used only by the synchronous backend implementation inside the submit
+wrapper, leaving the dirty-page queue as the remaining separate write batching
+boundary. Verification passed `git diff --check`, source scans covering
+`dxb_writev_submit_io_t`, `dxb_storage_make_writev_submit_io()`,
+`dxb_storage_writev_submit_io_validate()`,
+`dxb_storage_submit_writev_data()`, every remaining raw data/meta/writev helper
+reference, and the `page_kill_writev()` submit call site, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.100` batch, `1.145` crud, `1.161` iterate,
+`0.950` get, and `1.068` delete.
+
+A later sync-submission cleanup added `dxb_sync_submit_io_t` for explicit
+data/meta fsync requests. Commit data syncs, meta-page syncs, writer pre-syncs,
+steady-meta wipe syncs, standalone `meta_sync()` calls, and full-page meta
+override syncs now build checked sync-submission descriptors before calling
+`dxb_storage_submit_sync_io()`. The raw `dxb_storage_sync_io()` helper is now
+used only by the synchronous backend implementation inside the submit wrapper,
+so accepted sync work exposes the same submit/complete boundary as explicit
+reads and writes while preserving the current `dxb_note_fsync_pgop()` accounting
+and error branches. Verification passed `git diff --check`, source scans
+covering `dxb_sync_submit_io_t`, `dxb_storage_make_sync_submit_io()`,
+`dxb_storage_sync_submit_io_validate()`, `dxb_storage_submit_sync_io()`, every
+remaining raw `dxb_storage_sync_io()` reference, and all sync submit call sites,
+the GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.127` batch, `1.152` crud, `1.204`
+iterate, `0.991` get, and `1.073` delete.
+
+A later filesystem-size submission cleanup added `dxb_filesize_submit_io_t` for
+explicit file-size fetch and set-size operations. Resize setup, grow/shrink,
+open-time meta initialization, checker size import, read-header startup, meta
+validation, and environment info refresh still call the same storage helpers,
+but those helpers now build checked fetch/set submission descriptors before
+calling `dxb_storage_submit_fetch_filesize()` or
+`dxb_storage_submit_set_filesize()`. The raw `osal_filesize()` and
+`osal_fsetsize()` calls are now behind backend-only helpers
+(`dxb_storage_fetch_filesize_from_disk()` and
+`dxb_storage_set_filesize_on_disk()`), while completed fetches still update
+storage state and completed shrinks still invalidate stale cached page ranges.
+Verification passed `git diff --check`, source scans covering
+`dxb_filesize_submit_io_t`,
+`dxb_storage_make_filesize_fetch_submit_io()`,
+`dxb_storage_make_filesize_set_submit_io()`,
+`dxb_storage_filesize_fetch_submit_io_validate()`,
+`dxb_storage_filesize_set_submit_io_validate()`,
+`dxb_storage_submit_fetch_filesize()`,
+`dxb_storage_submit_set_filesize()`, every remaining raw filesize backend
+reference, and all high-level filesize/resize call sites, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.112` batch, `1.159` crud, `1.197` iterate,
+`1.180` get, and `1.067` delete.
+
+A later range-hint submission cleanup added checked submission descriptors for
+data-file discard, advisory, and readahead toggle operations. Resize/open/shrink
+DONTNEED discard paths now build `dxb_discard_submit_io_t` requests before
+calling `dxb_storage_submit_discard_io()`, and readahead enable/disable plus
+normal/willneed/random advisory paths now build `dxb_readahead_submit_io_t` or
+`dxb_advice_submit_io_t` before calling the submit wrappers. The raw
+`dxb_storage_discard_io()`, `dxb_storage_advise_io()`, and
+`dxb_storage_set_readahead()` helpers are now used only by the synchronous
+backend implementations inside those wrappers, so accepted range-hint work has
+the same validated submit/complete boundary as explicit reads, writes, syncs,
+and resize operations. Verification passed `git diff --check`, source scans
+covering `dxb_discard_submit_io_t`, `dxb_advice_submit_io_t`,
+`dxb_readahead_submit_io_t`, their make/validate helpers, every submit wrapper,
+and all remaining raw range-hint helper references, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.108` batch, `1.146` crud, `1.017` iterate,
+`1.001` get, and `1.055` delete.
+
+A later copy/export submission cleanup added `dxb_data_copy_submit_io_t` for
+same-file data-page copies and `dxb_data_export_submit_io_t` for fd-backed
+environment-copy fast paths. Defrag tail copies now build checked same-file
+copy submit descriptors before calling `dxb_storage_submit_copy_data()`, while
+`copy_file_range()` and `sendfile()` environment-copy fast paths build checked
+export submit descriptors carrying the destination fd before calling
+`dxb_storage_submit_copy_data_to_fd()` or
+`dxb_storage_submit_sendfile_data_to_fd()`. The raw copy helpers are now used
+only by the synchronous backend implementations inside those submit wrappers,
+so accepted page-copy/export work has the same submit/complete boundary as
+reads, writes, syncs, resize, and range hints. Verification passed `git diff
+--check`, source scans covering `dxb_data_copy_submit_io_t`,
+`dxb_data_export_submit_io_t`, their make/validate helpers, every copy submit
+wrapper, all remaining raw copy helper references, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.122` batch, `1.142` crud, `0.965` iterate,
+`1.015` get, and `1.085` delete.
+
+A later filesystem-probe submission cleanup added checked submit descriptors
+for data-file `fstat()` probes, environment sysinfo fetches, in-core
+filesystem checks, and readonly-filesystem checks used during lock-file open
+fallbacks. Close-time deleted-file checks, environment-info sysinfo refresh,
+open-time mode inheritance, in-core detection after setup, POSIX fstat
+validation, SysV lock initialization, and readonly lock-file fallback probing
+now build `dxb_stat_submit_io_t`, `dxb_sysinfo_submit_io_t`,
+`dxb_incore_submit_io_t`, or `dxb_readonly_submit_io_t` before calling the
+matching submit wrapper. The raw probe helpers remain as synchronous backend
+implementations inside those wrappers, preserving current public behavior while
+giving future async-capable storage code an explicit submit/complete boundary
+for non-page filesystem probes. Verification passed `git diff --check`, source
+scans covering the new submit descriptor types, make/validate helpers, submit
+wrappers, and remaining raw probe helper references, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.139` batch, `1.155` crud, `1.249` iterate,
+`0.971` get, and `1.065` delete.
+
+A later descriptor open/park submission cleanup added `dxb_open_submit_io_t`
+and `dxb_park_submit_io_t` for DXB descriptor lifecycle operations. Read/lazy
+data-file opens, dsync opens, Windows overlapped opens, and descriptor parking
+now build checked submit descriptors before calling
+`dxb_storage_submit_open_data()`, `dxb_storage_submit_open_dsync()`,
+`dxb_storage_submit_open_overlapped()`, or the matching park submit wrapper.
+The raw open and park helpers remain as synchronous backend implementations
+inside those wrappers, so accepted descriptor lifecycle work exposes the same
+submit/complete boundary as reads, writes, syncs, resize, range hints, copies,
+and filesystem probes while preserving existing descriptor state updates and
+parking behavior. Verification passed `git diff --check`, source scans
+covering `dxb_open_submit_io_t`, `dxb_park_submit_io_t`, their make/validate
+helpers, every open/park submit wrapper, and remaining raw open/park helper
+references, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.084`
+batch, `1.155` crud, `0.921` iterate, `1.009` get, and `1.072` delete.
+
+A later descriptor close submission cleanup added `dxb_close_submit_io_t` for
+DXB descriptor teardown. Normal environment close now builds a checked close
+submit descriptor before calling `dxb_storage_submit_close()`, while the POSIX
+lock-destroy path submits a close-without-reset operation so in-process lock
+restoration keeps the same ordering it had before. The raw descriptor close
+helper is now used only by the synchronous backend implementation inside the
+submit wrapper, which gives data/dsync descriptor teardown the same
+submit/complete boundary as descriptor open/park, reads, writes, syncs, resize,
+range hints, copies, and filesystem probes. Verification passed `git diff
+--check`, source scans covering `dxb_close_submit_io_t`, its make/validate
+helper, the close submit wrapper, and remaining raw close helper references,
+the GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.120` batch, `1.144` crud, `0.889`
+iterate, `0.937` get, and `1.075` delete.
+
+A later dirty write queue submission cleanup added checked submit descriptors
+for write-queue create/destroy/reset, dirty-queue prepare, queued dirty-page
+adds, dirty-queue walking, and queued write execution. Environment setup and
+close now submit queue lifecycle work, while `iov_init()`, `iov_page()`,
+`iov_write()`, and `iov_complete()` build checked queue submit descriptors
+before calling the matching submit wrapper. The raw queue helpers and
+`osal_ioring_*` calls remain as synchronous backend implementations inside
+those wrappers, so dirty-page write batching now exposes the same
+submit/complete boundary as scalar/vector writes, descriptor lifecycle,
+syncs, resize, range hints, copies, and filesystem probes. Verification passed
+`git diff --check`, source scans covering the new queue submit descriptor
+types, their make/validate helpers, every queue submit wrapper, and remaining
+raw queue helper references, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.623`
+batch, `1.179` crud, `1.013` iterate, `0.995` get, and `1.084` delete.
+
+A later storage lifecycle submission cleanup added checked submit descriptors
+for storage initialization, storage reset, and storage deinitialization.
+Environment creation, creation bailout, environment close teardown, preopen
+snapinfo temporary environment setup, and POSIX lock-destroy cleanup now build
+`dxb_init_submit_io_t`, `dxb_reset_submit_io_t`, or
+`dxb_deinit_submit_io_t` before calling the matching submit wrapper. The raw
+init/reset/deinit helpers remain as synchronous backend implementations inside
+those wrappers and inside wrapper-owned close/deinit cleanup, preserving the
+same page-cache release, descriptor sentinel reset, and cache-lock teardown
+behavior while exposing accepted lifecycle work through an explicit
+submit/complete boundary. Verification passed `git diff --check`, source
+scans covering the lifecycle submit descriptor types, their make/validate
+helpers, every lifecycle submit wrapper, and remaining raw lifecycle helper
+references, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.203`
+batch, `1.187` crud, `1.231` iterate, `1.059` get, and `1.050` delete.
+
+A later DXB lock submission cleanup added `dxb_lock_submit_io_t` for POSIX
+data-file `fcntl()` lock requests. Lock seize, downgrade, upgrade, destroy,
+and neighbor lock restore now build checked submit descriptors before calling
+`dxb_storage_submit_lock_op()` or the three-retry submit wrapper. The raw lock
+helpers remain as synchronous backend implementations inside those wrappers, so
+accepted data-file lock work now exposes the same submit/complete boundary as
+reads, writes, syncs, resize, range hints, copies, filesystem probes,
+descriptor lifecycle, dirty write queues, and storage lifecycle operations.
+Verification passed `git diff --check`, source scans covering
+`dxb_lock_submit_io_t`, its make/validate helpers, every lock submit wrapper,
+and remaining raw lock helper references, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.103`
+batch, `1.131` crud, `0.954` iterate, `0.925` get, and `1.063` delete.
+
+A later resize/setup submission cleanup added checked submit descriptors for
+open-time storage setup size changes and live data-file resize requests.
+`dxb_setup()` now builds `dxb_setup_size_submit_io_t` before submitting storage
+current/limit initialization, and `dxb_resize()` builds
+`dxb_resize_size_submit_io_t` before submitting resize work under the remap
+lock. The raw setup/resize helpers remain synchronous backend implementations
+inside those wrappers, preserving file-size fetch/set behavior, readonly resize
+checks, shrink permission handling, and storage current/limit bookkeeping while
+exposing geometry changes through the same submit/complete boundary as reads,
+writes, syncs, range hints, copies, filesystem probes, descriptor lifecycle,
+dirty write queues, storage lifecycle, and DXB locks. Verification passed `git
+diff --check`, source scans covering both resize submit descriptor types, their
+make/validate helpers, both submit wrappers, and remaining raw setup/resize
+helper references, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.109`
+batch, `1.145` crud, `0.850` iterate, `1.053` get, and `1.076` delete.
+
+A later page-cache read submission cleanup added `dxb_cache_page_submit_io_t`
+for the one-page committed-page cache path. `page_cache_read_io()` now builds
+checked submit descriptors before cache lookup and before cache fill, then calls
+`dxb_storage_submit_lookup_cached_page()` or
+`dxb_storage_submit_read_cached_page()` instead of entering the raw helpers
+directly. The raw lookup/fill helpers remain synchronous backend
+implementations inside those wrappers, preserving reusable snapshot-cache hits,
+tracked private entries, cache pruning, and read completion checks while making
+the committed-page fetch path expose an explicit submit/complete boundary above
+the lower-level data-read submit operation. Verification passed `git diff
+--check`, source scans covering `dxb_cache_page_submit_io_t`, its
+make/validate helpers, both cache-page submit wrappers, and remaining raw
+cache lookup/fill helper references, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.108`
+batch, `1.142` crud, `1.030` iterate, `1.025` get, and `1.072` delete.
+
+A later overflow materialization submission cleanup added
+`dxb_cache_materialize_submit_io_t` for the cache path that expands a pinned
+single-page overflow header into its full multi-page extent. `page_cache_read_large()`
+now builds a checked materialization submit descriptor from the current
+`page_ref_t` and overflow page count before calling
+`dxb_storage_submit_materialize_cached_large_page()`. The raw materialization
+helper remains a synchronous backend implementation inside that wrapper and now
+consumes the already-checked span, preserving read completion checks, in-place
+tracked entry expansion, pinned-entry detach behavior, and cursor reference
+replacement while exposing overflow materialization through the same
+submit/complete boundary as one-page cache lookup/fill and lower-level data
+reads. Verification passed `git diff --check`, source scans covering
+`dxb_cache_materialize_submit_io_t`, its make/validate helpers, the
+materialization submit wrapper, and remaining raw materialization helper
+references, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.112`
+batch, `1.172` crud, `0.838` iterate, `1.033` get, and `1.100` delete.
+
+A later cache invalidation submission cleanup added
+`dxb_cache_invalidate_submit_io_t` for explicit page-cache invalidation ranges.
+Successful discard/remove paths, scalar data writes, vector data writes,
+truncate-driven stale-tail invalidation, same-file copy destination
+invalidation, and completed dirty-queue writes now build checked invalidation
+submit descriptors before calling the storage invalidation wrapper. The raw
+cache invalidation helper remains a synchronous backend implementation inside
+that wrapper, preserving page-aligned range validation, pinned-entry retention,
+clean-entry eviction, and optional file advice while exposing cache mutation
+through the same submit/complete boundary as cache lookup/fill, overflow
+materialization, data writes, resize, discard, and copy operations.
+Verification passed `git diff --check`, source scans covering
+`dxb_cache_invalidate_submit_io_t`, its make/validate helpers, the invalidation
+submit wrappers, and remaining raw invalidation helper references, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.121` batch, `1.165` crud, `1.129` iterate,
+`1.232` get, and `1.083` delete.
+
+A later page-cache ref lifecycle submission cleanup added
+`dxb_cache_ref_submit_io_t` for cache-backed `page_ref_t` retain/release
+operations. `cursor_ref_retain()` and `cursor_ref_release()` now build checked
+ref submit descriptors before calling the storage retain/release wrappers, while
+the raw pin/unpin helpers remain synchronous backend implementations inside
+those wrappers. This keeps public cursor/value lifetime management on the same
+submit/complete reporting model as cache lookup/fill, overflow
+materialization, and invalidation, without changing the existing large-page
+case where a logical overflow ref can cover more pages than the currently
+pinned single-page cache header before materialization. Verification passed
+`git diff --check`, source scans covering `dxb_cache_ref_submit_io_t`, its
+make/validate helper, retain/release submit wrappers, and remaining raw
+retain/release helper references, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `0.999`
+batch, `1.002` crud, `1.042` iterate, `0.997` get, and `1.010` delete.
+
+A later page-cache release-all submission cleanup added
+`dxb_cache_release_all_submit_io_t` for cache-wide teardown during storage
+reset/deinit. `dxb_storage_reset()` now builds a checked release-all submit
+descriptor before clearing tracked explicit page-cache entries, and the raw
+release helper reports released bytes, pages, and entries through
+`dxb_cache_result_t` while remaining the synchronous backend implementation
+inside the submit wrapper. This keeps storage lifecycle teardown on the same
+submit/complete reporting model as page-cache lookup/fill, overflow
+materialization, invalidation, and ref retain/release, without changing the
+existing assertion that active environments must not reset with live pinned
+cache entries. Verification passed `git diff --check`, source scans covering
+`dxb_cache_release_all_submit_io_t`, its make/validate helper, the release-all
+submit wrapper, and the remaining raw `page_cache_release_all()` reference, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.084` batch, `1.163` crud, `1.152`
+iterate, `0.943` get, and `1.083` delete.
+
+A later page-cache detach submission cleanup added `dxb_cache_detach_submit_io_t`
+for the ownership split that happens when a single-page cached overflow header is
+materialized into a private multi-page buffer while other refs still pin the old
+entry. The shared-entry branch now constructs a checked detach descriptor while
+holding the page-cache lock, then submits the detach after unlocking so the old
+cache ref can be released through the normal ref lifecycle path. The raw detach
+helper remains the synchronous backend implementation and consumes only the
+descriptor, preserving the existing rule that validation or allocation failure
+frees the newly read large-page buffer. Verification passed `git diff --check`,
+source scans covering `dxb_cache_detach_submit_io_t`, its make/validate helpers,
+the detach submit wrapper, and the remaining raw detach helper reference, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.092` batch, `1.139` crud, `1.013`
+iterate, `1.030` get, and `1.086` delete.
+
+A later page-cache replace submission cleanup added
+`dxb_cache_replace_submit_io_t` for the in-place overflow materialization path.
+When the cached overflow header has a single pin, the materializer now builds a
+checked replacement descriptor and submits the page-buffer/range swap through
+`dxb_storage_submit_replace_materialized_large_page()` instead of mutating
+`entry->page`, `entry->io`, and cache byte/page accounting at the call site. The
+tracked branch still snapshots the descriptor while holding the page-cache lock;
+the private branch uses the same descriptor without cache accounting. The raw
+replacement helper remains the synchronous backend implementation and preserves
+the existing ownership rule that validation failure frees the newly read
+large-page buffer. Verification passed `git diff --check`, source scans covering
+`dxb_cache_replace_submit_io_t`, its make/validate helpers, the replace submit
+wrapper, and the remaining raw replacement helper references, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.104` batch, `1.154` crud, `0.855` iterate,
+`1.059` get, and `1.080` delete.
+
+A later WRITEMAP policy coverage cleanup extended `migration-smoke.c` with a
+plain `MDBX_WRITEMAP` open case in addition to the existing
+`MDBX_WRITEMAP | MDBX_UTTERLY_NOSYNC` rejection case and the active/inactive
+`mdbx_env_set_flags()` rejection checks. This makes the public migration smoke
+test prove that direct writable data-mapping requests fail with
+`MDBX_INCOMPATIBLE` independently of the legacy lazy-durability normalization
+path. Verification passed `git diff --check`, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs with logs confirming both `writemap-durable`
+and `writemap-utterly` are skipped after `MDBX_INCOMPATIBLE`, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.113`
+batch, `1.143` crud, `1.241` iterate, `0.985` get, and `1.080` delete.
+
+A later page-cache insert submission cleanup added
+`dxb_cache_insert_submit_io_t` for registering freshly read tracked pages in
+the explicit page cache. `dxb_storage_read_cached_page()` now constructs and
+submits a checked insert descriptor after the explicit page read completes,
+instead of linking the new entry into `storage->page_cache` directly at the
+fill call site. The descriptor validates the tracked read request, new entry
+ownership, page span, snapshot, pin count, and page-size metadata before the raw
+insert helper performs the synchronous cache-list/accounting mutation. This
+keeps read-fill cache publication on the same submit/complete model as lookup,
+fill I/O, invalidation, ref retain/release, release-all, and overflow
+materialization. Verification passed `git diff --check`, source scans covering
+`dxb_cache_insert_submit_io_t`, its make/validate helper, the insert submit
+wrapper, and the remaining raw cache-list assignments, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.067` batch, `1.158` crud, `0.972` iterate,
+`1.032` get, and `1.069` delete.
+
+A later public cache-entry read submission cleanup added
+`dxb_cache_entry_read_submit_io_t` for materializing `MDBX_cache_entry_t` hits
+through the explicit page cache. `cache_materialize_entry()` now builds a
+checked submit descriptor that carries the validated page-cache read request,
+public value byte span, and page offset, then submits it through
+`cache_submit_entry_read()` before validating the materialized pointer and
+retaining any required transaction pin. This keeps the fast public cache
+fallback on the same checked submit boundary style as page-cache lookup/fill
+without changing cache-hit storage-submission semantics or public `MDBX_val`
+lifetime behavior. Verification passed `git diff --check`, source scans
+covering `dxb_cache_entry_read_submit_io_t`, its make/validate helpers,
+`cache_submit_entry_read()`, and the updated `cache_materialize_entry()` call
+path, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.120`
+batch, `1.150` crud, `1.025` iterate, `0.988` get, and `1.082` delete.
+
+A later public cache-entry large-read submission cleanup added
+`dxb_cache_entry_large_submit_io_t` for the overflow expansion step inside
+`cache_materialize_entry()`. After the initial public cache-entry page read
+succeeds, large-page results now build a checked descriptor that revalidates the
+cache-entry read span, cache-backed page ref, overflow page count, page txnid,
+and value-byte containment inside the overflow extent before submitting through
+`cache_submit_entry_large_read()`. The raw overflow materialization still uses
+the existing page-cache large-read path, but the public cache fallback no longer
+calls it directly from the materialization body. Verification passed `git diff
+--check`, source scans covering `dxb_cache_entry_large_submit_io_t`, its
+make/validate helpers, `cache_submit_entry_large_read()`, and the updated
+`cache_materialize_entry()` call path, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.163`
+batch, `1.161` crud, `1.025` iterate, `0.998` get, and `1.084` delete.
+
+A later committed-page read submission cleanup added
+`dxb_committed_page_submit_io_t` for the ordinary `page_get_unchecked()` fall
+through into committed storage/cache. `page_get_committed()` now builds a
+checked descriptor that validates the one-page `dxb_page_io_t` request and the
+private-tracking flag before submitting through `page_submit_committed_read()`.
+The lower page-cache layer still performs the same lookup/fill behavior, but
+normal committed reads now cross an explicit transaction-level submit boundary
+instead of passing a raw page request directly into `page_cache_read()`.
+Verification passed `git diff --check`, source scans covering
+`dxb_committed_page_submit_io_t`, its make/validate helpers,
+`page_submit_committed_read()`, and the updated `page_get_committed()` path,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.124`
+batch, `1.163` crud, `0.816` iterate, `1.011` get, and `1.082` delete.
+
+A later large-page read submission cleanup added
+`dxb_large_page_read_submit_io_t` for overflow-span materialization reached
+from `page_get_inline()`. Large page reads now build a checked descriptor that
+validates the full page span, the returned `pgr_t` ref, whether the page is
+cache-backed, and whether the cache entry still needs expansion before
+submitting through `page_submit_large_read()`. Dirty transaction-owned large
+pages remain a no-op at this boundary, while cache-backed overflow headers use
+the existing synchronous `page_cache_read_large()` materializer behind the
+submit wrapper. Verification passed `git diff --check`, source scans covering
+`dxb_large_page_read_submit_io_t`, its make/validate helpers,
+`page_submit_large_read()`, `page_read_large()`, and the remaining direct
+`page_cache_read_large()` callers, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.102`
+batch, `1.165` crud, `0.988` iterate, `0.980` get, and `1.092` delete.
+
+A later unchecked page-get submission cleanup added
+`dxb_page_get_submit_io_t` for the ordinary `page_get_unchecked_ex()` path.
+That helper now builds a checked descriptor carrying the one-page
+`dxb_page_io_t`, caller front txnid, and private-tracking flag before
+submitting through `page_submit_get_unchecked()`. The submit path preserves the
+same dirty/spilled transaction-page lookup before committed storage/cache
+fallback, but request construction and fall-through into `page_get_committed()`
+now cross an explicit page-get submit boundary instead of being open-coded in
+the hot helper body. Verification passed `git diff --check`, source scans
+covering `dxb_page_get_submit_io_t`, `page_make_get_submit_io()`,
+`page_get_submit_io_validate()`, `page_submit_get_unchecked()`, and the updated
+`page_get_unchecked_ex()` call path, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.073`
+batch, `1.145` crud, `1.053` iterate, `1.100` get, and `1.060` delete.
+
+A later cursor page-get submission cleanup added
+`dxb_cursor_page_get_submit_io_t` for the `page_get_inline()` surface used by
+`page_get_any()`, `page_get_three()`, and `page_get_large()`. `page_get_inline()`
+now builds a checked descriptor that carries the underlying page-get request,
+the cursor, and the expected page-type mask, then submits through
+`page_submit_cursor_get()`. The submit path still performs the same page-read,
+header validation, full checking when requested, overflow materialization, and
+transaction-error handling, but cursor-facing page reads now cross an explicit
+submit boundary before the synchronous cache/storage backend is reached.
+Verification passed `git diff --check`, source scans covering
+`dxb_cursor_page_get_submit_io_t`, `page_make_cursor_get_submit_io()`,
+`page_cursor_get_submit_io_validate()`, `page_submit_cursor_get()`, and the
+updated `page_get_inline()` wrappers, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.118`
+batch, `1.167` crud, `1.018` iterate, `1.011` get, and `1.076` delete.
+
+A later bigdata read submission cleanup added `dxb_bigdata_read_submit_io_t`
+for `node_read_bigdata()`. Overflow value reads now build a checked descriptor
+that carries the cursor, source page, source txnid, node pointer, large-page
+number, requested value bytes, and expected overflow span before submitting
+through `node_submit_bigdata_read()`. The submit path still calls the
+cursor-facing large-page read boundary, validates the overflow extent, retains
+the returned page in `cursor.value_ref`, and exposes the payload through the
+caller-provided `MDBX_val`, but the value-read surface no longer calls
+`page_get_large()` directly from the public node-read body. Verification passed
+`git diff --check`, source scans covering `dxb_bigdata_read_submit_io_t`,
+`node_make_bigdata_read_submit_io()`,
+`node_bigdata_read_submit_io_validate()`, `node_submit_bigdata_read()`, and
+the updated `node_read_bigdata()` wrapper, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.117` batch, `1.157` crud, `1.005` iterate,
+`1.003` get, and `1.076` delete.
+
+A later generic node-value read submission cleanup added
+`dxb_node_read_submit_io_t` for `node_read()`. The public node-value helper now
+builds a checked descriptor with the cursor, source page, node pointer, node
+payload pointer, payload size, node flags, and inline-vs-overflow decision
+before submitting through `node_submit_read()`. Inline values complete as a
+no-I/O submit result that exposes the existing node payload, while overflow
+values route through the earlier `node_read_bigdata()` /
+`node_submit_bigdata_read()` boundary. This keeps the current synchronous API
+and `MDBX_val` lifetime behavior, but the generic node-read surface no longer
+contains the branch that directly decides between inline payload exposure and
+overflow page I/O. Verification passed `git diff --check`, source scans
+covering `dxb_node_read_submit_io_t`, `node_make_read_submit_io()`,
+`node_read_submit_io_validate()`, `node_submit_read()`, and the updated
+`node_read()` wrapper, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.094`
+batch, `1.159` crud, `1.025` iterate, `1.011` get, and `1.072` delete.
+
+A later node-key exposure cleanup added `dxb_node_key_submit_io_t` for
+`get_key()`. Key materialization now builds a checked descriptor carrying the
+source node, key payload pointer, and key length before submitting through
+`node_submit_key()`. This is intentionally a no-I/O submit boundary because the
+source page has already been found and pinned by the cursor/page-get path, but
+it separates public `MDBX_val` key exposure from direct node payload pointer
+construction. `get_key_optional()` keeps its no-error public-helper shape and
+continues to hand out the same key lifetime as before. Verification passed
+`git diff --check`, source scans covering `dxb_node_key_submit_io_t`,
+`node_make_key_submit_io()`, `node_key_submit_io_validate()`,
+`node_submit_key()`, and the updated `get_key()` wrapper, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.125` batch, `1.151` crud, `1.001` iterate,
+`0.986` get, and `1.076` delete.
+
+A later fixed-duplicate key/value exposure cleanup added
+`dxb_dupfix_key_submit_io_t` for `page_dupfix_key()`. Fixed-size duplicate
+payload exposure now builds a checked descriptor carrying the source page,
+duplicate index, requested fixed payload size, actual payload size, and payload
+pointer before submitting through `page_submit_dupfix_key()`. This keeps
+`page_dupfix_ptr()` available for internal write-side pointer arithmetic and
+page validation, while the `MDBX_val`-returning helper used by cursor and split
+paths now crosses the same explicit no-I/O submit boundary as ordinary node-key
+exposure. Verification passed `git diff --check`, source scans covering
+`dxb_dupfix_key_submit_io_t`, `page_make_dupfix_key_submit_io()`,
+`page_dupfix_key_submit_io_validate()`, `page_submit_dupfix_key()`, and the
+updated `page_dupfix_key()` wrapper, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.136`
+batch, `1.142` crud, `0.889` iterate, `0.818` get, and `1.076` delete; the
+read-heavy ratios remain above the reduced-run floors but should be watched in
+larger benchmark runs because this helper is in hot cursor paths.
+
+A later cursor page-get ownership cleanup added
+`dxb_page_get_with_ref_submit_io_t` for `page_get_with_ref()`. The helper now
+builds a checked descriptor carrying the cursor, requested page number, front
+txnid, output page slot, optional retained-reference slot, and ref-retention
+policy before submitting through `page_submit_get_with_ref()`. The submit path
+still calls the checked cursor page-read boundary, writes the returned page to
+the caller-provided slot, transfers the page-cache reference when requested,
+and releases it otherwise, but reference ownership now crosses an explicit
+submit boundary instead of being embedded directly in the convenience wrapper.
+Verification passed `git diff --check`, source scans covering
+`dxb_page_get_with_ref_submit_io_t`, `page_make_get_with_ref_submit_io()`,
+`page_get_with_ref_submit_io_validate()`, `page_submit_get_with_ref()`, and the
+updated `page_get_with_ref()` wrapper, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.127`
+batch, `1.148` crud, `0.957` iterate, `1.002` get, and `1.063` delete.
+
+A later cursor-stack ownership cleanup added
+`dxb_cursor_stack_set_submit_io_t` for `cursor_stack_set()`. Cursor stack page
+assignment now builds a checked descriptor carrying the cursor, stack slot,
+target page pointer, and normalized page reference before submitting through
+`cursor_submit_stack_set()`. The submit path preserves the old behavior:
+retain the incoming reference, release any value reference backed by the old
+cursor position, update the page and page-reference slot, then release the old
+slot reference. This makes the cursor-stack pin/unpin transition explicit while
+keeping the existing void helper API used by tree search, split, merge, and
+subcursor code. Verification passed `git diff --check`, source scans covering
+`dxb_cursor_stack_set_submit_io_t`, `cursor_make_stack_set_submit_io()`,
+`cursor_stack_set_submit_io_validate()`, `cursor_submit_stack_set()`, and the
+updated `cursor_stack_set()` wrapper, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.098`
+batch, `1.147` crud, `1.071` iterate, `0.964` get, and `1.079` delete.
+
+A later cursor-value ownership cleanup added
+`dxb_cursor_value_set_submit_io_t` for `cursor_value_set()`. The helper now
+builds a checked descriptor carrying the cursor and successful page-get result
+before submitting through `cursor_submit_value_set()`. The submit path preserves
+the old value lifetime behavior by retaining the incoming page reference,
+assigning it to `cursor.value_ref`, and releasing the previous value reference,
+but the ownership handoff for non-stack returned values is now explicit and
+matches the cursor-stack page pin/unpin boundary. Verification passed
+`git diff --check`, source scans covering `dxb_cursor_value_set_submit_io_t`,
+`cursor_make_value_set_submit_io()`, `cursor_value_set_submit_io_validate()`,
+`cursor_submit_value_set()`, and the updated `cursor_value_set()` wrapper, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.082` batch, `1.141` crud, `0.912`
+iterate, `1.036` get, and `1.076` delete.
+
+A later cursor-stack release cleanup added
+`dxb_cursor_stack_release_submit_io_t` for `cursor_stack_release_slot()`.
+Cursor stack unpinning now builds a checked descriptor carrying the cursor,
+stack slot, current page pointer, and current page reference before submitting
+through `cursor_submit_stack_release()`. The submit path validates that the
+captured slot still matches the cursor state, clears the page and page-reference
+slot, then releases the captured reference. This pairs the explicit
+`cursor_stack_set()` pin boundary with an explicit release boundary while
+keeping the existing void helper API used by stack truncation, reset, and cursor
+cleanup paths. Verification passed `git diff --check`, source scans covering
+`dxb_cursor_stack_release_submit_io_t`,
+`cursor_make_stack_release_submit_io()`,
+`cursor_stack_release_submit_io_validate()`,
+`cursor_submit_stack_release()`, and the updated
+`cursor_stack_release_slot()` wrapper, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.094`
+batch, `1.170` crud, `0.854` iterate, `1.014` get, and `1.075` delete.
+
+A later cursor-value release cleanup added
+`dxb_cursor_value_release_submit_io_t` for `cursor_value_release()`. Value
+reference unpinning now builds a checked descriptor carrying the cursor, the
+current value page pointer, and the current value page reference before
+submitting through `cursor_submit_value_release()`. The submit path validates
+that the captured value reference still matches the cursor, clears
+`cursor.value_ref`, then releases the captured reference. This pairs the
+explicit `cursor_value_set()` value pin boundary with an explicit release
+boundary while keeping the existing void helper API used by stack reset, cursor
+copy, GC cursor movement, and cleanup paths. Verification passed
+`git diff --check`, source scans covering
+`dxb_cursor_value_release_submit_io_t`,
+`cursor_make_value_release_submit_io()`,
+`cursor_value_release_submit_io_validate()`,
+`cursor_submit_value_release()`, and the updated `cursor_value_release()`
+wrapper, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.121`
+batch, `1.153` crud, `0.811` iterate, `0.994` get, and `1.070` delete.
+
+A later transient page-result release cleanup added
+`dxb_pgr_release_submit_io_t` for `pgr_release()`. Page-get result release now
+builds a checked descriptor carrying the optional cursor, the `pgr_t` object,
+the captured page pointer, result error code, and captured page reference before
+submitting through `pgr_submit_release()`. The submit path validates the
+captured `pgr_t` still matches the current object, then releases the page
+reference and clears only `pgr.page`, preserving the old `pgr.err` behavior.
+The validator intentionally does not require `pgr.page == pgr.ref.page`,
+because some allocation error paths can null the public page pointer while
+leaving a reference-shaped cleanup token. This moves the transient page-read
+release path behind the same submit/validate pattern used for cursor stack and
+value ownership while preserving null-cursor callers. Verification passed
+`git diff --check`, source scans covering `dxb_pgr_release_submit_io_t`,
+`pgr_make_release_submit_io()`, `pgr_release_submit_io_validate()`,
+`pgr_submit_release()`, and the updated `pgr_release()` wrapper, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.129` batch, `1.150` crud, `1.004` iterate,
+`0.992` get, and `1.070` delete.
+
+A later low-level page-reference release cleanup added
+`dxb_cursor_ref_release_submit_io_t` for `cursor_ref_release()`. Page-reference
+release now builds a checked descriptor carrying the optional cursor, the
+caller-owned `page_ref_t` pointer, and the captured reference value before
+submitting through `cursor_submit_ref_release()`. The submit path validates
+that the caller's reference still matches the captured value, routes
+cache-backed references through the existing checked
+`dxb_storage_submit_release_cached_ref()` path, rejects impossible non-cache
+`PAGE_REF_CACHE` markers, and finally clears the caller's reference. This keeps
+the cache-pin release backend unchanged, but moves the high-level
+copy/validate/mutate boundary used by stack slots, value refs, transient
+`pgr_t` results, txn-retained refs, and local sibling refs behind an explicit
+submit descriptor. Verification passed `git diff --check`, source scans
+covering `dxb_cursor_ref_release_submit_io_t`,
+`cursor_make_ref_release_submit_io()`,
+`cursor_ref_release_submit_io_validate()`, `cursor_submit_ref_release()`, and
+the updated `cursor_ref_release()` wrapper, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.073` batch, `1.164` crud, `1.004` iterate,
+`0.985` get, and `1.078` delete.
+
+A later low-level page-reference retain cleanup added
+`dxb_cursor_ref_retain_submit_io_t` for `cursor_ref_retain()`. Page-reference
+retention now builds a checked descriptor carrying the optional cursor and the
+normalized reference value before submitting through `cursor_submit_ref_retain()`.
+The submit path validates null-page normalization, cache-backed reference
+metadata, and non-cache `PAGE_REF_CACHE` rejection before routing cache-backed
+refs through the existing checked `dxb_storage_submit_retain_cached_ref()` path.
+This pairs the high-level release descriptor with an explicit retain boundary
+while preserving the existing `page_ref_t cursor_ref_retain(...)` helper API
+used by cursor stack/value copies, txn-retained refs, and local balancing refs.
+Verification passed `git diff --check`, source scans covering
+`dxb_cursor_ref_retain_submit_io_t`,
+`cursor_make_ref_retain_submit_io()`,
+`cursor_ref_retain_submit_io_validate()`, `cursor_submit_ref_retain()`, and
+the updated `cursor_ref_retain()` wrapper, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.136`
+batch, `1.148` crud, `0.992` iterate, `1.036` get, and `1.085` delete.
+
+A later cursor-stack push cleanup added `dxb_cursor_push_pgr_submit_io_t` for
+`cursor_push_pgr()`. Cursor stack growth now builds a checked descriptor
+carrying the cursor, successful page-get result, previous stack top, and target
+key index before submitting through `cursor_submit_push_pgr()`. The submit path
+validates that the cursor top has not changed since descriptor creation, keeps
+the existing overflow behavior that marks the cursor poor and sets
+`MDBX_TXN_ERROR`, then increments `cursor.top`, routes the page/reference
+assignment through `cursor_stack_set_pgr()`, and stores the key index. This
+makes the page-read-result-to-cursor-stack transition explicit while preserving
+the current `cursor_push_pgr()` and consume helper APIs used by tree search,
+root setup, page splits, and balancing. Verification passed `git diff --check`,
+source scans covering `dxb_cursor_push_pgr_submit_io_t`,
+`cursor_make_push_pgr_submit_io()`, `cursor_push_pgr_submit_io_validate()`,
+`cursor_submit_push_pgr()`, and the updated `cursor_push_pgr()` wrapper, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.084` batch, `1.156` crud, `0.794`
+iterate, `1.008` get, and `1.073` delete.
+
+A later cursor-stack pop cleanup added `dxb_cursor_pop_submit_io_t` for
+`cursor_pop()`. Cursor stack shrink now builds a checked descriptor carrying
+the cursor, captured top slot, page pointer, and page reference before
+submitting through `cursor_submit_pop()`. The submit path validates that the
+cursor top, page pointer, and page reference still match the captured state,
+then preserves the old pop behavior by releasing the current value reference,
+releasing the current top-slot page reference, and decrementing `cursor.top`
+without clearing the popped page pointer. This makes the stack pop ownership
+handoff explicit, with the keep-reference sibling path covered by the follow-up
+checkpoint below. Verification passed `git diff --check`, source scans
+covering `dxb_cursor_pop_submit_io_t`,
+`cursor_make_pop_submit_io()`, `cursor_pop_submit_io_validate()`,
+`cursor_submit_pop()`, and the updated `cursor_pop()` wrapper, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.114` batch, `1.197` crud, `0.996` iterate,
+`0.991` get, and `1.075` delete.
+
+A later cursor-stack keep-reference pop cleanup added
+`dxb_cursor_pop_keep_ref_submit_io_t` for `cursor_pop_keep_ref()`. The sibling
+navigation helper now builds a checked descriptor carrying the cursor, captured
+top slot, page pointer, and page reference before submitting through
+`cursor_submit_pop_keep_ref()`. The submit path validates that the cursor top,
+page pointer, and page reference still match the captured state, then preserves
+the old keep-reference behavior by releasing only the current value reference
+and decrementing `cursor.top`; the popped stack slot reference remains retained
+so the NOTFOUND restore path can restore `top`, or a later push can replace
+and release the old slot. Verification passed `git diff --check`,
+source scans covering `dxb_cursor_pop_keep_ref_submit_io_t`,
+`cursor_make_pop_keep_ref_submit_io()`,
+`cursor_pop_keep_ref_submit_io_validate()`,
+`cursor_submit_pop_keep_ref()`, and the updated `cursor_pop_keep_ref()`
+wrapper, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.117`
+batch, `1.132` crud, `1.014` iterate, `0.993` get, and `1.071` delete.
+
+A later cursor-stack keep-reference restore cleanup added
+`dxb_cursor_pop_keep_ref_restore_submit_io_t` for the NOTFOUND undo path after
+`cursor_pop_keep_ref()`. The restore path now builds a checked descriptor
+carrying the cursor, current parent top, restored child top, child page pointer,
+and child page reference before submitting through
+`cursor_submit_pop_keep_ref_restore()`. The submit path validates that the
+cursor is still on the expected parent level and that the retained child slot
+still matches the captured page/reference, then restores only `cursor.top`.
+This makes the temporary sibling-navigation pop/restore pair explicit without
+changing page-reference ownership. Verification passed `git diff --check`,
+source scans covering `dxb_cursor_pop_keep_ref_restore_submit_io_t`,
+`cursor_make_pop_keep_ref_restore_submit_io()`,
+`cursor_pop_keep_ref_restore_submit_io_validate()`,
+`cursor_submit_pop_keep_ref_restore()`, `cursor_restore_pop_keep_ref()`, and
+the updated `sibling()` NOTFOUND path, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.114`
+batch, `1.148` crud, `0.844` iterate, `0.962` get, and `1.077` delete.
+
+A later compacting-copy cursor-stack cleanup routed `compacting_walk()` child
+descent through the existing checked cursor push helpers. Leaf child pages
+loaded by `page_get_with_ref()` are now wrapped in a transient `pgr_t` and
+submitted through `cursor_push_pgr_consume()`, so the page-ref retain/release
+handoff uses `dxb_cursor_push_pgr_submit_io_t` instead of a raw `cursor.top`
+increment followed by `cursor_stack_set_ref_consume()`. Branch child pages are
+still copied into the preallocated compacting buffer first, but the synthetic
+stack push now goes through `cursor_push()` rather than direct `cursor.top`
+mutation and `cursor_stack_set_synthetic()`. The deep-limit guard still
+releases fetched child refs and returns `MDBX_CURSOR_FULL`, while missing
+preallocated branch slots are caught as `MDBX_PROBLEM` instead of relying on a
+null copy target. Verification passed `git diff --check`, source scans
+covering the `compacting_walk()` `next_top`, `cursor_push_pgr_consume()`, and
+`cursor_push()` changes, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.098`
+batch, `1.147` crud, `1.222` iterate, `0.992` get, and `1.075` delete.
+
+A later cursor-stack reference-consume cleanup added
+`dxb_cursor_stack_set_ref_consume_submit_io_t` around
+`cursor_stack_set_ref_consume()`. The wrapper now captures the cursor, target
+slot, page pointer, caller reference pointer, and caller reference token in a
+checked descriptor before submitting the combined stack-retain plus caller-ref
+release operation. Validation confirms the cursor, slot, reference pointer, and
+captured reference still match; submit then calls `cursor_stack_set()` with the
+captured reference and releases the caller's reference through
+`cursor_ref_release()`. This keeps the current helper API intact while making
+the ownership-transfer boundary explicit for a later async page-cache handoff.
+Verification passed `git diff --check`, source scans covering
+`dxb_cursor_stack_set_ref_consume_submit_io_t`,
+`cursor_make_stack_set_ref_consume_submit_io()`,
+`cursor_stack_set_ref_consume_submit_io_validate()`,
+`cursor_submit_stack_set_ref_consume()`, and the updated
+`cursor_stack_set_ref_consume()` wrapper, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.106` batch, `1.144` crud, `0.976` iterate, `1.034`
+get, and `1.078` delete.
+
+A later synthetic cursor-stack cleanup added
+`dxb_cursor_stack_set_synthetic_submit_io_t` around
+`cursor_stack_set_synthetic()`. The wrapper now captures the cursor, target
+slot, synthetic page pointer, and the derived synthetic `page_ref_t` in a
+checked descriptor before submitting through the normal `cursor_stack_set()`
+path. Validation recomputes `page_ref_synthetic(page)` and compares it with the
+captured reference, then rebuilds the descriptor to catch cursor, slot, page,
+or ref drift before the stack entry is retained/replaced. This keeps nested
+subpage, compacting-copy, and temporary rebalance stack installs on the same
+explicit page-ref handoff path as cache-backed page results. Verification
+passed `git diff --check`, source scans covering
+`dxb_cursor_stack_set_synthetic_submit_io_t`,
+`cursor_make_stack_set_synthetic_submit_io()`,
+`cursor_stack_set_synthetic_submit_io_validate()`,
+`cursor_submit_stack_set_synthetic()`, and the updated
+`cursor_stack_set_synthetic()` wrapper, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.085` batch, `1.138` crud, `0.985` iterate, `0.987`
+get, and `1.071` delete.
+
+A later cursor stack-copy cleanup added `dxb_cursor_stack_copy_submit_io_t`
+around `cursor_stack_copy()`. The wrapper now captures the destination cursor
+and slot, source cursor and slot, source page pointer, and source page
+reference before submitting through the normal `cursor_stack_set()` retain and
+release path. Validation confirms the source slot still contains the captured
+page/ref pair and rebuilds the descriptor to catch destination/source/slot
+drift before stack replacement. `cursor_cpstk()` now routes clone/copy stack
+entries through `cursor_stack_copy()`, so cursor cloning, range/cutoff copying,
+root-collapse shifts, rebalance cursor redirection, and tree-drop stack restore
+share a checked page-ref handoff boundary. Verification passed `git diff
+--check`, source scans covering `dxb_cursor_stack_copy_submit_io_t`,
+`cursor_make_stack_copy_submit_io()`,
+`cursor_stack_copy_submit_io_validate()`, `cursor_submit_stack_copy()`, the
+updated `cursor_stack_copy()` wrapper, and the `cursor_cpstk()` loop, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.073`
+batch, `1.147` crud, `0.821` iterate, `1.040` get, and `1.076` delete.
+
+A later cursor stack pgr-consume cleanup added
+`dxb_cursor_stack_set_pgr_consume_submit_io_t` around
+`cursor_stack_set_pgr_consume()`. The wrapper now captures the cursor, target
+slot, `pgr_t` pointer, and the full successful `pgr_t` result before
+submitting the stack install plus local result release. Validation confirms the
+captured result is still successful, the captured page reference still matches
+the captured page, and the caller's `pgr_t` still contains the captured
+page/error/ref tuple before rebuilding the descriptor. Submit then installs the
+captured result through `cursor_stack_set_pgr()` and releases the caller-owned
+`pgr_t` through `pgr_release()`. This makes new-root installation and root
+reload handoffs explicit for a later async page-cache result path. Verification
+passed `git diff --check`, source scans covering
+`dxb_cursor_stack_set_pgr_consume_submit_io_t`,
+`cursor_make_stack_set_pgr_consume_submit_io()`,
+`cursor_stack_set_pgr_consume_submit_io_validate()`,
+`cursor_submit_stack_set_pgr_consume()`, and the updated
+`cursor_stack_set_pgr_consume()` wrapper, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.092` batch, `1.154` crud, `1.233` iterate, `0.928`
+get, and `1.057` delete.
+
+A later cursor push pgr-consume cleanup added
+`dxb_cursor_push_pgr_consume_submit_io_t` around
+`cursor_push_pgr_consume()`. The wrapper now captures the cursor, caller
+`pgr_t` pointer, successful page result, previous cursor top, and target key
+index before submitting the combined push plus caller-result release. Validation
+confirms the cursor is still at the captured top, the captured result is still
+successful and page-backed, the captured page reference matches the captured
+page, and the caller's `pgr_t` still holds the same page/error/ref tuple before
+rebuilding the descriptor. Submit pushes the captured result through
+`cursor_push_pgr()` and then releases the original caller `pgr_t`, preserving
+the existing consume behavior even when the push reports `MDBX_CURSOR_FULL`.
+This makes tree descent, sibling navigation, compacting-copy descent, and new
+root creation use an explicit page-result ownership handoff. Verification
+passed `git diff --check`, source scans covering
+`dxb_cursor_push_pgr_consume_submit_io_t`,
+`cursor_make_push_pgr_consume_submit_io()`,
+`cursor_push_pgr_consume_submit_io_validate()`,
+`cursor_submit_push_pgr_consume()`, and the updated
+`cursor_push_pgr_consume()` wrapper, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.117` batch, `1.142` crud, `1.266` iterate, `0.956`
+get, and `1.069` delete.
+
+A later cursor stack pgr-install cleanup added
+`dxb_cursor_stack_set_pgr_submit_io_t` around `cursor_stack_set_pgr()`. The
+wrapper now captures the cursor, target stack slot, source `pgr_t` pointer, and
+the full successful `pgr_t` result before submitting the stack install.
+Validation confirms the captured result is successful, the captured page
+reference matches the captured page, and the source `pgr_t` still contains the
+captured page/error/ref tuple before rebuilding the descriptor. Submit then
+retains the captured page reference through the normal `cursor_stack_set()`
+path. This makes the shared page-result-to-stack installation used by
+`cursor_stack_set_pgr_consume()` and `cursor_push_pgr()` explicit before page
+results can be backed by asynchronous cache completions. Verification passed
+`git diff --check`, source scans covering
+`dxb_cursor_stack_set_pgr_submit_io_t`,
+`cursor_make_stack_set_pgr_submit_io()`,
+`cursor_stack_set_pgr_submit_io_validate()`,
+`cursor_submit_stack_set_pgr()`, and the updated `cursor_stack_set_pgr()`
+wrapper, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.086`
+batch, `1.144` crud, `1.016` iterate, `1.017` get, and `1.080` delete.
+
+A later cursor stack release-range cleanup added
+`dxb_cursor_stack_release_from_submit_io_t` around
+`cursor_stack_release_from()`. The wrapper captures the cursor, first stack
+slot, and cursor top before submitting the release range. Validation confirms
+the range is within the cursor stack bounds and that the cursor top has not
+changed before rebuilding the descriptor. Submit releases each slot through the
+checked `cursor_stack_release_slot()` path, so reset, drown, clone-tail,
+debug-clearing cleanup, and `cursor_stack_release_all()` all share an explicit
+release-range request boundary. This makes the remaining bulk stack cleanup
+path visible to a later async page-cache release/completion layer instead of
+leaving it as a raw loop over stack refs. Verification passed `git diff
+--check`, source scans covering
+`dxb_cursor_stack_release_from_submit_io_t`,
+`cursor_make_stack_release_from_submit_io()`,
+`cursor_stack_release_from_submit_io_validate()`,
+`cursor_submit_stack_release_from()`, and the updated
+`cursor_stack_release_from()` wrapper, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.097` batch, `1.148` crud, `0.984` iterate, `0.912`
+get, and `1.065` delete.
+
+A later cursor stack retain-all cleanup added
+`dxb_cursor_stack_retain_all_submit_io_t` around
+`cursor_stack_retain_all()`. The wrapper captures the cursor, combined
+top/flags state, every stack page/ref pair, and the latest value ref before
+submitting the bulk retain operation. Validation confirms the cursor state,
+value ref, and each stack page/ref pair have not drifted and that captured
+stack refs still point at their captured stack pages before rebuilding the
+descriptor. Submit retains every captured stack ref plus the captured value ref
+through the checked `cursor_ref_retain()` path. This makes nested-transaction
+cursor shadow backups explicit for both outer cursors and copied subcursors,
+so a later async page-cache pin-retain layer has a single request boundary for
+the bulk cursor-shadow retain operation. Verification passed `git diff
+--check`, source scans covering
+`dxb_cursor_stack_retain_all_submit_io_t`,
+`cursor_make_stack_retain_all_submit_io()`,
+`cursor_stack_retain_all_submit_io_validate()`,
+`cursor_submit_stack_retain_all()`, and the updated
+`cursor_stack_retain_all()` wrapper, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.092` batch, `1.148` crud, `0.829` iterate, `1.089`
+get, and `1.066` delete.
+
+A later cursor-to-transaction pin capture cleanup added
+`dxb_cursor_txn_pins_capture_submit_io_t` around
+`cursor_capture_txn_pins()`. The wrapper captures the cursor, owning
+transaction, retained-ref array window, latest value ref, and every stack ref
+before submitting the transaction-retain append. Validation confirms the cursor
+still belongs to the captured transaction, the retained-ref array/count/capacity
+have not drifted since the caller reserved space, and all captured cursor refs
+still match the cursor before rebuilding the descriptor. Submit appends each
+captured cache-backed value/stack ref through the checked
+`cursor_ref_retain()` path. This makes the public `mdbx_get*()` and cache
+fallback paths that preserve returned `MDBX_val` bytes explicit for a later
+async page-cache pin-retain completion boundary, while still relying on the
+existing pre-submit reserve step in `cursor_couple_capture_txn_pins()`.
+Verification passed `git diff --check`, source scans covering
+`dxb_cursor_txn_pins_capture_submit_io_t`,
+`cursor_make_txn_pins_capture_submit_io()`,
+`cursor_txn_pins_capture_submit_io_validate()`,
+`cursor_submit_txn_pins_capture()`, and the updated
+`cursor_capture_txn_pins()` wrapper, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.072` batch, `1.136` crud, `1.020` iterate, `0.962`
+get, and `1.079` delete.
+
+A later transaction retained-ref release cleanup added
+`dxb_txn_retained_refs_release_submit_io_t` around
+`txn_retained_refs_release()`. The wrapper captures the transaction, retained
+ref array pointer, retained count, and retained capacity before submitting the
+release slice. Validation confirms the transaction retained-ref window has not
+drifted, that count is still within capacity, and that non-empty slices still
+have a backing retained-ref array before rebuilding the descriptor. Submit
+releases each retained ref through the checked
+`cursor_submit_ref_release()` path and clears the transaction retained count
+only after the captured slice has been released. This makes read-transaction
+reset/free, basal transaction teardown, and nested transaction abort/free
+release the public-value pins through an explicit request boundary for a later
+async page-cache pin-release completion layer. Verification passed `git diff
+--check`, source scans covering
+`dxb_txn_retained_refs_release_submit_io_t`,
+`txn_make_retained_refs_release_submit_io()`,
+`txn_retained_refs_release_submit_io_validate()`,
+`txn_submit_retained_refs_release()`, and the updated
+`txn_retained_refs_release()` wrapper, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.097` batch, `1.133` crud, `1.056` iterate, `0.992`
+get, and `1.079` delete.
+
+A later transaction retained-ref append cleanup added
+`dxb_txn_retained_ref_append_submit_io_t` around single-ref appends into
+`txn->retained_refs`. The wrapper captures the transaction, optional source
+cursor, retained-ref array pointer, retained count/capacity, and the captured
+cache-backed ref before submitting the append. Validation confirms the source
+cursor still belongs to the transaction, the retained-ref array window has not
+drifted, the transaction still has reserved capacity, and the captured ref
+still requires a transaction pin before rebuilding the descriptor. Submit then
+appends through the checked `cursor_ref_retain()` path. This removes the
+remaining direct retained-ref append in `cache_materialize_entry()` and makes
+`cursor_submit_txn_pins_capture()` use the same request shape for value and
+stack refs, giving public-value pin retention one explicit append boundary for
+future async page-cache retain completion. Verification passed `git diff
+--check`, source scans covering
+`dxb_txn_retained_ref_append_submit_io_t`,
+`txn_make_retained_ref_append_submit_io()`,
+`txn_retained_ref_append_submit_io_validate()`,
+`txn_submit_retained_ref_append()`, the updated
+`cursor_submit_txn_pins_capture()` wrapper, and `cache_materialize_entry()`,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.097` batch, `1.143` crud, `1.203` iterate, `1.075`
+get, and `1.065` delete.
+
+A later cursor top-ref retain cleanup added
+`dxb_cursor_top_ref_retain_submit_io_t` around the merge/rebalance top-page
+snapshot path. The wrapper captures the cursor, top stack slot, top page, top
+ref, key index, and tree height before `cursor_pop()` and `tree_rebalance()`
+can mutate the stack. Validation confirms the cursor top, tree height, top
+page, key index, and page ref have not drifted, checks that the captured ref
+still matches its captured page when it owns a page pointer, and rebuilds the
+descriptor before submission. Submit retains the captured ref through the
+checked `cursor_submit_ref_retain()` path. This makes merge-stack restoration
+in `tree_merge()` explicit for a later async page-cache retain completion,
+including the branches that restore `top_page` with `cursor_stack_set()` and
+then release `top_ref`. Verification passed `git diff --check`, source scans
+covering `dxb_cursor_top_ref_retain_submit_io_t`,
+`cursor_make_top_ref_retain_submit_io()`,
+`cursor_top_ref_retain_submit_io_validate()`,
+`cursor_submit_top_ref_retain()`, and the updated merge/rebalance top-page
+snapshot path, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.094` batch, `1.140` crud, `1.026` iterate, `0.982`
+get, and `1.074` delete.
+
+A later rebalance neighbor cleanup added
+`dxb_cursor_rebalance_refs_release_submit_io_t` around the shared
+`REBALANCE_RETURN()` cleanup path in `tree_rebalance()`. The wrapper captures
+the owner cursor, cloned neighbor cursor, left/right page pointers, local
+left/right page-ref slots, the captured left/right refs, and the cloned
+cursor's top/flags state before submitting cleanup. Validation confirms both
+local refs still match their captured values, the cloned cursor state has not
+drifted, and any page-owning captured ref still matches the captured neighbor
+page pointer before rebuilding the descriptor. Submit releases the two local
+neighbor refs through `cursor_ref_release()` and then releases the cloned
+cursor stack through `cursor_stack_release_all()`. This turns every rebalance
+return/bailout that cleans temporary left/right neighbor refs and the cloned
+cursor stack into one explicit release request boundary for a later async
+page-cache release completion layer. Verification passed `git diff --check`,
+source scans covering `dxb_cursor_rebalance_refs_release_submit_io_t`,
+`cursor_make_rebalance_refs_release_submit_io()`,
+`cursor_rebalance_refs_release_submit_io_validate()`,
+`cursor_submit_rebalance_refs_release()`, `cursor_rebalance_refs_release()`,
+`REBALANCE_RETURN()`, and the absence of direct `left_ref`/`right_ref`
+releases in that cleanup macro, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.098` batch, `1.152` crud, `0.974` iterate, `1.005`
+get, and `1.065` delete.
+
+A later compacting-copy branch descent cleanup added
+`dxb_compacting_branch_child_copy_submit_io_t` around the path that copies a
+fetched sibling branch page into the compacting writer's synthetic branch
+buffer. The wrapper captures the cursor, caller-owned source page pointer,
+source page, destination synthetic branch page, local source ref slot,
+captured source ref, previous/top stack slots, and key index before submitting
+the copy. Validation confirms the caller still points at the fetched source
+page, the source ref still matches the capture, the source is still a branch,
+the source ref still matches the source page when it owns a page pointer, and
+the destination synthetic page is still in the expected next stack slot before
+rebuilding the descriptor. Submit copies the branch page, pushes the synthetic
+copy through the checked cursor-push path, updates the caller's page pointer
+to that synthetic copy after a successful push, and only then releases the
+fetched source ref. This avoids continuing compacting descent through a
+cache-backed page pointer after its ref has been released, which makes this
+copy-and-release boundary explicit for a later async page-cache release
+completion layer. Verification passed `git diff --check`, source scans
+covering `dxb_compacting_branch_child_copy_submit_io_t`,
+`compacting_make_branch_child_copy_submit_io()`,
+`compacting_branch_child_copy_submit_io_validate()`,
+`compacting_submit_branch_child_copy()`, `compacting_branch_child_copy()`, and
+the removal of the direct `page_copy(branch_copy, ...)` plus
+`cursor_push(mc, branch_copy, ...)` pair, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.111` batch, `1.151` crud, `0.979` iterate,
+`1.040` get, and `1.100` delete.
+
+A later page-touch redirect cleanup added
+`dxb_page_touch_redirect_submit_io_t` around the cursor-redirection block in
+`page_touch_unmodifable()`. The wrapper captures the transaction, active
+cursor, old unmodifiable page, new dirty replacement page, replacement page
+ref, cursor stack slot, DBI, cursor top/flags, and whether the active cursor
+is an inner cursor before submitting the redirect. Validation confirms the
+active cursor still belongs to the transaction, still points at the captured
+old page in the captured slot, still has the same top/flags and DBI, and that
+the replacement ref is a non-cache dirty-page ref for the replacement page
+before rebuilding the descriptor. Submit redirects the active cursor and every
+related tracked cursor that still points at the old page through
+`cursor_stack_set()`, preserving the existing inner-cursor refresh behavior for
+leaf pages. This turns CoW, unspill, and parent-shadow clone stack redirection
+into one explicit request boundary for a later async page-cache pin/dirty-page
+handoff layer. Verification passed `git diff --check`, source scans covering
+`dxb_page_touch_redirect_submit_io_t`,
+`page_touch_make_redirect_submit_io()`,
+`page_touch_redirect_submit_io_validate()`,
+`page_touch_submit_redirect()`, `page_touch_redirect_cursors()`, and the
+removal of the open-coded `cursor_stack_set(mc, mc->top, np, ...)` redirect
+block, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.117` batch, `1.144` crud, `1.176` iterate, `0.883`
+get, and `1.070` delete.
+
+A later page-split sibling install cleanup routed all `page_split()` stack
+installs of the newly allocated sibling `pgr_t npr` through
+`cursor_stack_set_pgr()` and its existing
+`dxb_cursor_stack_set_pgr_submit_io_t` request shape. This removes the direct
+`cursor_stack_set(..., sister, npr.ref)` pairs for the cloned right-side
+cursor, pure-left/pure-right installs, temporary right-side node moves,
+post-move restoration to the sibling, right-side split positioning, and
+tracked-cursor redirection to the new sibling. Validation now confirms the
+captured `pgr_t` still reports success, still has a page, and that the captured
+ref matches the captured page before submitting each sibling stack install.
+This makes page-split dirty-page stack installation explicit for a later async
+dirty-page handoff/pin-retain layer instead of passing loose `(page, ref)`
+pairs at the call sites. Verification passed `git diff --check`, source scans
+covering `dxb_cursor_stack_set_pgr_submit_io_t`,
+`cursor_stack_set_pgr_submit_io_validate()`, the updated `cursor_stack_set_pgr()`
+calls in `page_split()`, and the absence of direct
+`cursor_stack_set(..., sister, npr.ref)` installs, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.097` batch, `1.160` crud, `1.000` iterate,
+`0.996` get, and `1.068` delete.
+
+A later merge top-ref restore cleanup routed the only stack-restore branch
+that both installed and released `top_ref` through
+`cursor_stack_set_ref_consume()` and its existing
+`dxb_cursor_stack_set_ref_consume_submit_io_t` request shape. The wrapper
+captures the cursor, target restore slot, restored top page, local top-ref
+pointer, and captured top ref before submitting the restore. Validation
+confirms the caller's local ref has not drifted and rebuilds the descriptor.
+Submit installs the restored top page via the checked stack-set path, then
+releases and clears the consumed local ref. This removes the direct
+`cursor_stack_set(cdst, new_top, top_page, top_ref)` plus
+`cursor_ref_release(cdst, &top_ref)` pair from merge-stack restoration, leaving
+the other `top_ref` releases only on early-return and bailout branches. That
+makes this merge-stack restoration an explicit request boundary for a later
+async page-cache completion layer. Verification passed `git diff --check`,
+source scans covering `dxb_cursor_stack_set_ref_consume_submit_io_t`,
+`cursor_stack_set_ref_consume_submit_io_validate()`,
+`cursor_stack_set_ref_consume(cdst, new_top, top_page, &top_ref)`, and the
+removed direct set-then-release pair, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.096` batch, `1.144` crud, `1.229` iterate, `0.951`
+get, and `1.078` delete.
+
+A later rebalance neighbor setup cleanup added
+`dxb_cursor_rebalance_neighbor_set_submit_io_t` around the six
+`tree_rebalance()` branches that temporarily install the fetched left or right
+sibling into the cloned neighbor cursor before merge/move attempts. The wrapper
+captures the neighbor cursor, borrowed sibling page, borrowed sibling ref,
+neighbor stack slot, parent index, top index, and neighbor top/flags before
+submitting the setup. Validation confirms the neighbor cursor has not drifted,
+the parent slot is still a branch page, and any page-owning borrowed ref still
+matches the sibling page before rebuilding the descriptor. Submit installs the
+borrowed sibling through the checked stack-set path and applies the captured
+parent/top indices, while ownership of the local left/right refs remains with
+the existing `REBALANCE_RETURN()` cleanup and
+`dxb_cursor_rebalance_refs_release_submit_io_t`. This removes the direct
+`cursor_stack_set(mn, mn->top, left, left_ref)` and
+`cursor_stack_set(mn, mn->top, right, right_ref)` setup pairs from rebalance
+merge/move attempts, making sibling setup another explicit request boundary for
+a later async page-cache completion layer. Verification passed
+`git diff --check`, source scans covering
+`dxb_cursor_rebalance_neighbor_set_submit_io_t`,
+`cursor_make_rebalance_neighbor_set_submit_io()`,
+`cursor_rebalance_neighbor_set_submit_io_validate()`,
+`cursor_submit_rebalance_neighbor_set()`, `cursor_rebalance_neighbor_set()`,
+and the absence of direct left/right `cursor_stack_set(mn, mn->top, ...)`
+installs, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.079` batch, `1.197` crud, `1.288` iterate, `1.025`
+get, and `1.051` delete.
+
+A later tree-drop stack restore cleanup added
+`dxb_cursor_tree_drop_stack_restore_submit_io_t` around the `tree_drop()`
+popup path that restores saved cursor stack pages and refs after walking back
+to a parent level. The wrapper copies the caller's saved stack pages and
+borrowed stack refs into the descriptor, captures the cursor, first restore
+slot, and current top, and validates that the cursor top has not drifted and
+that any page-owning borrowed ref still matches its saved page. Submit restores
+each saved slot through the checked stack-set path and resets the restored key
+indices to zero, preserving the existing retain/release behavior of borrowed
+stack refs. This removes the direct `cursor_stack_set(mc, i, stack[i],
+stack_ref[i])` loop from tree-drop popup restoration and makes parent-stack
+restore another explicit request boundary for a later async page-cache
+completion layer. Verification passed `git diff --check`, source scans
+covering `dxb_cursor_tree_drop_stack_restore_submit_io_t`,
+`cursor_make_tree_drop_stack_restore_submit_io()`,
+`cursor_tree_drop_stack_restore_submit_io_validate()`,
+`cursor_submit_tree_drop_stack_restore()`, `cursor_tree_drop_stack_restore()`,
+and the absence of the direct tree-drop stack restore loop, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired standalone `mdbx_migration_bench_lazy`
+gate passed with forced/default ratios of `0.979` batch, `0.987` crud, `1.003`
+iterate, `1.028` get, and `1.001` delete.
+
+A later root-collapse child fetch cleanup replaced the loose `(page,
+page_ref_t)` handoff in the `tree_rebalance()` root-collapse path with
+`page_get_three()` plus the existing `cursor_stack_set_pgr_consume()` request
+shape. The collapse path now carries the fetched child as a `pgr_t`, checks
+`child.err`, releases the pgr on fetch failure, and consumes it into stack slot
+0 through `dxb_cursor_stack_set_pgr_consume_submit_io_t`. This removes the
+direct `page_get_with_ref(mc, mc->tree->root, &child, &child_ref, ...)` plus
+`cursor_stack_set_ref_consume(mc, 0, child, &child_ref)` pair from root
+collapse, so the fetched root child follows the same checked pgr install and
+release boundary used by other explicit page-cache handoffs. Verification
+passed `git diff --check`, source scans covering
+`pgr_t child = page_get_three(mc, mc->tree->root, mp->txnid)`,
+`cursor_stack_set_pgr_consume(mc, 0, &child)`,
+`dxb_cursor_stack_set_pgr_consume_submit_io_t`, and the absence of the old
+root-collapse `page_get_with_ref()`/`child_ref` pattern, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.134` batch, `1.198` crud, `1.001` iterate,
+`1.050` get, and `1.061` delete.
+
+A later branch-child push cleanup added
+`dxb_cursor_branch_child_push_submit_io_t` around the compact
+`tree_deepen_lowest()` branch descent. The wrapper captures the cursor,
+current parent branch page, parent stack ref, parent stack slot, selected
+branch index, target child pgno, parent txnid/front, and requested child index
+before submitting the fetch. Validation confirms the cursor top and stack ref
+still match the captured parent, the parent is still a branch page, the
+selected branch node still points at the captured child pgno, and the parent
+txnid/front has not drifted. Submit fetches the child with `page_get_three()`,
+sets the captured parent index, and consumes the fetched pgr through
+`cursor_push_pgr_consume()`. This removes the open-coded
+`page_get_three()`/`pgr_release()`/`cursor_push_pgr_consume()` sequence from
+`tree_deepen_lowest()` and makes that rebalance/merge descent another explicit
+request boundary for a later async page-cache fetch completion layer.
+Verification passed `git diff --check`, source scans covering
+`dxb_cursor_branch_child_push_submit_io_t`,
+`cursor_make_branch_child_push_submit_io()`,
+`cursor_branch_child_push_submit_io_validate()`,
+`cursor_submit_branch_child_push()`, `cursor_branch_child_push()`, and the
+updated `tree_deepen_lowest()` call site, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache
+runs, the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited
+environment. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.138` batch, `1.205` crud, `0.993` iterate, `1.010`
+get, and `1.057` delete.
+
+A later tree-search branch descent cleanup reused
+`dxb_cursor_branch_child_push_submit_io_t` for the main `tree_search()`
+branch loop. The loop now lets the checked branch-child push wrapper capture
+the selected branch index, parent branch page/ref, child pgno, and parent
+txnid/front, then submit the child fetch and stack push through
+`cursor_branch_child_push(mc, (indx_t)ki, 0)`. On success the loop resumes from
+the newly pushed stack top instead of carrying a local `pgr_t child`. This
+removes the open-coded `page_get_three(mc, node_pgno(page_node(mp, ki)),
+mp->txnid)`, local `pgr_release()`, and `cursor_push_pgr_consume(mc, &child,
+0)` sequence from the central tree-search descent, leaving the later
+right-edge descent for a separate conversion because its child index depends on
+the fetched child page. Verification passed `git diff --check`, source scans
+covering `cursor_branch_child_push(mc, (indx_t)ki, 0)`,
+`dxb_cursor_branch_child_push_submit_io_t`,
+`cursor_submit_branch_child_push()`, the absence of the old
+`tree_search()` open-coded fetch/push sequence, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.120` batch, `1.199` crud, `1.254` iterate,
+`1.029` get, and `1.054` delete.
+
+A later tree edge branch descent cleanup extended
+`dxb_cursor_branch_child_push_submit_io_t` with a `child_ki_last` mode and
+routed `tree_deepen_edge()` through `cursor_branch_child_edge_push()`. The
+wrapper captures the cursor, parent branch page, parent stack ref, parent stack
+slot, selected branch index, target child pgno, parent txnid/front, and whether
+the fetched child should be entered at its first key or last key. Validation
+confirms the cursor top/ref still match the captured parent, the parent is
+still a branch page, the selected node still points at the captured child pgno,
+the parent txnid/front has not drifted, and the child index mode still matches
+the captured request. Submit fetches the child with `page_get_three()`, restores
+the captured parent index, computes the last child index after fetch when
+requested, and consumes the fetched pgr through `cursor_push_pgr_consume()`.
+This removes the open-coded `page_get_three()`/`pgr_release()`/
+`cursor_push_pgr_consume()` sequence from `tree_deepen_edge()` and leaves the
+edge descent as another explicit request/completion boundary for a later async
+page-cache fetch layer. Verification passed `git diff --check`, source scans
+covering `cursor_make_branch_child_push_submit_io_ex()`,
+`cursor_make_branch_child_edge_push_submit_io()`,
+`cursor_branch_child_edge_push()`, `child_ki_last`, and the absence of the old
+`tree_deepen_edge()` open-coded fetch/push pattern, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.090` batch, `1.132` crud, `1.007` iterate,
+`1.036` get, and `1.077` delete.
+
+A later sibling movement cleanup reused the branch-child edge push request in
+`sibling()`. After moving to the selected sibling slot in the parent branch,
+the cursor now calls `cursor_branch_child_edge_push(mc, mc->ki[mc->top],
+!right)` instead of open-coding the child node lookup, `page_get_three()`,
+manual error release, and `cursor_push_pgr_consume()` call. Right siblings
+still enter the fetched child at key zero, while left siblings request
+`child_ki_last` so the child page's last key is computed only after the fetch
+completes. This keeps sibling navigation aligned with the same captured
+cursor, parent branch page/ref, selected branch index, child pgno, and
+parent-txnid validation already used by `tree_deepen_edge()`, turning another
+cursor movement into an explicit async page-cache completion boundary.
+Verification passed `git diff --check`, source scans covering the new
+`cursor_branch_child_edge_push(mc, mc->ki[mc->top], !right)` call, the forward
+declaration needed by `sibling()`, and the absence of the old sibling-local
+`page_get_three()`/`cursor_push_pgr_consume()` sequence, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.136` batch, `1.162` crud, `0.967` iterate,
+`0.942` get, and `1.088` delete.
+
+A later cursor-stack page-get cleanup added
+`dxb_cursor_stack_page_get_submit_io_t` and `cursor_stack_page_get()` for the
+common "fetch a pgno and install it into a cursor stack slot" pattern. The
+request captures the cursor, target stack slot, target pgno, parent/root
+txnid-front, and current cursor top, validates the pgno remains in the
+transaction's data-page range and the cursor top has not changed, then fetches
+with `page_get_three()` and delegates ownership transfer to
+`cursor_stack_set_pgr_consume()`. `tree_search()` root loading and the
+root-collapse branch in `tree_rebalance()` now use this helper instead of
+open-coding local `pgr_t` variables, error releases, and direct stack-slot
+consumption. This gives root entry and root-collapse reads the same explicit
+submit/validate/consume shape needed for a future async page-cache completion
+boundary. Verification passed `git diff --check`, source scans covering
+`dxb_cursor_stack_page_get_submit_io_t`, `cursor_stack_page_get()`, the updated
+`tree_search()` and `tree_rebalance()` call sites, and the absence of the old
+source-local `pgr_t root_pgr` and root-collapse child fetch/consume sequences,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.113`
+batch, `1.138` crud, `1.127` iterate, `0.973` get, and `1.070` delete.
+
+A later cursor validation cleanup added
+`dxb_cursor_validate_branch_child_submit_io_t` and
+`cursor_validate_branch_child()` for read-only branch-child checks in
+`cursor_validate()`. The request captures the cursor, parent branch page/ref,
+parent stack slot, branch index, child pgno, parent txnid-front, cursor top, and
+expected child leafness. Validation rechecks the parent stack entry/ref, branch
+index, child pgno, parent txnid-front, cursor top, and expected leafness before
+submitting the fetch. Submit then reads the child with `page_get_three()`,
+verifies the fetched page is at the expected depth, runs `page_check()`, and
+releases the pgr. This removes the local `pgr_t np` fetch/check/release sequence
+from `cursor_validate()` while preserving the caller's existing branch-node flag
+failure path. It also turns cursor validation's child-page read into another
+explicit request/completion boundary for a later async page-cache layer.
+Verification passed `git diff --check`, source scans covering
+`dxb_cursor_validate_branch_child_submit_io_t`,
+`cursor_validate_branch_child()`, the updated `cursor_validate()` call site, and
+the absence of the old `pgr_t np = page_get_three(mc, pgno, mp->txnid)`,
+`is_leaf(np.page)`, `page_check(mc, np.page)`, and `pgr_release(mc, &np)`
+sequence, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.120`
+batch, `1.148` crud, `0.887` iterate, `1.022` get, and `1.083` delete.
+
+A later page-walk traversal cleanup added `dxb_walk_page_get_submit_io_t` and
+`walk_page_get()` for `walk_pgno()`'s initial page fetch. The request captures
+the walk context, transaction, cursor, target pgno, parent txnid-front, and
+current traversal depth, then validates that the walk context still references
+the same transaction/cursor, the cursor still belongs to that transaction, the
+depth is unchanged, and the pgno is still within the transaction data-page
+range before submitting the read. `walk_pgno()` now receives its pgr from this
+helper instead of directly calling `page_get_three(ctx->cursor, pgno,
+parent_txnid)`, while preserving the existing pgr lifetime across visitor
+calls, recursive descent, large-page reporting, and final release. This turns
+pgwalk's page read into an explicit request/completion boundary for a future
+async page-cache traversal layer. Verification passed `git diff --check`,
+source scans covering `dxb_walk_page_get_submit_io_t`, `walk_page_get()`, the
+updated `walk_pgno()` call site, and the absence of the old direct
+`page_get_three(ctx->cursor, pgno, parent_txnid)` pattern, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.084` batch, `1.149` crud, `0.954` iterate,
+`1.015` get, and `1.069` delete.
+
+A later tree cutoff traversal cleanup added
+`dxb_tree_cutoff_page_get_submit_io_t` and `tree_cutoff_page_get()` for
+`tree_cutoff_twig()`'s page fetch. The request captures the cursor,
+transaction, tree, target pgno, parent txnid-front, recursion depth, cursor top,
+checking flags, and whole-tree mode. Validation rechecks the cursor still points
+at the captured transaction/tree, the cursor top and checking flags are
+unchanged, and the rebuilt request matches the captured one before submitting
+the read. Submit currently calls `page_get_three()` and returns `pgr_error()` on
+validation failure, while the caller's existing `TREE_CUTOFF_RETURN` path still
+owns the final pgr release. The early frozen-leaf no-read retirement fast path
+is unchanged. This removes the direct `page_get_three(mc, pgno, parent_txnid)`
+call from `tree_cutoff_twig()` and gives bunch-removal/tree-cutoff recursion an
+explicit request/completion boundary for a later async page-cache layer.
+Verification passed `git diff --check`, source scans covering
+`dxb_tree_cutoff_page_get_submit_io_t`, `tree_cutoff_page_get()`, the updated
+`tree_cutoff_twig()` call site, and the absence of the old direct
+`page_get_three(mc, pgno, parent_txnid)` pattern from source, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.116` batch, `1.156` crud, `0.992` iterate,
+`0.988` get, and `1.075` delete.
+
+A later defrag page-cache fetch cleanup added
+`dxb_defrag_page_get_submit_io_t` and routed `defrag_get_page()` through a
+make/validate/submit boundary. The request captures the defrag context,
+transaction, target pgno, current `first_unallocated`, and
+`txn_basis_snapshot()` front. Validation rechecks that the defrag context still
+owns the same transaction, the requested pgno is still in the transaction data
+range, the allocation edge and snapshot front are unchanged, and the rebuilt
+request matches the captured one before submitting the read. Submit keeps the
+existing `page_get_unchecked()` fetch and unexpected-page-flag check, and the
+caller still owns the returned pgr lifetime while copying resident source pages
+into `env->page_auxbuf`. The direct
+`page_get_unchecked(txn, pgno, txn_basis_snapshot(txn))` call is gone from
+`defrag_get_page()`, leaving the resident defrag fallback read with an explicit
+request/completion point for a future async page-cache layer. Verification
+passed `git diff --check`, source scans covering
+`dxb_defrag_page_get_submit_io_t`, `defrag_make_page_get_submit_io()`,
+`defrag_submit_page_get()`, and the absence of the old direct
+`page_get_unchecked(txn, pgno, txn_basis_snapshot(txn))` pattern, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.117` batch, `1.159` crud, `1.027` iterate,
+`0.979` get, and `1.063` delete.
+
+A later page-retirement fetch cleanup added
+`dxb_page_retire_page_get_submit_io_t` and routed `page_retire_ex()`'s
+read-before-retire paths through `page_retire_page_get()`. The request captures
+the cursor, transaction, target pgno, current `front_txnid`, optional expected
+page flags, and whether the debug-only page-flag check should run. Validation
+rechecks the cursor still owns the transaction, the transaction front is
+unchanged, and the rebuilt request matches the captured one before submitting
+the read. Submit keeps the existing `page_get_any()` fetch, preserves the
+CHECKS-only flag/frozen assertions, and returns a normal `pgr_t` so
+`PAGE_RETIRE_RETURN` and the local check/fetched variables keep their existing
+release ownership. This removes the direct `page_get_any(mc, pgno,
+txn->front_txnid)` calls from `page_retire_ex()` and gives both the
+read-for-check and read-for-unknown-status branches an explicit
+request/completion point for a later async page-cache layer. Verification passed
+`git diff --check`, source scans covering
+`dxb_page_retire_page_get_submit_io_t`, `page_retire_page_get()`, the updated
+`page_retire_ex()` call sites, and the absence of the old direct
+`page_get_any(mc, pgno, txn->front_txnid)` pattern, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.094` batch, `1.152` crud, `1.009` iterate,
+`0.965` get, and `1.089` delete.
+
+A later compacting-copy large-page cleanup added
+`dxb_compacting_large_page_get_submit_io_t` and
+`compacting_large_page_get()` for the N_BIG branch in `compacting_walk()`. The
+request captures the compacting context, cursor, transaction, synthetic source
+leaf, large-node pointer/index, cursor top, target large pgno, current
+`first_unallocated`, parent txnid-front, and data size. Validation rechecks that
+the cursor and compacting context still use the same transaction, the cursor top
+still points at the captured synthetic leaf, the node index still resolves to the
+same N_BIG node with the same large pgno/data size, and the compacting output
+allocation edge is unchanged before submitting the read. Submit still calls
+`page_get_large()` and returns a normal `pgr_t`, leaving the existing
+`compacting_put_page()` copy and `pgr_release()` ownership unchanged. This
+removes the direct `page_get_large(mc, node_largedata_pgno(node), mp->txnid)`
+call from compacting-copy large-value handling and gives environment-copy
+overflow fetches an explicit request/completion point for a later async
+page-cache layer. Verification passed `git diff --check`, source scans covering
+`dxb_compacting_large_page_get_submit_io_t`, `compacting_large_page_get()`, the
+updated `compacting_walk()` N_BIG call site, and the absence of the old direct
+compacting-copy `page_get_large(mc, node_largedata_pgno(node), mp->txnid)`
+pattern, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.102`
+batch, `1.158` crud, `1.006` iterate, `0.992` get, and `1.079` delete.
+
+A later page-check large-page validation cleanup added
+`dxb_page_check_bigdata_page_get_submit_io_t` and
+`page_check_bigdata_page_get()` for `page_check()`'s N_BIG validation read. The
+request captures the cursor, source leaf, large-node pointer/index, target large
+pgno, parent txnid-front, data size, and checking flags. Validation rechecks that
+the cursor is still in the captured checking mode, the source page still resolves
+the same node index to the same N_BIG node with the same large pgno/data size,
+and the parent txnid-front is unchanged before submitting the read. Submit still
+calls `page_get_large()` and returns a normal `pgr_t`, leaving `page_check()`'s
+existing overflow page-count validation and `pgr_release()` ownership unchanged.
+This removes the direct `page_get_large(mc, node_largedata_pgno(node),
+mp->txnid)` call from the N_BIG validation arm and gives large-value page checks
+an explicit request/completion point for a later async page-cache layer.
+Verification passed `git diff --check`, source scans covering
+`dxb_page_check_bigdata_page_get_submit_io_t`,
+`page_check_bigdata_page_get()`, the updated `page_check()` N_BIG call site, and
+the absence of the old direct fetch from the `page_check()` N_BIG block, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.101` batch, `1.143` crud, `1.007` iterate,
+`1.040` get, and `1.067` delete.
+
+A later cursor-delete large-page retirement cleanup added
+`dxb_cursor_delete_bigdata_page_get_submit_io_t` and
+`cursor_delete_bigdata_page_get()` for `cursor_del()`'s N_BIG retirement read.
+The request captures the cursor, transaction, source leaf, large-node pointer,
+cursor top, node index, target large pgno, and parent txnid-front. Validation
+rechecks the cursor/transaction/top/source/index relationship, source leaf
+state, node pointer, N_BIG flag, large pgno, source txnid-front, and a rebuilt
+request before submitting the read. Submit still calls `page_get_large()` and
+returns a normal `pgr_t`, leaving the existing `page_retire(mc, lp.page)` and
+`pgr_release()` ownership unchanged. This removes the direct delete-path
+large-page fetch and gives cursor deletion overflow retirement an explicit
+request/completion point for a later async page-cache layer. Verification passed
+`git diff --check`, source scans covering
+`dxb_cursor_delete_bigdata_page_get_submit_io_t`,
+`cursor_delete_bigdata_page_get()`, the updated `cursor_del()` N_BIG call site,
+and the absence of the old direct delete-path fetch from source, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.081` batch, `1.157` crud, `0.872` iterate,
+`1.066` get, and `1.067` delete.
+
+A later cursor-put large-page overwrite cleanup added
+`dxb_cursor_put_bigdata_page_get_submit_io_t` and
+`cursor_put_bigdata_page_get()` for `cursor_put()`'s N_BIG overwrite/retire
+read. The request captures the cursor, transaction, source leaf, large-node
+pointer, cursor top, node index, target large pgno, and parent txnid-front.
+Validation rechecks the cursor/transaction/top/source/index relationship, source
+leaf state, node pointer, N_BIG flag, large pgno, source txnid-front, and a
+rebuilt request before submitting the read. Submit still calls
+`page_get_large()` and returns a normal `pgr_t`, leaving the existing overwrite
+reuse, `page_unspill()`, `page_retire()`, and `pgr_release()` ownership flow
+unchanged. This removes the direct overwrite-path
+`page_get_large(mc, pgno, mc->pg[mc->top]->txnid)` call and gives large-value
+overwrite handling an explicit request/completion point for a later async
+page-cache layer. Verification passed `git diff --check`, source scans covering
+`dxb_cursor_put_bigdata_page_get_submit_io_t`,
+`cursor_put_bigdata_page_get()`, the updated `cursor_put()` N_BIG call site, and
+the absence of the old direct overwrite-path fetch from source, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.088` batch, `1.146` crud, `1.061` iterate,
+`0.964` get, and `1.081` delete.
+
+A later tree-walk large-page visitor cleanup added
+`dxb_walk_large_page_get_submit_io_t` and `walk_large_page_get()` for
+`walk_pgno()`'s N_BIG visitor read. The request captures the walk context,
+transaction, cursor, source leaf, large-node pointer/index, source page number,
+target large pgno, parent txnid-front, node data size, and traversal depth.
+Validation rechecks the walk context's transaction/cursor/depth, source leaf
+identity, source page number/txnid-front, node pointer, N_BIG flag, large pgno,
+data size, and a rebuilt request before submitting the read. Submit still calls
+`page_get_large()` and returns a normal `pgr_t`, leaving the existing visitor
+call, error propagation through visitor arguments, and `pgr_release()` ownership
+unchanged. This removes the direct tree-walk
+`page_get_large(ctx->cursor, large_pgno, mp->txnid)` call and gives overflow
+page accounting in tree traversal an explicit request/completion point for a
+later async page-cache layer. Verification passed `git diff --check`, source
+scans covering `dxb_walk_large_page_get_submit_io_t`, `walk_large_page_get()`,
+the updated `walk_pgno()` N_BIG call site, and the absence of the old direct
+tree-walk fetch from source, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.137`
+batch, `1.153` crud, `1.213` iterate, `0.999` get, and `1.073` delete.
+
+A later meta-shadow refresh read cleanup added
+`dxb_meta_shadow_refresh_read_submit_io_t` and
+`meta_shadow_refresh_read()` for `meta_shadow_refresh()`'s explicit meta-page
+buffer reload. The request captures the environment, data storage handle,
+generic read-submit descriptor, destination `meta_shadow` buffer, and expected
+shadow byte size. Validation rechecks that the read still targets the
+NUM_METAS-page file prefix, the destination buffer is still the environment's
+current `meta_shadow`, the expected byte count still matches
+`meta_shadow_bytes`, the generic read-submit descriptor is valid, and a rebuilt
+request matches before submitting the read. Submit still delegates to
+`dxb_storage_submit_read_data()` and callers still unwrap only `.err`, preserving
+the current synchronous open/refresh behavior while giving meta-shadow reloads
+their own request/completion point for a later async backend. This removes the
+inline direct storage-read submit from `meta_shadow_refresh()` and keeps meta
+page refresh on the explicit-buffer path required for data-file mmap removal.
+Verification passed `git diff --check`, source scans covering
+`dxb_meta_shadow_refresh_read_submit_io_t`,
+`meta_shadow_make_refresh_read_submit_io()`,
+`meta_shadow_refresh_read_submit_io_validate()`,
+`meta_shadow_submit_refresh_read()`, `meta_shadow_refresh_read()`, the updated
+`meta_shadow_refresh()` call site, and the absence of the old inline direct
+submit from `meta_shadow_refresh()`, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.098`
+batch, `1.164` crud, `1.031` iterate, `1.009` get, and `1.070` delete.
+
+A later warmup force-read cleanup added `dxb_warmup_force_read_submit_io_t` and
+`warmup_force_read_chunk()` for `warmup_force_read()`'s sequential page-read
+chunks. The request captures the data storage handle, page span, generic
+read-submit descriptor, destination buffer, and buffer capacity. Validation
+rechecks the page span, read-submit descriptor, buffer identity/capacity, and a
+rebuilt request before submitting the read. Submit still delegates to
+`dxb_storage_submit_read_data()` and returns only `.err`, preserving the current
+synchronous warmup timeout and scan-offset behavior while giving forced warmup
+reads an operation-level request/completion point for later async or batched read
+submission. This removes the inline direct storage-read submit from the warmup
+loop and keeps the readahead/warmup path on explicit data-file I/O instead of
+mapped-data touching. Verification passed `git diff --check`, source scans
+covering `dxb_warmup_force_read_submit_io_t`,
+`warmup_make_force_read_submit_io()`,
+`warmup_force_read_submit_io_validate()`, `warmup_submit_force_read()`,
+`warmup_force_read_chunk()`, the updated `warmup_force_read()` loop, and the
+absence of the old inline direct submit from that loop, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.112` batch, `1.150` crud, `1.247` iterate,
+`0.924` get, and `1.070` delete.
+
+A later portable copy fallback read cleanup added
+`dxb_copy_asis_read_submit_io_t` and `copy_asis_read_portable_chunk()` for
+`copy_asis()`'s portable environment-copy fallback. The request captures the
+data storage handle, source byte range, destination offset,
+`dxb_data_export_read_io_t`, generic read-submit descriptor, destination buffer,
+and buffer capacity. Validation rechecks the export-read descriptor, generic
+read-submit descriptor, source byte range, destination offset, buffer
+identity/capacity, and a rebuilt request before submitting the read. Submit
+still delegates to `dxb_storage_submit_read_data()` and returns only `.err`,
+preserving the existing throttle/parking behavior, `osal_write()` payload
+offset, and copy-offset advancement. This removes the inline direct
+storage-read submit from the portable copy fallback and gives
+non-`sendfile()`/non-`copy_file_range()` environment copy reads an explicit
+async-capable request point. Verification passed `git diff --check`, source
+scans covering `dxb_copy_asis_read_submit_io_t`,
+`copy_asis_make_read_submit_io()`, `copy_asis_read_submit_io_validate()`,
+`copy_asis_submit_read()`, `copy_asis_read_portable_chunk()`, the updated
+`copy_asis()` portable fallback loop, and the absence of the old inline direct
+submit from that loop, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.089`
+batch, `1.146` crud, `0.859` iterate, `1.079` get, and `1.067` delete.
+
+A later coherency root-read cleanup added
+`dxb_coherency_root_read_submit_io_t` and `coherency_submit_root_read()` for the
+single-page root probe inside `coherency_probe_root_txnid()`. The request
+captures the data storage handle, root pgno, rebuilt root page read descriptor,
+generic read-submit descriptor, destination buffer, and buffer capacity.
+Validation rechecks the data-read descriptor, generic read-submit descriptor,
+root pgno, one-page extent shape, buffer identity/capacity, and a rebuilt
+request before submitting the read. Submit still delegates to
+`dxb_storage_submit_read_data()` and returns only `.err`, preserving the current
+coherency warning paths, current-file-view check, root-buffer allocation/free,
+and `txnid` extraction from the loaded page. This removes the inline direct
+storage-read submit from the coherency root probe and gives metadata coherency
+root-page reads an explicit async-capable request point. Verification passed
+`git diff --check`, source scans covering
+`dxb_coherency_root_read_submit_io_t`,
+`coherency_make_root_read_submit_io()`,
+`coherency_root_read_submit_io_validate()`, `coherency_submit_root_read()`, the
+updated `coherency_probe_root_txnid()` call site, and the absence of the old
+inline direct submit from that probe, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.104`
+batch, `1.150` crud, `1.020` iterate, `1.021` get, and `1.076` delete.
+
+A later defrag page-read cleanup added `dxb_defrag_page_read_submit_io_t` and
+`defrag_read_page()` for the uncached single-page reads in `defrag_move()`. The
+request captures the defrag context, transaction, data storage handle, source
+pgno, current `first_unallocated` bound, rebuilt data-read descriptor, generic
+read-submit descriptor, destination buffer, and buffer capacity. Validation
+rechecks the transaction/storage identity, source pgno bounds, one-page read
+shape, current geometry bound, buffer identity/capacity, and a rebuilt request
+before submitting the read. Submit still delegates to
+`dxb_storage_submit_read_data()` and returns only `.err`, preserving the current
+incore fast path through `defrag_get_page()`, `repnl_clone` checking assertions,
+page fixup, auxiliary-buffer reuse, and write/copy behavior. This removes both
+inline direct storage-read submits from the defrag move fallback and gives
+uncached defrag page copies an explicit async-capable request point. Verification
+passed `git diff --check`, source scans covering
+`dxb_defrag_page_read_submit_io_t`, `defrag_make_page_read_submit_io()`,
+`defrag_page_read_submit_io_validate()`, `defrag_submit_page_read()`,
+`defrag_read_page()`, the updated `defrag_move()` call sites, and the absence of
+the old inline direct `dxb_storage_submit_read_data(storage, &submit).err` calls,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.099`
+batch, `1.152` crud, `0.995` iterate, `0.923` get, and `1.064` delete.
+
+A later page-cache fill-read cleanup added `dxb_cache_fill_read_submit_io_t` and
+`dxb_storage_submit_cache_fill_read()` for the normal page-cache miss path in
+`dxb_storage_read_cached_page()`. The request captures the cache read
+descriptor, allocated cache entry, and rebuilt low-level storage read-submit
+descriptor. Validation rechecks the cache read descriptor, entry storage/owner,
+pin count, detached-list state, snapshot/reusable flags, page-size shift,
+entry page span, destination page buffer, generic read-submit descriptor, and a
+rebuilt request before submitting the read. Submit still delegates to
+`dxb_storage_submit_read_data()`, preserving the existing page allocation,
+submitted flag propagation, payload-size check, tracked-cache insert path, and
+bailout freeing behavior. This removes the inline direct storage-read submit
+from the page-cache fill path and gives cache miss reads an explicit
+async-capable request point. Verification passed `git diff --check`, source
+scans covering `dxb_cache_fill_read_submit_io_t`,
+`dxb_storage_make_cache_fill_read_submit_io()`,
+`dxb_storage_cache_fill_read_submit_io_validate()`,
+`dxb_storage_submit_cache_fill_read()`, the updated
+`dxb_storage_read_cached_page()` call site, and the absence of the old inline
+`dxb_storage_make_read_submit_io(storage, &io->data, entry->page, &submit)` and
+`dxb_storage_submit_read_data(storage, &submit)` pair from that path, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.093` batch, `1.151` crud, `0.819`
+iterate, `1.058` get, and `1.069` delete.
+
+A later large-page materialization read cleanup added
+`dxb_cache_materialize_read_submit_io_t` and
+`dxb_storage_submit_cache_materialize_read()` for
+`dxb_storage_materialize_cached_large_page()`. The request captures the
+materialization descriptor, cached `pgr`, allocated large-page buffer, and
+rebuilt low-level storage read-submit descriptor. Validation rechecks cached
+`pgr`/storage identity, pin count, rebuilt materialization span, destination
+buffer identity, generic read-submit descriptor, and a rebuilt request before
+submitting the read. Submit still delegates to `dxb_storage_submit_read_data()`,
+preserving the existing allocation/free behavior, submitted flag propagation,
+payload-size check, and detach/replace decision. This removes the inline direct
+storage-read submit from large-page materialization and gives overflow expansion
+an explicit async-capable request point. Verification passed `git diff --check`,
+source scans covering `dxb_cache_materialize_read_submit_io_t`,
+`dxb_storage_make_cache_materialize_read_submit_io()`,
+`dxb_storage_cache_materialize_read_submit_io_validate()`,
+`dxb_storage_submit_cache_materialize_read()`, the updated
+`dxb_storage_materialize_cached_large_page()` call site, and the absence of the
+old inline `dxb_storage_submit_read_data(storage, &submit)` call from that path,
+the GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.113` batch, `1.152` crud, `0.991`
+iterate, `0.944` get, and `1.099` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -96,16 +96,135 @@ typedef struct dxb_size_io {
   size_t limit;
 } dxb_size_io_t;
 
+typedef struct dxb_setup_size_submit_io {
+  dxb_size_io_t target;
+  unsigned flags;
+  unsigned options;
+} dxb_setup_size_submit_io_t;
+
+typedef struct dxb_resize_size_submit_io {
+  dxb_size_io_t target;
+  unsigned flags;
+} dxb_resize_size_submit_io_t;
+
+typedef struct dxb_filesize_submit_io {
+  uint64_t target;
+  bool set;
+} dxb_filesize_submit_io_t;
+
+#if !defined(_WIN32) && !defined(_WIN64)
+typedef struct dxb_stat_submit_io {
+  bool fetch;
+} dxb_stat_submit_io_t;
+#endif /* !Windows */
+
+typedef struct dxb_sysinfo_submit_io {
+  bool fetch;
+} dxb_sysinfo_submit_io_t;
+
+typedef struct dxb_incore_submit_io {
+  bool probe;
+} dxb_incore_submit_io_t;
+
+typedef struct dxb_readonly_submit_io {
+  const pathchar_t *pathname;
+  int source_err;
+} dxb_readonly_submit_io_t;
+
+typedef struct dxb_lock_submit_io {
+  dxb_lock_io_t range;
+  int cmd;
+  int lck;
+  bool with_retries;
+} dxb_lock_submit_io_t;
+
+typedef struct dxb_open_submit_io {
+  const MDBX_env *env;
+  const pathchar_t *pathname;
+  enum osal_openfile_purpose purpose;
+  mdbx_mode_t mode_bits;
+  bool meta_sync;
+} dxb_open_submit_io_t;
+
+typedef struct dxb_park_submit_io {
+  enum dxb_io_channel channel;
+  dxb_byte_io_t position;
+} dxb_park_submit_io_t;
+
+typedef struct dxb_close_submit_io {
+  bool env_active;
+  bool reset;
+} dxb_close_submit_io_t;
+
+typedef struct dxb_init_submit_io {
+  bool init;
+} dxb_init_submit_io_t;
+
+typedef struct dxb_reset_submit_io {
+  bool env_active;
+  bool reset;
+} dxb_reset_submit_io_t;
+
+typedef struct dxb_deinit_submit_io {
+  bool env_active;
+  bool deinit;
+} dxb_deinit_submit_io_t;
+
 typedef struct dxb_sync_io {
   dxb_page_io_t pages;
   dxb_byte_io_t bytes;
   enum osal_syncmode_bits mode_bits;
 } dxb_sync_io_t;
 
+typedef struct dxb_sync_submit_io {
+  dxb_sync_io_t sync;
+} dxb_sync_submit_io_t;
+
 typedef struct dxb_data_read_io {
   dxb_page_io_t pages;
   dxb_byte_io_t bytes;
 } dxb_data_read_io_t;
+
+typedef struct dxb_read_submit_io {
+  dxb_data_read_io_t data;
+  void *buffer;
+} dxb_read_submit_io_t;
+
+typedef struct dxb_write_submit_io {
+  dxb_data_write_io_t data;
+  const void *buffer;
+} dxb_write_submit_io_t;
+
+typedef struct dxb_writev_submit_io {
+  dxb_data_write_io_t data;
+  struct iovec *iov;
+  size_t sgvcnt;
+} dxb_writev_submit_io_t;
+
+typedef struct dxb_write_queue_submit_io {
+  bool readonly;
+  bool create;
+} dxb_write_queue_submit_io_t;
+
+typedef struct dxb_write_queue_reset_submit_io {
+  bool reset;
+} dxb_write_queue_reset_submit_io_t;
+
+typedef struct dxb_dirty_write_queue_submit_io {
+  dxb_dirty_write_queue_io_t queue;
+} dxb_dirty_write_queue_submit_io_t;
+
+typedef struct dxb_dirty_queued_write_submit_io {
+  dxb_dirty_queued_write_io_t queued;
+} dxb_dirty_queued_write_submit_io_t;
+
+typedef struct dxb_dirty_write_walk_submit_io {
+  dxb_dirty_write_walk_io_t walk;
+} dxb_dirty_write_walk_submit_io_t;
+
+typedef struct dxb_queued_write_submit_io {
+  enum dxb_io_channel channel;
+} dxb_queued_write_submit_io_t;
 
 typedef struct dxb_cache_read_io {
   dxb_data_read_io_t data;
@@ -114,9 +233,329 @@ typedef struct dxb_cache_read_io {
   bool tracked;
 } dxb_cache_read_io_t;
 
+typedef struct dxb_cache_page_submit_io {
+  dxb_cache_read_io_t read;
+  bool fill;
+} dxb_cache_page_submit_io_t;
+
+typedef struct dxb_cache_fill_read_submit_io {
+  dxb_cache_read_io_t read;
+  page_cache_entry_t *entry;
+  dxb_read_submit_io_t storage_read;
+} dxb_cache_fill_read_submit_io_t;
+
+typedef struct dxb_committed_page_submit_io {
+  dxb_page_io_t request;
+  bool track_private;
+} dxb_committed_page_submit_io_t;
+
+typedef struct dxb_page_get_submit_io {
+  dxb_page_io_t request;
+  txnid_t front;
+  bool track_private;
+} dxb_page_get_submit_io_t;
+
+typedef struct dxb_cursor_page_get_submit_io {
+  dxb_page_get_submit_io_t get;
+  const MDBX_cursor *cursor;
+  uint16_t ill;
+} dxb_cursor_page_get_submit_io_t;
+
+typedef struct dxb_page_get_with_ref_submit_io {
+  const MDBX_cursor *cursor;
+  page_t **page;
+  page_ref_t *ref;
+  pgno_t pgno;
+  txnid_t front;
+  bool retain_ref;
+} dxb_page_get_with_ref_submit_io_t;
+
+typedef struct dxb_cursor_ref_retain_submit_io {
+  const MDBX_cursor *cursor;
+  page_ref_t ref;
+} dxb_cursor_ref_retain_submit_io_t;
+
+typedef struct dxb_cursor_top_ref_retain_submit_io {
+  MDBX_cursor *cursor;
+  page_t *page;
+  page_ref_t ref;
+  intptr_t top;
+  indx_t ki;
+  uint16_t tree_height;
+} dxb_cursor_top_ref_retain_submit_io_t;
+
+typedef struct dxb_cursor_ref_release_submit_io {
+  const MDBX_cursor *cursor;
+  page_ref_t *ref;
+  page_ref_t captured;
+} dxb_cursor_ref_release_submit_io_t;
+
+typedef struct dxb_cursor_rebalance_refs_release_submit_io {
+  MDBX_cursor *cursor;
+  MDBX_cursor *neighbor;
+  page_t *left_page;
+  page_t *right_page;
+  page_ref_t *left_ref;
+  page_ref_t *right_ref;
+  page_ref_t left;
+  page_ref_t right;
+  int16_t neighbor_top_and_flags;
+} dxb_cursor_rebalance_refs_release_submit_io_t;
+
+typedef struct dxb_cursor_rebalance_neighbor_set_submit_io {
+  MDBX_cursor *neighbor;
+  page_t *page;
+  page_ref_t ref;
+  intptr_t slot;
+  indx_t parent_ki;
+  indx_t top_ki;
+  int16_t neighbor_top_and_flags;
+} dxb_cursor_rebalance_neighbor_set_submit_io_t;
+
+typedef struct dxb_compacting_branch_child_copy_submit_io {
+  MDBX_cursor *cursor;
+  page_t **source;
+  page_t *source_page;
+  page_t *copy_page;
+  page_ref_t *source_ref;
+  page_ref_t captured_ref;
+  intptr_t previous_top;
+  intptr_t next_top;
+  indx_t ki;
+} dxb_compacting_branch_child_copy_submit_io_t;
+
+typedef struct dxb_page_touch_redirect_submit_io {
+  MDBX_txn *txn;
+  MDBX_cursor *cursor;
+  const page_t *old_page;
+  page_t *new_page;
+  page_ref_t new_ref;
+  intptr_t slot;
+  size_t dbi;
+  int16_t top_and_flags;
+  bool inner;
+} dxb_page_touch_redirect_submit_io_t;
+
+typedef struct dxb_pgr_release_submit_io {
+  const MDBX_cursor *cursor;
+  pgr_t *pgr;
+  page_t *page;
+  int err;
+  page_ref_t ref;
+} dxb_pgr_release_submit_io_t;
+
+typedef struct dxb_cursor_stack_set_submit_io {
+  MDBX_cursor *cursor;
+  page_t *page;
+  page_ref_t ref;
+  intptr_t slot;
+} dxb_cursor_stack_set_submit_io_t;
+
+typedef struct dxb_cursor_stack_set_ref_consume_submit_io {
+  MDBX_cursor *cursor;
+  page_t *page;
+  page_ref_t *ref;
+  page_ref_t captured;
+  intptr_t slot;
+} dxb_cursor_stack_set_ref_consume_submit_io_t;
+
+typedef struct dxb_cursor_stack_set_synthetic_submit_io {
+  MDBX_cursor *cursor;
+  page_t *page;
+  page_ref_t ref;
+  intptr_t slot;
+} dxb_cursor_stack_set_synthetic_submit_io_t;
+
+typedef struct dxb_cursor_stack_copy_submit_io {
+  MDBX_cursor *dst;
+  const MDBX_cursor *src;
+  page_t *page;
+  page_ref_t ref;
+  intptr_t dst_slot;
+  intptr_t src_slot;
+} dxb_cursor_stack_copy_submit_io_t;
+
+typedef struct dxb_cursor_stack_set_pgr_submit_io {
+  MDBX_cursor *cursor;
+  const pgr_t *pgr;
+  pgr_t captured;
+  intptr_t slot;
+} dxb_cursor_stack_set_pgr_submit_io_t;
+
+typedef struct dxb_cursor_stack_set_pgr_consume_submit_io {
+  MDBX_cursor *cursor;
+  pgr_t *pgr;
+  pgr_t captured;
+  intptr_t slot;
+} dxb_cursor_stack_set_pgr_consume_submit_io_t;
+
+typedef struct dxb_cursor_stack_page_get_submit_io {
+  MDBX_cursor *cursor;
+  pgno_t pgno;
+  txnid_t front;
+  intptr_t slot;
+  intptr_t captured_top;
+} dxb_cursor_stack_page_get_submit_io_t;
+
+typedef struct dxb_cursor_validate_branch_child_submit_io {
+  const MDBX_cursor *cursor;
+  page_t *parent;
+  page_ref_t parent_ref;
+  pgno_t child_pgno;
+  txnid_t front;
+  intptr_t parent_slot;
+  size_t parent_ki;
+  intptr_t captured_top;
+  bool expect_leaf;
+} dxb_cursor_validate_branch_child_submit_io_t;
+
+typedef struct dxb_cursor_stack_release_submit_io {
+  MDBX_cursor *cursor;
+  page_t *page;
+  page_ref_t ref;
+  intptr_t slot;
+} dxb_cursor_stack_release_submit_io_t;
+
+typedef struct dxb_cursor_stack_release_from_submit_io {
+  MDBX_cursor *cursor;
+  intptr_t first;
+  intptr_t captured_top;
+} dxb_cursor_stack_release_from_submit_io_t;
+
+typedef struct dxb_cursor_push_pgr_submit_io {
+  MDBX_cursor *cursor;
+  pgr_t pgr;
+  intptr_t previous_top;
+  indx_t ki;
+} dxb_cursor_push_pgr_submit_io_t;
+
+typedef struct dxb_cursor_push_pgr_consume_submit_io {
+  MDBX_cursor *cursor;
+  pgr_t *pgr;
+  pgr_t captured;
+  intptr_t previous_top;
+  indx_t ki;
+} dxb_cursor_push_pgr_consume_submit_io_t;
+
+typedef struct dxb_cursor_branch_child_push_submit_io {
+  MDBX_cursor *cursor;
+  page_t *parent;
+  page_ref_t parent_ref;
+  pgno_t child_pgno;
+  txnid_t front;
+  intptr_t parent_top;
+  indx_t parent_ki;
+  indx_t child_ki;
+  bool child_ki_last;
+} dxb_cursor_branch_child_push_submit_io_t;
+
+typedef struct dxb_cursor_pop_submit_io {
+  MDBX_cursor *cursor;
+  page_t *page;
+  page_ref_t ref;
+  intptr_t top;
+} dxb_cursor_pop_submit_io_t;
+
+typedef struct dxb_cursor_pop_keep_ref_submit_io {
+  MDBX_cursor *cursor;
+  page_t *page;
+  page_ref_t ref;
+  intptr_t top;
+} dxb_cursor_pop_keep_ref_submit_io_t;
+
+typedef struct dxb_cursor_pop_keep_ref_restore_submit_io {
+  MDBX_cursor *cursor;
+  page_t *page;
+  page_ref_t ref;
+  intptr_t previous_top;
+  intptr_t restored_top;
+} dxb_cursor_pop_keep_ref_restore_submit_io_t;
+
+typedef struct dxb_cursor_value_set_submit_io {
+  MDBX_cursor *cursor;
+  pgr_t pgr;
+} dxb_cursor_value_set_submit_io_t;
+
+typedef struct dxb_cursor_value_release_submit_io {
+  MDBX_cursor *cursor;
+  page_t *page;
+  page_ref_t ref;
+} dxb_cursor_value_release_submit_io_t;
+
+typedef struct dxb_node_key_submit_io {
+  const node_t *node;
+  void *key;
+  size_t bytes;
+} dxb_node_key_submit_io_t;
+
+typedef struct dxb_dupfix_key_submit_io {
+  const page_t *page;
+  void *key;
+  size_t index;
+  size_t requested_bytes;
+  size_t bytes;
+} dxb_dupfix_key_submit_io_t;
+
+typedef struct dxb_bigdata_read_submit_io {
+  MDBX_cursor *cursor;
+  MDBX_val *data;
+  const node_t *node;
+  const page_t *source;
+  pgno_t large_pgno;
+  txnid_t front;
+  size_t bytes;
+  unsigned npages;
+} dxb_bigdata_read_submit_io_t;
+
+typedef struct dxb_node_read_submit_io {
+  MDBX_cursor *cursor;
+  MDBX_val *data;
+  const node_t *node;
+  const page_t *source;
+  void *node_data;
+  size_t bytes;
+  uint8_t flags;
+  bool bigdata;
+} dxb_node_read_submit_io_t;
+
+typedef struct dxb_large_page_read_submit_io {
+  dxb_page_io_t span;
+  bool cache_backed;
+  bool materialize;
+} dxb_large_page_read_submit_io_t;
+
+typedef struct dxb_cache_insert_submit_io {
+  dxb_cache_read_io_t read;
+  page_cache_entry_t *entry;
+} dxb_cache_insert_submit_io_t;
+
 typedef struct dxb_cache_materialize_io {
   dxb_data_read_io_t data;
 } dxb_cache_materialize_io_t;
+
+typedef struct dxb_cache_materialize_submit_io {
+  dxb_cache_materialize_io_t materialize;
+} dxb_cache_materialize_submit_io_t;
+
+typedef struct dxb_cache_materialize_read_submit_io {
+  dxb_cache_materialize_io_t materialize;
+  const pgr_t *pgr;
+  page_t *large;
+  dxb_read_submit_io_t storage_read;
+} dxb_cache_materialize_read_submit_io_t;
+
+typedef struct dxb_cache_detach_submit_io {
+  dxb_cache_materialize_io_t materialize;
+  page_t *large;
+  size_t payload_bytes;
+} dxb_cache_detach_submit_io_t;
+
+typedef struct dxb_cache_replace_submit_io {
+  dxb_cache_materialize_io_t materialize;
+  page_t *large;
+  size_t payload_bytes;
+  bool tracked;
+} dxb_cache_replace_submit_io_t;
 
 typedef struct dxb_data_copy_io {
   dxb_page_io_t src_pages;
@@ -125,11 +564,20 @@ typedef struct dxb_data_copy_io {
   dxb_byte_io_t dst_bytes;
 } dxb_data_copy_io_t;
 
+typedef struct dxb_data_copy_submit_io {
+  dxb_data_copy_io_t copy;
+} dxb_data_copy_submit_io_t;
+
 typedef struct dxb_meta_read_io {
   dxb_byte_io_t bytes;
   unsigned number;
   size_t probe_pagesize;
 } dxb_meta_read_io_t;
+
+typedef struct dxb_meta_read_submit_io {
+  dxb_meta_read_io_t meta;
+  void *buffer;
+} dxb_meta_read_submit_io_t;
 
 typedef struct dxb_meta_write_io {
   dxb_page_io_t page;
@@ -139,6 +587,11 @@ typedef struct dxb_meta_write_io {
   size_t payload_bytes;
   bool full_page;
 } dxb_meta_write_io_t;
+
+typedef struct dxb_meta_write_submit_io {
+  dxb_meta_write_io_t meta;
+  const void *buffer;
+} dxb_meta_write_submit_io_t;
 
 typedef struct dxb_page_coverage_io {
   dxb_byte_io_t request;
@@ -151,20 +604,52 @@ typedef struct dxb_discard_io {
   enum dxb_discard_mode mode;
 } dxb_discard_io_t;
 
+typedef struct dxb_discard_submit_io {
+  dxb_discard_io_t discard;
+} dxb_discard_submit_io_t;
+
 typedef struct dxb_cache_invalidate_io {
   dxb_page_io_t pages;
   bool include_reusable;
 } dxb_cache_invalidate_io_t;
+
+typedef struct dxb_cache_invalidate_submit_io {
+  dxb_cache_invalidate_io_t invalidate;
+} dxb_cache_invalidate_submit_io_t;
+
+typedef struct dxb_cache_ref_submit_io {
+  page_ref_t *ref;
+  const MDBX_cursor *cursor;
+  bool retain;
+} dxb_cache_ref_submit_io_t;
+
+typedef struct dxb_cache_release_all_submit_io {
+  bool env_active;
+  bool release_all;
+} dxb_cache_release_all_submit_io_t;
 
 typedef struct dxb_advice_io {
   dxb_page_coverage_io_t range;
   enum dxb_advice advice;
 } dxb_advice_io_t;
 
+typedef struct dxb_advice_submit_io {
+  dxb_advice_io_t advice;
+} dxb_advice_submit_io_t;
+
+typedef struct dxb_readahead_submit_io {
+  bool enable;
+} dxb_readahead_submit_io_t;
+
 typedef struct dxb_data_export_io {
   dxb_page_coverage_io_t source;
   uint64_t dst_offset;
 } dxb_data_export_io_t;
+
+typedef struct dxb_data_export_submit_io {
+  dxb_data_export_io_t export;
+  mdbx_filehandle_t dst_fd;
+} dxb_data_export_submit_io_t;
 
 typedef struct dxb_data_export_read_io {
   dxb_data_export_io_t export;
@@ -210,20 +695,26 @@ typedef struct dxb_cache_page_result {
   bool hit;
   bool filled;
   bool tracked;
+  bool submitted;
+  bool completed;
 } dxb_cache_page_result_t;
 
 static inline dxb_cache_page_result_t dxb_cache_page_result(pgr_t page, size_t payload_bytes, bool hit, bool filled,
-                                                            bool tracked) {
-  const dxb_cache_page_result_t result = {page, payload_bytes, hit, filled, tracked};
+                                                            bool tracked, bool submitted, bool completed) {
+  const dxb_cache_page_result_t result = {page, payload_bytes, hit, filled, tracked, submitted, completed};
   return result;
 }
 
 static inline dxb_cache_page_result_t dxb_cache_page_error(int err) {
-  return dxb_cache_page_result(pgr_error(err), 0, false, false, false);
+  return dxb_cache_page_result(pgr_error(err), 0, false, false, false, false, false);
+}
+
+static inline dxb_cache_page_result_t dxb_cache_page_submitted_error(int err, bool submitted) {
+  return dxb_cache_page_result(pgr_error(err), 0, false, false, false, submitted, false);
 }
 
 static inline dxb_cache_page_result_t dxb_cache_page_miss(void) {
-  return dxb_cache_page_error(MDBX_RESULT_TRUE);
+  return dxb_cache_page_result(pgr_error(MDBX_RESULT_TRUE), 0, false, false, false, false, true);
 }
 
 static inline page_ref_t page_ref_empty(void) {
@@ -1368,6 +1859,49 @@ struct MDBX_cursor {
 #endif /* MDBX_DEBUG_SEARCH_DISPATCHING */
 };
 
+typedef struct dxb_cursor_stack_retain_all_submit_io {
+  MDBX_cursor *cursor;
+  page_t *page[CURSOR_STACK_SIZE];
+  page_ref_t pgref[CURSOR_STACK_SIZE];
+  page_ref_t value_ref;
+  int16_t top_and_flags;
+} dxb_cursor_stack_retain_all_submit_io_t;
+
+typedef struct dxb_cursor_tree_drop_stack_restore_submit_io {
+  MDBX_cursor *cursor;
+  page_t *page[CURSOR_STACK_SIZE];
+  page_ref_t ref[CURSOR_STACK_SIZE];
+  intptr_t first;
+  intptr_t top;
+} dxb_cursor_tree_drop_stack_restore_submit_io_t;
+
+typedef struct dxb_cursor_txn_pins_capture_submit_io {
+  MDBX_cursor *cursor;
+  MDBX_txn *txn;
+  page_ref_t *retained_refs;
+  page_ref_t pgref[CURSOR_STACK_SIZE];
+  page_ref_t value_ref;
+  size_t retained_refs_count;
+  size_t retained_refs_capacity;
+  size_t capture_count;
+} dxb_cursor_txn_pins_capture_submit_io_t;
+
+typedef struct dxb_txn_retained_refs_release_submit_io {
+  MDBX_txn *txn;
+  page_ref_t *retained_refs;
+  size_t retained_refs_count;
+  size_t retained_refs_capacity;
+} dxb_txn_retained_refs_release_submit_io_t;
+
+typedef struct dxb_txn_retained_ref_append_submit_io {
+  MDBX_txn *txn;
+  const MDBX_cursor *cursor;
+  page_ref_t *retained_refs;
+  page_ref_t ref;
+  size_t retained_refs_count;
+  size_t retained_refs_capacity;
+} dxb_txn_retained_ref_append_submit_io_t;
+
 struct inner_cursor {
   MDBX_cursor cursor;
   tree_t nested_tree;
@@ -1509,6 +2043,8 @@ static inline int dxb_storage_lock_io(uint64_t offset, uint64_t bytes, dxb_lock_
 }
 
 static inline int dxb_storage_lock_io_validate(const dxb_lock_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
   dxb_lock_io_t checked;
   int rc = dxb_storage_lock_io(io->offset, io->bytes, &checked);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -1517,6 +2053,42 @@ static inline int dxb_storage_lock_io_validate(const dxb_lock_io_t *io) {
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
+
+#if !(defined(_WIN32) || defined(_WIN64))
+static inline bool dxb_storage_lock_type_is_valid(int lck) {
+  return lck == F_RDLCK || lck == F_WRLCK || lck == F_UNLCK;
+}
+
+static inline int dxb_storage_make_lock_submit_io(int cmd, int lck, const dxb_lock_io_t *range,
+                                                  bool with_retries, dxb_lock_submit_io_t *io) {
+  if (unlikely(!io || !range || !cmd || !dxb_storage_lock_type_is_valid(lck)))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_lock_io_validate(range);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(with_retries && lck == F_UNLCK))
+    return MDBX_EINVAL;
+  io->range = *range;
+  io->cmd = cmd;
+  io->lck = lck;
+  io->with_retries = with_retries != 0;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_lock_submit_io_validate(const dxb_lock_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_lock_submit_io_t checked;
+  int rc = dxb_storage_make_lock_submit_io(io->cmd, io->lck, &io->range, io->with_retries, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return likely(checked.cmd == io->cmd && checked.lck == io->lck &&
+                checked.range.offset == io->range.offset && checked.range.bytes == io->range.bytes &&
+                checked.with_retries == io->with_retries)
+             ? MDBX_SUCCESS
+             : MDBX_EINVAL;
+}
+#endif /* !Windows */
 
 static inline int dxb_storage_size_io(size_t current, size_t limit, dxb_size_io_t *io) {
   if (unlikely(current > limit))
@@ -1528,11 +2100,316 @@ static inline int dxb_storage_size_io(size_t current, size_t limit, dxb_size_io_
 }
 
 static inline int dxb_storage_size_io_validate(const dxb_size_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
   dxb_size_io_t checked;
   int rc = dxb_storage_size_io(io->current, io->limit, &checked);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (unlikely(checked.current != io->current || checked.limit != io->limit))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_setup_size_submit_io(const dxb_size_io_t *target, unsigned flags, unsigned options,
+                                                        dxb_setup_size_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_size_io_validate(target);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  io->target = *target;
+  io->flags = flags;
+  io->options = options;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_setup_size_submit_io_validate(const dxb_setup_size_submit_io_t *io) {
+  dxb_setup_size_submit_io_t checked;
+  int rc = unlikely(!io) ? MDBX_EINVAL
+                         : dxb_storage_make_setup_size_submit_io(&io->target, io->flags, io->options, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return likely(checked.target.current == io->target.current && checked.target.limit == io->target.limit &&
+                checked.flags == io->flags && checked.options == io->options)
+             ? MDBX_SUCCESS
+             : MDBX_EINVAL;
+}
+
+static inline int dxb_storage_make_resize_size_submit_io(const dxb_size_io_t *target, unsigned flags,
+                                                         dxb_resize_size_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_size_io_validate(target);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  io->target = *target;
+  io->flags = flags;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_resize_size_submit_io_validate(const dxb_resize_size_submit_io_t *io) {
+  dxb_resize_size_submit_io_t checked;
+  int rc =
+      unlikely(!io) ? MDBX_EINVAL : dxb_storage_make_resize_size_submit_io(&io->target, io->flags, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return likely(checked.target.current == io->target.current && checked.target.limit == io->target.limit &&
+                checked.flags == io->flags)
+             ? MDBX_SUCCESS
+             : MDBX_EINVAL;
+}
+
+static inline int dxb_storage_make_filesize_fetch_submit_io(dxb_filesize_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  io->target = 0;
+  io->set = false;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_filesize_set_submit_io(uint64_t target, dxb_filesize_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  io->target = target;
+  io->set = true;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_filesize_fetch_submit_io_validate(const dxb_filesize_submit_io_t *io) {
+  if (unlikely(!io || io->set || io->target != 0))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_filesize_set_submit_io_validate(const dxb_filesize_submit_io_t *io) {
+  if (unlikely(!io || !io->set))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+#if !defined(_WIN32) && !defined(_WIN64)
+static inline int dxb_storage_make_stat_submit_io(dxb_stat_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  io->fetch = true;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_stat_submit_io_validate(const dxb_stat_submit_io_t *io) {
+  if (unlikely(!io || !io->fetch))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+#endif /* !Windows */
+
+static inline int dxb_storage_make_sysinfo_submit_io(dxb_sysinfo_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  io->fetch = true;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_sysinfo_submit_io_validate(const dxb_sysinfo_submit_io_t *io) {
+  if (unlikely(!io || !io->fetch))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_incore_submit_io(dxb_incore_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  io->probe = true;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_incore_submit_io_validate(const dxb_incore_submit_io_t *io) {
+  if (unlikely(!io || !io->probe))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_readonly_submit_io(const pathchar_t *pathname, int source_err,
+                                                      dxb_readonly_submit_io_t *io) {
+  if (unlikely(!pathname || !io))
+    return MDBX_EINVAL;
+  io->pathname = pathname;
+  io->source_err = source_err;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_readonly_submit_io_validate(const dxb_readonly_submit_io_t *io) {
+  dxb_readonly_submit_io_t checked;
+  int rc = unlikely(!io) ? MDBX_EINVAL : dxb_storage_make_readonly_submit_io(io->pathname, io->source_err, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.pathname != io->pathname || checked.source_err != io->source_err))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline bool dxb_storage_open_purpose_is_dxb(enum osal_openfile_purpose purpose) {
+  switch (purpose) {
+  case MDBX_OPEN_DXB_READ:
+  case MDBX_OPEN_DXB_LAZY:
+  case MDBX_OPEN_DXB_DSYNC:
+#if defined(_WIN32) || defined(_WIN64)
+  case MDBX_OPEN_DXB_OVERLAPPED:
+#endif /* Windows */
+    return true;
+  default:
+    return false;
+  }
+}
+
+static inline int dxb_storage_make_open_submit_io(const MDBX_env *env, const pathchar_t *pathname,
+                                                  enum osal_openfile_purpose purpose, mdbx_mode_t mode_bits,
+                                                  bool meta_sync, dxb_open_submit_io_t *io) {
+  if (unlikely(!env || !pathname || !io || !dxb_storage_open_purpose_is_dxb(purpose)))
+    return MDBX_EINVAL;
+  io->env = env;
+  io->pathname = pathname;
+  io->purpose = purpose;
+  io->mode_bits = mode_bits;
+  io->meta_sync = meta_sync != 0;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_open_submit_io_validate(const dxb_open_submit_io_t *io) {
+  dxb_open_submit_io_t checked;
+  int rc = unlikely(!io) ? MDBX_EINVAL
+                         : dxb_storage_make_open_submit_io(io->env, io->pathname, io->purpose, io->mode_bits,
+                                                           io->meta_sync, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env != io->env || checked.pathname != io->pathname || checked.purpose != io->purpose ||
+               checked.mode_bits != io->mode_bits || checked.meta_sync != io->meta_sync))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_park_submit_io(enum dxb_io_channel channel, const dxb_byte_io_t *position,
+                                                  dxb_park_submit_io_t *io) {
+  if (unlikely(!position || !io || (channel != dxb_io_data && channel != dxb_io_data_dsync)))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_byte_io_validate(position);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(position->bytes != 0))
+    return MDBX_EINVAL;
+
+  io->channel = channel;
+  io->position = *position;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_park_submit_io_validate(const dxb_park_submit_io_t *io) {
+  dxb_park_submit_io_t checked;
+  int rc =
+      unlikely(!io) ? MDBX_EINVAL : dxb_storage_make_park_submit_io(io->channel, &io->position, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.channel != io->channel || checked.position.offset != io->position.offset ||
+               checked.position.bytes != io->position.bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_close_submit_io(bool env_active, bool reset, dxb_close_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  io->env_active = env_active != 0;
+  io->reset = reset != 0;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_close_submit_io_validate(const dxb_close_submit_io_t *io) {
+  dxb_close_submit_io_t checked;
+  int rc = unlikely(!io) ? MDBX_EINVAL : dxb_storage_make_close_submit_io(io->env_active, io->reset, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env_active != io->env_active || checked.reset != io->reset))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_init_submit_io(dxb_init_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  io->init = true;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_init_submit_io_validate(const dxb_init_submit_io_t *io) {
+  if (unlikely(!io || !io->init))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_reset_submit_io(bool env_active, dxb_reset_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  io->env_active = env_active != 0;
+  io->reset = true;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_reset_submit_io_validate(const dxb_reset_submit_io_t *io) {
+  dxb_reset_submit_io_t checked;
+  int rc = unlikely(!io) ? MDBX_EINVAL : dxb_storage_make_reset_submit_io(io->env_active, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env_active != io->env_active || checked.reset != io->reset))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_deinit_submit_io(bool env_active, dxb_deinit_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  io->env_active = env_active != 0;
+  io->deinit = true;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_deinit_submit_io_validate(const dxb_deinit_submit_io_t *io) {
+  dxb_deinit_submit_io_t checked;
+  int rc = unlikely(!io) ? MDBX_EINVAL : dxb_storage_make_deinit_submit_io(io->env_active, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env_active != io->env_active || checked.deinit != io->deinit))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_write_queue_submit_io(bool readonly, bool create,
+                                                         dxb_write_queue_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  io->readonly = readonly != 0;
+  io->create = create != 0;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_write_queue_submit_io_validate(const dxb_write_queue_submit_io_t *io) {
+  dxb_write_queue_submit_io_t checked;
+  int rc = unlikely(!io) ? MDBX_EINVAL : dxb_storage_make_write_queue_submit_io(io->readonly, io->create, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.readonly != io->readonly || checked.create != io->create))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_write_queue_reset_submit_io(dxb_write_queue_reset_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  io->reset = true;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_write_queue_reset_submit_io_validate(const dxb_write_queue_reset_submit_io_t *io) {
+  if (unlikely(!io || !io->reset))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -1603,6 +2480,38 @@ static inline int dxb_storage_sync_io_validate(const dxb_storage_t *storage, con
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_make_sync_submit_io(const dxb_storage_t *storage, const dxb_sync_io_t *sync,
+                                                  dxb_sync_submit_io_t *io) {
+  if (unlikely(!sync))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_sync_io_validate(storage, sync);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->sync = *sync;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_sync_submit_io_validate(const dxb_storage_t *storage,
+                                                      const dxb_sync_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_sync_submit_io_t checked;
+  int rc = dxb_storage_make_sync_submit_io(storage, &io->sync, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.sync.pages.pgno != io->sync.pages.pgno ||
+               checked.sync.pages.end_pgno != io->sync.pages.end_pgno ||
+               checked.sync.pages.npages != io->sync.pages.npages ||
+               checked.sync.pages.offset != io->sync.pages.offset ||
+               checked.sync.pages.bytes != io->sync.pages.bytes ||
+               checked.sync.bytes.offset != io->sync.bytes.offset ||
+               checked.sync.bytes.bytes != io->sync.bytes.bytes ||
+               checked.sync.mode_bits != io->sync.mode_bits))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_make_meta_sync_io(const dxb_storage_t *storage, enum osal_syncmode_bits mode_bits,
                                                 dxb_sync_io_t *io) {
   dxb_page_io_t meta_pages;
@@ -1641,9 +2550,43 @@ static inline int dxb_storage_data_read_io_validate(const dxb_storage_t *storage
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_make_read_submit_io(const dxb_storage_t *storage, const dxb_data_read_io_t *data,
+                                                  void *buffer, dxb_read_submit_io_t *io) {
+  if (unlikely(!data || !buffer))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_data_read_io_validate(storage, data);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->data = *data;
+  io->buffer = buffer;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_read_submit_io_validate(const dxb_storage_t *storage,
+                                                      const dxb_read_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_read_submit_io_t checked;
+  int rc = dxb_storage_make_read_submit_io(storage, &io->data, io->buffer, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.data.pages.pgno != io->data.pages.pgno ||
+               checked.data.pages.end_pgno != io->data.pages.end_pgno ||
+               checked.data.pages.npages != io->data.pages.npages ||
+               checked.data.pages.offset != io->data.pages.offset ||
+               checked.data.pages.bytes != io->data.pages.bytes ||
+               checked.data.bytes.offset != io->data.bytes.offset ||
+               checked.data.bytes.bytes != io->data.bytes.bytes || checked.buffer != io->buffer))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_make_cache_read_io(const dxb_storage_t *storage, const dxb_page_io_t *pages,
                                                  txnid_t snapshot, bool reusable, bool tracked,
                                                  dxb_cache_read_io_t *io) {
+  if (unlikely(!storage || !pages || !io))
+    return MDBX_EINVAL;
   if (unlikely(pages->npages != 1 || (!reusable && snapshot != 0)))
     return MDBX_EINVAL;
 
@@ -1661,6 +2604,8 @@ static inline int dxb_storage_make_cache_read_io(const dxb_storage_t *storage, c
 
 static inline int dxb_storage_cache_read_io_validate(const dxb_storage_t *storage,
                                                      const dxb_cache_read_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
   dxb_cache_read_io_t checked;
   int rc = dxb_storage_make_cache_read_io(storage, &io->data.pages, io->snapshot, io->reusable, io->tracked,
                                          &checked);
@@ -1675,6 +2620,166 @@ static inline int dxb_storage_cache_read_io_validate(const dxb_storage_t *storag
                checked.data.bytes.bytes != io->data.bytes.bytes ||
                checked.snapshot != io->snapshot || checked.reusable != io->reusable ||
                checked.tracked != io->tracked))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_cache_page_submit_io(const dxb_storage_t *storage,
+                                                        const dxb_cache_read_io_t *read, bool fill,
+                                                        dxb_cache_page_submit_io_t *io) {
+  if (unlikely(!io || !read))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_cache_read_io_validate(storage, read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  io->read = *read;
+  io->fill = fill;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_cache_page_submit_io_validate(const dxb_storage_t *storage,
+                                                            const dxb_cache_page_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_cache_page_submit_io_t checked;
+  int rc = dxb_storage_make_cache_page_submit_io(storage, &io->read, io->fill, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.read.data.pages.pgno != io->read.data.pages.pgno ||
+               checked.read.data.pages.end_pgno != io->read.data.pages.end_pgno ||
+               checked.read.data.pages.npages != io->read.data.pages.npages ||
+               checked.read.data.pages.offset != io->read.data.pages.offset ||
+               checked.read.data.pages.bytes != io->read.data.pages.bytes ||
+               checked.read.data.bytes.offset != io->read.data.bytes.offset ||
+               checked.read.data.bytes.bytes != io->read.data.bytes.bytes ||
+               checked.read.snapshot != io->read.snapshot ||
+               checked.read.reusable != io->read.reusable ||
+               checked.read.tracked != io->read.tracked || checked.fill != io->fill))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_cache_fill_read_submit_io(const dxb_storage_t *storage,
+                                                             const dxb_cache_read_io_t *read,
+                                                             page_cache_entry_t *entry,
+                                                             dxb_cache_fill_read_submit_io_t *io) {
+  if (unlikely(!storage || !read || !entry || !io))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_cache_read_io_validate(storage, read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(entry->storage != storage || !entry->page || entry->pins != 1 || entry->next != nullptr ||
+               entry->owner != (read->tracked ? &storage->page_cache : nullptr) ||
+               entry->snapshot_txnid != read->snapshot || entry->reusable != read->reusable ||
+               entry->pagesize_ln != dxb_storage_pagesize_ln(storage)))
+    return MDBX_EINVAL;
+
+  rc = dxb_storage_page_io_validate(storage, &entry->io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(entry->io.pgno != read->data.pages.pgno ||
+               entry->io.end_pgno != read->data.pages.end_pgno ||
+               entry->io.npages != read->data.pages.npages ||
+               entry->io.offset != read->data.pages.offset ||
+               entry->io.bytes != read->data.pages.bytes))
+    return MDBX_EINVAL;
+
+  dxb_read_submit_io_t storage_read;
+  rc = dxb_storage_make_read_submit_io(storage, &read->data, entry->page, &storage_read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->read = *read;
+  io->entry = entry;
+  io->storage_read = storage_read;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_cache_fill_read_submit_io_validate(
+    const dxb_storage_t *storage, const dxb_cache_fill_read_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_cache_fill_read_submit_io_t checked;
+  int rc = dxb_storage_make_cache_fill_read_submit_io(storage, &io->read, io->entry, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_read_submit_io_validate(storage, &io->storage_read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.entry != io->entry ||
+               checked.read.data.pages.pgno != io->read.data.pages.pgno ||
+               checked.read.data.pages.end_pgno != io->read.data.pages.end_pgno ||
+               checked.read.data.pages.npages != io->read.data.pages.npages ||
+               checked.read.data.pages.offset != io->read.data.pages.offset ||
+               checked.read.data.pages.bytes != io->read.data.pages.bytes ||
+               checked.read.data.bytes.offset != io->read.data.bytes.offset ||
+               checked.read.data.bytes.bytes != io->read.data.bytes.bytes ||
+               checked.read.snapshot != io->read.snapshot ||
+               checked.read.reusable != io->read.reusable ||
+               checked.read.tracked != io->read.tracked ||
+               checked.storage_read.data.pages.pgno != io->storage_read.data.pages.pgno ||
+               checked.storage_read.data.pages.end_pgno != io->storage_read.data.pages.end_pgno ||
+               checked.storage_read.data.pages.npages != io->storage_read.data.pages.npages ||
+               checked.storage_read.data.pages.offset != io->storage_read.data.pages.offset ||
+               checked.storage_read.data.pages.bytes != io->storage_read.data.pages.bytes ||
+               checked.storage_read.data.bytes.offset != io->storage_read.data.bytes.offset ||
+               checked.storage_read.data.bytes.bytes != io->storage_read.data.bytes.bytes ||
+               checked.storage_read.buffer != io->storage_read.buffer ||
+               io->storage_read.buffer != io->entry->page))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_cache_insert_submit_io(const dxb_storage_t *storage,
+                                                          const dxb_cache_read_io_t *read,
+                                                          page_cache_entry_t *entry,
+                                                          dxb_cache_insert_submit_io_t *io) {
+  if (unlikely(!storage || !read || !entry || !io))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_cache_read_io_validate(storage, read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(!read->tracked || entry->owner != &storage->page_cache ||
+               entry->storage != storage || !entry->page || entry->pins != 1 ||
+               entry->next != nullptr || entry->snapshot_txnid != read->snapshot ||
+               entry->reusable != read->reusable ||
+               entry->pagesize_ln != dxb_storage_pagesize_ln(storage)))
+    return MDBX_EINVAL;
+
+  rc = dxb_storage_page_io_validate(storage, &entry->io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(entry->io.pgno != read->data.pages.pgno ||
+               entry->io.end_pgno != read->data.pages.end_pgno ||
+               entry->io.npages != read->data.pages.npages ||
+               entry->io.offset != read->data.pages.offset ||
+               entry->io.bytes != read->data.pages.bytes))
+    return MDBX_EINVAL;
+
+  io->read = *read;
+  io->entry = entry;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_cache_insert_submit_io_validate(
+    const dxb_storage_t *storage, const dxb_cache_insert_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_cache_insert_submit_io_t checked;
+  int rc = dxb_storage_make_cache_insert_submit_io(storage, &io->read, io->entry, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.entry != io->entry ||
+               checked.read.data.pages.pgno != io->read.data.pages.pgno ||
+               checked.read.data.pages.end_pgno != io->read.data.pages.end_pgno ||
+               checked.read.data.pages.npages != io->read.data.pages.npages ||
+               checked.read.data.pages.offset != io->read.data.pages.offset ||
+               checked.read.data.pages.bytes != io->read.data.pages.bytes ||
+               checked.read.data.bytes.offset != io->read.data.bytes.offset ||
+               checked.read.data.bytes.bytes != io->read.data.bytes.bytes ||
+               checked.read.snapshot != io->read.snapshot ||
+               checked.read.reusable != io->read.reusable ||
+               checked.read.tracked != io->read.tracked))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -1707,6 +2812,34 @@ static inline int dxb_storage_meta_read_io_validate(const dxb_meta_read_io_t *io
     return rc;
   if (unlikely(checked.bytes.offset != io->bytes.offset || checked.bytes.bytes != io->bytes.bytes ||
                checked.number != io->number || checked.probe_pagesize != io->probe_pagesize))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_meta_read_submit_io(const dxb_meta_read_io_t *meta, void *buffer,
+                                                       dxb_meta_read_submit_io_t *io) {
+  if (unlikely(!meta || !buffer))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_meta_read_io_validate(meta);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->meta = *meta;
+  io->buffer = buffer;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_meta_read_submit_io_validate(const dxb_meta_read_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_meta_read_submit_io_t checked;
+  int rc = dxb_storage_make_meta_read_submit_io(&io->meta, io->buffer, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.meta.bytes.offset != io->meta.bytes.offset ||
+               checked.meta.bytes.bytes != io->meta.bytes.bytes ||
+               checked.meta.number != io->meta.number ||
+               checked.meta.probe_pagesize != io->meta.probe_pagesize || checked.buffer != io->buffer))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -1796,8 +2929,46 @@ static inline int dxb_storage_meta_write_io_validate(const dxb_storage_t *storag
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_make_meta_write_submit_io(const dxb_storage_t *storage, const dxb_meta_write_io_t *meta,
+                                                        const void *buffer, dxb_meta_write_submit_io_t *io) {
+  if (unlikely(!meta || !buffer))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_meta_write_io_validate(storage, meta);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->meta = *meta;
+  io->buffer = buffer;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_meta_write_submit_io_validate(const dxb_storage_t *storage,
+                                                           const dxb_meta_write_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_meta_write_submit_io_t checked;
+  int rc = dxb_storage_make_meta_write_submit_io(storage, &io->meta, io->buffer, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.meta.page.pgno != io->meta.page.pgno ||
+               checked.meta.page.end_pgno != io->meta.page.end_pgno ||
+               checked.meta.page.npages != io->meta.page.npages ||
+               checked.meta.page.offset != io->meta.page.offset ||
+               checked.meta.page.bytes != io->meta.page.bytes ||
+               checked.meta.bytes.offset != io->meta.bytes.offset ||
+               checked.meta.bytes.bytes != io->meta.bytes.bytes ||
+               checked.meta.number != io->meta.number ||
+               checked.meta.payload_offset != io->meta.payload_offset ||
+               checked.meta.payload_bytes != io->meta.payload_bytes ||
+               checked.meta.full_page != io->meta.full_page || checked.buffer != io->buffer))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_page_ref_span_io(const dxb_storage_t *storage, const page_ref_t *ref, size_t npages,
                                                dxb_page_io_t *io) {
+  if (unlikely(!storage || !ref || !io))
+    return MDBX_EINVAL;
   if (unlikely(!ref->page))
     return MDBX_NOTFOUND;
   pgno_t pgno = ref->pgno;
@@ -1820,6 +2991,8 @@ static inline int dxb_storage_page_ref_io(const dxb_storage_t *storage, const pa
 
 static inline int dxb_storage_make_cache_materialize_io(const dxb_storage_t *storage, const page_ref_t *ref,
                                                         size_t npages, dxb_cache_materialize_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
   if (unlikely(npages <= 1))
     return MDBX_EINVAL;
 
@@ -1839,6 +3012,8 @@ static inline int dxb_storage_make_cache_materialize_io(const dxb_storage_t *sto
 
 static inline int dxb_storage_cache_materialize_io_validate(const dxb_storage_t *storage,
                                                             const dxb_cache_materialize_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
   if (unlikely(io->data.pages.npages <= 1))
     return MDBX_EINVAL;
 
@@ -1853,6 +3028,204 @@ static inline int dxb_storage_cache_materialize_io_validate(const dxb_storage_t 
                checked.pages.bytes != io->data.pages.bytes ||
                checked.bytes.offset != io->data.bytes.offset ||
                checked.bytes.bytes != io->data.bytes.bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_cache_materialize_submit_io(const dxb_storage_t *storage, const page_ref_t *ref,
+                                                               size_t npages,
+                                                               dxb_cache_materialize_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_cache_materialize_io_t materialize;
+  int rc = dxb_storage_make_cache_materialize_io(storage, ref, npages, &materialize);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  io->materialize = materialize;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_cache_materialize_submit_io_validate(
+    const dxb_storage_t *storage, const pgr_t *pgr, const dxb_cache_materialize_submit_io_t *io) {
+  if (unlikely(!pgr || !pgr->page || !io))
+    return MDBX_EINVAL;
+  dxb_cache_materialize_submit_io_t checked;
+  int rc = dxb_storage_make_cache_materialize_submit_io(storage, &pgr->ref, pgr->page->pages, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.materialize.data.pages.pgno != io->materialize.data.pages.pgno ||
+               checked.materialize.data.pages.end_pgno != io->materialize.data.pages.end_pgno ||
+               checked.materialize.data.pages.npages != io->materialize.data.pages.npages ||
+               checked.materialize.data.pages.offset != io->materialize.data.pages.offset ||
+               checked.materialize.data.pages.bytes != io->materialize.data.pages.bytes ||
+               checked.materialize.data.bytes.offset != io->materialize.data.bytes.offset ||
+               checked.materialize.data.bytes.bytes != io->materialize.data.bytes.bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_cache_materialize_read_submit_io(
+    const dxb_storage_t *storage, const pgr_t *pgr, page_t *large,
+    const dxb_cache_materialize_io_t *materialize, dxb_cache_materialize_read_submit_io_t *io) {
+  if (unlikely(!storage || !pgr || !pgr->page || !pgr->ref.cache || !large || !materialize || !io))
+    return MDBX_EINVAL;
+  if (unlikely(!(pgr->ref.flags & PAGE_REF_CACHE) || pgr->ref.cache->storage != storage ||
+               pgr->ref.cache->page != pgr->page || pgr->ref.cache->pins == 0))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_cache_materialize_io_validate(storage, materialize);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_cache_materialize_io_t checked_materialize;
+  rc = dxb_storage_make_cache_materialize_io(storage, &pgr->ref, pgr->page->pages, &checked_materialize);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked_materialize.data.pages.pgno != materialize->data.pages.pgno ||
+               checked_materialize.data.pages.end_pgno != materialize->data.pages.end_pgno ||
+               checked_materialize.data.pages.npages != materialize->data.pages.npages ||
+               checked_materialize.data.pages.offset != materialize->data.pages.offset ||
+               checked_materialize.data.pages.bytes != materialize->data.pages.bytes ||
+               checked_materialize.data.bytes.offset != materialize->data.bytes.offset ||
+               checked_materialize.data.bytes.bytes != materialize->data.bytes.bytes))
+    return MDBX_EINVAL;
+
+  dxb_read_submit_io_t storage_read;
+  rc = dxb_storage_make_read_submit_io(storage, &materialize->data, large, &storage_read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->materialize = *materialize;
+  io->pgr = pgr;
+  io->large = large;
+  io->storage_read = storage_read;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_cache_materialize_read_submit_io_validate(
+    const dxb_storage_t *storage, const dxb_cache_materialize_read_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+
+  dxb_cache_materialize_read_submit_io_t checked;
+  int rc = dxb_storage_make_cache_materialize_read_submit_io(storage, io->pgr, io->large, &io->materialize,
+                                                            &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_read_submit_io_validate(storage, &io->storage_read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.pgr != io->pgr || checked.large != io->large ||
+               checked.materialize.data.pages.pgno != io->materialize.data.pages.pgno ||
+               checked.materialize.data.pages.end_pgno != io->materialize.data.pages.end_pgno ||
+               checked.materialize.data.pages.npages != io->materialize.data.pages.npages ||
+               checked.materialize.data.pages.offset != io->materialize.data.pages.offset ||
+               checked.materialize.data.pages.bytes != io->materialize.data.pages.bytes ||
+               checked.materialize.data.bytes.offset != io->materialize.data.bytes.offset ||
+               checked.materialize.data.bytes.bytes != io->materialize.data.bytes.bytes ||
+               checked.storage_read.data.pages.pgno != io->storage_read.data.pages.pgno ||
+               checked.storage_read.data.pages.end_pgno != io->storage_read.data.pages.end_pgno ||
+               checked.storage_read.data.pages.npages != io->storage_read.data.pages.npages ||
+               checked.storage_read.data.pages.offset != io->storage_read.data.pages.offset ||
+               checked.storage_read.data.pages.bytes != io->storage_read.data.pages.bytes ||
+               checked.storage_read.data.bytes.offset != io->storage_read.data.bytes.offset ||
+               checked.storage_read.data.bytes.bytes != io->storage_read.data.bytes.bytes ||
+               checked.storage_read.buffer != io->storage_read.buffer || io->storage_read.buffer != io->large))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_cache_detach_submit_io(const dxb_storage_t *storage, const pgr_t *pgr,
+                                                          page_t *large,
+                                                          const dxb_cache_materialize_io_t *materialize,
+                                                          size_t payload_bytes,
+                                                          dxb_cache_detach_submit_io_t *io) {
+  if (unlikely(!io || !pgr || !pgr->page || !pgr->ref.cache || !large || !materialize))
+    return MDBX_EINVAL;
+  if (unlikely(!(pgr->ref.flags & PAGE_REF_CACHE) || pgr->ref.cache->storage != storage ||
+               pgr->ref.cache->page != pgr->page))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_cache_materialize_io_validate(storage, materialize);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(payload_bytes != materialize->data.bytes.bytes))
+    return MDBX_EINVAL;
+
+  io->materialize = *materialize;
+  io->large = large;
+  io->payload_bytes = payload_bytes;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_cache_detach_submit_io_validate(const dxb_storage_t *storage, const pgr_t *pgr,
+                                                              const dxb_cache_detach_submit_io_t *io) {
+  if (unlikely(!io || !pgr || !pgr->page || !pgr->ref.cache || !io->large))
+    return MDBX_EINVAL;
+
+  dxb_cache_detach_submit_io_t checked;
+  int rc = dxb_storage_make_cache_detach_submit_io(storage, pgr, io->large, &io->materialize, io->payload_bytes,
+                                                   &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.large != io->large || checked.payload_bytes != io->payload_bytes ||
+               checked.materialize.data.pages.pgno != io->materialize.data.pages.pgno ||
+               checked.materialize.data.pages.end_pgno != io->materialize.data.pages.end_pgno ||
+               checked.materialize.data.pages.npages != io->materialize.data.pages.npages ||
+               checked.materialize.data.pages.offset != io->materialize.data.pages.offset ||
+               checked.materialize.data.pages.bytes != io->materialize.data.pages.bytes ||
+               checked.materialize.data.bytes.offset != io->materialize.data.bytes.offset ||
+               checked.materialize.data.bytes.bytes != io->materialize.data.bytes.bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_cache_replace_submit_io(const dxb_storage_t *storage, const pgr_t *pgr,
+                                                           page_t *large,
+                                                           const dxb_cache_materialize_io_t *materialize,
+                                                           size_t payload_bytes, bool tracked,
+                                                           dxb_cache_replace_submit_io_t *io) {
+  if (unlikely(!storage || !io || !pgr || !pgr->page || !pgr->ref.cache || !large || !materialize))
+    return MDBX_EINVAL;
+  if (unlikely(!(pgr->ref.flags & PAGE_REF_CACHE) || pgr->ref.cache->storage != storage ||
+               pgr->ref.cache->page != pgr->page || pgr->ref.cache->pins == 0))
+    return MDBX_EINVAL;
+  if (unlikely((pgr->ref.cache->owner != nullptr) != tracked))
+    return MDBX_EINVAL;
+  if (unlikely(tracked &&
+               (pgr->ref.cache->owner != &storage->page_cache || pgr->ref.cache->pins != 1)))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_cache_materialize_io_validate(storage, materialize);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(payload_bytes != materialize->data.bytes.bytes))
+    return MDBX_EINVAL;
+
+  io->materialize = *materialize;
+  io->large = large;
+  io->payload_bytes = payload_bytes;
+  io->tracked = tracked;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_cache_replace_submit_io_validate(const dxb_storage_t *storage, const pgr_t *pgr,
+                                                               const dxb_cache_replace_submit_io_t *io) {
+  if (unlikely(!io || !pgr || !pgr->page || !pgr->ref.cache || !io->large))
+    return MDBX_EINVAL;
+
+  dxb_cache_replace_submit_io_t checked;
+  int rc = dxb_storage_make_cache_replace_submit_io(storage, pgr, io->large, &io->materialize, io->payload_bytes,
+                                                    io->tracked, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.large != io->large || checked.payload_bytes != io->payload_bytes ||
+               checked.tracked != io->tracked ||
+               checked.materialize.data.pages.pgno != io->materialize.data.pages.pgno ||
+               checked.materialize.data.pages.end_pgno != io->materialize.data.pages.end_pgno ||
+               checked.materialize.data.pages.npages != io->materialize.data.pages.npages ||
+               checked.materialize.data.pages.offset != io->materialize.data.pages.offset ||
+               checked.materialize.data.pages.bytes != io->materialize.data.pages.bytes ||
+               checked.materialize.data.bytes.offset != io->materialize.data.bytes.offset ||
+               checked.materialize.data.bytes.bytes != io->materialize.data.bytes.bytes))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -2040,6 +3413,40 @@ static inline int dxb_storage_discard_io_validate(const dxb_storage_t *storage, 
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_make_discard_submit_io(const dxb_storage_t *storage, const dxb_discard_io_t *discard,
+                                                     dxb_discard_submit_io_t *io) {
+  if (unlikely(!discard))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_discard_io_validate(storage, discard);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->discard = *discard;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_discard_submit_io_validate(const dxb_storage_t *storage,
+                                                         const dxb_discard_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_discard_submit_io_t checked;
+  int rc = dxb_storage_make_discard_submit_io(storage, &io->discard, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.discard.range.request.offset != io->discard.range.request.offset ||
+               checked.discard.range.request.bytes != io->discard.range.request.bytes ||
+               checked.discard.range.pages.pgno != io->discard.range.pages.pgno ||
+               checked.discard.range.pages.end_pgno != io->discard.range.pages.end_pgno ||
+               checked.discard.range.pages.npages != io->discard.range.pages.npages ||
+               checked.discard.range.pages.offset != io->discard.range.pages.offset ||
+               checked.discard.range.pages.bytes != io->discard.range.pages.bytes ||
+               checked.discard.range.page_bytes.offset != io->discard.range.page_bytes.offset ||
+               checked.discard.range.page_bytes.bytes != io->discard.range.page_bytes.bytes ||
+               checked.discard.mode != io->discard.mode))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_make_advice_io(const dxb_storage_t *storage, const dxb_byte_io_t *range,
                                              enum dxb_advice advice, dxb_advice_io_t *io) {
   switch (advice) {
@@ -2080,6 +3487,53 @@ static inline int dxb_storage_advice_io_validate(const dxb_storage_t *storage, c
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_make_advice_submit_io(const dxb_storage_t *storage, const dxb_advice_io_t *advice,
+                                                    dxb_advice_submit_io_t *io) {
+  if (unlikely(!advice))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_advice_io_validate(storage, advice);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->advice = *advice;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_advice_submit_io_validate(const dxb_storage_t *storage,
+                                                        const dxb_advice_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_advice_submit_io_t checked;
+  int rc = dxb_storage_make_advice_submit_io(storage, &io->advice, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.advice.range.request.offset != io->advice.range.request.offset ||
+               checked.advice.range.request.bytes != io->advice.range.request.bytes ||
+               checked.advice.range.pages.pgno != io->advice.range.pages.pgno ||
+               checked.advice.range.pages.end_pgno != io->advice.range.pages.end_pgno ||
+               checked.advice.range.pages.npages != io->advice.range.pages.npages ||
+               checked.advice.range.pages.offset != io->advice.range.pages.offset ||
+               checked.advice.range.pages.bytes != io->advice.range.pages.bytes ||
+               checked.advice.range.page_bytes.offset != io->advice.range.page_bytes.offset ||
+               checked.advice.range.page_bytes.bytes != io->advice.range.page_bytes.bytes ||
+               checked.advice.advice != io->advice.advice))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_readahead_submit_io(bool enable, dxb_readahead_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  io->enable = enable != 0;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_readahead_submit_io_validate(const dxb_readahead_submit_io_t *io) {
+  if (unlikely(!io || (io->enable & 1) != (io->enable != 0)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_data_export_io_validate(const dxb_storage_t *storage,
                                                       const dxb_data_export_io_t *io) {
   dxb_data_export_io_t checked;
@@ -2096,6 +3550,43 @@ static inline int dxb_storage_data_export_io_validate(const dxb_storage_t *stora
                checked.source.page_bytes.offset != io->source.page_bytes.offset ||
                checked.source.page_bytes.bytes != io->source.page_bytes.bytes ||
                checked.dst_offset != io->dst_offset))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_data_export_submit_io(const dxb_storage_t *storage,
+                                                         const dxb_data_export_io_t *export_io,
+                                                         mdbx_filehandle_t dst_fd,
+                                                         dxb_data_export_submit_io_t *io) {
+  if (unlikely(!export_io || !io || dst_fd == INVALID_HANDLE_VALUE))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_data_export_io_validate(storage, export_io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->export = *export_io;
+  io->dst_fd = dst_fd;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_data_export_submit_io_validate(const dxb_storage_t *storage,
+                                                             const dxb_data_export_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_data_export_submit_io_t checked;
+  int rc = dxb_storage_make_data_export_submit_io(storage, &io->export, io->dst_fd, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.export.source.request.offset != io->export.source.request.offset ||
+               checked.export.source.request.bytes != io->export.source.request.bytes ||
+               checked.export.source.pages.pgno != io->export.source.pages.pgno ||
+               checked.export.source.pages.end_pgno != io->export.source.pages.end_pgno ||
+               checked.export.source.pages.npages != io->export.source.pages.npages ||
+               checked.export.source.pages.offset != io->export.source.pages.offset ||
+               checked.export.source.pages.bytes != io->export.source.pages.bytes ||
+               checked.export.source.page_bytes.offset != io->export.source.page_bytes.offset ||
+               checked.export.source.page_bytes.bytes != io->export.source.page_bytes.bytes ||
+               checked.export.dst_offset != io->export.dst_offset || checked.dst_fd != io->dst_fd))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -2140,6 +3631,81 @@ static inline int dxb_storage_data_write_io_validate(const dxb_storage_t *storag
                checked.pages.npages != io->pages.npages || checked.pages.offset != io->pages.offset ||
                checked.pages.bytes != io->pages.bytes || checked.bytes.offset != io->bytes.offset ||
                checked.bytes.bytes != io->bytes.bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static int dxb_storage_iov_bytes(const struct iovec *iov, size_t sgvcnt, size_t *bytes);
+
+static inline int dxb_storage_make_write_submit_io(const dxb_storage_t *storage, const dxb_data_write_io_t *data,
+                                                   const void *buffer, dxb_write_submit_io_t *io) {
+  if (unlikely(!data || !buffer))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_data_write_io_validate(storage, data);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->data = *data;
+  io->buffer = buffer;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_write_submit_io_validate(const dxb_storage_t *storage,
+                                                       const dxb_write_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_write_submit_io_t checked;
+  int rc = dxb_storage_make_write_submit_io(storage, &io->data, io->buffer, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.data.pages.pgno != io->data.pages.pgno ||
+               checked.data.pages.end_pgno != io->data.pages.end_pgno ||
+               checked.data.pages.npages != io->data.pages.npages ||
+               checked.data.pages.offset != io->data.pages.offset ||
+               checked.data.pages.bytes != io->data.pages.bytes ||
+               checked.data.bytes.offset != io->data.bytes.offset ||
+               checked.data.bytes.bytes != io->data.bytes.bytes || checked.buffer != io->buffer))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_writev_submit_io(const dxb_storage_t *storage, const dxb_data_write_io_t *data,
+                                                    struct iovec *iov, size_t sgvcnt,
+                                                    dxb_writev_submit_io_t *io) {
+  if (unlikely(!data || !iov || !sgvcnt))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_data_write_io_validate(storage, data);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  size_t bytes;
+  rc = dxb_storage_iov_bytes(iov, sgvcnt, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(bytes != data->bytes.bytes))
+    return MDBX_EINVAL;
+
+  io->data = *data;
+  io->iov = iov;
+  io->sgvcnt = sgvcnt;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_writev_submit_io_validate(const dxb_storage_t *storage,
+                                                        const dxb_writev_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_writev_submit_io_t checked;
+  int rc = dxb_storage_make_writev_submit_io(storage, &io->data, io->iov, io->sgvcnt, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.data.pages.pgno != io->data.pages.pgno ||
+               checked.data.pages.end_pgno != io->data.pages.end_pgno ||
+               checked.data.pages.npages != io->data.pages.npages ||
+               checked.data.pages.offset != io->data.pages.offset ||
+               checked.data.pages.bytes != io->data.pages.bytes ||
+               checked.data.bytes.offset != io->data.bytes.offset ||
+               checked.data.bytes.bytes != io->data.bytes.bytes || checked.iov != io->iov ||
+               checked.sgvcnt != io->sgvcnt))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -2190,6 +3756,8 @@ static inline int dxb_queued_write_io_validate(const dxb_queued_write_io_t *io) 
 static inline int dxb_storage_make_cache_invalidate_io(const dxb_storage_t *storage, const dxb_page_io_t *pages,
                                                        bool include_reusable,
                                                        dxb_cache_invalidate_io_t *io) {
+  if (unlikely(!storage || !pages || !io))
+    return MDBX_EINVAL;
   int rc = dxb_storage_page_io_validate(storage, pages);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
@@ -2201,6 +3769,8 @@ static inline int dxb_storage_make_cache_invalidate_io(const dxb_storage_t *stor
 
 static inline int dxb_storage_cache_invalidate_io_validate(const dxb_storage_t *storage,
                                                           const dxb_cache_invalidate_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
   dxb_cache_invalidate_io_t checked;
   int rc = dxb_storage_make_cache_invalidate_io(storage, &io->pages, io->include_reusable, &checked);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -2209,6 +3779,88 @@ static inline int dxb_storage_cache_invalidate_io_validate(const dxb_storage_t *
                checked.pages.npages != io->pages.npages || checked.pages.offset != io->pages.offset ||
                checked.pages.bytes != io->pages.bytes ||
                checked.include_reusable != io->include_reusable))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_cache_invalidate_submit_io(const dxb_storage_t *storage,
+                                                              const dxb_cache_invalidate_io_t *invalidate,
+                                                              dxb_cache_invalidate_submit_io_t *io) {
+  if (unlikely(!invalidate || !io))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_cache_invalidate_io_validate(storage, invalidate);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  io->invalidate = *invalidate;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_cache_invalidate_submit_io_validate(
+    const dxb_storage_t *storage, const dxb_cache_invalidate_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_cache_invalidate_submit_io_t checked;
+  int rc = dxb_storage_make_cache_invalidate_submit_io(storage, &io->invalidate, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.invalidate.pages.pgno != io->invalidate.pages.pgno ||
+               checked.invalidate.pages.end_pgno != io->invalidate.pages.end_pgno ||
+               checked.invalidate.pages.npages != io->invalidate.pages.npages ||
+               checked.invalidate.pages.offset != io->invalidate.pages.offset ||
+               checked.invalidate.pages.bytes != io->invalidate.pages.bytes ||
+               checked.invalidate.include_reusable != io->invalidate.include_reusable))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_cache_ref_submit_io(page_ref_t *ref, const MDBX_cursor *cursor, bool retain,
+                                                       dxb_cache_ref_submit_io_t *io) {
+  if (unlikely(!ref || !ref->cache || !io))
+    return MDBX_EINVAL;
+  io->ref = ref;
+  io->cursor = cursor;
+  io->retain = retain;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_cache_ref_submit_io_validate(const dxb_storage_t *storage,
+                                                          const dxb_cache_ref_submit_io_t *io, bool retain) {
+  if (unlikely(!storage || !io || !io->ref || !io->ref->cache || io->retain != retain))
+    return MDBX_EINVAL;
+
+  dxb_cache_ref_submit_io_t checked;
+  int rc = dxb_storage_make_cache_ref_submit_io(io->ref, io->cursor, io->retain, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  const page_ref_t *const ref = checked.ref;
+  const page_cache_entry_t *const entry = ref->cache;
+  if (unlikely(checked.ref != io->ref || checked.cursor != io->cursor || checked.retain != io->retain ||
+               !(ref->flags & PAGE_REF_CACHE) || !ref->page || ref->npages == 0 || !entry ||
+               entry->storage != storage || entry->page != ref->page || entry->pins == 0 ||
+               entry->io.pgno != ref->pgno || (entry->owner && entry->owner != &storage->page_cache)))
+    return MDBX_EINVAL;
+
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_cache_release_all_submit_io(bool env_active,
+                                                               dxb_cache_release_all_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  io->env_active = env_active;
+  io->release_all = true;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_cache_release_all_submit_io_validate(const dxb_cache_release_all_submit_io_t *io) {
+  if (unlikely(!io || !io->release_all))
+    return MDBX_EINVAL;
+  dxb_cache_release_all_submit_io_t checked;
+  int rc = dxb_storage_make_cache_release_all_submit_io(io->env_active, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env_active != io->env_active || checked.release_all != io->release_all))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -2260,6 +3912,44 @@ static inline int dxb_storage_data_copy_io_validate(const dxb_storage_t *storage
                checked.src_bytes.bytes != io->src_bytes.bytes ||
                checked.dst_bytes.offset != io->dst_bytes.offset ||
                checked.dst_bytes.bytes != io->dst_bytes.bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_data_copy_submit_io(const dxb_storage_t *storage, const dxb_data_copy_io_t *copy,
+                                                       dxb_data_copy_submit_io_t *io) {
+  if (unlikely(!copy || !io))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_data_copy_io_validate(storage, copy);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->copy = *copy;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_data_copy_submit_io_validate(const dxb_storage_t *storage,
+                                                           const dxb_data_copy_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_data_copy_submit_io_t checked;
+  int rc = dxb_storage_make_data_copy_submit_io(storage, &io->copy, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.copy.src_pages.pgno != io->copy.src_pages.pgno ||
+               checked.copy.src_pages.end_pgno != io->copy.src_pages.end_pgno ||
+               checked.copy.src_pages.npages != io->copy.src_pages.npages ||
+               checked.copy.src_pages.offset != io->copy.src_pages.offset ||
+               checked.copy.src_pages.bytes != io->copy.src_pages.bytes ||
+               checked.copy.dst_pages.pgno != io->copy.dst_pages.pgno ||
+               checked.copy.dst_pages.end_pgno != io->copy.dst_pages.end_pgno ||
+               checked.copy.dst_pages.npages != io->copy.dst_pages.npages ||
+               checked.copy.dst_pages.offset != io->copy.dst_pages.offset ||
+               checked.copy.dst_pages.bytes != io->copy.dst_pages.bytes ||
+               checked.copy.src_bytes.offset != io->copy.src_bytes.offset ||
+               checked.copy.src_bytes.bytes != io->copy.src_bytes.bytes ||
+               checked.copy.dst_bytes.offset != io->copy.dst_bytes.offset ||
+               checked.copy.dst_bytes.bytes != io->copy.dst_bytes.bytes))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -2543,29 +4233,51 @@ MDBX_INTERNAL int __must_check_result dxb_read_header(MDBX_env *env, meta_t *met
                                                       const mdbx_mode_t mode_bits);
 enum resize_mode { implicit_grow, impilict_shrink, explicit_resize };
 MDBX_INTERNAL dxb_init_result_t dxb_storage_init(dxb_storage_t *storage);
+MDBX_INTERNAL dxb_init_result_t dxb_storage_submit_init(dxb_storage_t *storage, const dxb_init_submit_io_t *io);
 MDBX_INTERNAL dxb_state_result_t dxb_storage_reset(dxb_storage_t *storage, bool env_active);
+MDBX_INTERNAL dxb_state_result_t dxb_storage_submit_reset(dxb_storage_t *storage, const dxb_reset_submit_io_t *io);
 MDBX_INTERNAL dxb_open_result_t dxb_storage_open_data(dxb_storage_t *storage, const MDBX_env *env,
                                                       const pathchar_t *pathname,
                                                       enum osal_openfile_purpose purpose, mdbx_mode_t mode_bits);
+MDBX_INTERNAL dxb_open_result_t dxb_storage_submit_open_data(dxb_storage_t *storage,
+                                                             const dxb_open_submit_io_t *io);
 #if defined(_WIN32) || defined(_WIN64)
 MDBX_INTERNAL void dxb_storage_mark_overlapped_closed(dxb_storage_t *storage);
 MDBX_INTERNAL dxb_open_result_t dxb_storage_open_overlapped(dxb_storage_t *storage, const MDBX_env *env,
                                                             const pathchar_t *pathname);
+MDBX_INTERNAL dxb_open_result_t dxb_storage_submit_open_overlapped(dxb_storage_t *storage,
+                                                                   const dxb_open_submit_io_t *io);
 MDBX_INTERNAL dxb_park_result_t dxb_storage_park_overlapped(const dxb_storage_t *storage,
                                                             const dxb_byte_io_t *position);
+MDBX_INTERNAL dxb_park_result_t dxb_storage_submit_park_overlapped(const dxb_storage_t *storage,
+                                                                   const dxb_park_submit_io_t *io);
 #endif /* Windows */
 MDBX_INTERNAL dxb_open_result_t dxb_storage_open_dsync(dxb_storage_t *storage, const MDBX_env *env,
                                                        const pathchar_t *pathname, bool meta_sync);
+MDBX_INTERNAL dxb_open_result_t dxb_storage_submit_open_dsync(dxb_storage_t *storage,
+                                                              const dxb_open_submit_io_t *io);
 MDBX_INTERNAL dxb_park_result_t dxb_storage_park_data(const dxb_storage_t *storage, const dxb_byte_io_t *position);
+MDBX_INTERNAL dxb_park_result_t dxb_storage_submit_park_data(const dxb_storage_t *storage,
+                                                             const dxb_park_submit_io_t *io);
 MDBX_INTERNAL dxb_park_result_t dxb_storage_park_dsync(const dxb_storage_t *storage, const dxb_byte_io_t *position);
-MDBX_INTERNAL dxb_close_result_t dxb_storage_close(dxb_storage_t *storage, bool env_active);
+MDBX_INTERNAL dxb_park_result_t dxb_storage_submit_park_dsync(const dxb_storage_t *storage,
+                                                              const dxb_park_submit_io_t *io);
+MDBX_INTERNAL dxb_close_result_t dxb_storage_submit_close(dxb_storage_t *storage,
+                                                          const dxb_close_submit_io_t *io);
 MDBX_INTERNAL dxb_deinit_result_t dxb_storage_deinit(dxb_storage_t *storage, bool env_active);
+MDBX_INTERNAL dxb_deinit_result_t dxb_storage_submit_deinit(dxb_storage_t *storage,
+                                                            const dxb_deinit_submit_io_t *io);
 #if !defined(_WIN32) && !defined(_WIN64)
 static dxb_stat_result_t dxb_storage_stat(const dxb_storage_t *storage);
+static dxb_stat_result_t dxb_storage_submit_stat(const dxb_storage_t *storage, const dxb_stat_submit_io_t *io);
 #endif /* !Windows */
 static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *storage);
+static dxb_sysinfo_result_t dxb_storage_submit_fetch_sysinfo(const dxb_storage_t *storage,
+                                                             const dxb_sysinfo_submit_io_t *io);
 static dxb_readonly_result_t dxb_storage_check_readonly(const dxb_storage_t *storage, const pathchar_t *pathname,
                                                         int err);
+static dxb_readonly_result_t dxb_storage_submit_check_readonly(const dxb_storage_t *storage,
+                                                               const dxb_readonly_submit_io_t *io);
 static inline dxb_state_result_t dxb_storage_set_filesize(dxb_storage_t *storage, uint64_t filesize);
 static inline dxb_state_result_t dxb_storage_set_current(dxb_storage_t *storage, uint64_t filesize);
 static dxb_filesize_result_t dxb_storage_fetch_filesize(dxb_storage_t *storage);
@@ -2573,21 +4285,36 @@ MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
 static dxb_read_result_t dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_read_io_t *io, void *buf);
+static dxb_read_result_t dxb_storage_submit_read_data(const dxb_storage_t *storage,
+                                                      const dxb_read_submit_io_t *io);
 static dxb_read_result_t dxb_storage_read_meta(const dxb_storage_t *storage, const dxb_meta_read_io_t *io, void *buf);
+static dxb_read_result_t dxb_storage_submit_read_meta(const dxb_storage_t *storage,
+                                                      const dxb_meta_read_submit_io_t *io);
 static dxb_write_result_t dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_io_t *io,
                                                  const void *buf);
+static dxb_write_result_t dxb_storage_submit_write_data(dxb_storage_t *storage, const dxb_write_submit_io_t *io);
 static dxb_write_result_t dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_write_io_t *io,
                                                  const void *buf);
+static dxb_write_result_t dxb_storage_submit_write_meta(dxb_storage_t *storage,
+                                                        const dxb_meta_write_submit_io_t *io);
+static dxb_write_result_t dxb_storage_writev_data(dxb_storage_t *storage, const dxb_data_write_io_t *io,
+                                                  struct iovec *iov, size_t sgvcnt);
+static dxb_write_result_t dxb_storage_submit_writev_data(dxb_storage_t *storage, const dxb_writev_submit_io_t *io);
 static dxb_cache_result_t dxb_storage_invalidate_cached_io(dxb_storage_t *storage,
                                                            const dxb_cache_invalidate_io_t *io);
 #if MDBX_USE_COPYFILERANGE
 static dxb_copy_result_t dxb_storage_copy_data(dxb_storage_t *storage, const dxb_data_copy_io_t *io);
+static dxb_copy_result_t dxb_storage_submit_copy_data(dxb_storage_t *storage, const dxb_data_copy_submit_io_t *io);
 static dxb_copy_result_t dxb_storage_copy_data_to_fd(const dxb_storage_t *storage, const dxb_data_export_io_t *io,
                                                      mdbx_filehandle_t dst_fd);
+static dxb_copy_result_t dxb_storage_submit_copy_data_to_fd(const dxb_storage_t *storage,
+                                                            const dxb_data_export_submit_io_t *io);
 #endif /* MDBX_USE_COPYFILERANGE */
 #if MDBX_USE_SENDFILE
 static dxb_copy_result_t dxb_storage_sendfile_data_to_fd(const dxb_storage_t *storage,
                                                          const dxb_data_export_io_t *io, mdbx_filehandle_t dst_fd);
+static dxb_copy_result_t dxb_storage_submit_sendfile_data_to_fd(const dxb_storage_t *storage,
+                                                                const dxb_data_export_submit_io_t *io);
 #endif /* MDBX_USE_SENDFILE */
 MDBX_INTERNAL int __must_check_result dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending,
                                                       troika_t *const troika);
@@ -2657,6 +4384,7 @@ MDBX_INTERNAL int tree_deepen_lowest(MDBX_cursor *mc);
 MDBX_INTERNAL intptr_t tree_diff_level(const MDBX_cursor *left, const MDBX_cursor *right);
 MDBX_INTERNAL size_t tree_search_branch_configure(const MDBX_cursor *mc, const MDBX_val *key);
 MDBX_INTERNAL sfr_t tree_search_foliage_configure(MDBX_cursor *mc, const MDBX_val *key);
+static inline int cursor_branch_child_edge_push(MDBX_cursor *mc, indx_t parent_ki, bool last_child_ki);
 
 enum page_search_flags {
   Z_MODIFY = 1,
@@ -2800,10 +4528,47 @@ MDBX_NOTHROW_PURE_FUNCTION static inline pgno_t node_largedata_pgno(const node_t
 MDBX_INTERNAL int __must_check_result node_read_bigdata(MDBX_cursor *mc, const node_t *node, MDBX_val *data,
                                                         const page_t *mp);
 
-static inline int __must_check_result node_read(MDBX_cursor *mc, const node_t *node, MDBX_val *data, const page_t *mp) {
-  data->iov_len = node_ds(node);
-  data->iov_base = node_data(node);
-  if (likely(node_flags(node) != N_BIG)) {
+static inline int node_make_read_submit_io(MDBX_cursor *mc, const node_t *node, MDBX_val *data,
+                                           const page_t *mp, dxb_node_read_submit_io_t *io) {
+  if (unlikely(!mc || !mc->txn || !node || !data || !mp || !io))
+    return MDBX_EINVAL;
+
+  const uint8_t flags = node_flags(node);
+  io->cursor = mc;
+  io->data = data;
+  io->node = node;
+  io->source = mp;
+  io->node_data = node_data(node);
+  io->bytes = node_ds(node);
+  io->flags = flags;
+  io->bigdata = flags == N_BIG;
+  return MDBX_SUCCESS;
+}
+
+static inline int node_read_submit_io_validate(const dxb_node_read_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->data || !io->node || !io->source || !io->node_data))
+    return MDBX_EINVAL;
+
+  dxb_node_read_submit_io_t checked;
+  int err = node_make_read_submit_io(io->cursor, io->node, io->data, io->source, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.data != io->data ||
+               checked.node != io->node || checked.source != io->source ||
+               checked.node_data != io->node_data || checked.bytes != io->bytes ||
+               checked.flags != io->flags || checked.bigdata != io->bigdata))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int node_submit_read(const dxb_node_read_submit_io_t *io) {
+  int err = node_read_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  io->data->iov_len = io->bytes;
+  io->data->iov_base = io->node_data;
+  if (likely(!io->bigdata)) {
 #if 0
     /* This is an example of a code that checks out-of-bounds by an incorrect/bad/crafted node.
      * Such checks look useful, but they are unreasonable really:
@@ -2823,16 +4588,26 @@ static inline int __must_check_result node_read(MDBX_cursor *mc, const node_t *n
      *  - https://sourcecraft.dev/dqdkfa/libmdbx/issues/290
      *  - https://github.com/Mithril-mine/libmdbx/pull/306
      */
-    const char *data_end = ptr_disp(data->iov_base, data->iov_len);
-    const char *page_tail = (const char *)((intptr_t)mp | /* Using the OR operation to get the tail of a real page
-                                                             in case here is a dupsort nested sub-page even. */
-                                           (intptr_t)(mc->txn->env->ps - 1));
+    const char *data_end = ptr_disp(io->data->iov_base, io->data->iov_len);
+    const char *page_tail = (const char *)((intptr_t)io->source | /* Using the OR operation to get the tail of a real
+                                                                     page in case here is a dupsort nested sub-page
+                                                                     even. */
+                                           (intptr_t)(io->cursor->txn->env->ps - 1));
     if (!MDBX_DISABLE_VALIDATION && unlikely(data_end > page_tail))
-      return bad_page(mp, "node-data (size %zu bytes) beyond the end of page", data->iov_len);
+      return bad_page(io->source, "node-data (size %zu bytes) beyond the end of page", io->data->iov_len);
 #endif /* code example */
     return MDBX_SUCCESS;
   }
-  return node_read_bigdata(mc, node, data, mp);
+  return node_read_bigdata(io->cursor, io->node, io->data, io->source);
+}
+
+static inline int __must_check_result node_read(MDBX_cursor *mc, const node_t *node, MDBX_val *data,
+                                                const page_t *mp) {
+  dxb_node_read_submit_io_t submit;
+  int err = node_make_read_submit_io(mc, node, data, mp, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  return node_submit_read(&submit);
 }
 
 /*----------------------------------------------------------------------------*/
@@ -3249,10 +5024,33 @@ static inline int check_key(const MDBX_cursor *mc, const MDBX_val *key, alignkey
   return MDBX_SUCCESS;
 }
 
-MDBX_NOTHROW_PURE_FUNCTION static inline MDBX_val get_key(const node_t *node) {
+MDBX_NOTHROW_PURE_FUNCTION static inline dxb_node_key_submit_io_t node_make_key_submit_io(const node_t *node) {
+  dxb_node_key_submit_io_t io;
+  io.node = node;
+  io.key = node_key(node);
+  io.bytes = node_ks(node);
+  return io;
+}
+
+MDBX_NOTHROW_PURE_FUNCTION static inline bool node_key_submit_io_validate(const dxb_node_key_submit_io_t *io) {
+  if (unlikely(!io || !io->node || !io->key))
+    return false;
+
+  dxb_node_key_submit_io_t checked = node_make_key_submit_io(io->node);
+  return checked.node == io->node && checked.key == io->key && checked.bytes == io->bytes;
+}
+
+MDBX_NOTHROW_PURE_FUNCTION static inline MDBX_val node_submit_key(const dxb_node_key_submit_io_t *io) {
+  MDBX_ANALYSIS_ASSUME(node_key_submit_io_validate(io));
   MDBX_val key;
-  key.iov_len = node_ks(node);
-  key.iov_base = node_key(node);
+  key.iov_len = io->bytes;
+  key.iov_base = io->key;
+  return key;
+}
+
+MDBX_NOTHROW_PURE_FUNCTION static inline MDBX_val get_key(const node_t *node) {
+  dxb_node_key_submit_io_t submit = node_make_key_submit_io(node);
+  MDBX_val key = node_submit_key(&submit);
   return key;
 }
 
@@ -3308,10 +5106,40 @@ MDBX_NOTHROW_PURE_FUNCTION static inline void *page_dupfix_ptr(const page_t *mp,
   return ptr_disp(mp, PAGEHDRSZ + mp->dupfix_ksize * (indx_t)i);
 }
 
-MDBX_NOTHROW_PURE_FUNCTION static inline MDBX_val page_dupfix_key(const page_t *mp, size_t i, size_t keysize) {
+MDBX_NOTHROW_PURE_FUNCTION static inline dxb_dupfix_key_submit_io_t
+page_make_dupfix_key_submit_io(const page_t *mp, size_t i, size_t keysize) {
+  dxb_dupfix_key_submit_io_t io;
+  io.page = mp;
+  io.key = page_dupfix_ptr(mp, i, keysize);
+  io.index = i;
+  io.requested_bytes = keysize;
+  io.bytes = mp->dupfix_ksize;
+  return io;
+}
+
+MDBX_NOTHROW_PURE_FUNCTION static inline bool
+page_dupfix_key_submit_io_validate(const dxb_dupfix_key_submit_io_t *io) {
+  if (unlikely(!io || !io->page || !io->key))
+    return false;
+
+  dxb_dupfix_key_submit_io_t checked =
+      page_make_dupfix_key_submit_io(io->page, io->index, io->requested_bytes);
+  return checked.page == io->page && checked.key == io->key && checked.index == io->index &&
+         checked.requested_bytes == io->requested_bytes && checked.bytes == io->bytes;
+}
+
+MDBX_NOTHROW_PURE_FUNCTION static inline MDBX_val page_submit_dupfix_key(
+    const dxb_dupfix_key_submit_io_t *io) {
+  MDBX_ANALYSIS_ASSUME(page_dupfix_key_submit_io_validate(io));
   MDBX_val r;
-  r.iov_base = page_dupfix_ptr(mp, i, keysize);
-  r.iov_len = mp->dupfix_ksize;
+  r.iov_base = io->key;
+  r.iov_len = io->bytes;
+  return r;
+}
+
+MDBX_NOTHROW_PURE_FUNCTION static inline MDBX_val page_dupfix_key(const page_t *mp, size_t i, size_t keysize) {
+  dxb_dupfix_key_submit_io_t submit = page_make_dupfix_key_submit_io(mp, i, keysize);
+  MDBX_val r = page_submit_dupfix_key(&submit);
   return r;
 }
 
@@ -3749,48 +5577,380 @@ MDBX_MAYBE_UNUSED MDBX_NOTHROW_PURE_FUNCTION static inline bool inner_hollow(con
 static void page_cache_lock(const dxb_storage_t *storage);
 static void page_cache_unlock(const dxb_storage_t *storage);
 static size_t page_cache_limit_from_env(void);
+static inline dxb_cache_result_t dxb_cache_error(int err);
 static void dxb_storage_retain_cached_entry(dxb_storage_t *storage, page_cache_entry_t *entry);
 static void dxb_storage_release_cached_ref(dxb_storage_t *storage, const MDBX_cursor *mc, page_ref_t *ref);
+static dxb_cache_result_t dxb_storage_submit_retain_cached_ref(dxb_storage_t *storage,
+                                                               const dxb_cache_ref_submit_io_t *io);
+static dxb_cache_result_t dxb_storage_submit_release_cached_ref(dxb_storage_t *storage,
+                                                               const dxb_cache_ref_submit_io_t *io);
+
+static inline bool page_ref_equal(const page_ref_t *a, const page_ref_t *b) {
+  return a->page == b->page && a->cache == b->cache && a->pgno == b->pgno && a->npages == b->npages &&
+         a->flags == b->flags;
+}
+
+static inline int cursor_make_ref_retain_submit_io(const MDBX_cursor *mc, page_ref_t ref,
+                                                   dxb_cursor_ref_retain_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->ref = ref.page ? ref : page_ref_empty();
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_ref_retain_submit_io_validate(const dxb_cursor_ref_retain_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  const page_ref_t *const ref = &io->ref;
+  if (ref->page) {
+    if (unlikely(!ref->npages && ref->flags != PAGE_REF_NONE))
+      return MDBX_EINVAL;
+    if (ref->cache) {
+      if (unlikely((ref->flags & PAGE_REF_CACHE) == 0 || ref->cache->page != ref->page ||
+                   ref->cache->io.pgno != ref->pgno))
+        return MDBX_EINVAL;
+    } else if (unlikely(ref->flags & PAGE_REF_CACHE))
+      return MDBX_EINVAL;
+  }
+
+  dxb_cursor_ref_retain_submit_io_t checked;
+  int err = cursor_make_ref_retain_submit_io(io->cursor, io->ref, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || !page_ref_equal(&checked.ref, &io->ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline page_ref_t cursor_submit_ref_retain(const dxb_cursor_ref_retain_submit_io_t *io, int *err_out) {
+  int err = cursor_ref_retain_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    goto bailout;
+
+  page_ref_t ref = io->ref;
+  if (ref.page == nullptr) {
+    err = MDBX_SUCCESS;
+    goto done;
+  }
+  if (ref.cache) {
+    dxb_cache_ref_submit_io_t submit;
+    err = dxb_storage_make_cache_ref_submit_io(&ref, io->cursor, true, &submit);
+    dxb_cache_result_t retain =
+        likely(err == MDBX_SUCCESS) ? dxb_storage_submit_retain_cached_ref(ref.cache->storage, &submit)
+                                    : dxb_cache_error(err);
+    if (unlikely(retain.err != MDBX_SUCCESS || !retain.submitted || !retain.completed))
+      err = retain.err == MDBX_SUCCESS ? MDBX_EIO : retain.err;
+  } else if (unlikely(ref.flags & PAGE_REF_CACHE))
+    err = MDBX_EINVAL;
+
+done:
+  if (err_out)
+    *err_out = err;
+  return likely(err == MDBX_SUCCESS) ? ref : page_ref_empty();
+
+bailout:
+  if (err_out)
+    *err_out = err;
+  return page_ref_empty();
+}
 
 static inline page_ref_t cursor_ref_retain(const MDBX_cursor *mc, page_ref_t ref) {
-  if (ref.page == nullptr)
-    return page_ref_empty();
-  cASSERT0(mc, ref.npages || ref.flags == PAGE_REF_NONE);
-  if (ref.cache) {
-    cASSERT0(mc, (ref.flags & PAGE_REF_CACHE) != 0);
-    cASSERT0(mc, ref.cache->page == ref.page);
-    cASSERT0(mc, ref.cache->io.pgno == ref.pgno);
-    dxb_storage_retain_cached_entry(ref.cache->storage, ref.cache);
-  } else
-    cASSERT0(mc, (ref.flags & PAGE_REF_CACHE) == 0);
-  return ref;
+  dxb_cursor_ref_retain_submit_io_t submit;
+  int err = cursor_make_ref_retain_submit_io(mc, ref, &submit);
+  if (mc)
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  else
+    ASSERT(err == MDBX_SUCCESS);
+
+  page_ref_t retained = page_ref_empty();
+  if (likely(err == MDBX_SUCCESS)) {
+    retained = cursor_submit_ref_retain(&submit, &err);
+    if (mc)
+      cASSERT0(mc, err == MDBX_SUCCESS);
+    else
+      ASSERT(err == MDBX_SUCCESS);
+  }
+  return retained;
+}
+
+static inline int cursor_make_top_ref_retain_submit_io(MDBX_cursor *mc,
+                                                       dxb_cursor_top_ref_retain_submit_io_t *io) {
+  if (unlikely(!mc || !io || !mc->tree || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  if (unlikely(mc->top + 1 > mc->tree->height))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->top = mc->top;
+  io->page = mc->pg[mc->top];
+  io->ref = mc->pgref[mc->top];
+  io->ki = mc->ki[mc->top];
+  io->tree_height = mc->tree->height;
+  if (unlikely(!io->page))
+    return MDBX_EINVAL;
+  if (unlikely(io->ref.page != nullptr && io->ref.page != io->page))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_top_ref_retain_submit_io_validate(const dxb_cursor_top_ref_retain_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->cursor->tree || io->top < 0 || io->top >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+
+  MDBX_cursor *const mc = io->cursor;
+  if (unlikely(mc->top != io->top || mc->tree->height != io->tree_height || mc->top + 1 > mc->tree->height))
+    return MDBX_EINVAL;
+  if (unlikely(!io->page || mc->pg[io->top] != io->page || mc->ki[io->top] != io->ki ||
+               !page_ref_equal(&mc->pgref[io->top], &io->ref)))
+    return MDBX_EINVAL;
+  if (unlikely(io->ref.page != nullptr && io->ref.page != io->page))
+    return MDBX_EINVAL;
+
+  dxb_cursor_top_ref_retain_submit_io_t checked;
+  int err = cursor_make_top_ref_retain_submit_io(mc, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.top != io->top ||
+               checked.ki != io->ki || checked.tree_height != io->tree_height ||
+               !page_ref_equal(&checked.ref, &io->ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_top_ref_retain(const dxb_cursor_top_ref_retain_submit_io_t *io,
+                                               page_ref_t *retained) {
+  if (unlikely(!retained))
+    return MDBX_EINVAL;
+
+  int err = cursor_top_ref_retain_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  dxb_cursor_ref_retain_submit_io_t retain_submit;
+  err = cursor_make_ref_retain_submit_io(io->cursor, io->ref, &retain_submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  *retained = cursor_submit_ref_retain(&retain_submit, &err);
+  return err;
+}
+
+static inline int cursor_make_ref_release_submit_io(const MDBX_cursor *mc, page_ref_t *ref,
+                                                    dxb_cursor_ref_release_submit_io_t *io) {
+  if (unlikely(!ref || !io))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->ref = ref;
+  io->captured = *ref;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_ref_release_submit_io_validate(const dxb_cursor_ref_release_submit_io_t *io) {
+  if (unlikely(!io || !io->ref))
+    return MDBX_EINVAL;
+  if (unlikely(!page_ref_equal(io->ref, &io->captured)))
+    return MDBX_EINVAL;
+
+  dxb_cursor_ref_release_submit_io_t checked;
+  int err = cursor_make_ref_release_submit_io(io->cursor, io->ref, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.ref != io->ref ||
+               !page_ref_equal(&checked.captured, &io->captured)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_ref_release(const dxb_cursor_ref_release_submit_io_t *io) {
+  int err = cursor_ref_release_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  page_ref_t *const ref = io->ref;
+  if (ref->cache) {
+    dxb_cache_ref_submit_io_t submit;
+    err = dxb_storage_make_cache_ref_submit_io(ref, io->cursor, false, &submit);
+    dxb_cache_result_t release =
+        likely(err == MDBX_SUCCESS) ? dxb_storage_submit_release_cached_ref(ref->cache->storage, &submit)
+                                    : dxb_cache_error(err);
+    if (unlikely(release.err != MDBX_SUCCESS || !release.submitted || !release.completed))
+      return release.err == MDBX_SUCCESS ? MDBX_EIO : release.err;
+  } else if (unlikely(ref->flags & PAGE_REF_CACHE))
+    return MDBX_EINVAL;
+  *ref = page_ref_empty();
+  return MDBX_SUCCESS;
 }
 
 static inline void cursor_ref_release(const MDBX_cursor *mc, page_ref_t *ref) {
-  if (ref->cache) {
-    dxb_storage_release_cached_ref(ref->cache->storage, mc, ref);
-  } else if (mc)
-    cASSERT0(mc, (ref->flags & PAGE_REF_CACHE) == 0);
+  dxb_cursor_ref_release_submit_io_t submit;
+  int err = cursor_make_ref_release_submit_io(mc, ref, &submit);
+  if (mc)
+    cASSERT0(mc, err == MDBX_SUCCESS);
   else
-    ASSERT((ref->flags & PAGE_REF_CACHE) == 0);
-  *ref = page_ref_empty();
+    ASSERT(err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_ref_release(&submit);
+    if (mc)
+      cASSERT0(mc, err == MDBX_SUCCESS);
+    else
+      ASSERT(err == MDBX_SUCCESS);
+  }
+}
+
+static inline int pgr_make_release_submit_io(const MDBX_cursor *mc, pgr_t *pgr, dxb_pgr_release_submit_io_t *io) {
+  if (unlikely(!pgr || !io))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->pgr = pgr;
+  io->page = pgr->page;
+  io->err = pgr->err;
+  io->ref = pgr->ref;
+  return MDBX_SUCCESS;
+}
+
+static inline int pgr_release_submit_io_validate(const dxb_pgr_release_submit_io_t *io) {
+  if (unlikely(!io || !io->pgr))
+    return MDBX_EINVAL;
+  if (unlikely(io->pgr->page != io->page || io->pgr->err != io->err || !page_ref_equal(&io->pgr->ref, &io->ref)))
+    return MDBX_EINVAL;
+
+  dxb_pgr_release_submit_io_t checked;
+  int err = pgr_make_release_submit_io(io->cursor, io->pgr, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.pgr != io->pgr || checked.page != io->page ||
+               checked.err != io->err || !page_ref_equal(&checked.ref, &io->ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int pgr_submit_release(const dxb_pgr_release_submit_io_t *io) {
+  int err = pgr_release_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  pgr_t *const pgr = io->pgr;
+  cursor_ref_release(io->cursor, &pgr->ref);
+  pgr->page = nullptr;
+  return MDBX_SUCCESS;
 }
 
 static inline void pgr_release(const MDBX_cursor *mc, pgr_t *pgr) {
-  cursor_ref_release(mc, &pgr->ref);
-  pgr->page = nullptr;
+  dxb_pgr_release_submit_io_t submit;
+  int err = pgr_make_release_submit_io(mc, pgr, &submit);
+  if (mc)
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  else
+    ASSERT(err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = pgr_submit_release(&submit);
+    if (mc)
+      cASSERT0(mc, err == MDBX_SUCCESS);
+    else
+      ASSERT(err == MDBX_SUCCESS);
+  }
+}
+
+static inline int cursor_make_value_release_submit_io(MDBX_cursor *mc, dxb_cursor_value_release_submit_io_t *io) {
+  if (unlikely(!mc || !io))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->ref = mc->value_ref;
+  io->page = io->ref.page;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_value_release_submit_io_validate(const dxb_cursor_value_release_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || io->ref.page != io->page))
+    return MDBX_EINVAL;
+  if (unlikely(!page_ref_equal(&io->cursor->value_ref, &io->ref)))
+    return MDBX_EINVAL;
+
+  dxb_cursor_value_release_submit_io_t checked;
+  int err = cursor_make_value_release_submit_io(io->cursor, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.page != io->page ||
+               !page_ref_equal(&checked.ref, &io->ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_value_release(const dxb_cursor_value_release_submit_io_t *io) {
+  int err = cursor_value_release_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  MDBX_cursor *const mc = io->cursor;
+  page_ref_t old = io->ref;
+  mc->value_ref = page_ref_empty();
+  cursor_ref_release(mc, &old);
+  return MDBX_SUCCESS;
 }
 
 static inline void cursor_value_release(MDBX_cursor *mc) {
-  cursor_ref_release(mc, &mc->value_ref);
+  dxb_cursor_value_release_submit_io_t submit;
+  int err = cursor_make_value_release_submit_io(mc, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_value_release(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
 }
 
-static inline void cursor_value_set(MDBX_cursor *mc, const pgr_t *pgr) {
-  cASSERT0(mc, pgr->err == MDBX_SUCCESS);
-  page_ref_t ref = cursor_ref_retain(mc, pgr->ref);
+static inline int cursor_make_value_set_submit_io(MDBX_cursor *mc, const pgr_t *pgr,
+                                                  dxb_cursor_value_set_submit_io_t *io) {
+  if (unlikely(!mc || !pgr || !io || pgr->err != MDBX_SUCCESS))
+    return MDBX_EINVAL;
+  if (unlikely(pgr->ref.page != nullptr && pgr->ref.page != pgr->page))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->pgr = *pgr;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_value_set_submit_io_validate(const dxb_cursor_value_set_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || io->pgr.err != MDBX_SUCCESS))
+    return MDBX_EINVAL;
+  if (unlikely(io->pgr.ref.page != nullptr && io->pgr.ref.page != io->pgr.page))
+    return MDBX_EINVAL;
+
+  dxb_cursor_value_set_submit_io_t checked;
+  int err = cursor_make_value_set_submit_io(io->cursor, &io->pgr, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.pgr.page != io->pgr.page ||
+               checked.pgr.err != io->pgr.err || !page_ref_equal(&checked.pgr.ref, &io->pgr.ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_value_set(const dxb_cursor_value_set_submit_io_t *io) {
+  int err = cursor_value_set_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  MDBX_cursor *const mc = io->cursor;
+  page_ref_t ref = cursor_ref_retain(mc, io->pgr.ref);
   page_ref_t old = mc->value_ref;
   mc->value_ref = ref;
   cursor_ref_release(mc, &old);
+  return MDBX_SUCCESS;
+}
+
+static inline void cursor_value_set(MDBX_cursor *mc, const pgr_t *pgr) {
+  dxb_cursor_value_set_submit_io_t submit;
+  int err = cursor_make_value_set_submit_io(mc, pgr, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_value_set(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
 }
 
 static inline void cursor_stack_init(MDBX_cursor *mc) {
@@ -3801,23 +5961,250 @@ static inline void cursor_stack_init(MDBX_cursor *mc) {
   mc->value_ref = page_ref_empty();
 }
 
-static inline void cursor_stack_release_slot(MDBX_cursor *mc, intptr_t i) {
-  cASSERT0(mc, i >= 0 && i < CURSOR_STACK_SIZE);
-  page_ref_t old = mc->pgref[i];
-  mc->pg[i] = nullptr;
-  mc->pgref[i] = page_ref_empty();
+static inline int cursor_make_stack_release_submit_io(MDBX_cursor *mc, intptr_t i,
+                                                      dxb_cursor_stack_release_submit_io_t *io) {
+  if (unlikely(!mc || !io || i < 0 || i >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->page = mc->pg[i];
+  io->ref = mc->pgref[i];
+  io->slot = i;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_stack_release_submit_io_validate(const dxb_cursor_stack_release_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || io->slot < 0 || io->slot >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  if (unlikely(io->ref.page != nullptr && io->ref.page != io->page))
+    return MDBX_EINVAL;
+  if (unlikely(io->cursor->pg[io->slot] != io->page || !page_ref_equal(&io->cursor->pgref[io->slot], &io->ref)))
+    return MDBX_EINVAL;
+
+  dxb_cursor_stack_release_submit_io_t checked;
+  int err = cursor_make_stack_release_submit_io(io->cursor, io->slot, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.slot != io->slot ||
+               !page_ref_equal(&checked.ref, &io->ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_stack_release(const dxb_cursor_stack_release_submit_io_t *io) {
+  int err = cursor_stack_release_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  MDBX_cursor *const mc = io->cursor;
+  page_ref_t old = io->ref;
+  mc->pg[io->slot] = nullptr;
+  mc->pgref[io->slot] = page_ref_empty();
   cursor_ref_release(mc, &old);
+  return MDBX_SUCCESS;
+}
+
+static inline void cursor_stack_release_slot(MDBX_cursor *mc, intptr_t i) {
+  dxb_cursor_stack_release_submit_io_t submit;
+  int err = cursor_make_stack_release_submit_io(mc, i, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_stack_release(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
+}
+
+static inline int cursor_make_stack_release_from_submit_io(MDBX_cursor *mc, intptr_t first,
+                                                           dxb_cursor_stack_release_from_submit_io_t *io) {
+  if (unlikely(!mc || !io || first < 0 || first > CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->first = first;
+  io->captured_top = mc->top;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_stack_release_from_submit_io_validate(const dxb_cursor_stack_release_from_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || io->first < 0 || io->first > CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  if (unlikely(io->cursor->top != io->captured_top))
+    return MDBX_EINVAL;
+
+  dxb_cursor_stack_release_from_submit_io_t checked;
+  int err = cursor_make_stack_release_from_submit_io(io->cursor, io->first, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.first != io->first ||
+               checked.captured_top != io->captured_top))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_stack_release_from(const dxb_cursor_stack_release_from_submit_io_t *io) {
+  int err = cursor_stack_release_from_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  for (intptr_t i = io->first; i < CURSOR_STACK_SIZE; ++i)
+    cursor_stack_release_slot(io->cursor, i);
+  return MDBX_SUCCESS;
 }
 
 static inline void cursor_stack_release_from(MDBX_cursor *mc, intptr_t first) {
-  cASSERT0(mc, first >= 0 && first <= CURSOR_STACK_SIZE);
-  for (intptr_t i = first; i < CURSOR_STACK_SIZE; ++i)
-    cursor_stack_release_slot(mc, i);
+  dxb_cursor_stack_release_from_submit_io_t submit;
+  int err = cursor_make_stack_release_from_submit_io(mc, first, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_stack_release_from(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
 }
 
 static inline void cursor_stack_release_all(MDBX_cursor *mc) {
   cursor_stack_release_from(mc, 0);
   cursor_value_release(mc);
+}
+
+static inline int cursor_make_rebalance_refs_release_submit_io(
+    MDBX_cursor *mc, MDBX_cursor *mn, page_t *left, page_ref_t *left_ref, page_t *right, page_ref_t *right_ref,
+    dxb_cursor_rebalance_refs_release_submit_io_t *io) {
+  if (unlikely(!mc || !mn || !left_ref || !right_ref || !io))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->neighbor = mn;
+  io->left_page = left;
+  io->right_page = right;
+  io->left_ref = left_ref;
+  io->right_ref = right_ref;
+  io->left = *left_ref;
+  io->right = *right_ref;
+  io->neighbor_top_and_flags = mn->top_and_flags;
+  if (unlikely((!left && io->left.page) || (io->left.page && io->left.page != left)))
+    return MDBX_EINVAL;
+  if (unlikely((!right && io->right.page) || (io->right.page && io->right.page != right)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int
+cursor_rebalance_refs_release_submit_io_validate(const dxb_cursor_rebalance_refs_release_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->neighbor || !io->left_ref || !io->right_ref))
+    return MDBX_EINVAL;
+  if (unlikely(!page_ref_equal(io->left_ref, &io->left) || !page_ref_equal(io->right_ref, &io->right)))
+    return MDBX_EINVAL;
+  if (unlikely(io->neighbor->top_and_flags != io->neighbor_top_and_flags))
+    return MDBX_EINVAL;
+  if (unlikely((!io->left_page && io->left.page) || (io->left.page && io->left.page != io->left_page)))
+    return MDBX_EINVAL;
+  if (unlikely((!io->right_page && io->right.page) || (io->right.page && io->right.page != io->right_page)))
+    return MDBX_EINVAL;
+
+  dxb_cursor_rebalance_refs_release_submit_io_t checked;
+  int err = cursor_make_rebalance_refs_release_submit_io(io->cursor, io->neighbor, io->left_page, io->left_ref,
+                                                         io->right_page, io->right_ref, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.neighbor != io->neighbor ||
+               checked.left_page != io->left_page || checked.right_page != io->right_page ||
+               checked.left_ref != io->left_ref || checked.right_ref != io->right_ref ||
+               checked.neighbor_top_and_flags != io->neighbor_top_and_flags ||
+               !page_ref_equal(&checked.left, &io->left) || !page_ref_equal(&checked.right, &io->right)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_rebalance_refs_release(const dxb_cursor_rebalance_refs_release_submit_io_t *io) {
+  int err = cursor_rebalance_refs_release_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  cursor_ref_release(io->cursor, io->left_ref);
+  cursor_ref_release(io->cursor, io->right_ref);
+  cursor_stack_release_all(io->neighbor);
+  return MDBX_SUCCESS;
+}
+
+static inline void cursor_rebalance_refs_release(MDBX_cursor *mc, MDBX_cursor *mn, page_t *left, page_ref_t *left_ref,
+                                                 page_t *right, page_ref_t *right_ref) {
+  dxb_cursor_rebalance_refs_release_submit_io_t submit;
+  int err = cursor_make_rebalance_refs_release_submit_io(mc, mn, left, left_ref, right, right_ref, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_rebalance_refs_release(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
+}
+
+static inline void cursor_stack_set(MDBX_cursor *mc, intptr_t i, page_t *mp, page_ref_t ref);
+
+static inline int cursor_make_rebalance_neighbor_set_submit_io(
+    MDBX_cursor *mn, page_t *page, page_ref_t ref, indx_t parent_ki, indx_t top_ki,
+    dxb_cursor_rebalance_neighbor_set_submit_io_t *io) {
+  if (unlikely(!mn || !page || !io || mn->top <= 0 || mn->top >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  if (unlikely(ref.page != nullptr && ref.page != page))
+    return MDBX_EINVAL;
+  if (unlikely(!mn->pg[mn->top - 1] || !is_branch(mn->pg[mn->top - 1])))
+    return MDBX_EINVAL;
+
+  io->neighbor = mn;
+  io->page = page;
+  io->ref = ref;
+  io->slot = mn->top;
+  io->parent_ki = parent_ki;
+  io->top_ki = top_ki;
+  io->neighbor_top_and_flags = mn->top_and_flags;
+  return MDBX_SUCCESS;
+}
+
+static inline int
+cursor_rebalance_neighbor_set_submit_io_validate(const dxb_cursor_rebalance_neighbor_set_submit_io_t *io) {
+  if (unlikely(!io || !io->neighbor || !io->page || io->slot <= 0 || io->slot >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  MDBX_cursor *const mn = io->neighbor;
+  if (unlikely(mn->top_and_flags != io->neighbor_top_and_flags || mn->top != io->slot))
+    return MDBX_EINVAL;
+  if (unlikely(io->ref.page != nullptr && io->ref.page != io->page))
+    return MDBX_EINVAL;
+  if (unlikely(!mn->pg[io->slot - 1] || !is_branch(mn->pg[io->slot - 1])))
+    return MDBX_EINVAL;
+
+  dxb_cursor_rebalance_neighbor_set_submit_io_t checked;
+  int err = cursor_make_rebalance_neighbor_set_submit_io(mn, io->page, io->ref, io->parent_ki, io->top_ki, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.neighbor != io->neighbor || checked.page != io->page || checked.slot != io->slot ||
+               checked.parent_ki != io->parent_ki || checked.top_ki != io->top_ki ||
+               checked.neighbor_top_and_flags != io->neighbor_top_and_flags ||
+               !page_ref_equal(&checked.ref, &io->ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_rebalance_neighbor_set(const dxb_cursor_rebalance_neighbor_set_submit_io_t *io) {
+  int err = cursor_rebalance_neighbor_set_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  MDBX_cursor *const mn = io->neighbor;
+  cursor_stack_set(mn, io->slot, io->page, io->ref);
+  mn->ki[io->slot - 1] = io->parent_ki;
+  mn->ki[io->slot] = io->top_ki;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_rebalance_neighbor_set(MDBX_cursor *mn, page_t *page, page_ref_t ref, indx_t parent_ki,
+                                                indx_t top_ki) {
+  dxb_cursor_rebalance_neighbor_set_submit_io_t submit;
+  int err = cursor_make_rebalance_neighbor_set_submit_io(mn, page, ref, parent_ki, top_ki, &submit);
+  cASSERT0(mn, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_rebalance_neighbor_set(&submit);
+    cASSERT0(mn, err == MDBX_SUCCESS);
+  }
+  return err;
 }
 
 static inline bool page_ref_requires_txn_pin(const page_ref_t *ref) {
@@ -3861,10 +6248,121 @@ static int txn_retained_refs_reserve(MDBX_txn *txn, size_t extra) {
   return MDBX_SUCCESS;
 }
 
-static void txn_retained_refs_release(MDBX_txn *txn) {
-  for (size_t i = 0; i < txn->retained_refs_count; ++i)
-    cursor_ref_release(nullptr, &txn->retained_refs[i]);
+static inline int txn_make_retained_ref_append_submit_io(MDBX_txn *txn, const MDBX_cursor *mc, page_ref_t ref,
+                                                         dxb_txn_retained_ref_append_submit_io_t *io) {
+  if (unlikely(!txn || !io || !page_ref_requires_txn_pin(&ref)))
+    return MDBX_EINVAL;
+  if (unlikely(mc && mc->txn != txn))
+    return MDBX_EINVAL;
+
+  io->txn = txn;
+  io->cursor = mc;
+  io->retained_refs = txn->retained_refs;
+  io->retained_refs_count = txn->retained_refs_count;
+  io->retained_refs_capacity = txn->retained_refs_capacity;
+  io->ref = ref;
+  return MDBX_SUCCESS;
+}
+
+static inline int txn_retained_ref_append_submit_io_validate(const dxb_txn_retained_ref_append_submit_io_t *io) {
+  if (unlikely(!io || !io->txn || !page_ref_requires_txn_pin(&io->ref)))
+    return MDBX_EINVAL;
+
+  MDBX_txn *const txn = io->txn;
+  const MDBX_cursor *const mc = io->cursor;
+  if (unlikely(mc && mc->txn != txn))
+    return MDBX_EINVAL;
+  if (unlikely(txn->retained_refs != io->retained_refs || txn->retained_refs_count != io->retained_refs_count ||
+               txn->retained_refs_capacity != io->retained_refs_capacity))
+    return MDBX_EINVAL;
+  if (unlikely(txn->retained_refs_count >= txn->retained_refs_capacity || !txn->retained_refs))
+    return MDBX_EINVAL;
+
+  dxb_txn_retained_ref_append_submit_io_t checked;
+  int err = txn_make_retained_ref_append_submit_io(txn, mc, io->ref, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.txn != io->txn || checked.cursor != io->cursor ||
+               checked.retained_refs != io->retained_refs ||
+               checked.retained_refs_count != io->retained_refs_count ||
+               checked.retained_refs_capacity != io->retained_refs_capacity ||
+               !page_ref_equal(&checked.ref, &io->ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int txn_submit_retained_ref_append(const dxb_txn_retained_ref_append_submit_io_t *io) {
+  int err = txn_retained_ref_append_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  io->txn->retained_refs[io->txn->retained_refs_count++] = cursor_ref_retain(io->cursor, io->ref);
+  return MDBX_SUCCESS;
+}
+
+static inline int txn_make_retained_refs_release_submit_io(MDBX_txn *txn,
+                                                           dxb_txn_retained_refs_release_submit_io_t *io) {
+  if (unlikely(!txn || !io))
+    return MDBX_EINVAL;
+
+  io->txn = txn;
+  io->retained_refs = txn->retained_refs;
+  io->retained_refs_count = txn->retained_refs_count;
+  io->retained_refs_capacity = txn->retained_refs_capacity;
+  return MDBX_SUCCESS;
+}
+
+static inline int txn_retained_refs_release_submit_io_validate(const dxb_txn_retained_refs_release_submit_io_t *io) {
+  if (unlikely(!io || !io->txn))
+    return MDBX_EINVAL;
+
+  MDBX_txn *const txn = io->txn;
+  if (unlikely(txn->retained_refs != io->retained_refs || txn->retained_refs_count != io->retained_refs_count ||
+               txn->retained_refs_capacity != io->retained_refs_capacity))
+    return MDBX_EINVAL;
+  if (unlikely(io->retained_refs_count > io->retained_refs_capacity))
+    return MDBX_EINVAL;
+  if (unlikely(io->retained_refs_count && !io->retained_refs))
+    return MDBX_EINVAL;
+
+  dxb_txn_retained_refs_release_submit_io_t checked;
+  int err = txn_make_retained_refs_release_submit_io(txn, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.txn != io->txn || checked.retained_refs != io->retained_refs ||
+               checked.retained_refs_count != io->retained_refs_count ||
+               checked.retained_refs_capacity != io->retained_refs_capacity))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int txn_submit_retained_refs_release(const dxb_txn_retained_refs_release_submit_io_t *io) {
+  int err = txn_retained_refs_release_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  MDBX_txn *const txn = io->txn;
+  for (size_t i = 0; i < io->retained_refs_count; ++i) {
+    dxb_cursor_ref_release_submit_io_t release;
+    err = cursor_make_ref_release_submit_io(nullptr, &txn->retained_refs[i], &release);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = cursor_submit_ref_release(&release);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+  }
   txn->retained_refs_count = 0;
+  return MDBX_SUCCESS;
+}
+
+static void txn_retained_refs_release(MDBX_txn *txn) {
+  dxb_txn_retained_refs_release_submit_io_t submit;
+  int err = txn_make_retained_refs_release_submit_io(txn, &submit);
+  ASSERT(err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = txn_submit_retained_refs_release(&submit);
+    ASSERT(err == MDBX_SUCCESS);
+  }
 }
 
 static void txn_retained_refs_destroy(MDBX_txn *txn) {
@@ -3874,13 +6372,105 @@ static void txn_retained_refs_destroy(MDBX_txn *txn) {
   txn->retained_refs_capacity = 0;
 }
 
-static void cursor_capture_txn_pins(MDBX_cursor *mc) {
+static inline int cursor_make_txn_pins_capture_submit_io(MDBX_cursor *mc,
+                                                         dxb_cursor_txn_pins_capture_submit_io_t *io) {
+  if (unlikely(!mc || !mc->txn || !io))
+    return MDBX_EINVAL;
+
   MDBX_txn *const txn = mc->txn;
-  if (page_ref_requires_txn_pin(&mc->value_ref))
-    txn->retained_refs[txn->retained_refs_count++] = cursor_ref_retain(mc, mc->value_ref);
+  io->cursor = mc;
+  io->txn = txn;
+  io->retained_refs = txn->retained_refs;
+  io->retained_refs_count = txn->retained_refs_count;
+  io->retained_refs_capacity = txn->retained_refs_capacity;
+  io->value_ref = mc->value_ref;
+  io->capture_count = page_ref_requires_txn_pin(&io->value_ref);
+  for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i) {
+    io->pgref[i] = mc->pgref[i];
+    io->capture_count += page_ref_requires_txn_pin(&io->pgref[i]);
+  }
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_txn_pins_capture_submit_io_validate(const dxb_cursor_txn_pins_capture_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->txn))
+    return MDBX_EINVAL;
+
+  MDBX_cursor *const mc = io->cursor;
+  MDBX_txn *const txn = io->txn;
+  if (unlikely(mc->txn != txn || txn->retained_refs != io->retained_refs ||
+               txn->retained_refs_count != io->retained_refs_count ||
+               txn->retained_refs_capacity != io->retained_refs_capacity))
+    return MDBX_EINVAL;
+  if (unlikely(txn->retained_refs_count > txn->retained_refs_capacity))
+    return MDBX_EINVAL;
+  if (unlikely(io->capture_count > txn->retained_refs_capacity - txn->retained_refs_count))
+    return MDBX_EINVAL;
+  if (unlikely(!page_ref_equal(&mc->value_ref, &io->value_ref)))
+    return MDBX_EINVAL;
+
+  size_t capture_count = page_ref_requires_txn_pin(&io->value_ref);
+  for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i) {
+    if (unlikely(!page_ref_equal(&mc->pgref[i], &io->pgref[i])))
+      return MDBX_EINVAL;
+    capture_count += page_ref_requires_txn_pin(&io->pgref[i]);
+  }
+  if (unlikely(capture_count != io->capture_count))
+    return MDBX_EINVAL;
+
+  dxb_cursor_txn_pins_capture_submit_io_t checked;
+  int err = cursor_make_txn_pins_capture_submit_io(mc, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.txn != io->txn ||
+               checked.retained_refs != io->retained_refs ||
+               checked.retained_refs_count != io->retained_refs_count ||
+               checked.retained_refs_capacity != io->retained_refs_capacity ||
+               checked.capture_count != io->capture_count || !page_ref_equal(&checked.value_ref, &io->value_ref)))
+    return MDBX_EINVAL;
   for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i)
-    if (page_ref_requires_txn_pin(&mc->pgref[i]))
-      txn->retained_refs[txn->retained_refs_count++] = cursor_ref_retain(mc, mc->pgref[i]);
+    if (unlikely(!page_ref_equal(&checked.pgref[i], &io->pgref[i])))
+      return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_txn_pins_capture(const dxb_cursor_txn_pins_capture_submit_io_t *io) {
+  int err = cursor_txn_pins_capture_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  MDBX_txn *const txn = io->txn;
+  if (page_ref_requires_txn_pin(&io->value_ref)) {
+    dxb_txn_retained_ref_append_submit_io_t append;
+    err = txn_make_retained_ref_append_submit_io(txn, io->cursor, io->value_ref, &append);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = txn_submit_retained_ref_append(&append);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+  }
+  for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i) {
+    if (page_ref_requires_txn_pin(&io->pgref[i])) {
+      dxb_txn_retained_ref_append_submit_io_t append;
+      err = txn_make_retained_ref_append_submit_io(txn, io->cursor, io->pgref[i], &append);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+      err = txn_submit_retained_ref_append(&append);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+    }
+  }
+  return MDBX_SUCCESS;
+}
+
+static void cursor_capture_txn_pins(MDBX_cursor *mc) {
+  dxb_cursor_txn_pins_capture_submit_io_t submit;
+  int err = cursor_make_txn_pins_capture_submit_io(mc, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_txn_pins_capture(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
 }
 
 static int cursor_couple_capture_txn_pins(cursor_couple_t *couple) {
@@ -3897,10 +6487,68 @@ static int cursor_couple_capture_txn_pins(cursor_couple_t *couple) {
   return MDBX_SUCCESS;
 }
 
-static inline void cursor_stack_retain_all(MDBX_cursor *mc) {
+static inline int cursor_make_stack_retain_all_submit_io(MDBX_cursor *mc,
+                                                         dxb_cursor_stack_retain_all_submit_io_t *io) {
+  if (unlikely(!mc || !io))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->top_and_flags = mc->top_and_flags;
+  io->value_ref = mc->value_ref;
+  for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i) {
+    io->page[i] = mc->pg[i];
+    io->pgref[i] = mc->pgref[i];
+  }
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_stack_retain_all_submit_io_validate(const dxb_cursor_stack_retain_all_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor))
+    return MDBX_EINVAL;
+
+  MDBX_cursor *const mc = io->cursor;
+  if (unlikely(mc->top_and_flags != io->top_and_flags || !page_ref_equal(&mc->value_ref, &io->value_ref)))
+    return MDBX_EINVAL;
+  for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i) {
+    if (unlikely(io->pgref[i].page != nullptr && io->pgref[i].page != io->page[i]))
+      return MDBX_EINVAL;
+    if (unlikely(mc->pg[i] != io->page[i] || !page_ref_equal(&mc->pgref[i], &io->pgref[i])))
+      return MDBX_EINVAL;
+  }
+
+  dxb_cursor_stack_retain_all_submit_io_t checked;
+  int err = cursor_make_stack_retain_all_submit_io(mc, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.top_and_flags != io->top_and_flags ||
+               !page_ref_equal(&checked.value_ref, &io->value_ref)))
+    return MDBX_EINVAL;
   for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i)
-    mc->pgref[i] = cursor_ref_retain(mc, mc->pgref[i]);
-  mc->value_ref = cursor_ref_retain(mc, mc->value_ref);
+    if (unlikely(checked.page[i] != io->page[i] || !page_ref_equal(&checked.pgref[i], &io->pgref[i])))
+      return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_stack_retain_all(const dxb_cursor_stack_retain_all_submit_io_t *io) {
+  int err = cursor_stack_retain_all_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  MDBX_cursor *const mc = io->cursor;
+  for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i)
+    mc->pgref[i] = cursor_ref_retain(mc, io->pgref[i]);
+  mc->value_ref = cursor_ref_retain(mc, io->value_ref);
+  return MDBX_SUCCESS;
+}
+
+static inline void cursor_stack_retain_all(MDBX_cursor *mc) {
+  dxb_cursor_stack_retain_all_submit_io_t submit;
+  int err = cursor_make_stack_retain_all_submit_io(mc, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_stack_retain_all(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
 }
 
 MDBX_MAYBE_UNUSED static inline void inner_gone(MDBX_cursor *mc) {
@@ -4001,44 +6649,435 @@ MDBX_MAYBE_UNUSED static inline int cursor_dbi_dbg(const MDBX_cursor *mc) {
   return (mc->flags & z_inner) ? -dbi : dbi;
 }
 
-static inline void cursor_stack_set(MDBX_cursor *mc, intptr_t i, page_t *mp, page_ref_t ref) {
-  cASSERT0(mc, i >= 0 && i < CURSOR_STACK_SIZE);
+static inline int cursor_make_stack_set_submit_io(MDBX_cursor *mc, intptr_t i, page_t *mp, page_ref_t ref,
+                                                  dxb_cursor_stack_set_submit_io_t *io) {
+  if (unlikely(!mc || !io || i < 0 || i >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+
   if (unlikely(ref.page != nullptr && ref.page != mp))
     ref = page_ref_untrusted(mp);
-  ref = cursor_ref_retain(mc, ref);
-  page_ref_t old = mc->pgref[i];
+  io->cursor = mc;
+  io->page = mp;
+  io->ref = ref;
+  io->slot = i;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_stack_set_submit_io_validate(const dxb_cursor_stack_set_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || io->slot < 0 || io->slot >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  if (unlikely(io->ref.page != nullptr && io->ref.page != io->page))
+    return MDBX_EINVAL;
+
+  dxb_cursor_stack_set_submit_io_t checked;
+  int err = cursor_make_stack_set_submit_io(io->cursor, io->slot, io->page, io->ref, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.slot != io->slot ||
+               !page_ref_equal(&checked.ref, &io->ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_stack_set(const dxb_cursor_stack_set_submit_io_t *io) {
+  int err = cursor_stack_set_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  MDBX_cursor *const mc = io->cursor;
+  page_ref_t ref = cursor_ref_retain(mc, io->ref);
+  page_ref_t old = mc->pgref[io->slot];
   cursor_value_release(mc);
-  mc->pg[i] = mp;
-  mc->pgref[i] = ref;
+  mc->pg[io->slot] = io->page;
+  mc->pgref[io->slot] = ref;
   cursor_ref_release(mc, &old);
+  return MDBX_SUCCESS;
+}
+
+static inline void cursor_stack_set(MDBX_cursor *mc, intptr_t i, page_t *mp, page_ref_t ref) {
+  dxb_cursor_stack_set_submit_io_t submit;
+  int err = cursor_make_stack_set_submit_io(mc, i, mp, ref, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_stack_set(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
+}
+
+static inline int cursor_make_tree_drop_stack_restore_submit_io(
+    MDBX_cursor *mc, page_t *const stack[], const page_ref_t stack_ref[], intptr_t first,
+    dxb_cursor_tree_drop_stack_restore_submit_io_t *io) {
+  if (unlikely(!mc || !stack || !stack_ref || !io || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE || first < 0 ||
+               first > mc->top + 1))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->first = first;
+  io->top = mc->top;
+  for (intptr_t i = first; i <= io->top; ++i) {
+    if (unlikely(!stack[i]))
+      return MDBX_EINVAL;
+    if (unlikely(stack_ref[i].page != nullptr && stack_ref[i].page != stack[i]))
+      return MDBX_EINVAL;
+    io->page[i] = stack[i];
+    io->ref[i] = stack_ref[i];
+  }
+  return MDBX_SUCCESS;
+}
+
+static inline int
+cursor_tree_drop_stack_restore_submit_io_validate(const dxb_cursor_tree_drop_stack_restore_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || io->top < 0 || io->top >= CURSOR_STACK_SIZE || io->first < 0 ||
+               io->first > io->top + 1))
+    return MDBX_EINVAL;
+  if (unlikely(io->cursor->top != io->top))
+    return MDBX_EINVAL;
+  for (intptr_t i = io->first; i <= io->top; ++i) {
+    if (unlikely(!io->page[i]))
+      return MDBX_EINVAL;
+    if (unlikely(io->ref[i].page != nullptr && io->ref[i].page != io->page[i]))
+      return MDBX_EINVAL;
+  }
+
+  dxb_cursor_tree_drop_stack_restore_submit_io_t checked;
+  int err = cursor_make_tree_drop_stack_restore_submit_io(io->cursor, io->page, io->ref, io->first, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.first != io->first || checked.top != io->top))
+    return MDBX_EINVAL;
+  for (intptr_t i = io->first; i <= io->top; ++i)
+    if (unlikely(checked.page[i] != io->page[i] || !page_ref_equal(&checked.ref[i], &io->ref[i])))
+      return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_tree_drop_stack_restore(const dxb_cursor_tree_drop_stack_restore_submit_io_t *io) {
+  int err = cursor_tree_drop_stack_restore_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  for (intptr_t i = io->first; i <= io->top; ++i) {
+    cursor_stack_set(io->cursor, i, io->page[i], io->ref[i]);
+    io->cursor->ki[i] = 0;
+  }
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_tree_drop_stack_restore(MDBX_cursor *mc, page_t *const stack[],
+                                                 const page_ref_t stack_ref[], intptr_t first) {
+  dxb_cursor_tree_drop_stack_restore_submit_io_t submit;
+  int err = cursor_make_tree_drop_stack_restore_submit_io(mc, stack, stack_ref, first, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_tree_drop_stack_restore(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
+  return err;
+}
+
+static inline int cursor_make_stack_set_ref_consume_submit_io(MDBX_cursor *mc, intptr_t i, page_t *mp,
+                                                              page_ref_t *ref,
+                                                              dxb_cursor_stack_set_ref_consume_submit_io_t *io) {
+  if (unlikely(!mc || !ref || !io || i < 0 || i >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->page = mp;
+  io->ref = ref;
+  io->captured = *ref;
+  io->slot = i;
+  return MDBX_SUCCESS;
+}
+
+static inline int
+cursor_stack_set_ref_consume_submit_io_validate(const dxb_cursor_stack_set_ref_consume_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->ref || io->slot < 0 || io->slot >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  if (unlikely(!page_ref_equal(io->ref, &io->captured)))
+    return MDBX_EINVAL;
+
+  dxb_cursor_stack_set_ref_consume_submit_io_t checked;
+  int err = cursor_make_stack_set_ref_consume_submit_io(io->cursor, io->slot, io->page, io->ref, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.ref != io->ref ||
+               checked.slot != io->slot || !page_ref_equal(&checked.captured, &io->captured)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_stack_set_ref_consume(const dxb_cursor_stack_set_ref_consume_submit_io_t *io) {
+  int err = cursor_stack_set_ref_consume_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  cursor_stack_set(io->cursor, io->slot, io->page, io->captured);
+  cursor_ref_release(io->cursor, io->ref);
+  return MDBX_SUCCESS;
 }
 
 static inline void cursor_stack_set_ref_consume(MDBX_cursor *mc, intptr_t i, page_t *mp, page_ref_t *ref) {
-  cursor_stack_set(mc, i, mp, *ref);
-  cursor_ref_release(mc, ref);
+  dxb_cursor_stack_set_ref_consume_submit_io_t submit;
+  int err = cursor_make_stack_set_ref_consume_submit_io(mc, i, mp, ref, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_stack_set_ref_consume(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
+}
+
+static inline int cursor_make_stack_set_synthetic_submit_io(MDBX_cursor *mc, intptr_t i, page_t *mp,
+                                                            dxb_cursor_stack_set_synthetic_submit_io_t *io) {
+  if (unlikely(!mc || !io || i < 0 || i >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->page = mp;
+  io->ref = page_ref_synthetic(mp);
+  io->slot = i;
+  return MDBX_SUCCESS;
+}
+
+static inline int
+cursor_stack_set_synthetic_submit_io_validate(const dxb_cursor_stack_set_synthetic_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || io->slot < 0 || io->slot >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+
+  const page_ref_t expected = page_ref_synthetic(io->page);
+  if (unlikely(!page_ref_equal(&io->ref, &expected)))
+    return MDBX_EINVAL;
+
+  dxb_cursor_stack_set_synthetic_submit_io_t checked;
+  int err = cursor_make_stack_set_synthetic_submit_io(io->cursor, io->slot, io->page, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.slot != io->slot ||
+               !page_ref_equal(&checked.ref, &io->ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_stack_set_synthetic(const dxb_cursor_stack_set_synthetic_submit_io_t *io) {
+  int err = cursor_stack_set_synthetic_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  cursor_stack_set(io->cursor, io->slot, io->page, io->ref);
+  return MDBX_SUCCESS;
 }
 
 static inline void cursor_stack_set_synthetic(MDBX_cursor *mc, intptr_t i, page_t *mp) {
-  cursor_stack_set(mc, i, mp, page_ref_synthetic(mp));
+  dxb_cursor_stack_set_synthetic_submit_io_t submit;
+  int err = cursor_make_stack_set_synthetic_submit_io(mc, i, mp, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_stack_set_synthetic(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
+}
+
+static inline int cursor_make_stack_copy_submit_io(MDBX_cursor *dst, intptr_t di, const MDBX_cursor *src, intptr_t si,
+                                                   dxb_cursor_stack_copy_submit_io_t *io) {
+  if (unlikely(!dst || !src || !io || di < 0 || di >= CURSOR_STACK_SIZE || si < 0 || si >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+
+  io->dst = dst;
+  io->src = src;
+  io->page = src->pg[si];
+  io->ref = src->pgref[si];
+  io->dst_slot = di;
+  io->src_slot = si;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_stack_copy_submit_io_validate(const dxb_cursor_stack_copy_submit_io_t *io) {
+  if (unlikely(!io || !io->dst || !io->src || io->dst_slot < 0 || io->dst_slot >= CURSOR_STACK_SIZE ||
+               io->src_slot < 0 || io->src_slot >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  if (unlikely(io->src->pg[io->src_slot] != io->page ||
+               !page_ref_equal(&io->src->pgref[io->src_slot], &io->ref)))
+    return MDBX_EINVAL;
+
+  dxb_cursor_stack_copy_submit_io_t checked;
+  int err = cursor_make_stack_copy_submit_io(io->dst, io->dst_slot, io->src, io->src_slot, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.dst != io->dst || checked.src != io->src || checked.page != io->page ||
+               checked.dst_slot != io->dst_slot || checked.src_slot != io->src_slot ||
+               !page_ref_equal(&checked.ref, &io->ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_stack_copy(const dxb_cursor_stack_copy_submit_io_t *io) {
+  int err = cursor_stack_copy_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  cursor_stack_set(io->dst, io->dst_slot, io->page, io->ref);
+  return MDBX_SUCCESS;
 }
 
 static inline void cursor_stack_copy(MDBX_cursor *dst, intptr_t di, const MDBX_cursor *src, intptr_t si) {
-  cursor_stack_set(dst, di, src->pg[si], src->pgref[si]);
+  dxb_cursor_stack_copy_submit_io_t submit;
+  int err = cursor_make_stack_copy_submit_io(dst, di, src, si, &submit);
+  cASSERT0(dst, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_stack_copy(&submit);
+    cASSERT0(dst, err == MDBX_SUCCESS);
+  }
+}
+
+static inline int cursor_make_stack_set_pgr_submit_io(MDBX_cursor *mc, intptr_t i, const pgr_t *pgr,
+                                                      dxb_cursor_stack_set_pgr_submit_io_t *io) {
+  if (unlikely(!mc || !pgr || !io || i < 0 || i >= CURSOR_STACK_SIZE || pgr->err != MDBX_SUCCESS))
+    return MDBX_EINVAL;
+  if (unlikely(pgr->ref.page != nullptr && pgr->ref.page != pgr->page))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->pgr = pgr;
+  io->captured = *pgr;
+  io->slot = i;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_stack_set_pgr_submit_io_validate(const dxb_cursor_stack_set_pgr_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->pgr || io->slot < 0 || io->slot >= CURSOR_STACK_SIZE ||
+               io->captured.err != MDBX_SUCCESS))
+    return MDBX_EINVAL;
+  if (unlikely(io->captured.ref.page != nullptr && io->captured.ref.page != io->captured.page))
+    return MDBX_EINVAL;
+  if (unlikely(io->pgr->page != io->captured.page || io->pgr->err != io->captured.err ||
+               !page_ref_equal(&io->pgr->ref, &io->captured.ref)))
+    return MDBX_EINVAL;
+
+  dxb_cursor_stack_set_pgr_submit_io_t checked;
+  int err = cursor_make_stack_set_pgr_submit_io(io->cursor, io->slot, io->pgr, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.pgr != io->pgr || checked.captured.page != io->captured.page ||
+               checked.captured.err != io->captured.err || checked.slot != io->slot ||
+               !page_ref_equal(&checked.captured.ref, &io->captured.ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_stack_set_pgr(const dxb_cursor_stack_set_pgr_submit_io_t *io) {
+  int err = cursor_stack_set_pgr_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  cursor_stack_set(io->cursor, io->slot, io->captured.page, io->captured.ref);
+  return MDBX_SUCCESS;
 }
 
 static inline void cursor_stack_set_pgr(MDBX_cursor *mc, intptr_t i, const pgr_t *pgr) {
-  cASSERT0(mc, pgr->err == MDBX_SUCCESS);
-  cASSERT0(mc, pgr->ref.page == nullptr || pgr->ref.page == pgr->page);
-  cursor_stack_set(mc, i, pgr->page, pgr->ref);
+  dxb_cursor_stack_set_pgr_submit_io_t submit;
+  int err = cursor_make_stack_set_pgr_submit_io(mc, i, pgr, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_stack_set_pgr(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
+}
+
+static inline int cursor_make_stack_set_pgr_consume_submit_io(MDBX_cursor *mc, intptr_t i, pgr_t *pgr,
+                                                              dxb_cursor_stack_set_pgr_consume_submit_io_t *io) {
+  if (unlikely(!mc || !pgr || !io || i < 0 || i >= CURSOR_STACK_SIZE || pgr->err != MDBX_SUCCESS))
+    return MDBX_EINVAL;
+  if (unlikely(pgr->ref.page != nullptr && pgr->ref.page != pgr->page))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->pgr = pgr;
+  io->captured = *pgr;
+  io->slot = i;
+  return MDBX_SUCCESS;
+}
+
+static inline int
+cursor_stack_set_pgr_consume_submit_io_validate(const dxb_cursor_stack_set_pgr_consume_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->pgr || io->slot < 0 || io->slot >= CURSOR_STACK_SIZE ||
+               io->captured.err != MDBX_SUCCESS))
+    return MDBX_EINVAL;
+  if (unlikely(io->captured.ref.page != nullptr && io->captured.ref.page != io->captured.page))
+    return MDBX_EINVAL;
+  if (unlikely(io->pgr->page != io->captured.page || io->pgr->err != io->captured.err ||
+               !page_ref_equal(&io->pgr->ref, &io->captured.ref)))
+    return MDBX_EINVAL;
+
+  dxb_cursor_stack_set_pgr_consume_submit_io_t checked;
+  int err = cursor_make_stack_set_pgr_consume_submit_io(io->cursor, io->slot, io->pgr, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.pgr != io->pgr || checked.captured.page != io->captured.page ||
+               checked.captured.err != io->captured.err || checked.slot != io->slot ||
+               !page_ref_equal(&checked.captured.ref, &io->captured.ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_stack_set_pgr_consume(const dxb_cursor_stack_set_pgr_consume_submit_io_t *io) {
+  int err = cursor_stack_set_pgr_consume_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  cursor_stack_set_pgr(io->cursor, io->slot, &io->captured);
+  pgr_release(io->cursor, io->pgr);
+  return MDBX_SUCCESS;
 }
 
 static inline void cursor_stack_set_pgr_consume(MDBX_cursor *mc, intptr_t i, pgr_t *pgr) {
-  cursor_stack_set_pgr(mc, i, pgr);
-  pgr_release(mc, pgr);
+  dxb_cursor_stack_set_pgr_consume_submit_io_t submit;
+  int err = cursor_make_stack_set_pgr_consume_submit_io(mc, i, pgr, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_stack_set_pgr_consume(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
 }
 
-MDBX_MAYBE_UNUSED static inline int __must_check_result cursor_push_pgr(MDBX_cursor *mc, const pgr_t *pgr, indx_t ki) {
-  page_t *const mp = pgr->page;
+static inline int cursor_make_push_pgr_submit_io(MDBX_cursor *mc, const pgr_t *pgr, indx_t ki,
+                                                 dxb_cursor_push_pgr_submit_io_t *io) {
+  if (unlikely(!mc || !pgr || !io || pgr->err != MDBX_SUCCESS || !pgr->page))
+    return MDBX_EINVAL;
+  if (unlikely(pgr->ref.page != nullptr && pgr->ref.page != pgr->page))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->pgr = *pgr;
+  io->previous_top = mc->top;
+  io->ki = ki;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_push_pgr_submit_io_validate(const dxb_cursor_push_pgr_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || io->pgr.err != MDBX_SUCCESS || !io->pgr.page))
+    return MDBX_EINVAL;
+  if (unlikely(io->pgr.ref.page != nullptr && io->pgr.ref.page != io->pgr.page))
+    return MDBX_EINVAL;
+  if (unlikely(io->cursor->top != io->previous_top))
+    return MDBX_EINVAL;
+
+  dxb_cursor_push_pgr_submit_io_t checked;
+  int err = cursor_make_push_pgr_submit_io(io->cursor, &io->pgr, io->ki, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.pgr.page != io->pgr.page ||
+               checked.pgr.err != io->pgr.err || checked.previous_top != io->previous_top ||
+               checked.ki != io->ki || !page_ref_equal(&checked.pgr.ref, &io->pgr.ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_push_pgr(const dxb_cursor_push_pgr_submit_io_t *io) {
+  int err = cursor_push_pgr_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  MDBX_cursor *const mc = io->cursor;
+  page_t *const mp = io->pgr.page;
   TRACE("pushing page %" PRIaPGNO " on db %d cursor %p", mp->pgno, cursor_dbi_dbg(mc), __Wpedantic_format_voidptr(mc));
   if (unlikely(mc->top >= CURSOR_STACK_SIZE - 1)) {
     be_poor(mc);
@@ -4046,16 +7085,78 @@ MDBX_MAYBE_UNUSED static inline int __must_check_result cursor_push_pgr(MDBX_cur
     return MDBX_CURSOR_FULL;
   }
   mc->top += 1;
-  cursor_stack_set_pgr(mc, mc->top, pgr);
-  mc->ki[mc->top] = ki;
+  cursor_stack_set_pgr(mc, mc->top, &io->pgr);
+  mc->ki[mc->top] = io->ki;
   return MDBX_SUCCESS;
+}
+
+MDBX_MAYBE_UNUSED static inline int __must_check_result cursor_push_pgr(MDBX_cursor *mc, const pgr_t *pgr, indx_t ki) {
+  dxb_cursor_push_pgr_submit_io_t submit;
+  int err = cursor_make_push_pgr_submit_io(mc, pgr, ki, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS))
+    err = cursor_submit_push_pgr(&submit);
+  cASSERT0(mc, err == MDBX_SUCCESS || err == MDBX_CURSOR_FULL);
+  return err;
+}
+
+static inline int cursor_make_push_pgr_consume_submit_io(MDBX_cursor *mc, pgr_t *pgr, indx_t ki,
+                                                         dxb_cursor_push_pgr_consume_submit_io_t *io) {
+  if (unlikely(!mc || !pgr || !io || pgr->err != MDBX_SUCCESS || !pgr->page))
+    return MDBX_EINVAL;
+  if (unlikely(pgr->ref.page != nullptr && pgr->ref.page != pgr->page))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->pgr = pgr;
+  io->captured = *pgr;
+  io->previous_top = mc->top;
+  io->ki = ki;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_push_pgr_consume_submit_io_validate(const dxb_cursor_push_pgr_consume_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->pgr || io->captured.err != MDBX_SUCCESS || !io->captured.page))
+    return MDBX_EINVAL;
+  if (unlikely(io->captured.ref.page != nullptr && io->captured.ref.page != io->captured.page))
+    return MDBX_EINVAL;
+  if (unlikely(io->cursor->top != io->previous_top))
+    return MDBX_EINVAL;
+  if (unlikely(io->pgr->page != io->captured.page || io->pgr->err != io->captured.err ||
+               !page_ref_equal(&io->pgr->ref, &io->captured.ref)))
+    return MDBX_EINVAL;
+
+  dxb_cursor_push_pgr_consume_submit_io_t checked;
+  int err = cursor_make_push_pgr_consume_submit_io(io->cursor, io->pgr, io->ki, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.pgr != io->pgr ||
+               checked.captured.page != io->captured.page || checked.captured.err != io->captured.err ||
+               checked.previous_top != io->previous_top || checked.ki != io->ki ||
+               !page_ref_equal(&checked.captured.ref, &io->captured.ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_push_pgr_consume(const dxb_cursor_push_pgr_consume_submit_io_t *io) {
+  int err = cursor_push_pgr_consume_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  err = cursor_push_pgr(io->cursor, &io->captured, io->ki);
+  pgr_release(io->cursor, io->pgr);
+  return err;
 }
 
 MDBX_MAYBE_UNUSED static inline int __must_check_result cursor_push_pgr_consume(MDBX_cursor *mc, pgr_t *pgr,
                                                                                 indx_t ki) {
-  int rc = cursor_push_pgr(mc, pgr, ki);
-  pgr_release(mc, pgr);
-  return rc;
+  dxb_cursor_push_pgr_consume_submit_io_t submit;
+  int err = cursor_make_push_pgr_consume_submit_io(mc, pgr, ki, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS))
+    err = cursor_submit_push_pgr_consume(&submit);
+  cASSERT0(mc, err == MDBX_SUCCESS || err == MDBX_CURSOR_FULL);
+  return err;
 }
 
 MDBX_MAYBE_UNUSED static inline int __must_check_result cursor_push(MDBX_cursor *mc, page_t *mp, indx_t ki) {
@@ -4063,21 +7164,160 @@ MDBX_MAYBE_UNUSED static inline int __must_check_result cursor_push(MDBX_cursor 
   return cursor_push_pgr(mc, &pgr, ki);
 }
 
-MDBX_MAYBE_UNUSED static inline void cursor_pop(MDBX_cursor *mc) {
-  TRACE("popped page %" PRIaPGNO " off db %d cursor %p", mc->pg[mc->top]->pgno, cursor_dbi_dbg(mc),
+static inline int cursor_make_pop_submit_io(MDBX_cursor *mc, dxb_cursor_pop_submit_io_t *io) {
+  if (unlikely(!mc || !io || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE || !mc->pg[mc->top]))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->page = mc->pg[mc->top];
+  io->ref = mc->pgref[mc->top];
+  io->top = mc->top;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_pop_submit_io_validate(const dxb_cursor_pop_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->page || io->top < 0 || io->top >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  if (unlikely(io->cursor->top != io->top || io->cursor->pg[io->top] != io->page ||
+               !page_ref_equal(&io->cursor->pgref[io->top], &io->ref)))
+    return MDBX_EINVAL;
+
+  dxb_cursor_pop_submit_io_t checked;
+  int err = cursor_make_pop_submit_io(io->cursor, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.top != io->top ||
+               !page_ref_equal(&checked.ref, &io->ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_pop(const dxb_cursor_pop_submit_io_t *io) {
+  int err = cursor_pop_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  MDBX_cursor *const mc = io->cursor;
+  TRACE("popped page %" PRIaPGNO " off db %d cursor %p", io->page->pgno, cursor_dbi_dbg(mc),
         __Wpedantic_format_voidptr(mc));
-  cASSERT0(mc, mc->top >= 0);
   cursor_value_release(mc);
   cursor_ref_release(mc, &mc->pgref[mc->top]);
   mc->top -= 1;
+  return MDBX_SUCCESS;
+}
+
+MDBX_MAYBE_UNUSED static inline void cursor_pop(MDBX_cursor *mc) {
+  dxb_cursor_pop_submit_io_t submit;
+  int err = cursor_make_pop_submit_io(mc, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_pop(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
+}
+
+static inline int cursor_make_pop_keep_ref_submit_io(MDBX_cursor *mc, dxb_cursor_pop_keep_ref_submit_io_t *io) {
+  if (unlikely(!mc || !io || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE || !mc->pg[mc->top]))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->page = mc->pg[mc->top];
+  io->ref = mc->pgref[mc->top];
+  io->top = mc->top;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_pop_keep_ref_submit_io_validate(const dxb_cursor_pop_keep_ref_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->page || io->top < 0 || io->top >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  if (unlikely(io->cursor->top != io->top || io->cursor->pg[io->top] != io->page ||
+               !page_ref_equal(&io->cursor->pgref[io->top], &io->ref)))
+    return MDBX_EINVAL;
+
+  dxb_cursor_pop_keep_ref_submit_io_t checked;
+  int err = cursor_make_pop_keep_ref_submit_io(io->cursor, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.top != io->top ||
+               !page_ref_equal(&checked.ref, &io->ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_pop_keep_ref(const dxb_cursor_pop_keep_ref_submit_io_t *io) {
+  int err = cursor_pop_keep_ref_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  MDBX_cursor *const mc = io->cursor;
+  TRACE("temporarily popped page %" PRIaPGNO " off db %d cursor %p", io->page->pgno, cursor_dbi_dbg(mc),
+        __Wpedantic_format_voidptr(mc));
+  cursor_value_release(mc);
+  mc->top -= 1;
+  return MDBX_SUCCESS;
 }
 
 static inline void cursor_pop_keep_ref(MDBX_cursor *mc) {
-  TRACE("temporarily popped page %" PRIaPGNO " off db %d cursor %p", mc->pg[mc->top]->pgno, cursor_dbi_dbg(mc),
-        __Wpedantic_format_voidptr(mc));
-  cASSERT0(mc, mc->top >= 0);
-  cursor_value_release(mc);
-  mc->top -= 1;
+  dxb_cursor_pop_keep_ref_submit_io_t submit;
+  int err = cursor_make_pop_keep_ref_submit_io(mc, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_pop_keep_ref(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
+}
+
+static inline int
+cursor_make_pop_keep_ref_restore_submit_io(MDBX_cursor *mc, dxb_cursor_pop_keep_ref_restore_submit_io_t *io) {
+  if (unlikely(!mc || !io || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE - 1 || !mc->pg[mc->top + 1]))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->previous_top = mc->top;
+  io->restored_top = mc->top + 1;
+  io->page = mc->pg[io->restored_top];
+  io->ref = mc->pgref[io->restored_top];
+  return MDBX_SUCCESS;
+}
+
+static inline int
+cursor_pop_keep_ref_restore_submit_io_validate(const dxb_cursor_pop_keep_ref_restore_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->page || io->previous_top < 0 ||
+               io->previous_top >= CURSOR_STACK_SIZE - 1 || io->restored_top != io->previous_top + 1 ||
+               io->restored_top >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  if (unlikely(io->cursor->top != io->previous_top || io->cursor->pg[io->restored_top] != io->page ||
+               !page_ref_equal(&io->cursor->pgref[io->restored_top], &io->ref)))
+    return MDBX_EINVAL;
+
+  dxb_cursor_pop_keep_ref_restore_submit_io_t checked;
+  int err = cursor_make_pop_keep_ref_restore_submit_io(io->cursor, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.page != io->page ||
+               checked.previous_top != io->previous_top || checked.restored_top != io->restored_top ||
+               !page_ref_equal(&checked.ref, &io->ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_pop_keep_ref_restore(const dxb_cursor_pop_keep_ref_restore_submit_io_t *io) {
+  int err = cursor_pop_keep_ref_restore_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  io->cursor->top = (int8_t)io->restored_top;
+  return MDBX_SUCCESS;
+}
+
+static inline void cursor_restore_pop_keep_ref(MDBX_cursor *mc) {
+  dxb_cursor_pop_keep_ref_restore_submit_io_t submit;
+  int err = cursor_make_pop_keep_ref_restore_submit_io(mc, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_pop_keep_ref_restore(&submit);
+    cASSERT0(mc, err == MDBX_SUCCESS);
+  }
 }
 
 MDBX_NOTHROW_PURE_FUNCTION static inline bool check_leaf_type(const MDBX_cursor *mc, const page_t *mp) {
@@ -4181,6 +7421,104 @@ MDBX_MAYBE_UNUSED static inline void cursor_inner_refresh(const MDBX_cursor *mc,
   const node_t *node = page_node(mp, ki);
   if ((node_flags(node) & (N_DUP | N_TREE)) == N_DUP)
     cursor_stack_set_synthetic(&mc->subcur->cursor, 0, node_data(node));
+}
+
+static inline int page_touch_make_redirect_submit_io(MDBX_txn *txn, MDBX_cursor *mc, const page_t *old_page,
+                                                     page_t *new_page, page_ref_t new_ref,
+                                                     dxb_page_touch_redirect_submit_io_t *io) {
+  if (unlikely(!txn || !mc || !old_page || !new_page || !io || mc->txn != txn || mc->top < 0 ||
+               mc->top >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  if (unlikely(mc->pg[mc->top] != old_page))
+    return MDBX_EINVAL;
+  if (unlikely(new_ref.page != new_page || new_ref.cache || (new_ref.flags & PAGE_REF_CACHE)))
+    return MDBX_EINVAL;
+
+  io->txn = txn;
+  io->cursor = mc;
+  io->old_page = old_page;
+  io->new_page = new_page;
+  io->new_ref = new_ref;
+  io->slot = mc->top;
+  io->dbi = cursor_dbi(mc);
+  io->top_and_flags = mc->top_and_flags;
+  io->inner = (mc->flags & z_inner) != 0;
+  return MDBX_SUCCESS;
+}
+
+static inline int page_touch_redirect_submit_io_validate(const dxb_page_touch_redirect_submit_io_t *io) {
+  if (unlikely(!io || !io->txn || !io->cursor || !io->old_page || !io->new_page || io->slot < 0 ||
+               io->slot >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+
+  MDBX_cursor *const mc = io->cursor;
+  if (unlikely(mc->txn != io->txn || mc->top_and_flags != io->top_and_flags ||
+               mc->pg[io->slot] != io->old_page || cursor_dbi(mc) != io->dbi ||
+               ((mc->flags & z_inner) != 0) != io->inner))
+    return MDBX_EINVAL;
+  if (unlikely(io->new_ref.page != io->new_page || io->new_ref.cache || (io->new_ref.flags & PAGE_REF_CACHE)))
+    return MDBX_EINVAL;
+
+  dxb_page_touch_redirect_submit_io_t checked;
+  int err = page_touch_make_redirect_submit_io(io->txn, mc, io->old_page, io->new_page, io->new_ref, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.txn != io->txn || checked.cursor != io->cursor || checked.old_page != io->old_page ||
+               checked.new_page != io->new_page || checked.slot != io->slot || checked.dbi != io->dbi ||
+               checked.top_and_flags != io->top_and_flags || checked.inner != io->inner ||
+               !page_ref_equal(&checked.new_ref, &io->new_ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int page_touch_submit_redirect(const dxb_page_touch_redirect_submit_io_t *io) {
+  int err = page_touch_redirect_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  MDBX_cursor *const mc = io->cursor;
+  MDBX_txn *const txn = io->txn;
+  const intptr_t slot = io->slot;
+  page_t *const np = io->new_page;
+  cursor_stack_set(mc, slot, np, io->new_ref);
+#ifdef MDBX_EVENBUG20260405_FIX
+  if (is_leaf(np) && inner_pointed(mc))
+    cursor_inner_refresh(mc, np, mc->ki[slot]);
+#endif /* MDBX_EVENBUG20260405_FIX */
+
+  MDBX_cursor *m2 = txn->cursors[io->dbi];
+  if (io->inner) {
+    for (; m2; m2 = m2->next) {
+      MDBX_cursor *m3 = &m2->subcur->cursor;
+      if (m3->top < slot)
+        continue;
+      if (m3->pg[slot] == io->old_page)
+        cursor_stack_set(m3, slot, np, io->new_ref);
+    }
+  } else {
+    for (; m2; m2 = m2->next) {
+      if (m2->top < slot)
+        continue;
+      if (m2->pg[slot] == io->old_page) {
+        cursor_stack_set(m2, slot, np, io->new_ref);
+        if (is_leaf(np) && inner_pointed(m2))
+          cursor_inner_refresh(m2, np, m2->ki[slot]);
+      }
+    }
+  }
+  return MDBX_SUCCESS;
+}
+
+static inline int __must_check_result page_touch_redirect_cursors(MDBX_txn *txn, MDBX_cursor *mc,
+                                                                  const page_t *old_page, page_t *new_page,
+                                                                  page_ref_t new_ref) {
+  dxb_page_touch_redirect_submit_io_t submit;
+  int err = page_touch_make_redirect_submit_io(txn, mc, old_page, new_page, new_ref, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS))
+    err = page_touch_submit_redirect(&submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  return err;
 }
 
 MDBX_MAYBE_UNUSED MDBX_INTERNAL bool cursor_is_tracked(const MDBX_cursor *mc);
@@ -4657,6 +7995,83 @@ __cold static int meta_shadow_alloc(MDBX_env *env) {
   return err;
 }
 
+typedef struct dxb_meta_shadow_refresh_read_submit_io {
+  MDBX_env *env;
+  const dxb_storage_t *storage;
+  dxb_read_submit_io_t read;
+  void *buffer;
+  size_t expected_bytes;
+} dxb_meta_shadow_refresh_read_submit_io_t;
+
+static inline int meta_shadow_make_refresh_read_submit_io(MDBX_env *env, const dxb_data_read_io_t *meta_pages,
+                                                          dxb_meta_shadow_refresh_read_submit_io_t *io) {
+  if (unlikely(!env || !env->meta_shadow || !meta_pages || !io))
+    return MDBX_EINVAL;
+  if (unlikely(meta_pages->pages.pgno != 0 || meta_pages->pages.npages != NUM_METAS || meta_pages->bytes.offset != 0 ||
+               meta_pages->bytes.bytes != env->meta_shadow_bytes))
+    return MDBX_EINVAL;
+
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  dxb_read_submit_io_t read;
+  int err = dxb_storage_make_read_submit_io(storage, meta_pages, env->meta_shadow, &read);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  io->env = env;
+  io->storage = storage;
+  io->read = read;
+  io->buffer = env->meta_shadow;
+  io->expected_bytes = env->meta_shadow_bytes;
+  return MDBX_SUCCESS;
+}
+
+static inline int
+meta_shadow_refresh_read_submit_io_validate(const dxb_meta_shadow_refresh_read_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage || !io->buffer || !io->read.buffer))
+    return MDBX_EINVAL;
+  MDBX_env *const env = io->env;
+  if (unlikely(io->storage != &env->dxb_storage || io->buffer != env->meta_shadow || io->read.buffer != io->buffer ||
+               io->expected_bytes != env->meta_shadow_bytes || io->read.data.bytes.bytes != io->expected_bytes))
+    return MDBX_EINVAL;
+
+  int err = dxb_storage_read_submit_io_validate(io->storage, &io->read);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  dxb_meta_shadow_refresh_read_submit_io_t checked;
+  err = meta_shadow_make_refresh_read_submit_io(env, &io->read.data, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.env != io->env || checked.storage != io->storage || checked.buffer != io->buffer ||
+               checked.expected_bytes != io->expected_bytes ||
+               checked.read.data.pages.pgno != io->read.data.pages.pgno ||
+               checked.read.data.pages.end_pgno != io->read.data.pages.end_pgno ||
+               checked.read.data.pages.npages != io->read.data.pages.npages ||
+               checked.read.data.pages.offset != io->read.data.pages.offset ||
+               checked.read.data.pages.bytes != io->read.data.pages.bytes ||
+               checked.read.data.bytes.offset != io->read.data.bytes.offset ||
+               checked.read.data.bytes.bytes != io->read.data.bytes.bytes || checked.read.buffer != io->read.buffer))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static dxb_read_result_t meta_shadow_submit_refresh_read(const dxb_meta_shadow_refresh_read_submit_io_t *io) {
+  int err = meta_shadow_refresh_read_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS)) {
+    const dxb_read_result_t result = {err, 0, false, false};
+    return result;
+  }
+  return dxb_storage_submit_read_data(io->storage, &io->read);
+}
+
+static int meta_shadow_refresh_read(MDBX_env *env, const dxb_data_read_io_t *meta_pages) {
+  dxb_meta_shadow_refresh_read_submit_io_t submit;
+  int err = meta_shadow_make_refresh_read_submit_io(env, meta_pages, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  return meta_shadow_submit_refresh_read(&submit).err;
+}
+
 int meta_shadow_refresh(MDBX_env *env) {
   const dxb_storage_t *const storage = &env->dxb_storage;
   int err = meta_shadow_alloc(env);
@@ -4671,7 +8086,7 @@ int meta_shadow_refresh(MDBX_env *env) {
   err = dxb_storage_make_data_read_io(storage, &meta_page_span, &meta_pages);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  return dxb_storage_read_data(storage, &meta_pages, env->meta_shadow).err;
+  return meta_shadow_refresh_read(env, &meta_pages);
 }
 
 void meta_shadow_copy_write(const MDBX_env *env, const dxb_meta_write_io_t *io, const void *src) {
@@ -4906,20 +8321,212 @@ MDBX_INTERNAL pgr_t page_get_three(const MDBX_cursor *const mc, const pgno_t pgn
 
 MDBX_INTERNAL pgr_t page_get_large(const MDBX_cursor *const mc, const pgno_t pgno, const txnid_t front);
 
+static inline int page_make_get_with_ref_submit_io(const MDBX_cursor *mc, const pgno_t pgno, page_t **mp,
+                                                   page_ref_t *ref, const txnid_t front,
+                                                   dxb_page_get_with_ref_submit_io_t *io) {
+  if (unlikely(!mc || !mc->txn || !mp || !io))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->page = mp;
+  io->ref = ref;
+  io->pgno = pgno;
+  io->front = front;
+  io->retain_ref = ref != nullptr;
+  return MDBX_SUCCESS;
+}
+
+static inline int page_get_with_ref_submit_io_validate(const dxb_page_get_with_ref_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->cursor->txn || !io->page))
+    return MDBX_EINVAL;
+
+  dxb_page_get_with_ref_submit_io_t checked;
+  int err = page_make_get_with_ref_submit_io(io->cursor, io->pgno, io->page, io->ref, io->front, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.ref != io->ref ||
+               checked.pgno != io->pgno || checked.front != io->front || checked.retain_ref != io->retain_ref))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int page_submit_get_with_ref(const dxb_page_get_with_ref_submit_io_t *io) {
+  int err = page_get_with_ref_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  pgr_t ret = page_get_three(io->cursor, io->pgno, io->front);
+  *io->page = ret.page;
+  if (io->retain_ref)
+    *io->ref = ret.ref;
+  else
+    pgr_release(io->cursor, &ret);
+  return ret.err;
+}
+
 static inline int __must_check_result page_get_with_ref(const MDBX_cursor *mc, const pgno_t pgno, page_t **mp,
                                                         page_ref_t *ref, const txnid_t front) {
-  pgr_t ret = page_get_three(mc, pgno, front);
-  *mp = ret.page;
-  if (ref)
-    *ref = ret.ref;
-  else
-    pgr_release(mc, &ret);
-  return ret.err;
+  dxb_page_get_with_ref_submit_io_t submit;
+  int err = page_make_get_with_ref_submit_io(mc, pgno, mp, ref, front, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  return page_submit_get_with_ref(&submit);
 }
 
 static inline int __must_check_result page_get(const MDBX_cursor *mc, const pgno_t pgno, page_t **mp,
                                                const txnid_t front) {
   return page_get_with_ref(mc, pgno, mp, nullptr, front);
+}
+
+static inline int cursor_make_stack_page_get_submit_io(MDBX_cursor *mc, intptr_t slot, pgno_t pgno, txnid_t front,
+                                                       dxb_cursor_stack_page_get_submit_io_t *io) {
+  if (unlikely(!mc || !mc->txn || !io || slot < 0 || slot >= CURSOR_STACK_SIZE || pgno < NUM_METAS ||
+               pgno >= mc->txn->geo.first_unallocated))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->pgno = pgno;
+  io->front = front;
+  io->slot = slot;
+  io->captured_top = mc->top;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_stack_page_get_submit_io_validate(const dxb_cursor_stack_page_get_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->cursor->txn || io->slot < 0 || io->slot >= CURSOR_STACK_SIZE ||
+               io->pgno < NUM_METAS || io->pgno >= io->cursor->txn->geo.first_unallocated))
+    return MDBX_EINVAL;
+  if (unlikely(io->cursor->top != io->captured_top))
+    return MDBX_EINVAL;
+
+  dxb_cursor_stack_page_get_submit_io_t checked;
+  int err = cursor_make_stack_page_get_submit_io(io->cursor, io->slot, io->pgno, io->front, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.pgno != io->pgno || checked.front != io->front ||
+               checked.slot != io->slot || checked.captured_top != io->captured_top))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_stack_page_get(const dxb_cursor_stack_page_get_submit_io_t *io) {
+  int err = cursor_stack_page_get_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  pgr_t pgr = page_get_three(io->cursor, io->pgno, io->front);
+  err = pgr.err;
+  if (unlikely(err != MDBX_SUCCESS)) {
+    pgr_release(io->cursor, &pgr);
+    return err;
+  }
+
+  cursor_stack_set_pgr_consume(io->cursor, io->slot, &pgr);
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_stack_page_get(MDBX_cursor *mc, intptr_t slot, pgno_t pgno, txnid_t front) {
+  dxb_cursor_stack_page_get_submit_io_t submit;
+  int err = cursor_make_stack_page_get_submit_io(mc, slot, pgno, front, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS))
+    err = cursor_submit_stack_page_get(&submit);
+  return err;
+}
+
+static inline int
+cursor_make_validate_branch_child_submit_io(const MDBX_cursor *mc, intptr_t parent_slot, size_t parent_ki,
+                                            bool expect_leaf,
+                                            dxb_cursor_validate_branch_child_submit_io_t *io) {
+  if (unlikely(!mc || !io || parent_slot < 0 || parent_slot >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+
+  page_t *const parent = mc->pg[parent_slot];
+  if (unlikely(!parent || !is_branch(parent) || parent_ki >= page_numkeys(parent)))
+    return MDBX_EINVAL;
+  if (unlikely(mc->pgref[parent_slot].page != nullptr && mc->pgref[parent_slot].page != parent))
+    return MDBX_EINVAL;
+
+  const node_t *const node = page_node(parent, parent_ki);
+  if (unlikely(node_flags(node) != 0))
+    return MDBX_CURSOR_FULL;
+
+  io->cursor = mc;
+  io->parent = parent;
+  io->parent_ref = mc->pgref[parent_slot];
+  io->child_pgno = node_pgno(node);
+  io->front = parent->txnid;
+  io->parent_slot = parent_slot;
+  io->parent_ki = parent_ki;
+  io->captured_top = mc->top;
+  io->expect_leaf = expect_leaf;
+  return MDBX_SUCCESS;
+}
+
+static inline int
+cursor_validate_branch_child_submit_io_validate(const dxb_cursor_validate_branch_child_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->parent || io->parent_slot < 0 || io->parent_slot >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+
+  const MDBX_cursor *const mc = io->cursor;
+  if (unlikely(mc->top != io->captured_top || mc->pg[io->parent_slot] != io->parent ||
+               !page_ref_equal(&mc->pgref[io->parent_slot], &io->parent_ref)))
+    return MDBX_EINVAL;
+  if (unlikely(io->parent_ref.page != nullptr && io->parent_ref.page != io->parent))
+    return MDBX_EINVAL;
+  if (unlikely(!is_branch(io->parent) || io->parent_ki >= page_numkeys(io->parent)))
+    return MDBX_EINVAL;
+
+  const node_t *const node = page_node(io->parent, io->parent_ki);
+  if (unlikely(node_flags(node) != 0 || node_pgno(node) != io->child_pgno || io->front != io->parent->txnid))
+    return MDBX_EINVAL;
+
+  dxb_cursor_validate_branch_child_submit_io_t checked;
+  int err = cursor_make_validate_branch_child_submit_io(mc, io->parent_slot, io->parent_ki, io->expect_leaf, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.parent != io->parent ||
+               checked.child_pgno != io->child_pgno || checked.front != io->front ||
+               checked.parent_slot != io->parent_slot || checked.parent_ki != io->parent_ki ||
+               checked.captured_top != io->captured_top || checked.expect_leaf != io->expect_leaf ||
+               !page_ref_equal(&checked.parent_ref, &io->parent_ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_validate_branch_child(const dxb_cursor_validate_branch_child_submit_io_t *io) {
+  int err = cursor_validate_branch_child_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  pgr_t child = page_get_three(io->cursor, io->child_pgno, io->front);
+  err = child.err;
+  cASSERT0(io->cursor, err == MDBX_SUCCESS);
+  if (unlikely(err != MDBX_SUCCESS)) {
+    pgr_release(io->cursor, &child);
+    return err;
+  }
+
+  const bool leaf = is_leaf(child.page) ? true : false;
+  cASSERT0(io->cursor, leaf == io->expect_leaf);
+  if (unlikely(leaf != io->expect_leaf)) {
+    pgr_release(io->cursor, &child);
+    return MDBX_CURSOR_FULL;
+  }
+
+  err = page_check(io->cursor, child.page);
+  pgr_release(io->cursor, &child);
+  return err;
+}
+
+static inline int cursor_validate_branch_child(const MDBX_cursor *mc, intptr_t parent_slot, size_t parent_ki,
+                                               bool expect_leaf) {
+  dxb_cursor_validate_branch_child_submit_io_t submit;
+  int err = cursor_make_validate_branch_child_submit_io(mc, parent_slot, parent_ki, expect_leaf, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS))
+    err = cursor_submit_validate_branch_child(&submit);
+  return err;
 }
 
 MDBX_INTERNAL pgr_t page_get_unchecked(MDBX_txn *const txn, const pgno_t pgno, const txnid_t front);
@@ -4959,6 +8566,86 @@ static inline int page_touch(MDBX_cursor *mc) {
 
 MDBX_INTERNAL void page_copy(page_t *const dst, const page_t *const src, const size_t size);
 MDBX_INTERNAL pgr_t __must_check_result page_unspill(MDBX_txn *const txn, const page_t *const mp);
+
+static inline int compacting_make_branch_child_copy_submit_io(
+    MDBX_cursor *mc, page_t **source, page_ref_t *source_ref, page_t *copy_page, intptr_t next_top, indx_t ki,
+    dxb_compacting_branch_child_copy_submit_io_t *io) {
+  if (unlikely(!mc || !source || !*source || !source_ref || !copy_page || !io || mc->top < 0 ||
+               next_top < 0 || next_top >= CURSOR_STACK_SIZE || next_top != mc->top + 1))
+    return MDBX_EINVAL;
+  if (unlikely(!is_branch(*source)))
+    return MDBX_EINVAL;
+  if (unlikely(source_ref->page != nullptr && source_ref->page != *source))
+    return MDBX_EINVAL;
+  if (unlikely(mc->pg[next_top] != copy_page))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->source = source;
+  io->source_page = *source;
+  io->copy_page = copy_page;
+  io->source_ref = source_ref;
+  io->captured_ref = *source_ref;
+  io->previous_top = mc->top;
+  io->next_top = next_top;
+  io->ki = ki;
+  return MDBX_SUCCESS;
+}
+
+static inline int
+compacting_branch_child_copy_submit_io_validate(const dxb_compacting_branch_child_copy_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->source || !io->source_page || !io->copy_page || !io->source_ref ||
+               io->previous_top < 0 || io->next_top < 0 || io->next_top >= CURSOR_STACK_SIZE ||
+               io->next_top != io->previous_top + 1))
+    return MDBX_EINVAL;
+  if (unlikely(io->cursor->top != io->previous_top || *io->source != io->source_page ||
+               io->cursor->pg[io->next_top] != io->copy_page))
+    return MDBX_EINVAL;
+  if (unlikely(!is_branch(io->source_page)))
+    return MDBX_EINVAL;
+  if (unlikely(!page_ref_equal(io->source_ref, &io->captured_ref)))
+    return MDBX_EINVAL;
+  if (unlikely(io->captured_ref.page != nullptr && io->captured_ref.page != io->source_page))
+    return MDBX_EINVAL;
+
+  dxb_compacting_branch_child_copy_submit_io_t checked;
+  int err = compacting_make_branch_child_copy_submit_io(io->cursor, io->source, io->source_ref, io->copy_page,
+                                                        io->next_top, io->ki, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.source != io->source ||
+               checked.source_page != io->source_page || checked.copy_page != io->copy_page ||
+               checked.source_ref != io->source_ref || checked.previous_top != io->previous_top ||
+               checked.next_top != io->next_top || checked.ki != io->ki ||
+               !page_ref_equal(&checked.captured_ref, &io->captured_ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int compacting_submit_branch_child_copy(const dxb_compacting_branch_child_copy_submit_io_t *io) {
+  int err = compacting_branch_child_copy_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  page_copy(io->copy_page, io->source_page, io->cursor->txn->env->ps);
+  err = cursor_push(io->cursor, io->copy_page, io->ki);
+  if (likely(err == MDBX_SUCCESS))
+    *io->source = io->copy_page;
+  cursor_ref_release(io->cursor, io->source_ref);
+  return err;
+}
+
+static inline int __must_check_result compacting_branch_child_copy(MDBX_cursor *mc, page_t **source,
+                                                                   page_ref_t *source_ref, page_t *copy_page,
+                                                                   intptr_t next_top, indx_t ki) {
+  dxb_compacting_branch_child_copy_submit_io_t submit;
+  int err = compacting_make_branch_child_copy_submit_io(mc, source, source_ref, copy_page, next_top, ki, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS))
+    err = compacting_submit_branch_child_copy(&submit);
+  cASSERT0(mc, err == MDBX_SUCCESS || err == MDBX_CURSOR_FULL);
+  return err;
+}
 
 MDBX_INTERNAL page_t *page_shadow_alloc(MDBX_txn *txn, size_t num);
 
@@ -5049,6 +8736,146 @@ typedef struct walk_ctx {
   MDBX_txn *txn;
   MDBX_cursor *cursor;
 } walk_ctx_t;
+
+typedef struct dxb_walk_page_get_submit_io {
+  walk_ctx_t *ctx;
+  MDBX_txn *txn;
+  MDBX_cursor *cursor;
+  pgno_t pgno;
+  txnid_t front;
+  unsigned deep;
+} dxb_walk_page_get_submit_io_t;
+
+static inline int walk_make_page_get_submit_io(walk_ctx_t *ctx, pgno_t pgno, txnid_t front,
+                                               dxb_walk_page_get_submit_io_t *io) {
+  if (unlikely(!ctx || !ctx->txn || !ctx->cursor || !io || ctx->cursor->txn != ctx->txn || pgno < NUM_METAS ||
+               pgno >= ctx->txn->geo.first_unallocated))
+    return MDBX_EINVAL;
+
+  io->ctx = ctx;
+  io->txn = ctx->txn;
+  io->cursor = ctx->cursor;
+  io->pgno = pgno;
+  io->front = front;
+  io->deep = ctx->deep;
+  return MDBX_SUCCESS;
+}
+
+static inline int walk_page_get_submit_io_validate(const dxb_walk_page_get_submit_io_t *io) {
+  if (unlikely(!io || !io->ctx || !io->txn || !io->cursor || io->cursor->txn != io->txn || io->pgno < NUM_METAS ||
+               io->pgno >= io->txn->geo.first_unallocated))
+    return MDBX_EINVAL;
+  if (unlikely(io->ctx->txn != io->txn || io->ctx->cursor != io->cursor || io->ctx->deep != io->deep))
+    return MDBX_EINVAL;
+
+  dxb_walk_page_get_submit_io_t checked;
+  int err = walk_make_page_get_submit_io(io->ctx, io->pgno, io->front, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.ctx != io->ctx || checked.txn != io->txn || checked.cursor != io->cursor ||
+               checked.pgno != io->pgno || checked.front != io->front || checked.deep != io->deep))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline pgr_t walk_submit_page_get(const dxb_walk_page_get_submit_io_t *io) {
+  int err = walk_page_get_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  return page_get_three(io->cursor, io->pgno, io->front);
+}
+
+static inline pgr_t walk_page_get(walk_ctx_t *ctx, pgno_t pgno, txnid_t front) {
+  dxb_walk_page_get_submit_io_t submit;
+  int err = walk_make_page_get_submit_io(ctx, pgno, front, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return walk_submit_page_get(&submit);
+}
+
+typedef struct dxb_walk_large_page_get_submit_io {
+  walk_ctx_t *ctx;
+  MDBX_txn *txn;
+  MDBX_cursor *cursor;
+  const page_t *source;
+  const node_t *node;
+  size_t node_index;
+  pgno_t source_pgno;
+  pgno_t large_pgno;
+  txnid_t front;
+  size_t data_bytes;
+  unsigned deep;
+} dxb_walk_large_page_get_submit_io_t;
+
+static inline int walk_make_large_page_get_submit_io(walk_ctx_t *ctx, const page_t *source, size_t node_index,
+                                                     const node_t *node, dxb_walk_large_page_get_submit_io_t *io) {
+  if (unlikely(!ctx || !ctx->txn || !ctx->cursor || !source || !node || !io || ctx->cursor->txn != ctx->txn ||
+               !is_leaf(source) || node_index >= page_numkeys(source)))
+    return MDBX_EINVAL;
+  if (unlikely(node != page_node(source, node_index) || node_flags(node) != N_BIG))
+    return MDBX_EINVAL;
+
+  const pgno_t large_pgno = node_largedata_pgno(node);
+  if (unlikely(large_pgno < NUM_METAS || large_pgno >= ctx->txn->geo.first_unallocated))
+    return MDBX_EINVAL;
+
+  io->ctx = ctx;
+  io->txn = ctx->txn;
+  io->cursor = ctx->cursor;
+  io->source = source;
+  io->node = node;
+  io->node_index = node_index;
+  io->source_pgno = source->pgno;
+  io->large_pgno = large_pgno;
+  io->front = source->txnid;
+  io->data_bytes = node_ds(node);
+  io->deep = ctx->deep;
+  return MDBX_SUCCESS;
+}
+
+static inline int walk_large_page_get_submit_io_validate(const dxb_walk_large_page_get_submit_io_t *io) {
+  if (unlikely(!io || !io->ctx || !io->txn || !io->cursor || !io->source || !io->node ||
+               io->cursor->txn != io->txn || !is_leaf(io->source) || io->node_index >= page_numkeys(io->source)))
+    return MDBX_EINVAL;
+  if (unlikely(io->ctx->txn != io->txn || io->ctx->cursor != io->cursor || io->ctx->deep != io->deep ||
+               io->source->pgno != io->source_pgno || io->source->txnid != io->front))
+    return MDBX_EINVAL;
+
+  const node_t *const node = page_node(io->source, io->node_index);
+  if (unlikely(node != io->node || node_flags(node) != N_BIG || node_largedata_pgno(node) != io->large_pgno ||
+               node_ds(node) != io->data_bytes || io->large_pgno < NUM_METAS ||
+               io->large_pgno >= io->txn->geo.first_unallocated))
+    return MDBX_EINVAL;
+
+  dxb_walk_large_page_get_submit_io_t checked;
+  int err = walk_make_large_page_get_submit_io(io->ctx, io->source, io->node_index, io->node, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.ctx != io->ctx || checked.txn != io->txn || checked.cursor != io->cursor ||
+               checked.source != io->source || checked.node != io->node || checked.node_index != io->node_index ||
+               checked.source_pgno != io->source_pgno || checked.large_pgno != io->large_pgno ||
+               checked.front != io->front || checked.data_bytes != io->data_bytes || checked.deep != io->deep))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline pgr_t walk_submit_large_page_get(const dxb_walk_large_page_get_submit_io_t *io) {
+  int err = walk_large_page_get_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  return page_get_large(io->cursor, io->large_pgno, io->front);
+}
+
+static inline pgr_t walk_large_page_get(walk_ctx_t *ctx, const page_t *source, size_t node_index,
+                                        const node_t *node) {
+  dxb_walk_large_page_get_submit_io_t submit;
+  int err = walk_make_large_page_get_submit_io(ctx, source, node_index, node, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return walk_submit_large_page_get(&submit);
+}
 
 MDBX_INTERNAL int walk_tbl(walk_ctx_t *ctx, walk_tbl_t *tbl, pgno_t parent_page);
 
@@ -5660,6 +9487,88 @@ static size_t estimate_rss(size_t database_bytes) {
   return database_bytes + database_bytes / 64 + (512 + MDBX_WORDBITS * 16) * MEGABYTE;
 }
 
+typedef struct dxb_warmup_force_read_submit_io {
+  const dxb_storage_t *storage;
+  dxb_page_io_t pages;
+  dxb_read_submit_io_t read;
+  void *buffer;
+  size_t buffer_bytes;
+} dxb_warmup_force_read_submit_io_t;
+
+static inline int warmup_make_force_read_submit_io(const dxb_storage_t *storage, const dxb_page_io_t *pages,
+                                                   void *buffer, size_t buffer_bytes,
+                                                   dxb_warmup_force_read_submit_io_t *io) {
+  if (unlikely(!storage || !pages || !buffer || !io || buffer_bytes == 0))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_page_io_validate(storage, pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_data_read_io_t request;
+  rc = dxb_storage_make_data_read_io(storage, pages, &request);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(request.bytes.bytes > buffer_bytes))
+    return MDBX_EINVAL;
+
+  dxb_read_submit_io_t read;
+  rc = dxb_storage_make_read_submit_io(storage, &request, buffer, &read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->storage = storage;
+  io->pages = *pages;
+  io->read = read;
+  io->buffer = buffer;
+  io->buffer_bytes = buffer_bytes;
+  return MDBX_SUCCESS;
+}
+
+static inline int warmup_force_read_submit_io_validate(const dxb_warmup_force_read_submit_io_t *io) {
+  if (unlikely(!io || !io->storage || !io->buffer || !io->read.buffer || io->buffer_bytes == 0))
+    return MDBX_EINVAL;
+  if (unlikely(io->read.buffer != io->buffer || io->read.data.bytes.bytes > io->buffer_bytes))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_read_submit_io_validate(io->storage, &io->read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_warmup_force_read_submit_io_t checked;
+  rc = warmup_make_force_read_submit_io(io->storage, &io->pages, io->buffer, io->buffer_bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.storage != io->storage || checked.buffer != io->buffer ||
+               checked.buffer_bytes != io->buffer_bytes || checked.pages.pgno != io->pages.pgno ||
+               checked.pages.end_pgno != io->pages.end_pgno || checked.pages.npages != io->pages.npages ||
+               checked.pages.offset != io->pages.offset || checked.pages.bytes != io->pages.bytes ||
+               checked.read.data.pages.pgno != io->read.data.pages.pgno ||
+               checked.read.data.pages.end_pgno != io->read.data.pages.end_pgno ||
+               checked.read.data.pages.npages != io->read.data.pages.npages ||
+               checked.read.data.pages.offset != io->read.data.pages.offset ||
+               checked.read.data.pages.bytes != io->read.data.pages.bytes ||
+               checked.read.data.bytes.offset != io->read.data.bytes.offset ||
+               checked.read.data.bytes.bytes != io->read.data.bytes.bytes || checked.read.buffer != io->read.buffer))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static int warmup_submit_force_read(const dxb_warmup_force_read_submit_io_t *io) {
+  int rc = warmup_force_read_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_submit_read_data(io->storage, &io->read).err;
+}
+
+static int warmup_force_read_chunk(const dxb_storage_t *storage, const dxb_page_io_t *pages, void *buffer,
+                                   size_t buffer_bytes) {
+  dxb_warmup_force_read_submit_io_t submit;
+  int rc = warmup_make_force_read_submit_io(storage, pages, buffer, buffer_bytes, &submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return warmup_submit_force_read(&submit);
+}
+
 static int warmup_force_read(const dxb_storage_t *storage, const dxb_page_io_t *range, uint64_t timeout_monotime) {
   int rc = dxb_storage_page_io_validate(storage, range);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -5698,11 +9607,7 @@ static int warmup_force_read(const dxb_storage_t *storage, const dxb_page_io_t *
     rc = dxb_storage_page_io(storage, scan.pgno + (pgno_t)offset_npages, npages, &request_pages);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
-    dxb_data_read_io_t request;
-    rc = dxb_storage_make_data_read_io(storage, &request_pages, &request);
-    if (unlikely(rc != MDBX_SUCCESS))
-      break;
-    rc = dxb_storage_read_data(storage, &request, buffer).err;
+    rc = warmup_force_read_chunk(storage, &request_pages, buffer, chunk_bytes);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     offset_npages += npages;
@@ -6046,6 +9951,20 @@ typedef struct compacting_context {
   mdbx_filehandle_t fd;
 } ctx_t;
 
+typedef struct dxb_compacting_large_page_get_submit_io {
+  ctx_t *ctx;
+  MDBX_cursor *cursor;
+  MDBX_txn *txn;
+  page_t *source;
+  const node_t *node;
+  size_t node_index;
+  intptr_t top;
+  pgno_t large_pgno;
+  pgno_t first_unallocated;
+  txnid_t front;
+  size_t bytes;
+} dxb_compacting_large_page_get_submit_io_t;
+
 __cold static int compacting_walk_tree(ctx_t *ctx, tree_t *tree);
 
 /* Dedicated writer thread for compacting copy. */
@@ -6175,6 +10094,80 @@ static int compacting_put_page(ctx_t *ctx, const page_t *mp, const size_t head_b
   return compacting_put_bytes(ctx, ptr_disp(mp, ctx->env->ps - tail_bytes), tail_bytes, 0, 0);
 }
 
+static inline int compacting_make_large_page_get_submit_io(ctx_t *ctx, MDBX_cursor *mc, page_t *source,
+                                                           size_t node_index,
+                                                           dxb_compacting_large_page_get_submit_io_t *io) {
+  if (unlikely(!ctx || !ctx->txn || !mc || !mc->txn || !source || !io || mc->top < 0))
+    return MDBX_EINVAL;
+  if (unlikely(ctx->txn != mc->txn || mc->pg[mc->top] != source || !is_leaf(source)))
+    return MDBX_EINVAL;
+  if (unlikely(node_index >= page_numkeys(source)))
+    return MDBX_EINVAL;
+
+  const node_t *const node = page_node(source, node_index);
+  if (unlikely(node_flags(node) != N_BIG))
+    return MDBX_EINVAL;
+
+  io->ctx = ctx;
+  io->cursor = mc;
+  io->txn = mc->txn;
+  io->source = source;
+  io->node = node;
+  io->node_index = node_index;
+  io->top = mc->top;
+  io->large_pgno = node_largedata_pgno(node);
+  io->first_unallocated = ctx->first_unallocated;
+  io->front = source->txnid;
+  io->bytes = node_ds(node);
+  return MDBX_SUCCESS;
+}
+
+static inline int compacting_large_page_get_submit_io_validate(
+    const dxb_compacting_large_page_get_submit_io_t *io) {
+  if (unlikely(!io || !io->ctx || !io->cursor || !io->txn || !io->source || !io->node || io->top < 0))
+    return MDBX_EINVAL;
+
+  MDBX_cursor *const mc = io->cursor;
+  if (unlikely(io->ctx->txn != io->txn || mc->txn != io->txn || mc->top != io->top || mc->pg[io->top] != io->source ||
+               io->ctx->first_unallocated != io->first_unallocated))
+    return MDBX_EINVAL;
+  if (unlikely(!is_leaf(io->source) || io->node_index >= page_numkeys(io->source)))
+    return MDBX_EINVAL;
+
+  const node_t *const node = page_node(io->source, io->node_index);
+  if (unlikely(node != io->node || node_flags(node) != N_BIG || node_largedata_pgno(node) != io->large_pgno ||
+               io->source->txnid != io->front || node_ds(node) != io->bytes))
+    return MDBX_EINVAL;
+
+  dxb_compacting_large_page_get_submit_io_t checked;
+  int err = compacting_make_large_page_get_submit_io(io->ctx, mc, io->source, io->node_index, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.ctx != io->ctx || checked.cursor != io->cursor || checked.txn != io->txn ||
+               checked.source != io->source || checked.node != io->node || checked.node_index != io->node_index ||
+               checked.top != io->top || checked.large_pgno != io->large_pgno ||
+               checked.first_unallocated != io->first_unallocated || checked.front != io->front ||
+               checked.bytes != io->bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline pgr_t compacting_submit_large_page_get(const dxb_compacting_large_page_get_submit_io_t *io) {
+  int err = compacting_large_page_get_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  return page_get_large(io->cursor, io->large_pgno, io->front);
+}
+
+static inline pgr_t compacting_large_page_get(ctx_t *ctx, MDBX_cursor *mc, page_t *source, size_t node_index) {
+  dxb_compacting_large_page_get_submit_io_t submit;
+  int err = compacting_make_large_page_get_submit_io(ctx, mc, source, node_index, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return compacting_submit_large_page_get(&submit);
+}
+
 __cold static int compacting_walk(ctx_t *ctx, MDBX_cursor *mc, pgno_t *const parent_pgno, txnid_t parent_txnid) {
   mc->top = 0;
   mc->ki[0] = 0;
@@ -6221,7 +10214,7 @@ __cold static int compacting_walk(ctx_t *ctx, MDBX_cursor *mc, pgno_t *const par
               node = page_node(mp, i);
             }
 
-            pgr_t lp = page_get_large(mc, node_largedata_pgno(node), mp->txnid);
+            pgr_t lp = compacting_large_page_get(ctx, mc, mp, i);
             if (unlikely((rc = lp.err) != MDBX_SUCCESS)) {
               pgr_release(mc, &lp);
               goto bailout;
@@ -6278,22 +10271,32 @@ __cold static int compacting_walk(ctx_t *ctx, MDBX_cursor *mc, pgno_t *const par
           rc = page_get_with_ref(mc, node_pgno(node), &mp, &child_ref, mp->txnid);
           if (unlikely(rc != MDBX_SUCCESS))
             goto bailout;
-          mc->top += 1;
-          if (unlikely(mc->top >= deep_limit)) {
+          const intptr_t next_top = mc->top + 1;
+          if (unlikely(next_top >= deep_limit)) {
             cursor_ref_release(mc, &child_ref);
             rc = MDBX_CURSOR_FULL;
             goto bailout;
           }
-          mc->ki[mc->top] = 0;
           if (!is_branch(mp)) {
-            cursor_stack_set_ref_consume(mc, mc->top, mp, &child_ref);
+            pgr_t child = {.page = mp, .err = MDBX_SUCCESS, .ref = child_ref};
+            child_ref = page_ref_empty();
+            rc = cursor_push_pgr_consume(mc, &child, 0);
+            if (unlikely(rc != MDBX_SUCCESS))
+              goto bailout;
             break;
           }
           /* Whenever we advance to a sibling branch page,
            * we must proceed all the way down to its first leaf. */
-          page_copy(mc->pg[mc->top], mp, ctx->env->ps);
-          cursor_stack_set_synthetic(mc, mc->top, mc->pg[mc->top]);
-          cursor_ref_release(mc, &child_ref);
+          page_t *const branch_copy = mc->pg[next_top];
+          cASSERT0(mc, branch_copy != nullptr);
+          if (unlikely(!branch_copy)) {
+            cursor_ref_release(mc, &child_ref);
+            rc = MDBX_PROBLEM;
+            goto bailout;
+          }
+          rc = compacting_branch_child_copy(mc, &mp, &child_ref, branch_copy, next_top, 0);
+          if (unlikely(rc != MDBX_SUCCESS))
+            goto bailout;
         }
         continue;
       }
@@ -6550,6 +10553,117 @@ __cold static int copy_with_compacting(MDBX_env *env, MDBX_txn *txn, mdbx_fileha
 
 //----------------------------------------------------------------------------
 
+typedef struct dxb_copy_asis_read_submit_io {
+  const dxb_storage_t *storage;
+  dxb_byte_io_t source;
+  uint64_t dst_offset;
+  dxb_data_export_read_io_t export_read;
+  dxb_read_submit_io_t read;
+  void *buffer;
+  size_t buffer_bytes;
+} dxb_copy_asis_read_submit_io_t;
+
+static inline int copy_asis_make_read_submit_io(const dxb_storage_t *storage, const dxb_byte_io_t *source,
+                                                uint64_t dst_offset, void *buffer, size_t buffer_bytes,
+                                                dxb_copy_asis_read_submit_io_t *io) {
+  if (unlikely(!storage || !source || !buffer || !io || buffer_bytes < dxb_storage_pagesize(storage)))
+    return MDBX_EINVAL;
+
+  dxb_data_export_read_io_t export_read;
+  int rc = dxb_storage_make_data_export_read_io(storage, source, dst_offset, buffer_bytes, &export_read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_data_export_read_io_validate(storage, &export_read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(export_read.read.bytes.bytes > buffer_bytes))
+    return MDBX_EINVAL;
+
+  dxb_read_submit_io_t read;
+  rc = dxb_storage_make_read_submit_io(storage, &export_read.read, buffer, &read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->storage = storage;
+  io->source = *source;
+  io->dst_offset = dst_offset;
+  io->export_read = export_read;
+  io->read = read;
+  io->buffer = buffer;
+  io->buffer_bytes = buffer_bytes;
+  return MDBX_SUCCESS;
+}
+
+static inline int copy_asis_read_submit_io_validate(const dxb_copy_asis_read_submit_io_t *io) {
+  if (unlikely(!io || !io->storage || !io->buffer || !io->read.buffer ||
+               io->buffer_bytes < dxb_storage_pagesize(io->storage)))
+    return MDBX_EINVAL;
+  if (unlikely(io->read.buffer != io->buffer || io->read.data.bytes.bytes > io->buffer_bytes))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_data_export_read_io_validate(io->storage, &io->export_read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_read_submit_io_validate(io->storage, &io->read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(io->export_read.export.source.request.offset != io->source.offset ||
+               io->export_read.export.source.request.bytes != io->source.bytes ||
+               io->export_read.export.dst_offset != io->dst_offset))
+    return MDBX_EINVAL;
+
+  dxb_copy_asis_read_submit_io_t checked;
+  rc = copy_asis_make_read_submit_io(io->storage, &io->source, io->dst_offset, io->buffer, io->buffer_bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.storage != io->storage || checked.buffer != io->buffer ||
+               checked.buffer_bytes != io->buffer_bytes || checked.source.offset != io->source.offset ||
+               checked.source.bytes != io->source.bytes || checked.dst_offset != io->dst_offset ||
+               checked.export_read.export.source.request.offset != io->export_read.export.source.request.offset ||
+               checked.export_read.export.source.request.bytes != io->export_read.export.source.request.bytes ||
+               checked.export_read.export.source.pages.pgno != io->export_read.export.source.pages.pgno ||
+               checked.export_read.export.source.pages.end_pgno != io->export_read.export.source.pages.end_pgno ||
+               checked.export_read.export.source.pages.npages != io->export_read.export.source.pages.npages ||
+               checked.export_read.export.source.pages.offset != io->export_read.export.source.pages.offset ||
+               checked.export_read.export.source.pages.bytes != io->export_read.export.source.pages.bytes ||
+               checked.export_read.export.source.page_bytes.offset != io->export_read.export.source.page_bytes.offset ||
+               checked.export_read.export.source.page_bytes.bytes != io->export_read.export.source.page_bytes.bytes ||
+               checked.export_read.export.dst_offset != io->export_read.export.dst_offset ||
+               checked.export_read.read.pages.pgno != io->export_read.read.pages.pgno ||
+               checked.export_read.read.pages.end_pgno != io->export_read.read.pages.end_pgno ||
+               checked.export_read.read.pages.npages != io->export_read.read.pages.npages ||
+               checked.export_read.read.pages.offset != io->export_read.read.pages.offset ||
+               checked.export_read.read.pages.bytes != io->export_read.read.pages.bytes ||
+               checked.export_read.read.bytes.offset != io->export_read.read.bytes.offset ||
+               checked.export_read.read.bytes.bytes != io->export_read.read.bytes.bytes ||
+               checked.export_read.payload_offset != io->export_read.payload_offset ||
+               checked.read.data.pages.pgno != io->read.data.pages.pgno ||
+               checked.read.data.pages.end_pgno != io->read.data.pages.end_pgno ||
+               checked.read.data.pages.npages != io->read.data.pages.npages ||
+               checked.read.data.pages.offset != io->read.data.pages.offset ||
+               checked.read.data.pages.bytes != io->read.data.pages.bytes ||
+               checked.read.data.bytes.offset != io->read.data.bytes.offset ||
+               checked.read.data.bytes.bytes != io->read.data.bytes.bytes || checked.read.buffer != io->read.buffer))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static int copy_asis_submit_read(const dxb_copy_asis_read_submit_io_t *io) {
+  int rc = copy_asis_read_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_submit_read_data(io->storage, &io->read).err;
+}
+
+static int copy_asis_read_portable_chunk(const dxb_storage_t *storage, const dxb_byte_io_t *source, uint64_t dst_offset,
+                                         uint8_t *buffer, size_t buffer_bytes,
+                                         dxb_copy_asis_read_submit_io_t *submit) {
+  int rc = copy_asis_make_read_submit_io(storage, source, dst_offset, buffer, buffer_bytes, submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return copy_asis_submit_read(submit);
+}
+
 __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, uint8_t *buffer,
                             const bool dest_is_pipe, const MDBX_copy_flags_t flags) {
   const dxb_storage_t *const storage = &env->dxb_storage;
@@ -6639,7 +10753,11 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
       rc = dxb_storage_make_data_export_io(storage, &remaining, 0, &export_io);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
-      dxb_copy_result_t sendfile_result = dxb_storage_sendfile_data_to_fd(storage, &export_io, fd);
+      dxb_data_export_submit_io_t export_submit;
+      rc = dxb_storage_make_data_export_submit_io(storage, &export_io, fd, &export_submit);
+      if (unlikely(rc != MDBX_SUCCESS))
+        break;
+      dxb_copy_result_t sendfile_result = dxb_storage_submit_sendfile_data_to_fd(storage, &export_submit);
       rc = sendfile_result.err;
       if (likely(sendfile_result.copied)) {
         offset += sendfile_result.payload_bytes;
@@ -6660,7 +10778,11 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
       rc = dxb_storage_make_data_export_io(storage, &remaining, offset, &export_io);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
-      dxb_copy_result_t copy_result = dxb_storage_copy_data_to_fd(storage, &export_io, fd);
+      dxb_data_export_submit_io_t export_submit;
+      rc = dxb_storage_make_data_export_submit_io(storage, &export_io, fd, &export_submit);
+      if (unlikely(rc != MDBX_SUCCESS))
+        break;
+      dxb_copy_result_t copy_result = dxb_storage_submit_copy_data_to_fd(storage, &export_submit);
       rc = copy_result.err;
       if (likely(copy_result.copied)) {
         offset += copy_result.payload_bytes;
@@ -6679,15 +10801,9 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
 #endif /* MDBX_USE_COPYFILERANGE */
 
     /* fallback to portable */
-    dxb_data_export_read_io_t read_io;
-    rc = dxb_storage_make_data_export_read_io(storage, &remaining, dest_is_pipe ? 0 : offset,
-                                              (size_t)MDBX_ENVCOPY_WRITEBUF, &read_io);
-    if (unlikely(rc != MDBX_SUCCESS))
-      break;
-    rc = dxb_storage_data_export_read_io_validate(storage, &read_io);
-    if (unlikely(rc != MDBX_SUCCESS))
-      break;
-    rc = dxb_storage_read_data(storage, &read_io.read, data_buffer).err;
+    dxb_copy_asis_read_submit_io_t submit;
+    rc = copy_asis_read_portable_chunk(storage, &remaining, dest_is_pipe ? 0 : offset, data_buffer,
+                                       (size_t)MDBX_ENVCOPY_WRITEBUF, &submit);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     if (flags & MDBX_CP_THROTTLE_MVCC) {
@@ -6695,8 +10811,9 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
       if (unlikely(rc != MDBX_SUCCESS))
         break;
     }
-    rc = osal_write(fd, data_buffer + read_io.payload_offset, read_io.export.source.request.bytes);
-    offset += read_io.export.source.request.bytes;
+    rc = osal_write(fd, data_buffer + submit.export_read.payload_offset,
+                    submit.export_read.export.source.request.bytes);
+    offset += submit.export_read.export.source.request.bytes;
   }
 
   /* Extend file if required */
@@ -8602,8 +12719,14 @@ __cold int mdbx_env_create(MDBX_env **penv) {
   env_setup_pagesize(env, (globals.sys_pagesize < MDBX_MAX_PAGESIZE) ? globals.sys_pagesize : MDBX_MAX_PAGESIZE);
 
   dxb_storage_t *const storage = &env->dxb_storage;
-  dxb_init_result_t storage_init = dxb_storage_init(storage);
-  int rc = storage_init.err;
+  dxb_init_submit_io_t init_submit;
+  int rc = dxb_storage_make_init_submit_io(&init_submit);
+  dxb_init_result_t storage_init;
+  if (likely(rc == MDBX_SUCCESS))
+    storage_init = dxb_storage_submit_init(storage, &init_submit);
+  else
+    goto bailout;
+  rc = storage_init.err;
   if (unlikely(rc != MDBX_SUCCESS))
     goto bailout;
 
@@ -8638,8 +12761,11 @@ __cold int mdbx_env_create(MDBX_env **penv) {
   *penv = env;
   return MDBX_SUCCESS;
 
-bailout:
-  (void)dxb_storage_deinit(storage, false);
+bailout:;
+  dxb_deinit_submit_io_t deinit_submit;
+  int deinit_rc = dxb_storage_make_deinit_submit_io(false, &deinit_submit);
+  if (likely(deinit_rc == MDBX_SUCCESS))
+    (void)dxb_storage_submit_deinit(storage, &deinit_submit);
   osal_free(env);
   return LOG_IFERR(rc);
 }
@@ -8986,8 +13112,13 @@ __cold int mdbx_env_close_ex(MDBX_env *env, bool dont_sync) {
     rc = env_sync(env, true, false);
     rc = (rc == MDBX_RESULT_TRUE) ? MDBX_SUCCESS : rc;
 #else
-    dxb_stat_result_t stat_result = dxb_storage_stat(storage);
-    rc = stat_result.err;
+    dxb_stat_submit_io_t stat_submit;
+    rc = dxb_storage_make_stat_submit_io(&stat_submit);
+    dxb_stat_result_t stat_result;
+    if (likely(rc == MDBX_SUCCESS)) {
+      stat_result = dxb_storage_submit_stat(storage, &stat_submit);
+      rc = stat_result.err;
+    }
     if (likely(rc == MDBX_SUCCESS) && stat_result.st.st_nlink > 0 /* don't sync deleted files */) {
       rc = env_sync(env, true, true);
       rc = (rc == MDBX_BUSY || rc == EAGAIN || rc == EACCES || rc == EBUSY || rc == EWOULDBLOCK ||
@@ -9003,7 +13134,10 @@ __cold int mdbx_env_close_ex(MDBX_env *env, bool dont_sync) {
 
   eASSERT0(env, env->signature.weak == 0);
   rc = env_close(env, false) ? MDBX_PANIC : rc;
-  ENSURE_OBJ(env, dxb_storage_deinit(storage, false).err == MDBX_SUCCESS);
+  dxb_deinit_submit_io_t deinit_submit;
+  int deinit_rc = dxb_storage_make_deinit_submit_io(false, &deinit_submit);
+  ENSURE_OBJ(env, deinit_rc == MDBX_SUCCESS &&
+                      dxb_storage_submit_deinit(storage, &deinit_submit).err == MDBX_SUCCESS);
   ENSURE_OBJ(env, osal_fastmutex_destroy(&env->dbi_lock) == MDBX_SUCCESS);
 #if defined(_WIN32) || defined(_WIN64)
   /* remap_lock don't have destructor (Slim Reader/Writer Lock) */
@@ -9052,7 +13186,11 @@ __must_check_result static int env_info_sys(const MDBX_env *env, MDBX_envinfo *o
   out->mi_dxb_fsize = 0;
   out->mi_dxb_fallocated = 0;
   out->mi_sys_ioblk = 0;
-  dxb_sysinfo_result_t sysinfo = dxb_storage_fetch_sysinfo(storage);
+  dxb_sysinfo_submit_io_t sysinfo_submit;
+  int err = dxb_storage_make_sysinfo_submit_io(&sysinfo_submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  dxb_sysinfo_result_t sysinfo = dxb_storage_submit_fetch_sysinfo(storage, &sysinfo_submit);
   if (unlikely(sysinfo.err != MDBX_SUCCESS))
     return sysinfo.err;
   out->mi_dxb_fsize = sysinfo.filesize;
@@ -9262,7 +13400,11 @@ __cold int mdbx_preopen_snapinfoW(const wchar_t *pathname, MDBX_envinfo *out, si
   env.stuck_meta = -1;
   env.lck_mmap.fd = INVALID_HANDLE_VALUE;
   dxb_storage_t *const storage = &env.dxb_storage;
-  dxb_state_result_t reset_storage = dxb_storage_reset(storage, false);
+  dxb_reset_submit_io_t reset_submit;
+  int reset_rc = dxb_storage_make_reset_submit_io(false, &reset_submit);
+  if (unlikely(reset_rc != MDBX_SUCCESS))
+    return LOG_IFERR(reset_rc);
+  dxb_state_result_t reset_storage = dxb_storage_submit_reset(storage, &reset_submit);
   if (unlikely(reset_storage.err != MDBX_SUCCESS))
     return LOG_IFERR(reset_storage.err);
 #if defined(_WIN32) || defined(_WIN64)
@@ -9275,7 +13417,11 @@ __cold int mdbx_preopen_snapinfoW(const wchar_t *pathname, MDBX_envinfo *out, si
   int err, rc = env_handle_pathname(&env, pathname, 0);
   if (unlikely(rc != MDBX_SUCCESS))
     goto bailout;
-  dxb_open_result_t open_result = dxb_storage_open_data(storage, &env, env.pathname.dxb, MDBX_OPEN_DXB_READ, 0);
+  dxb_open_submit_io_t open_submit;
+  rc = dxb_storage_make_open_submit_io(&env, env.pathname.dxb, MDBX_OPEN_DXB_READ, 0, false, &open_submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    goto bailout;
+  dxb_open_result_t open_result = dxb_storage_submit_open_data(storage, &open_submit);
   rc = open_result.err;
   if (unlikely(rc != MDBX_SUCCESS))
     goto bailout;
@@ -10205,6 +14351,15 @@ typedef struct dxb_cache_entry_read_io {
   size_t page_offset;
 } dxb_cache_entry_read_io_t;
 
+typedef struct dxb_cache_entry_read_submit_io {
+  dxb_cache_entry_read_io_t read;
+} dxb_cache_entry_read_submit_io_t;
+
+typedef struct dxb_cache_entry_large_submit_io {
+  dxb_cache_entry_read_io_t read;
+  size_t npages;
+} dxb_cache_entry_large_submit_io_t;
+
 static inline int cache_make_entry_read_io(const MDBX_txn *txn, const MDBX_cache_entry_t *entry,
                                            dxb_cache_entry_read_io_t *io) {
   const dxb_storage_t *const storage = &txn->env->dxb_storage;
@@ -10252,8 +14407,22 @@ static inline int cache_make_entry_read_io(const MDBX_txn *txn, const MDBX_cache
   return MDBX_SUCCESS;
 }
 
+static inline int cache_make_entry_read_submit_io(const MDBX_txn *txn, const MDBX_cache_entry_t *entry,
+                                                  dxb_cache_entry_read_submit_io_t *io) {
+  if (unlikely(!txn || !entry || !io))
+    return MDBX_EINVAL;
+  dxb_cache_entry_read_io_t read;
+  int err = cache_make_entry_read_io(txn, entry, &read);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  io->read = read;
+  return MDBX_SUCCESS;
+}
+
 static inline int cache_entry_read_io_validate(const MDBX_txn *txn, const MDBX_cache_entry_t *entry,
                                                const dxb_cache_entry_read_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
   dxb_cache_entry_read_io_t checked;
   int err = cache_make_entry_read_io(txn, entry, &checked);
   if (unlikely(err != MDBX_SUCCESS))
@@ -10271,6 +14440,95 @@ static inline int cache_entry_read_io_validate(const MDBX_txn *txn, const MDBX_c
                checked.page_offset != io->page_offset))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
+}
+
+static inline int cache_entry_read_submit_io_validate(const MDBX_txn *txn, const MDBX_cache_entry_t *entry,
+                                                      const dxb_cache_entry_read_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  return cache_entry_read_io_validate(txn, entry, &io->read);
+}
+
+static dxb_cache_page_result_t cache_submit_entry_read(const MDBX_txn *txn, const MDBX_cache_entry_t *entry,
+                                                       const dxb_cache_entry_read_submit_io_t *io) {
+  int err = cache_entry_read_submit_io_validate(txn, entry, io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_page_error(err);
+  return page_cache_read_io((MDBX_txn *)txn, &io->read.page);
+}
+
+static inline int cache_make_entry_large_submit_io(const MDBX_txn *txn, const MDBX_cache_entry_t *entry,
+                                                   const pgr_t *pgr,
+                                                   const dxb_cache_entry_read_submit_io_t *read_submit,
+                                                   dxb_cache_entry_large_submit_io_t *io) {
+  if (unlikely(!txn || !entry || !pgr || !pgr->page || !read_submit || !io))
+    return MDBX_EINVAL;
+  int err = cache_entry_read_submit_io_validate(txn, entry, read_submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  const dxb_cache_entry_read_io_t *const read = &read_submit->read;
+  const dxb_storage_t *const storage = &txn->env->dxb_storage;
+  if (unlikely(!(pgr->ref.flags & PAGE_REF_CACHE) || !pgr->ref.cache ||
+               pgr->ref.cache->page != pgr->page || pgr->ref.cache->storage != storage ||
+               pgr->page->pgno != read->page.data.pages.pgno || pgr->ref.pgno != read->page.data.pages.pgno ||
+               !is_largepage(pgr->page) || (pgr->page->flags & P_ILL_BITS) != 0 ||
+               pgr->page->txnid > txn_basis_snapshot(txn)))
+    return MDBX_INVALID;
+
+  dxb_page_io_t large_pages;
+  err = dxb_storage_page_io(storage, pgr->page->pgno, pgr->page->pages, &large_pages);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  dxb_byte_io_t large_bytes;
+  err = dxb_storage_byte_io_from_page(&large_pages, &large_bytes);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(read->value.offset < large_bytes.offset))
+    return MDBX_INVALID;
+  const uint64_t offset_in_large = read->value.offset - large_bytes.offset;
+  if (unlikely(offset_in_large > large_bytes.bytes || read->value.bytes > large_bytes.bytes - offset_in_large))
+    return MDBX_INVALID;
+
+  io->read = *read;
+  io->npages = pgr->page->pages;
+  return MDBX_SUCCESS;
+}
+
+static inline int cache_entry_large_submit_io_validate(const MDBX_txn *txn, const MDBX_cache_entry_t *entry,
+                                                       const pgr_t *pgr,
+                                                       const dxb_cache_entry_large_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  const dxb_cache_entry_read_submit_io_t read_submit = {io->read};
+  dxb_cache_entry_large_submit_io_t checked;
+  int err = cache_make_entry_large_submit_io(txn, entry, pgr, &read_submit, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.read.page.data.pages.pgno != io->read.page.data.pages.pgno ||
+               checked.read.page.data.pages.end_pgno != io->read.page.data.pages.end_pgno ||
+               checked.read.page.data.pages.npages != io->read.page.data.pages.npages ||
+               checked.read.page.data.pages.offset != io->read.page.data.pages.offset ||
+               checked.read.page.data.pages.bytes != io->read.page.data.pages.bytes ||
+               checked.read.page.data.bytes.offset != io->read.page.data.bytes.offset ||
+               checked.read.page.data.bytes.bytes != io->read.page.data.bytes.bytes ||
+               checked.read.page.snapshot != io->read.page.snapshot ||
+               checked.read.page.reusable != io->read.page.reusable ||
+               checked.read.page.tracked != io->read.page.tracked ||
+               checked.read.value.offset != io->read.value.offset ||
+               checked.read.value.bytes != io->read.value.bytes ||
+               checked.read.page_offset != io->read.page_offset || checked.npages != io->npages))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static dxb_cache_result_t cache_submit_entry_large_read(const MDBX_txn *txn, const MDBX_cache_entry_t *entry,
+                                                        pgr_t *pgr,
+                                                        const dxb_cache_entry_large_submit_io_t *io) {
+  int err = cache_entry_large_submit_io_validate(txn, entry, pgr, io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_error(err);
+  return page_cache_read_large((MDBX_txn *)txn, pgr);
 }
 
 static inline int cache_value_io_from_ref(const dxb_storage_t *storage, const page_ref_t *ref, const MDBX_val *data,
@@ -10329,40 +14587,41 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
   }
 
   const dxb_storage_t *const storage = &txn->env->dxb_storage;
-  dxb_cache_entry_read_io_t read;
-  int err = cache_make_entry_read_io(txn, entry, &read);
+  dxb_cache_entry_read_submit_io_t read_submit;
+  int err = cache_make_entry_read_submit_io(txn, entry, &read_submit);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  err = cache_entry_read_io_validate(txn, entry, &read);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  dxb_cache_page_result_t read_result = page_cache_read_io((MDBX_txn *)txn, &read.page);
+  dxb_cache_page_result_t read_result = cache_submit_entry_read(txn, entry, &read_submit);
   pgr_t pgr = read_result.page;
   if (unlikely(pgr.err != MDBX_SUCCESS))
     return pgr.err;
 
   err = MDBX_SUCCESS;
-  if (unlikely(pgr.page->pgno != read.page.data.pages.pgno || (pgr.page->flags & P_ILL_BITS) != 0 ||
+  const dxb_cache_entry_read_io_t *const read = &read_submit.read;
+  if (unlikely(pgr.page->pgno != read->page.data.pages.pgno || (pgr.page->flags & P_ILL_BITS) != 0 ||
                pgr.page->txnid > txn_basis_snapshot(txn))) {
     err = MDBX_INVALID;
     goto bailout;
   }
 
   if (is_largepage(pgr.page)) {
-    err = page_cache_read_large((MDBX_txn *)txn, &pgr).err;
+    dxb_cache_entry_large_submit_io_t large_submit;
+    err = cache_make_entry_large_submit_io(txn, entry, &pgr, &read_submit, &large_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      goto bailout;
+    err = cache_submit_entry_large_read(txn, entry, &pgr, &large_submit).err;
     if (unlikely(err != MDBX_SUCCESS))
       goto bailout;
   }
 
-  const MDBX_val materialized_data = {.iov_base = ptr_disp(pgr.page, read.page_offset),
-                                      .iov_len = read.value.bytes};
+  const MDBX_val materialized_data = {.iov_base = ptr_disp(pgr.page, read->page_offset),
+                                      .iov_len = read->value.bytes};
   cache_value_io_t materialized_value;
   err = cache_value_io_from_ref(storage, &pgr.ref, &materialized_data, &materialized_value);
-  if (unlikely(err != MDBX_SUCCESS || materialized_value.bytes.offset != read.value.offset ||
-               materialized_value.bytes.bytes != read.value.bytes ||
-               materialized_value.page_offset != read.page_offset)) {
+  if (unlikely(err != MDBX_SUCCESS || materialized_value.bytes.offset != read->value.offset ||
+               materialized_value.bytes.bytes != read->value.bytes ||
+               materialized_value.page_offset != read->page_offset)) {
     err = MDBX_INVALID;
     goto bailout;
   }
@@ -10372,9 +14631,15 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
-  if (retain)
-    ((MDBX_txn *)txn)->retained_refs[((MDBX_txn *)txn)->retained_refs_count++] =
-        cursor_ref_retain(nullptr, pgr.ref);
+  if (retain) {
+    dxb_txn_retained_ref_append_submit_io_t retain_submit;
+    err = txn_make_retained_ref_append_submit_io((MDBX_txn *)txn, nullptr, pgr.ref, &retain_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      goto bailout;
+    err = txn_submit_retained_ref_append(&retain_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      goto bailout;
+  }
 
   *data = materialized_data;
 
@@ -15641,6 +19906,102 @@ typedef struct coherency_root_probe {
   txnid_t txnid;
 } coherency_root_probe_t;
 
+typedef struct dxb_coherency_root_read_submit_io {
+  const dxb_storage_t *storage;
+  pgno_t root_pgno;
+  dxb_data_read_io_t root_read;
+  dxb_read_submit_io_t read;
+  void *buffer;
+  size_t buffer_bytes;
+} dxb_coherency_root_read_submit_io_t;
+
+static inline int coherency_make_root_read_submit_io(const dxb_storage_t *storage, pgno_t root_pgno, void *buffer,
+                                                     size_t buffer_bytes,
+                                                     dxb_coherency_root_read_submit_io_t *io) {
+  if (unlikely(!storage || !buffer || !io))
+    return MDBX_EINVAL;
+  if (unlikely(buffer_bytes < dxb_storage_pagesize(storage)))
+    return MDBX_EINVAL;
+
+  dxb_page_io_t root_page;
+  int rc = dxb_storage_page_io(storage, root_pgno, 1, &root_page);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_data_read_io_t root_read;
+  rc = dxb_storage_make_data_read_io(storage, &root_page, &root_read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(root_read.bytes.bytes > buffer_bytes))
+    return MDBX_EINVAL;
+
+  dxb_read_submit_io_t read;
+  rc = dxb_storage_make_read_submit_io(storage, &root_read, buffer, &read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->storage = storage;
+  io->root_pgno = root_pgno;
+  io->root_read = root_read;
+  io->read = read;
+  io->buffer = buffer;
+  io->buffer_bytes = buffer_bytes;
+  return MDBX_SUCCESS;
+}
+
+static inline int coherency_root_read_submit_io_validate(const dxb_coherency_root_read_submit_io_t *io) {
+  if (unlikely(!io || !io->storage || !io->buffer))
+    return MDBX_EINVAL;
+  if (unlikely(io->buffer_bytes < dxb_storage_pagesize(io->storage) || io->read.buffer != io->buffer ||
+               io->read.data.bytes.bytes > io->buffer_bytes))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_data_read_io_validate(io->storage, &io->root_read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_read_submit_io_validate(io->storage, &io->read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(io->root_read.pages.pgno != io->root_pgno || io->root_read.pages.npages != 1 ||
+               io->read.data.pages.pgno != io->root_read.pages.pgno ||
+               io->read.data.pages.end_pgno != io->root_read.pages.end_pgno ||
+               io->read.data.pages.npages != io->root_read.pages.npages ||
+               io->read.data.pages.offset != io->root_read.pages.offset ||
+               io->read.data.pages.bytes != io->root_read.pages.bytes ||
+               io->read.data.bytes.offset != io->root_read.bytes.offset ||
+               io->read.data.bytes.bytes != io->root_read.bytes.bytes))
+    return MDBX_EINVAL;
+
+  dxb_coherency_root_read_submit_io_t checked;
+  rc = coherency_make_root_read_submit_io(io->storage, io->root_pgno, io->buffer, io->buffer_bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.storage != io->storage || checked.root_pgno != io->root_pgno ||
+               checked.buffer != io->buffer || checked.buffer_bytes != io->buffer_bytes ||
+               checked.root_read.pages.pgno != io->root_read.pages.pgno ||
+               checked.root_read.pages.end_pgno != io->root_read.pages.end_pgno ||
+               checked.root_read.pages.npages != io->root_read.pages.npages ||
+               checked.root_read.pages.offset != io->root_read.pages.offset ||
+               checked.root_read.pages.bytes != io->root_read.pages.bytes ||
+               checked.root_read.bytes.offset != io->root_read.bytes.offset ||
+               checked.root_read.bytes.bytes != io->root_read.bytes.bytes ||
+               checked.read.data.pages.pgno != io->read.data.pages.pgno ||
+               checked.read.data.pages.end_pgno != io->read.data.pages.end_pgno ||
+               checked.read.data.pages.npages != io->read.data.pages.npages ||
+               checked.read.data.pages.offset != io->read.data.pages.offset ||
+               checked.read.data.pages.bytes != io->read.data.pages.bytes ||
+               checked.read.data.bytes.offset != io->read.data.bytes.offset ||
+               checked.read.data.bytes.bytes != io->read.data.bytes.bytes || checked.read.buffer != io->read.buffer))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static int coherency_submit_root_read(const dxb_coherency_root_read_submit_io_t *io) {
+  int rc = coherency_root_read_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_submit_read_data(io->storage, &io->read).err;
+}
+
 static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, const txnid_t meta_txnid,
                                        const pgno_t root_pgno, const pgno_t last_pgno, const bool report,
                                        coherency_root_probe_t *probe) {
@@ -15668,7 +20029,11 @@ static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, co
     void *root_buffer = nullptr;
     err = osal_memalign_alloc(globals.sys_pagesize, root_read.bytes.bytes, &root_buffer);
     if (likely(err == MDBX_SUCCESS)) {
-      err = dxb_storage_read_data(storage, &root_read, root_buffer).err;
+      dxb_coherency_root_read_submit_io_t submit;
+      err = coherency_make_root_read_submit_io(storage, root_pgno, root_buffer, (size_t)root_read.bytes.bytes,
+                                               &submit);
+      if (likely(err == MDBX_SUCCESS))
+        err = coherency_submit_root_read(&submit);
       if (likely(err == MDBX_SUCCESS))
         probe->txnid = ((page_t *)root_buffer)->txnid;
       osal_memalign_free(root_buffer);
@@ -15919,22 +20284,7 @@ __cold int cursor_validate(const MDBX_cursor *mc) {
         cASSERT0(mc, node_flags(node) == 0);
         if (unlikely(node_flags(node) != 0))
           return MDBX_CURSOR_FULL;
-        pgno_t pgno = node_pgno(node);
-        pgr_t np = page_get_three(mc, pgno, mp->txnid);
-        err = np.err;
-        cASSERT0(mc, err == MDBX_SUCCESS);
-        if (unlikely(err != MDBX_SUCCESS)) {
-          pgr_release(mc, &np);
-          return err;
-        }
-        const bool nested_leaf = is_leaf(np.page) ? true : false;
-        cASSERT0(mc, nested_leaf == expect_nested_leaf);
-        if (unlikely(nested_leaf != expect_nested_leaf)) {
-          pgr_release(mc, &np);
-          return MDBX_CURSOR_FULL;
-        }
-        err = page_check(mc, np.page);
-        pgr_release(mc, &np);
+        err = cursor_validate_branch_child(mc, n, i, expect_nested_leaf);
         if (unlikely(err != MDBX_SUCCESS))
           return err;
       }
@@ -16280,7 +20630,7 @@ MDBX_cursor *cursor_cpstk(const MDBX_cursor *csrc, MDBX_cursor *cdst) {
   cdst->top_and_flags = csrc->top_and_flags;
 
   for (intptr_t i = 0; i <= csrc->top; i++) {
-    cursor_stack_set(cdst, i, csrc->pg[i], csrc->pgref[i]);
+    cursor_stack_copy(cdst, i, csrc, i);
     cdst->ki[i] = csrc->ki[i];
   }
   cursor_stack_release_from(cdst, csrc->top >= 0 ? csrc->top + 1 : 0);
@@ -16375,8 +20725,8 @@ static __always_inline int sibling(MDBX_cursor *mc, bool right) {
     err = right ? cursor_sibling_right(mc) : cursor_sibling_left(mc);
     if (unlikely(err != MDBX_SUCCESS)) {
       if (likely(err == MDBX_NOTFOUND)) {
-        /* undo cursor_pop() before returning */
-        mc->top += 1;
+        /* undo cursor_pop_keep_ref() before returning */
+        cursor_restore_pop_keep_ref(mc);
         return err;
       }
       goto bailout;
@@ -16387,17 +20737,9 @@ static __always_inline int sibling(MDBX_cursor *mc, bool right) {
   }
   cASSERT0(mc, is_branch(mc->pg[mc->top]));
 
-  page_t *mp = mc->pg[mc->top];
-  const node_t *node = page_node(mp, mc->ki[mc->top]);
-  pgr_t child = page_get_three(mc, node_pgno(node), mp->txnid);
-  err = child.err;
-  if (likely(err == MDBX_SUCCESS)) {
-    mp = child.page;
-    err = cursor_push_pgr_consume(mc, &child, right ? 0 : (indx_t)page_numkeys(mp) - 1);
-    if (likely(err == MDBX_SUCCESS))
-      return err;
-  } else
-    pgr_release(mc, &child);
+  err = cursor_branch_child_edge_push(mc, mc->ki[mc->top], !right);
+  if (likely(err == MDBX_SUCCESS))
+    return err;
 
 bailout:
   cASSERT0(mc, err != MDBX_NOTFOUND);
@@ -16675,6 +21017,81 @@ __hot int outer_prev(MDBX_cursor *mc, MDBX_val *key, MDBX_val *data, MDBX_cursor
 
 /*----------------------------------------------------------------------------*/
 
+typedef struct dxb_cursor_put_bigdata_page_get_submit_io {
+  MDBX_cursor *cursor;
+  MDBX_txn *txn;
+  page_t *source;
+  const node_t *node;
+  intptr_t top;
+  indx_t node_index;
+  pgno_t large_pgno;
+  txnid_t front;
+} dxb_cursor_put_bigdata_page_get_submit_io_t;
+
+static inline int cursor_put_make_bigdata_page_get_submit_io(
+    MDBX_cursor *mc, page_t *source, const node_t *node, dxb_cursor_put_bigdata_page_get_submit_io_t *io) {
+  if (unlikely(!mc || !mc->txn || !source || !node || !io || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  if (unlikely(mc->pg[mc->top] != source || !is_leaf(source)))
+    return MDBX_EINVAL;
+  const size_t nkeys = page_numkeys(source);
+  if (unlikely(mc->ki[mc->top] >= nkeys || node != page_node(source, mc->ki[mc->top]) || !(node_flags(node) & N_BIG)))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->txn = mc->txn;
+  io->source = source;
+  io->node = node;
+  io->top = mc->top;
+  io->node_index = mc->ki[mc->top];
+  io->large_pgno = node_largedata_pgno(node);
+  io->front = source->txnid;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_put_bigdata_page_get_submit_io_validate(const dxb_cursor_put_bigdata_page_get_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->txn || !io->source || !io->node || io->top < 0 ||
+               io->top >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  MDBX_cursor *const mc = io->cursor;
+  if (unlikely(mc->txn != io->txn || mc->top != io->top || mc->pg[io->top] != io->source ||
+               mc->ki[io->top] != io->node_index))
+    return MDBX_EINVAL;
+  if (unlikely(!is_leaf(io->source) || io->node_index >= page_numkeys(io->source)))
+    return MDBX_EINVAL;
+
+  const node_t *const node = page_node(io->source, io->node_index);
+  if (unlikely(node != io->node || !(node_flags(node) & N_BIG) || node_largedata_pgno(node) != io->large_pgno ||
+               io->source->txnid != io->front))
+    return MDBX_EINVAL;
+
+  dxb_cursor_put_bigdata_page_get_submit_io_t checked;
+  int err = cursor_put_make_bigdata_page_get_submit_io(mc, io->source, io->node, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.txn != io->txn || checked.source != io->source ||
+               checked.node != io->node || checked.top != io->top || checked.node_index != io->node_index ||
+               checked.large_pgno != io->large_pgno || checked.front != io->front))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline pgr_t cursor_put_submit_bigdata_page_get(const dxb_cursor_put_bigdata_page_get_submit_io_t *io) {
+  int err = cursor_put_bigdata_page_get_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  return page_get_large(io->cursor, io->large_pgno, io->front);
+}
+
+static inline pgr_t cursor_put_bigdata_page_get(MDBX_cursor *mc, page_t *source, const node_t *node) {
+  dxb_cursor_put_bigdata_page_get_submit_io_t submit;
+  int err = cursor_put_make_bigdata_page_get_submit_io(mc, source, node, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return cursor_put_submit_bigdata_page_get(&submit);
+}
+
 __hot int cursor_put(MDBX_cursor *mc, const MDBX_val *key, MDBX_val *data, unsigned flags) {
   int err;
   DKBUF_DEBUG;
@@ -16936,14 +21353,15 @@ __hot int cursor_put(MDBX_cursor *mc, const MDBX_val *key, MDBX_val *data, unsig
       if (unlikely(err != MDBX_SUCCESS))
         return err;
     }
-    node_t *const node = page_node(mc->pg[mc->top], mc->ki[mc->top]);
+    page_t *const mp = mc->pg[mc->top];
+    node_t *const node = page_node(mp, mc->ki[mc->top]);
 
     /* Large/Overflow page overwrites need special handling */
     if (unlikely(node_flags(node) & N_BIG)) {
       const size_t dpages = (node_size(key, data) > env->leaf_nodemax) ? largechunk_npages(env, data->iov_len) : 0;
 
       const pgno_t pgno = node_largedata_pgno(node);
-      pgr_t lp = page_get_large(mc, pgno, mc->pg[mc->top]->txnid);
+      pgr_t lp = cursor_put_bigdata_page_get(mc, mp, node);
       if (unlikely(lp.err != MDBX_SUCCESS)) {
         err = lp.err;
         pgr_release(mc, &lp);
@@ -17510,6 +21928,82 @@ __hot int cursor_put_checklen(MDBX_cursor *mc, const MDBX_val *key, MDBX_val *da
   return cursor_put(mc, key, data, flags);
 }
 
+typedef struct dxb_cursor_delete_bigdata_page_get_submit_io {
+  MDBX_cursor *cursor;
+  MDBX_txn *txn;
+  page_t *source;
+  const node_t *node;
+  intptr_t top;
+  indx_t node_index;
+  pgno_t large_pgno;
+  txnid_t front;
+} dxb_cursor_delete_bigdata_page_get_submit_io_t;
+
+static inline int cursor_delete_make_bigdata_page_get_submit_io(
+    MDBX_cursor *mc, page_t *source, const node_t *node, dxb_cursor_delete_bigdata_page_get_submit_io_t *io) {
+  if (unlikely(!mc || !mc->txn || !source || !node || !io || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  if (unlikely(mc->pg[mc->top] != source || !is_leaf(source)))
+    return MDBX_EINVAL;
+  const size_t nkeys = page_numkeys(source);
+  if (unlikely(mc->ki[mc->top] >= nkeys || node != page_node(source, mc->ki[mc->top]) || !(node_flags(node) & N_BIG)))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->txn = mc->txn;
+  io->source = source;
+  io->node = node;
+  io->top = mc->top;
+  io->node_index = mc->ki[mc->top];
+  io->large_pgno = node_largedata_pgno(node);
+  io->front = source->txnid;
+  return MDBX_SUCCESS;
+}
+
+static inline int
+cursor_delete_bigdata_page_get_submit_io_validate(const dxb_cursor_delete_bigdata_page_get_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->txn || !io->source || !io->node || io->top < 0 ||
+               io->top >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  MDBX_cursor *const mc = io->cursor;
+  if (unlikely(mc->txn != io->txn || mc->top != io->top || mc->pg[io->top] != io->source ||
+               mc->ki[io->top] != io->node_index))
+    return MDBX_EINVAL;
+  if (unlikely(!is_leaf(io->source) || io->node_index >= page_numkeys(io->source)))
+    return MDBX_EINVAL;
+
+  const node_t *const node = page_node(io->source, io->node_index);
+  if (unlikely(node != io->node || !(node_flags(node) & N_BIG) || node_largedata_pgno(node) != io->large_pgno ||
+               io->source->txnid != io->front))
+    return MDBX_EINVAL;
+
+  dxb_cursor_delete_bigdata_page_get_submit_io_t checked;
+  int err = cursor_delete_make_bigdata_page_get_submit_io(mc, io->source, io->node, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.txn != io->txn || checked.source != io->source ||
+               checked.node != io->node || checked.top != io->top || checked.node_index != io->node_index ||
+               checked.large_pgno != io->large_pgno || checked.front != io->front))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline pgr_t cursor_delete_submit_bigdata_page_get(const dxb_cursor_delete_bigdata_page_get_submit_io_t *io) {
+  int err = cursor_delete_bigdata_page_get_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  return page_get_large(io->cursor, io->large_pgno, io->front);
+}
+
+static inline pgr_t cursor_delete_bigdata_page_get(MDBX_cursor *mc, page_t *source, const node_t *node) {
+  dxb_cursor_delete_bigdata_page_get_submit_io_t submit;
+  int err = cursor_delete_make_bigdata_page_get_submit_io(mc, source, node, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return cursor_delete_submit_bigdata_page_get(&submit);
+}
+
 __hot int cursor_del(MDBX_cursor *mc, unsigned flags) {
   if (unlikely(!is_filled(mc))) {
     if (!F_ISSET(mc->flags, z_inner | z_eof_hard))
@@ -17603,7 +22097,7 @@ __hot int cursor_del(MDBX_cursor *mc, unsigned flags) {
 
   /* add large/overflow pages to free list */
   if (node_flags(node) & N_BIG) {
-    pgr_t lp = page_get_large(mc, node_largedata_pgno(node), mp->txnid);
+    pgr_t lp = cursor_delete_bigdata_page_get(mc, mp, node);
     if (likely(lp.err == MDBX_SUCCESS))
       rc = page_retire(mc, lp.page);
     else
@@ -19894,13 +24388,184 @@ __cold static int defrag_gc_lookup_page(dfc_t *dfc, pgno_t pgno, txnid_t *id) {
   return rc;
 }
 
-MDBX_MAYBE_UNUSED static pgr_t defrag_get_page(dfc_t *dfc, pgno_t pgno) {
+typedef struct dxb_defrag_page_get_submit_io {
+  dfc_t *dfc;
+  MDBX_txn *txn;
+  pgno_t pgno;
+  pgno_t first_unallocated;
+  txnid_t front;
+} dxb_defrag_page_get_submit_io_t;
+
+static inline int defrag_make_page_get_submit_io(dfc_t *dfc, pgno_t pgno, dxb_defrag_page_get_submit_io_t *io) {
+  if (unlikely(!dfc || !dfc->txn || !io))
+    return MDBX_EINVAL;
+
   MDBX_txn *const txn = dfc->txn;
-  ASSERT(pgno >= NUM_METAS && pgno < txn->geo.first_unallocated);
-  pgr_t pgr = page_get_unchecked(txn, pgno, txn_basis_snapshot(txn));
+  if (unlikely(pgno < NUM_METAS || pgno >= txn->geo.first_unallocated))
+    return MDBX_EINVAL;
+
+  io->dfc = dfc;
+  io->txn = txn;
+  io->pgno = pgno;
+  io->first_unallocated = txn->geo.first_unallocated;
+  io->front = txn_basis_snapshot(txn);
+  return MDBX_SUCCESS;
+}
+
+static inline int defrag_page_get_submit_io_validate(const dxb_defrag_page_get_submit_io_t *io) {
+  if (unlikely(!io || !io->dfc || !io->txn || io->dfc->txn != io->txn))
+    return MDBX_EINVAL;
+  if (unlikely(io->pgno < NUM_METAS || io->pgno >= io->txn->geo.first_unallocated ||
+               io->first_unallocated != io->txn->geo.first_unallocated || io->front != txn_basis_snapshot(io->txn)))
+    return MDBX_EINVAL;
+
+  dxb_defrag_page_get_submit_io_t checked;
+  int err = defrag_make_page_get_submit_io(io->dfc, io->pgno, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.dfc != io->dfc || checked.txn != io->txn || checked.pgno != io->pgno ||
+               checked.first_unallocated != io->first_unallocated || checked.front != io->front))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline pgr_t defrag_submit_page_get(const dxb_defrag_page_get_submit_io_t *io) {
+  int err = defrag_page_get_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  pgr_t pgr = page_get_unchecked(io->txn, io->pgno, io->front);
   if (likely(pgr.err == MDBX_SUCCESS) && unlikely(pgr.page->flags & ~(P_BRANCH | P_LEAF | P_DUPFIX | P_LARGE)))
     pgr.err = bad_page(pgr.page, "unexpected page flags 0x%x", pgr.page->flags);
   return pgr;
+}
+
+MDBX_MAYBE_UNUSED static pgr_t defrag_get_page(dfc_t *dfc, pgno_t pgno) {
+  dxb_defrag_page_get_submit_io_t submit;
+  int err = defrag_make_page_get_submit_io(dfc, pgno, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return defrag_submit_page_get(&submit);
+}
+
+typedef struct dxb_defrag_page_read_submit_io {
+  dfc_t *dfc;
+  MDBX_txn *txn;
+  const dxb_storage_t *storage;
+  pgno_t pgno;
+  pgno_t first_unallocated;
+  dxb_data_read_io_t read_page;
+  dxb_read_submit_io_t read;
+  void *buffer;
+  size_t buffer_bytes;
+} dxb_defrag_page_read_submit_io_t;
+
+static inline int defrag_make_page_read_submit_io(dfc_t *dfc, pgno_t pgno, void *buffer, size_t buffer_bytes,
+                                                  dxb_defrag_page_read_submit_io_t *io) {
+  if (unlikely(!dfc || !dfc->txn || !buffer || !io))
+    return MDBX_EINVAL;
+
+  MDBX_txn *const txn = dfc->txn;
+  MDBX_env *const env = txn->env;
+  const dxb_storage_t *const storage = &env->dxb_storage;
+  if (unlikely(pgno < NUM_METAS || pgno >= txn->geo.first_unallocated ||
+               buffer_bytes < dxb_storage_pagesize(storage)))
+    return MDBX_EINVAL;
+
+  dxb_page_io_t source_page;
+  int rc = dxb_storage_page_io(storage, pgno, 1, &source_page);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_data_read_io_t read_page;
+  rc = dxb_storage_make_data_read_io(storage, &source_page, &read_page);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(read_page.bytes.bytes > buffer_bytes))
+    return MDBX_EINVAL;
+
+  dxb_read_submit_io_t read;
+  rc = dxb_storage_make_read_submit_io(storage, &read_page, buffer, &read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->dfc = dfc;
+  io->txn = txn;
+  io->storage = storage;
+  io->pgno = pgno;
+  io->first_unallocated = txn->geo.first_unallocated;
+  io->read_page = read_page;
+  io->read = read;
+  io->buffer = buffer;
+  io->buffer_bytes = buffer_bytes;
+  return MDBX_SUCCESS;
+}
+
+static inline int defrag_page_read_submit_io_validate(const dxb_defrag_page_read_submit_io_t *io) {
+  if (unlikely(!io || !io->dfc || !io->txn || !io->storage || !io->buffer || io->dfc->txn != io->txn ||
+               io->storage != &io->txn->env->dxb_storage))
+    return MDBX_EINVAL;
+  if (unlikely(io->pgno < NUM_METAS || io->pgno >= io->txn->geo.first_unallocated ||
+               io->first_unallocated != io->txn->geo.first_unallocated ||
+               io->buffer_bytes < dxb_storage_pagesize(io->storage) || io->read.buffer != io->buffer ||
+               io->read.data.bytes.bytes > io->buffer_bytes))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_data_read_io_validate(io->storage, &io->read_page);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_read_submit_io_validate(io->storage, &io->read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(io->read_page.pages.pgno != io->pgno || io->read_page.pages.npages != 1 ||
+               io->read.data.pages.pgno != io->read_page.pages.pgno ||
+               io->read.data.pages.end_pgno != io->read_page.pages.end_pgno ||
+               io->read.data.pages.npages != io->read_page.pages.npages ||
+               io->read.data.pages.offset != io->read_page.pages.offset ||
+               io->read.data.pages.bytes != io->read_page.pages.bytes ||
+               io->read.data.bytes.offset != io->read_page.bytes.offset ||
+               io->read.data.bytes.bytes != io->read_page.bytes.bytes))
+    return MDBX_EINVAL;
+
+  dxb_defrag_page_read_submit_io_t checked;
+  rc = defrag_make_page_read_submit_io(io->dfc, io->pgno, io->buffer, io->buffer_bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.dfc != io->dfc || checked.txn != io->txn || checked.storage != io->storage ||
+               checked.pgno != io->pgno || checked.first_unallocated != io->first_unallocated ||
+               checked.buffer != io->buffer || checked.buffer_bytes != io->buffer_bytes ||
+               checked.read_page.pages.pgno != io->read_page.pages.pgno ||
+               checked.read_page.pages.end_pgno != io->read_page.pages.end_pgno ||
+               checked.read_page.pages.npages != io->read_page.pages.npages ||
+               checked.read_page.pages.offset != io->read_page.pages.offset ||
+               checked.read_page.pages.bytes != io->read_page.pages.bytes ||
+               checked.read_page.bytes.offset != io->read_page.bytes.offset ||
+               checked.read_page.bytes.bytes != io->read_page.bytes.bytes ||
+               checked.read.data.pages.pgno != io->read.data.pages.pgno ||
+               checked.read.data.pages.end_pgno != io->read.data.pages.end_pgno ||
+               checked.read.data.pages.npages != io->read.data.pages.npages ||
+               checked.read.data.pages.offset != io->read.data.pages.offset ||
+               checked.read.data.pages.bytes != io->read.data.pages.bytes ||
+               checked.read.data.bytes.offset != io->read.data.bytes.offset ||
+               checked.read.data.bytes.bytes != io->read.data.bytes.bytes || checked.read.buffer != io->read.buffer))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static int defrag_submit_page_read(const dxb_defrag_page_read_submit_io_t *io) {
+  int rc = defrag_page_read_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_submit_read_data(io->storage, &io->read).err;
+}
+
+static int defrag_read_page(dfc_t *dfc, pgno_t pgno, page_t *buffer) {
+  if (unlikely(!dfc || !dfc->txn))
+    return MDBX_EINVAL;
+  dxb_defrag_page_read_submit_io_t submit;
+  int rc = defrag_make_page_read_submit_io(dfc, pgno, buffer, dfc->txn->env->ps, &submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return defrag_submit_page_read(&submit);
 }
 
 static int defrag_fixup_ref(dfc_t *dfc, void *pgno_ptr) {
@@ -20028,15 +24693,7 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
 #if MDBX_CHECKING > 1
     ASSERT(!pnl_contains(dfc->repnl_clone, arc->key_or_pgno));
 #endif /* MDBX_CHECKING > 1 */
-    dxb_page_io_t source_page;
-    err = dxb_storage_page_io(storage, arc->key_or_pgno, 1, &source_page);
-    if (unlikely(err != MDBX_SUCCESS))
-      return err;
-    dxb_data_read_io_t source_read;
-    err = dxb_storage_make_data_read_io(storage, &source_page, &source_read);
-    if (unlikely(err != MDBX_SUCCESS))
-      return err;
-    err = dxb_storage_read_data(storage, &source_read, dst).err;
+    err = defrag_read_page(dfc, arc->key_or_pgno, dst);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
@@ -20056,7 +24713,11 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
   err = dxb_storage_make_data_write_io_from_page(storage, &mapped_page, &mapped_write);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  dxb_write_result_t mapped_result = dxb_storage_write_data(storage, &mapped_write, dst);
+  dxb_write_submit_io_t mapped_submit;
+  err = dxb_storage_make_write_submit_io(storage, &mapped_write, dst, &mapped_submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  dxb_write_result_t mapped_result = dxb_storage_submit_write_data(storage, &mapped_submit);
   err = mapped_result.err;
   if (unlikely(err != MDBX_SUCCESS))
     return err;
@@ -20077,7 +24738,11 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
       err = dxb_storage_make_data_copy_io(storage, &src_pages, &dst_pages, &copy_io);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
-      err = dxb_storage_copy_data(storage, &copy_io).err;
+      dxb_data_copy_submit_io_t copy_submit;
+      err = dxb_storage_make_data_copy_submit_io(storage, &copy_io, &copy_submit);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+      err = dxb_storage_submit_copy_data(storage, &copy_submit).err;
       if (unlikely(err != MDBX_SUCCESS))
         return err;
       break;
@@ -20087,15 +24752,7 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
 #if MDBX_CHECKING > 1
       ASSERT(!pnl_contains(dfc->repnl_clone, src_pgno));
 #endif /* MDBX_CHECKING > 1 */
-      dxb_page_io_t source_page;
-      err = dxb_storage_page_io(storage, src_pgno, 1, &source_page);
-      if (unlikely(err != MDBX_SUCCESS))
-        return err;
-      dxb_data_read_io_t source_read;
-      err = dxb_storage_make_data_read_io(storage, &source_page, &source_read);
-      if (unlikely(err != MDBX_SUCCESS))
-        return err;
-      err = dxb_storage_read_data(storage, &source_read, env->page_auxbuf).err;
+      err = defrag_read_page(dfc, src_pgno, env->page_auxbuf);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
 #if MDBX_CHECKING > 1
@@ -20109,7 +24766,11 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
       err = dxb_storage_make_data_write_io_from_page(storage, &dst_page, &dst_write);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
-      dxb_write_result_t dst_result = dxb_storage_write_data(storage, &dst_write, env->page_auxbuf);
+      dxb_write_submit_io_t dst_submit;
+      err = dxb_storage_make_write_submit_io(storage, &dst_write, env->page_auxbuf, &dst_submit);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+      dxb_write_result_t dst_result = dxb_storage_submit_write_data(storage, &dst_submit);
       err = dst_result.err;
       if (unlikely(err != MDBX_SUCCESS))
         return err;
@@ -21580,9 +26241,17 @@ static void dxb_storage_release_cached_ref(dxb_storage_t *storage, const MDBX_cu
   page_cache_unlock(storage);
 }
 
-static void page_cache_release_all(dxb_storage_t *storage, bool env_active) {
+static dxb_cache_result_t page_cache_release_all(dxb_storage_t *storage, bool env_active) {
+  if (unlikely(!storage)) {
+    const dxb_cache_result_t error = {MDBX_EINVAL, 0, 0, 0, false, false, false};
+    return error;
+  }
+
   page_cache_lock(storage);
   page_cache_t *cache = &storage->page_cache;
+  const size_t entries_count = cache->entries_count;
+  const size_t pages = cache->pages;
+  const size_t bytes = cache->bytes;
   page_cache_entry_t *entry = cache->entries;
   while (entry) {
     page_cache_entry_t *const next = entry->next;
@@ -21598,29 +26267,80 @@ static void page_cache_release_all(dxb_storage_t *storage, bool env_active) {
   cache->bytes = 0;
   cache->pinned = 0;
   page_cache_unlock(storage);
+  const dxb_cache_result_t result = {MDBX_SUCCESS, bytes, pages, entries_count, false, false, true};
+  return result;
 }
 
 static inline dxb_cache_result_t dxb_cache_result(int err, size_t payload_bytes, size_t npages, size_t entries,
-                                                  bool detached) {
-  const dxb_cache_result_t result = {err, payload_bytes, npages, entries, detached};
+                                                  bool detached, bool submitted, bool completed) {
+  const dxb_cache_result_t result = {err, payload_bytes, npages, entries, detached, submitted, completed};
   return result;
 }
 
 static inline dxb_cache_result_t dxb_cache_error(int err) {
-  return dxb_cache_result(err, 0, 0, 0, false);
+  return dxb_cache_result(err, 0, 0, 0, false, false, false);
+}
+
+static inline dxb_cache_result_t dxb_cache_submitted_error(int err, bool submitted) {
+  return dxb_cache_result(err, 0, 0, 0, false, submitted, false);
 }
 
 static inline dxb_cache_result_t dxb_cache_success(void) {
-  return dxb_cache_result(MDBX_SUCCESS, 0, 0, 0, false);
+  return dxb_cache_result(MDBX_SUCCESS, 0, 0, 0, false, false, true);
+}
+
+static inline dxb_cache_result_t dxb_cache_referenced(const page_ref_t *ref) {
+  return dxb_cache_result(MDBX_SUCCESS, 0, ref->npages, ref->cache ? 1 : 0, false, false, true);
 }
 
 static inline dxb_cache_result_t dxb_cache_invalidated(const dxb_cache_invalidate_io_t *io, size_t entries) {
-  return dxb_cache_result(MDBX_SUCCESS, io->pages.bytes, io->pages.npages, entries, false);
+  return dxb_cache_result(MDBX_SUCCESS, io->pages.bytes, io->pages.npages, entries, false, false, true);
+}
+
+static inline dxb_cache_result_t dxb_cache_inserted(const dxb_cache_insert_submit_io_t *io) {
+  return dxb_cache_result(MDBX_SUCCESS, io->entry->io.bytes, io->entry->io.npages, 1, false, false, true);
+}
+
+static inline dxb_cache_result_t dxb_cache_submitted(dxb_cache_result_t result) {
+  result.submitted = true;
+  result.completed = result.completed && result.err == MDBX_SUCCESS;
+  return result;
+}
+
+static dxb_cache_result_t dxb_storage_submit_retain_cached_ref(dxb_storage_t *storage,
+                                                               const dxb_cache_ref_submit_io_t *io) {
+  int rc = dxb_storage_cache_ref_submit_io_validate(storage, io, true);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_cache_error(rc);
+
+  dxb_cache_result_t result = dxb_cache_referenced(io->ref);
+  dxb_storage_retain_cached_entry(storage, io->ref->cache);
+  return dxb_cache_submitted(result);
+}
+
+static dxb_cache_result_t dxb_storage_submit_release_cached_ref(dxb_storage_t *storage,
+                                                                const dxb_cache_ref_submit_io_t *io) {
+  int rc = dxb_storage_cache_ref_submit_io_validate(storage, io, false);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_cache_error(rc);
+
+  dxb_cache_result_t result = dxb_cache_referenced(io->ref);
+  dxb_storage_release_cached_ref(storage, io->cursor, io->ref);
+  return dxb_cache_submitted(result);
+}
+
+static dxb_cache_result_t dxb_storage_submit_release_all_cached(dxb_storage_t *storage,
+                                                                const dxb_cache_release_all_submit_io_t *io) {
+  int rc = dxb_storage_cache_release_all_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS || !storage))
+    return dxb_cache_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
+
+  return dxb_cache_submitted(page_cache_release_all(storage, io->env_active));
 }
 
 static inline dxb_cache_result_t dxb_cache_materialized(const dxb_cache_materialize_io_t *io, size_t payload_bytes,
                                                         bool detached) {
-  return dxb_cache_result(MDBX_SUCCESS, payload_bytes, io->data.pages.npages, 1, detached);
+  return dxb_cache_result(MDBX_SUCCESS, payload_bytes, io->data.pages.npages, 1, detached, true, true);
 }
 
 static dxb_cache_result_t dxb_storage_invalidate_cached_io(dxb_storage_t *storage,
@@ -21654,6 +26374,23 @@ static dxb_cache_result_t dxb_storage_invalidate_cached_io(dxb_storage_t *storag
   return dxb_cache_invalidated(io, entries);
 }
 
+static dxb_cache_result_t dxb_storage_submit_invalidate_cached_io(dxb_storage_t *storage,
+                                                                  const dxb_cache_invalidate_submit_io_t *io) {
+  int rc = dxb_storage_cache_invalidate_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_cache_error(rc);
+  return dxb_cache_submitted(dxb_storage_invalidate_cached_io(storage, &io->invalidate));
+}
+
+static inline dxb_cache_result_t dxb_storage_submit_invalidate_cached_request(
+    dxb_storage_t *storage, const dxb_cache_invalidate_io_t *invalidate) {
+  dxb_cache_invalidate_submit_io_t submit;
+  int rc = dxb_storage_make_cache_invalidate_submit_io(storage, invalidate, &submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_cache_error(rc);
+  return dxb_storage_submit_invalidate_cached_io(storage, &submit);
+}
+
 static inline bool page_cache_entry_can_reuse(const page_cache_entry_t *entry, const dxb_cache_read_io_t *io) {
   ASSERT(io->data.pages.npages == 1);
   if (!entry->reusable || entry->io.pgno != io->data.pages.pgno || entry->snapshot_txnid != io->snapshot)
@@ -21667,6 +26404,45 @@ static inline bool page_cache_entry_can_reuse(const page_cache_entry_t *entry, c
    * Branch/leaf pages and already-expanded overflow spans are immutable for the
    * snapshot and can safely share the same cache entry while pinned. */
   return entry->io.npages > 1 || !is_largepage(entry->page);
+}
+
+static dxb_cache_result_t dxb_storage_insert_cached_page(dxb_storage_t *storage,
+                                                         const dxb_cache_insert_submit_io_t *io) {
+  const int err = dxb_storage_cache_insert_submit_io_validate(storage, io);
+  ASSERT(err == MDBX_SUCCESS);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_error(err);
+
+  page_cache_lock(storage);
+  page_cache_t *const cache = &storage->page_cache;
+  page_cache_entry_t *const entry = io->entry;
+  entry->next = cache->entries;
+  cache->entries = entry;
+  cache->entries_count += 1;
+  cache->pages += entry->io.npages;
+  cache->bytes += entry->io.bytes;
+  cache->pinned += 1;
+  page_cache_prune_locked(storage);
+  page_cache_unlock(storage);
+  return dxb_cache_inserted(io);
+}
+
+static dxb_cache_result_t dxb_storage_submit_insert_cached_page(dxb_storage_t *storage,
+                                                                const dxb_cache_insert_submit_io_t *io) {
+  int err = dxb_storage_cache_insert_submit_io_validate(storage, io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_error(err);
+  return dxb_cache_submitted(dxb_storage_insert_cached_page(storage, io));
+}
+
+static dxb_read_result_t dxb_storage_submit_cache_fill_read(const dxb_storage_t *storage,
+                                                            const dxb_cache_fill_read_submit_io_t *io) {
+  int err = dxb_storage_cache_fill_read_submit_io_validate(storage, io);
+  if (unlikely(err != MDBX_SUCCESS)) {
+    const dxb_read_result_t result = {err, 0, false, false};
+    return result;
+  }
+  return dxb_storage_submit_read_data(storage, &io->storage_read);
 }
 
 static inline pgr_t dxb_storage_make_cached_pgr(page_cache_entry_t *entry) {
@@ -21691,7 +26467,7 @@ static dxb_cache_page_result_t dxb_storage_lookup_cached_page(dxb_storage_t *sto
       pgr_t ret = dxb_storage_make_cached_pgr(entry);
       const size_t payload_bytes = entry->io.bytes;
       page_cache_unlock(storage);
-      return dxb_cache_page_result(ret, payload_bytes, true, false, entry->owner != nullptr);
+      return dxb_cache_page_result(ret, payload_bytes, true, false, entry->owner != nullptr, false, true);
     }
   }
   page_cache_unlock(storage);
@@ -21716,11 +26492,18 @@ static dxb_cache_page_result_t dxb_storage_read_cached_page(dxb_storage_t *stora
   entry->pins = 1;
   entry->pagesize_ln = pagesize_ln;
   entry->reusable = io->reusable;
+  bool submitted = false;
   err = osal_memalign_alloc(globals.sys_pagesize, entry->io.bytes, (void **)&entry->page);
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
-  dxb_read_result_t read_result = dxb_storage_read_data(storage, &io->data, entry->page);
+  dxb_cache_fill_read_submit_io_t fill_submit;
+  err = dxb_storage_make_cache_fill_read_submit_io(storage, io, entry, &fill_submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    goto bailout;
+
+  dxb_read_result_t read_result = dxb_storage_submit_cache_fill_read(storage, &fill_submit);
+  submitted = read_result.submitted;
   err = read_result.err;
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
@@ -21731,59 +26514,143 @@ static dxb_cache_page_result_t dxb_storage_read_cached_page(dxb_storage_t *stora
   }
 
   if (io->tracked) {
-    page_cache_t *const cache = &storage->page_cache;
-    page_cache_lock(storage);
-    entry->next = cache->entries;
-    cache->entries = entry;
-    cache->entries_count += 1;
-    cache->pages += entry->io.npages;
-    cache->bytes += entry->io.bytes;
-    cache->pinned += 1;
-    page_cache_prune_locked(storage);
-    page_cache_unlock(storage);
+    dxb_cache_insert_submit_io_t insert_submit;
+    err = dxb_storage_make_cache_insert_submit_io(storage, io, entry, &insert_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      goto bailout;
+    dxb_cache_result_t insert_result = dxb_storage_submit_insert_cached_page(storage, &insert_submit);
+    if (unlikely(insert_result.err != MDBX_SUCCESS)) {
+      err = insert_result.err;
+      goto bailout;
+    }
+    submitted = submitted || insert_result.submitted;
   }
 
   return dxb_cache_page_result(dxb_storage_make_cached_pgr(entry), read_result.payload_bytes, false, true,
-                               io->tracked);
+                               io->tracked, true, true);
 
 bailout:
   if (entry->page)
     osal_memalign_free(entry->page);
   osal_free(entry);
-  return dxb_cache_page_error(err);
+  return dxb_cache_page_submitted_error(err, submitted);
+}
+
+static dxb_cache_page_result_t dxb_storage_submit_lookup_cached_page(dxb_storage_t *storage,
+                                                                     const dxb_cache_page_submit_io_t *io) {
+  int err = dxb_storage_cache_page_submit_io_validate(storage, io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_page_error(err);
+  if (unlikely(io->fill))
+    return dxb_cache_page_error(MDBX_EINVAL);
+  return dxb_storage_lookup_cached_page(storage, &io->read);
+}
+
+static dxb_cache_page_result_t dxb_storage_submit_read_cached_page(dxb_storage_t *storage,
+                                                                   const dxb_cache_page_submit_io_t *io) {
+  int err = dxb_storage_cache_page_submit_io_validate(storage, io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_page_error(err);
+  if (unlikely(!io->fill))
+    return dxb_cache_page_error(MDBX_EINVAL);
+  return dxb_storage_read_cached_page(storage, &io->read);
+}
+
+static dxb_read_result_t dxb_storage_submit_cache_materialize_read(
+    const dxb_storage_t *storage, const dxb_cache_materialize_read_submit_io_t *io) {
+  int err = dxb_storage_cache_materialize_read_submit_io_validate(storage, io);
+  if (unlikely(err != MDBX_SUCCESS)) {
+    const dxb_read_result_t result = {err, 0, false, false};
+    return result;
+  }
+  return dxb_storage_submit_read_data(storage, &io->storage_read);
 }
 
 static dxb_cache_result_t dxb_storage_detach_materialized_large_page(dxb_storage_t *storage, pgr_t *pgr,
-                                                                     page_t *large,
-                                                                     const dxb_cache_materialize_io_t *io,
-                                                                     size_t payload_bytes) {
-  int err = dxb_storage_cache_materialize_io_validate(storage, io);
+                                                                     const dxb_cache_detach_submit_io_t *io) {
+  int err = dxb_storage_cache_detach_submit_io_validate(storage, pgr, io);
   if (unlikely(err != MDBX_SUCCESS)) {
-    osal_memalign_free(large);
+    if (io && io->large)
+      osal_memalign_free(io->large);
     return dxb_cache_error(err);
   }
 
   page_cache_entry_t *const detached = osal_calloc(1, sizeof(*detached));
   if (unlikely(!detached)) {
-    osal_memalign_free(large);
+    osal_memalign_free(io->large);
     return dxb_cache_error(MDBX_ENOMEM);
   }
 
   page_ref_t old = pgr->ref;
   ASSERT(old.cache != nullptr);
   detached->storage = storage;
-  detached->page = large;
+  detached->page = io->large;
   detached->snapshot_txnid = old.cache->snapshot_txnid;
-  detached->io = io->data.pages;
+  detached->io = io->materialize.data.pages;
   detached->pins = 1;
   detached->pagesize_ln = old.cache->pagesize_ln;
 
-  pgr->page = large;
-  pgr->ref.page = large;
+  pgr->page = io->large;
+  pgr->ref.page = io->large;
   pgr->ref.cache = detached;
-  pgr->ref.npages = io->data.pages.npages;
+  pgr->ref.npages = io->materialize.data.pages.npages;
   cursor_ref_release(nullptr, &old);
-  return dxb_cache_materialized(io, payload_bytes, true);
+  return dxb_cache_materialized(&io->materialize, io->payload_bytes, true);
+}
+
+static dxb_cache_result_t dxb_storage_submit_detach_materialized_large_page(
+    dxb_storage_t *storage, pgr_t *pgr, const dxb_cache_detach_submit_io_t *io) {
+  int err = dxb_storage_cache_detach_submit_io_validate(storage, pgr, io);
+  if (unlikely(err != MDBX_SUCCESS)) {
+    if (io && io->large)
+      osal_memalign_free(io->large);
+    return dxb_cache_error(err);
+  }
+  return dxb_cache_submitted(dxb_storage_detach_materialized_large_page(storage, pgr, io));
+}
+
+static dxb_cache_result_t dxb_storage_replace_materialized_large_page(dxb_storage_t *storage, pgr_t *pgr,
+                                                                      const dxb_cache_replace_submit_io_t *io) {
+  int err = dxb_storage_cache_replace_submit_io_validate(storage, pgr, io);
+  if (unlikely(err != MDBX_SUCCESS)) {
+    if (io && io->large)
+      osal_memalign_free(io->large);
+    return dxb_cache_error(err);
+  }
+
+  page_cache_entry_t *const entry = pgr->ref.cache;
+  const dxb_page_io_t old_io = entry->io;
+  osal_memalign_free(entry->page);
+  entry->page = io->large;
+  entry->io = io->materialize.data.pages;
+  pgr->page = io->large;
+  pgr->ref.page = io->large;
+  pgr->ref.npages = io->materialize.data.pages.npages;
+
+  if (io->tracked) {
+    storage->page_cache.pages += io->materialize.data.pages.npages - old_io.npages;
+    storage->page_cache.bytes += io->materialize.data.pages.bytes - old_io.bytes;
+    page_cache_prune_locked(storage);
+  }
+  return dxb_cache_materialized(&io->materialize, io->payload_bytes, false);
+}
+
+static dxb_cache_result_t dxb_storage_submit_replace_materialized_large_page(
+    dxb_storage_t *storage, pgr_t *pgr, const dxb_cache_replace_submit_io_t *io) {
+  int err = dxb_storage_cache_replace_submit_io_validate(storage, pgr, io);
+  if (unlikely(err != MDBX_SUCCESS)) {
+    if (io && io->large)
+      osal_memalign_free(io->large);
+    return dxb_cache_error(err);
+  }
+
+  if (io->tracked) {
+    page_cache_lock(storage);
+    dxb_cache_result_t result = dxb_storage_replace_materialized_large_page(storage, pgr, io);
+    page_cache_unlock(storage);
+    return dxb_cache_submitted(result);
+  }
+  return dxb_cache_submitted(dxb_storage_replace_materialized_large_page(storage, pgr, io));
 }
 
 static dxb_cache_page_result_t page_cache_read_io(MDBX_txn *txn, const dxb_cache_read_io_t *io) {
@@ -21798,13 +26665,21 @@ static dxb_cache_page_result_t page_cache_read_io(MDBX_txn *txn, const dxb_cache
   if (unlikely(io->reusable != reusable || io->snapshot != snapshot))
     return dxb_cache_page_error(MDBX_EINVAL);
 
-  dxb_cache_page_result_t cached = dxb_storage_lookup_cached_page(storage, io);
+  dxb_cache_page_submit_io_t lookup_submit;
+  err = dxb_storage_make_cache_page_submit_io(storage, io, false, &lookup_submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_page_error(err);
+  dxb_cache_page_result_t cached = dxb_storage_submit_lookup_cached_page(storage, &lookup_submit);
   if (cached.page.err == MDBX_SUCCESS)
     return cached;
   if (unlikely(cached.page.err != MDBX_RESULT_TRUE))
     return cached;
 
-  dxb_cache_page_result_t filled = dxb_storage_read_cached_page(storage, io);
+  dxb_cache_page_submit_io_t fill_submit;
+  err = dxb_storage_make_cache_page_submit_io(storage, io, true, &fill_submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_page_error(err);
+  dxb_cache_page_result_t filled = dxb_storage_submit_read_cached_page(storage, &fill_submit);
   return filled;
 }
 
@@ -21826,58 +26701,78 @@ static dxb_cache_page_result_t page_cache_read(MDBX_txn *txn, const dxb_page_io_
   return page_cache_read_io(txn, &read);
 }
 
-static dxb_cache_result_t dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr_t *pgr) {
+static dxb_cache_result_t dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr_t *pgr,
+                                                                    const dxb_cache_materialize_io_t *materialize) {
+  int err = dxb_storage_cache_materialize_io_validate(storage, materialize);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_error(err);
   page_cache_entry_t *const entry = pgr->ref.cache;
   ASSERT(entry != nullptr && entry->storage == storage);
-  const size_t npages = pgr->page->pages;
-  dxb_cache_materialize_io_t materialize;
-  int err = dxb_storage_make_cache_materialize_io(storage, &pgr->ref, npages, &materialize);
-  if (unlikely(err != MDBX_SUCCESS))
-    return dxb_cache_error(err);
 
   page_t *large = nullptr;
-  err = osal_memalign_alloc(globals.sys_pagesize, materialize.data.bytes.bytes, (void **)&large);
+  err = osal_memalign_alloc(globals.sys_pagesize, materialize->data.bytes.bytes, (void **)&large);
   if (unlikely(err != MDBX_SUCCESS))
     return dxb_cache_error(err);
 
-  dxb_read_result_t read_result = dxb_storage_read_data(storage, &materialize.data, large);
-  err = read_result.err;
+  dxb_cache_materialize_read_submit_io_t read_submit;
+  err = dxb_storage_make_cache_materialize_read_submit_io(storage, pgr, large, materialize, &read_submit);
   if (unlikely(err != MDBX_SUCCESS)) {
     osal_memalign_free(large);
     return dxb_cache_error(err);
   }
-  if (unlikely(!read_result.submitted || !read_result.completed ||
-               read_result.payload_bytes != materialize.data.bytes.bytes)) {
+
+  dxb_read_result_t read_result = dxb_storage_submit_cache_materialize_read(storage, &read_submit);
+  err = read_result.err;
+  if (unlikely(err != MDBX_SUCCESS)) {
     osal_memalign_free(large);
-    return dxb_cache_error(MDBX_EIO);
+    return dxb_cache_submitted_error(err, read_result.submitted);
+  }
+  if (unlikely(!read_result.submitted || !read_result.completed ||
+               read_result.payload_bytes != materialize->data.bytes.bytes)) {
+    osal_memalign_free(large);
+    return dxb_cache_submitted_error(MDBX_EIO, read_result.submitted);
   }
 
   if (entry->owner) {
     page_cache_lock(storage);
     if (entry->pins > 1) {
+      dxb_cache_detach_submit_io_t detach_submit;
+      err = dxb_storage_make_cache_detach_submit_io(storage, pgr, large, materialize, read_result.payload_bytes,
+                                                    &detach_submit);
       page_cache_unlock(storage);
-      return dxb_storage_detach_materialized_large_page(storage, pgr, large, &materialize,
-                                                        read_result.payload_bytes);
+      if (unlikely(err != MDBX_SUCCESS)) {
+        osal_memalign_free(large);
+        return dxb_cache_error(err);
+      }
+      return dxb_storage_submit_detach_materialized_large_page(storage, pgr, &detach_submit);
     }
-    osal_memalign_free(entry->page);
-    entry->page = large;
-    storage->page_cache.pages += materialize.data.pages.npages - entry->io.npages;
-    storage->page_cache.bytes += materialize.data.pages.bytes - entry->io.bytes;
-    entry->io = materialize.data.pages;
-    pgr->page = large;
-    pgr->ref.page = large;
-    pgr->ref.npages = materialize.data.pages.npages;
-    page_cache_prune_locked(storage);
+    dxb_cache_replace_submit_io_t replace_submit;
+    err = dxb_storage_make_cache_replace_submit_io(storage, pgr, large, materialize, read_result.payload_bytes, true,
+                                                   &replace_submit);
     page_cache_unlock(storage);
+    if (unlikely(err != MDBX_SUCCESS)) {
+      osal_memalign_free(large);
+      return dxb_cache_error(err);
+    }
+    return dxb_storage_submit_replace_materialized_large_page(storage, pgr, &replace_submit);
   } else {
-    osal_memalign_free(entry->page);
-    entry->page = large;
-    entry->io = materialize.data.pages;
-    pgr->page = large;
-    pgr->ref.page = large;
-    pgr->ref.npages = materialize.data.pages.npages;
+    dxb_cache_replace_submit_io_t replace_submit;
+    err = dxb_storage_make_cache_replace_submit_io(storage, pgr, large, materialize, read_result.payload_bytes, false,
+                                                   &replace_submit);
+    if (unlikely(err != MDBX_SUCCESS)) {
+      osal_memalign_free(large);
+      return dxb_cache_error(err);
+    }
+    return dxb_storage_submit_replace_materialized_large_page(storage, pgr, &replace_submit);
   }
-  return dxb_cache_materialized(&materialize, read_result.payload_bytes, false);
+}
+
+static dxb_cache_result_t dxb_storage_submit_materialize_cached_large_page(
+    dxb_storage_t *storage, pgr_t *pgr, const dxb_cache_materialize_submit_io_t *io) {
+  int err = dxb_storage_cache_materialize_submit_io_validate(storage, pgr, io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_error(err);
+  return dxb_storage_materialize_cached_large_page(storage, pgr, &io->materialize);
 }
 
 static dxb_cache_result_t page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
@@ -21887,16 +26782,32 @@ static dxb_cache_result_t page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
 
   const size_t npages = pgr->page->pages;
   tASSERT0(txn, npages > 1 && (size_t)pgr->page->pgno + npages <= txn->geo.first_unallocated);
-  return dxb_storage_materialize_cached_large_page(entry->storage, pgr);
+  dxb_cache_materialize_submit_io_t materialize_submit;
+  int err = dxb_storage_make_cache_materialize_submit_io(entry->storage, &pgr->ref, npages, &materialize_submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_error(err);
+  return dxb_storage_submit_materialize_cached_large_page(entry->storage, pgr, &materialize_submit);
 }
 
-static inline dxb_init_result_t dxb_init_result(int err, const dxb_storage_t *storage, bool reset) {
-  const dxb_init_result_t result = {err, storage->page_cache_limit, reset, storage->page_cache_lock_initialized};
+static inline dxb_init_result_t dxb_init_result(int err, const dxb_storage_t *storage, bool reset, bool submitted) {
+  const dxb_init_result_t result = {err, storage->page_cache_limit, reset, storage->page_cache_lock_initialized,
+                                    submitted, submitted && err == MDBX_SUCCESS};
+  return result;
+}
+
+static inline dxb_init_result_t dxb_init_error(int err) {
+  const dxb_init_result_t result = {err, 0, false, false, false, false};
   return result;
 }
 
 static inline dxb_state_result_t dxb_state_result(int err, const dxb_storage_t *storage, bool reset) {
-  const dxb_state_result_t result = {err, storage->current, storage->limit, storage->filesize, reset};
+  const dxb_state_result_t result = {err, storage->current, storage->limit, storage->filesize, reset,
+                                     false, err == MDBX_SUCCESS};
+  return result;
+}
+
+static inline dxb_state_result_t dxb_state_error(int err) {
+  const dxb_state_result_t result = {err, 0, 0, 0, false, false, false};
   return result;
 }
 
@@ -21905,15 +26816,32 @@ dxb_init_result_t dxb_storage_init(dxb_storage_t *storage) {
   storage->page_cache_limit = page_cache_limit_from_env();
   dxb_state_result_t reset = dxb_storage_reset(storage, false);
   int rc = reset.err;
-  if (likely(rc == MDBX_SUCCESS))
+  bool submitted = false;
+  if (likely(rc == MDBX_SUCCESS)) {
+    submitted = true;
     rc = osal_fastmutex_init(&storage->page_cache_lock);
+  }
   if (likely(rc == MDBX_SUCCESS))
     storage->page_cache_lock_initialized = true;
-  return dxb_init_result(rc, storage, reset.reset);
+  return dxb_init_result(rc, storage, reset.reset, submitted);
+}
+
+dxb_init_result_t dxb_storage_submit_init(dxb_storage_t *storage, const dxb_init_submit_io_t *io) {
+  int rc = dxb_storage_init_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS || !storage))
+    return dxb_init_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
+  return dxb_storage_init(storage);
 }
 
 dxb_state_result_t dxb_storage_reset(dxb_storage_t *storage, bool env_active) {
-  page_cache_release_all(storage, env_active);
+  dxb_cache_release_all_submit_io_t cache_release_submit;
+  int rc = dxb_storage_make_cache_release_all_submit_io(env_active, &cache_release_submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_state_error(rc);
+  dxb_cache_result_t cache_release = dxb_storage_submit_release_all_cached(storage, &cache_release_submit);
+  if (unlikely(cache_release.err != MDBX_SUCCESS))
+    return dxb_state_error(cache_release.err);
+
   storage->data_fd = INVALID_HANDLE_VALUE;
   storage->meta_fd = INVALID_HANDLE_VALUE;
   storage->dsync_fd = INVALID_HANDLE_VALUE;
@@ -21922,6 +26850,13 @@ dxb_state_result_t dxb_storage_reset(dxb_storage_t *storage, bool env_active) {
   storage->current = 0;
   storage->limit = 0;
   return dxb_state_result(MDBX_SUCCESS, storage, true);
+}
+
+dxb_state_result_t dxb_storage_submit_reset(dxb_storage_t *storage, const dxb_reset_submit_io_t *io) {
+  int rc = dxb_storage_reset_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS || !storage))
+    return dxb_state_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
+  return dxb_storage_reset(storage, io->env_active);
 }
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -21999,6 +26934,15 @@ dxb_open_result_t dxb_storage_open_data(dxb_storage_t *storage, const MDBX_env *
   return dxb_open_from_rc(storage, rc);
 }
 
+dxb_open_result_t dxb_storage_submit_open_data(dxb_storage_t *storage, const dxb_open_submit_io_t *io) {
+  int rc = dxb_storage_open_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_open_result(storage, rc, false, false);
+  if (unlikely(io->purpose != MDBX_OPEN_DXB_READ && io->purpose != MDBX_OPEN_DXB_LAZY))
+    return dxb_open_result(storage, MDBX_EINVAL, false, false);
+  return dxb_storage_open_data(storage, io->env, io->pathname, io->purpose, io->mode_bits);
+}
+
 #if defined(_WIN32) || defined(_WIN64)
 dxb_open_result_t dxb_storage_open_overlapped(dxb_storage_t *storage, const MDBX_env *env,
                                               const pathchar_t *pathname) {
@@ -22007,8 +26951,26 @@ dxb_open_result_t dxb_storage_open_overlapped(dxb_storage_t *storage, const MDBX
   return dxb_open_from_rc(storage, rc);
 }
 
+dxb_open_result_t dxb_storage_submit_open_overlapped(dxb_storage_t *storage, const dxb_open_submit_io_t *io) {
+  int rc = dxb_storage_open_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_open_result(storage, rc, false, false);
+  if (unlikely(io->purpose != MDBX_OPEN_DXB_OVERLAPPED || io->mode_bits != 0 || io->meta_sync))
+    return dxb_open_result(storage, MDBX_EINVAL, false, false);
+  return dxb_storage_open_overlapped(storage, io->env, io->pathname);
+}
+
 dxb_park_result_t dxb_storage_park_overlapped(const dxb_storage_t *storage, const dxb_byte_io_t *position) {
   return dxb_storage_park_fd(dxb_io_data, storage->ioring.overlapped_fd, position);
+}
+
+dxb_park_result_t dxb_storage_submit_park_overlapped(const dxb_storage_t *storage, const dxb_park_submit_io_t *io) {
+  int rc = dxb_storage_park_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_park_error(rc, io ? io->channel : dxb_io_data, io ? io->position.offset : 0, false);
+  if (unlikely(io->channel != dxb_io_data))
+    return dxb_park_error(MDBX_EINVAL, io->channel, io->position.offset, false);
+  return dxb_storage_park_overlapped(storage, &io->position);
 }
 #endif /* Windows */
 
@@ -22023,12 +26985,39 @@ dxb_open_result_t dxb_storage_open_dsync(dxb_storage_t *storage, const MDBX_env 
   return dxb_open_from_rc(storage, rc);
 }
 
+dxb_open_result_t dxb_storage_submit_open_dsync(dxb_storage_t *storage, const dxb_open_submit_io_t *io) {
+  int rc = dxb_storage_open_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_open_result(storage, rc, false, false);
+  if (unlikely(io->purpose != MDBX_OPEN_DXB_DSYNC || io->mode_bits != 0))
+    return dxb_open_result(storage, MDBX_EINVAL, false, false);
+  return dxb_storage_open_dsync(storage, io->env, io->pathname, io->meta_sync);
+}
+
 dxb_park_result_t dxb_storage_park_data(const dxb_storage_t *storage, const dxb_byte_io_t *position) {
   return dxb_storage_park_fd(dxb_io_data, dxb_storage_data_fd(storage), position);
 }
 
+dxb_park_result_t dxb_storage_submit_park_data(const dxb_storage_t *storage, const dxb_park_submit_io_t *io) {
+  int rc = dxb_storage_park_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_park_error(rc, io ? io->channel : dxb_io_data, io ? io->position.offset : 0, false);
+  if (unlikely(io->channel != dxb_io_data))
+    return dxb_park_error(MDBX_EINVAL, io->channel, io->position.offset, false);
+  return dxb_storage_park_data(storage, &io->position);
+}
+
 dxb_park_result_t dxb_storage_park_dsync(const dxb_storage_t *storage, const dxb_byte_io_t *position) {
   return dxb_storage_park_fd(dxb_io_data_dsync, storage->dsync_fd, position);
+}
+
+dxb_park_result_t dxb_storage_submit_park_dsync(const dxb_storage_t *storage, const dxb_park_submit_io_t *io) {
+  int rc = dxb_storage_park_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_park_error(rc, io ? io->channel : dxb_io_data_dsync, io ? io->position.offset : 0, false);
+  if (unlikely(io->channel != dxb_io_data_dsync))
+    return dxb_park_error(MDBX_EINVAL, io->channel, io->position.offset, false);
+  return dxb_storage_park_dsync(storage, &io->position);
 }
 
 static inline dxb_close_result_t dxb_close_result(int err, bool had_data, bool had_dsync, bool closed_data,
@@ -22036,6 +27025,10 @@ static inline dxb_close_result_t dxb_close_result(int err, bool had_data, bool h
   const dxb_close_result_t result = {err,        had_data,  had_dsync, closed_data,
                                      closed_dsync, reset,   submitted, completed};
   return result;
+}
+
+static inline dxb_close_result_t dxb_close_error(int err) {
+  return dxb_close_result(err, false, false, false, false, false, false, false);
 }
 
 static inline dxb_close_result_t dxb_close_with_reset(dxb_close_result_t result) {
@@ -22074,17 +27067,25 @@ static dxb_close_result_t dxb_storage_close_handles(dxb_storage_t *storage) {
   return dxb_close_result(rc, had_data, had_dsync, closed_data, closed_dsync, false, submitted, completed);
 }
 
-dxb_close_result_t dxb_storage_close(dxb_storage_t *storage, bool env_active) {
+dxb_close_result_t dxb_storage_submit_close(dxb_storage_t *storage, const dxb_close_submit_io_t *io) {
+  int rc = dxb_storage_close_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS || !storage))
+    return dxb_close_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
+
   dxb_close_result_t result = dxb_storage_close_handles(storage);
-  dxb_state_result_t reset = dxb_storage_reset(storage, env_active);
+  if (!io->reset)
+    return result;
+
+  dxb_state_result_t reset = dxb_storage_reset(storage, io->env_active);
   if (unlikely(result.err == MDBX_SUCCESS && reset.err != MDBX_SUCCESS))
     result.err = reset.err;
   return reset.reset ? dxb_close_with_reset(result) : result;
 }
 
 static inline dxb_deinit_result_t dxb_deinit_result(int err, bool reset, bool cache_lock_was_initialized,
-                                                    bool cache_lock_destroyed) {
-  const dxb_deinit_result_t result = {err, reset, cache_lock_was_initialized, cache_lock_destroyed};
+                                                    bool cache_lock_destroyed, bool submitted, bool completed) {
+  const dxb_deinit_result_t result = {err, reset, cache_lock_was_initialized, cache_lock_destroyed,
+                                      submitted, completed};
   return result;
 }
 
@@ -22092,14 +27093,21 @@ dxb_deinit_result_t dxb_storage_deinit(dxb_storage_t *storage, bool env_active) 
   const bool cache_lock_was_initialized = storage->page_cache_lock_initialized;
   dxb_state_result_t reset = dxb_storage_reset(storage, env_active);
   if (!cache_lock_was_initialized)
-    return dxb_deinit_result(reset.err, reset.reset, false, false);
+    return dxb_deinit_result(reset.err, reset.reset, false, false, false, reset.err == MDBX_SUCCESS);
   if (unlikely(reset.err != MDBX_SUCCESS))
-    return dxb_deinit_result(reset.err, reset.reset, true, false);
+    return dxb_deinit_result(reset.err, reset.reset, true, false, false, false);
   const int rc = osal_fastmutex_destroy(&storage->page_cache_lock);
   const bool cache_lock_destroyed = rc == MDBX_SUCCESS;
   if (likely(cache_lock_destroyed))
     storage->page_cache_lock_initialized = false;
-  return dxb_deinit_result(rc, reset.reset, true, cache_lock_destroyed);
+  return dxb_deinit_result(rc, reset.reset, true, cache_lock_destroyed, true, cache_lock_destroyed);
+}
+
+dxb_deinit_result_t dxb_storage_submit_deinit(dxb_storage_t *storage, const dxb_deinit_submit_io_t *io) {
+  int rc = dxb_storage_deinit_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS || !storage))
+    return dxb_deinit_result((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL, false, false, false, false, false);
+  return dxb_storage_deinit(storage, io->env_active);
 }
 
 static inline dxb_state_result_t dxb_storage_set_filesize(dxb_storage_t *storage, uint64_t filesize) {
@@ -22260,22 +27268,29 @@ static inline bool dxb_storage_can_lazy_meta_sync_with_data(const dxb_storage_t 
 #endif /* Windows */
 }
 
-static inline dxb_queue_result_t dxb_queue_result(int err, const osal_ioring_t *queue, bool readonly, bool active) {
+static inline dxb_queue_result_t dxb_queue_result(int err, const osal_ioring_t *queue, bool readonly, bool active,
+                                                  bool submitted, bool completed) {
   const dxb_queue_result_t result = {err, queue ? queue->allocated : 0,
-                                     queue ? osal_ioring_used(queue) : 0, readonly, active};
+                                     queue ? osal_ioring_used(queue) : 0, readonly,
+                                     active, submitted, completed};
   return result;
 }
 
-static inline dxb_queue_result_t dxb_queue_error(int err, bool readonly) {
-  return dxb_queue_result(err, nullptr, readonly, false);
+static inline dxb_queue_result_t dxb_queue_submitted_error(int err, bool readonly) {
+  return dxb_queue_result(err, nullptr, readonly, false, true, false);
+}
+
+static inline dxb_queue_result_t dxb_queue_noop_completed(bool readonly) {
+  return dxb_queue_result(MDBX_SUCCESS, nullptr, readonly, false, false, true);
 }
 
 static inline dxb_queue_result_t dxb_queue_completed(const osal_ioring_t *queue, bool readonly, bool active) {
-  return dxb_queue_result(MDBX_SUCCESS, queue, readonly, active);
+  return dxb_queue_result(MDBX_SUCCESS, queue, readonly, active, true, true);
 }
 
 static inline dxb_queue_op_result_t dxb_queue_op_result(int err, const osal_ioring_t *queue, bool prepared,
-                                                        bool enqueued, bool walked, bool reset) {
+                                                        bool enqueued, bool walked, bool reset, bool submitted) {
+  const bool completed = submitted && err == MDBX_SUCCESS && (prepared || enqueued || walked || reset);
   const dxb_queue_op_result_t result = {err,
                                         queue ? queue->allocated : 0,
                                         queue ? osal_ioring_used(queue) : 0,
@@ -22284,7 +27299,9 @@ static inline dxb_queue_op_result_t dxb_queue_op_result(int err, const osal_iori
                                         prepared,
                                         enqueued,
                                         walked,
-                                        reset};
+                                        reset,
+                                        submitted,
+                                        completed};
   return result;
 }
 
@@ -22299,7 +27316,7 @@ static inline dxb_queue_write_result_t dxb_queue_write_result(int err, enum dxb_
 
 dxb_queue_op_result_t osal_ioring_prepare(osal_ioring_t *ior, const dxb_dirty_write_queue_io_t *io) {
   if (unlikely(!ior || !io))
-    return dxb_queue_op_result(MDBX_EINVAL, ior, false, false, false, false);
+    return dxb_queue_op_result(MDBX_EINVAL, ior, false, false, false, false, false);
 
   size_t items = (io->items > 32) ? io->items : 32;
 #if defined(_WIN32) || defined(_WIN64)
@@ -22310,15 +27327,15 @@ dxb_queue_op_result_t osal_ioring_prepare(osal_ioring_t *ior, const dxb_dirty_wr
 #endif /* Windows */
   items = (items < 65536) ? items : 65536;
   if (likely(ior->allocated >= items))
-    return dxb_queue_op_result(MDBX_SUCCESS, ior, true, false, false, false);
+    return dxb_queue_op_result(MDBX_SUCCESS, ior, true, false, false, false, true);
 
   const int rc = osal_ioring_resize(ior, items);
-  return dxb_queue_op_result(rc, ior, rc == MDBX_SUCCESS, false, false, false);
+  return dxb_queue_op_result(rc, ior, rc == MDBX_SUCCESS, false, false, false, true);
 }
 
 static dxb_queue_result_t dxb_storage_create_write_queue(dxb_storage_t *storage, bool readonly) {
   if (readonly)
-    return dxb_queue_completed(nullptr, true, false);
+    return dxb_queue_noop_completed(true);
   const int rc = osal_ioring_create(&storage->ioring
 #if defined(_WIN32) || defined(_WIN64)
                                     ,
@@ -22326,20 +27343,48 @@ static dxb_queue_result_t dxb_storage_create_write_queue(dxb_storage_t *storage,
 #endif /* Windows */
   );
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_queue_error(rc, false);
+    return dxb_queue_submitted_error(rc, false);
   return dxb_queue_completed(dxb_storage_write_queue_const(storage), false, true);
+}
+
+static dxb_queue_result_t dxb_storage_submit_create_write_queue(dxb_storage_t *storage,
+                                                                const dxb_write_queue_submit_io_t *io) {
+  int rc = dxb_storage_write_queue_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS || !storage))
+    return dxb_queue_submitted_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL, io ? io->readonly : false);
+  if (unlikely(!io->create))
+    return dxb_queue_submitted_error(MDBX_EINVAL, io->readonly);
+  return dxb_storage_create_write_queue(storage, io->readonly);
 }
 
 static dxb_queue_result_t dxb_storage_destroy_write_queue(dxb_storage_t *storage, bool readonly) {
   if (readonly)
-    return dxb_queue_completed(nullptr, true, false);
+    return dxb_queue_noop_completed(true);
   dxb_queue_result_t result = dxb_queue_completed(dxb_storage_write_queue_const(storage), false, true);
   osal_ioring_destroy(&storage->ioring);
   return result;
 }
 
+static dxb_queue_result_t dxb_storage_submit_destroy_write_queue(dxb_storage_t *storage,
+                                                                 const dxb_write_queue_submit_io_t *io) {
+  int rc = dxb_storage_write_queue_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS || !storage))
+    return dxb_queue_submitted_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL, io ? io->readonly : false);
+  if (unlikely(io->create))
+    return dxb_queue_submitted_error(MDBX_EINVAL, io->readonly);
+  return dxb_storage_destroy_write_queue(storage, io->readonly);
+}
+
 static inline dxb_queue_op_result_t dxb_storage_reset_write_queue(dxb_storage_t *storage) {
   return osal_ioring_reset(dxb_storage_write_queue(storage));
+}
+
+static inline dxb_queue_op_result_t dxb_storage_submit_reset_write_queue(
+    dxb_storage_t *storage, const dxb_write_queue_reset_submit_io_t *io) {
+  int rc = dxb_storage_write_queue_reset_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS || !storage))
+    return dxb_queue_op_result((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL, nullptr, false, false, false, false, false);
+  return dxb_storage_reset_write_queue(storage);
 }
 
 static inline mdbx_filehandle_t dxb_storage_lock_fd(const dxb_storage_t *storage) {
@@ -22411,12 +27456,55 @@ static inline int dxb_storage_dirty_write_queue_io_validate(const dxb_storage_t 
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_make_dirty_write_queue_submit_io(
+    const dxb_storage_t *storage, const dxb_dirty_write_queue_io_t *queue,
+    dxb_dirty_write_queue_submit_io_t *io) {
+  if (unlikely(!storage || !io || !queue))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_dirty_write_queue_io_validate(storage, queue);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  io->queue = *queue;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_dirty_write_queue_submit_io_validate(
+    const dxb_storage_t *storage, const dxb_dirty_write_queue_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_dirty_write_queue_submit_io_t checked;
+  int rc = dxb_storage_make_dirty_write_queue_submit_io(storage, &io->queue, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.queue.channel != io->queue.channel || checked.queue.items != io->queue.items ||
+               checked.queue.reserve_bytes != io->queue.reserve_bytes ||
+               checked.queue.data.pages.pgno != io->queue.data.pages.pgno ||
+               checked.queue.data.pages.end_pgno != io->queue.data.pages.end_pgno ||
+               checked.queue.data.pages.npages != io->queue.data.pages.npages ||
+               checked.queue.data.pages.offset != io->queue.data.pages.offset ||
+               checked.queue.data.pages.bytes != io->queue.data.pages.bytes ||
+               checked.queue.data.bytes.offset != io->queue.data.bytes.offset ||
+               checked.queue.data.bytes.bytes != io->queue.data.bytes.bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline dxb_queue_op_result_t dxb_storage_prepare_write_queue(dxb_storage_t *storage,
                                                                     const dxb_dirty_write_queue_io_t *io) {
   int rc = dxb_storage_dirty_write_queue_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false);
+    return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false, false);
   return osal_ioring_prepare(dxb_storage_write_queue(storage), io);
+}
+
+static inline dxb_queue_op_result_t dxb_storage_submit_prepare_write_queue(
+    dxb_storage_t *storage, const dxb_dirty_write_queue_submit_io_t *io) {
+  if (unlikely(!storage))
+    return dxb_queue_op_result(MDBX_EINVAL, nullptr, false, false, false, false, false);
+  int rc = dxb_storage_dirty_write_queue_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false, false);
+  return dxb_storage_prepare_write_queue(storage, &io->queue);
 }
 
 static inline int dxb_storage_make_dirty_queued_write_io(const dxb_storage_t *storage, pgno_t pgno, size_t npages,
@@ -22460,12 +27548,54 @@ static inline int dxb_storage_dirty_queued_write_io_validate(const dxb_storage_t
   return dxb_storage_queued_data_write_io_validate(storage, &io->data);
 }
 
+static inline int dxb_storage_make_dirty_queued_write_submit_io(
+    const dxb_storage_t *storage, const dxb_dirty_queued_write_io_t *queued,
+    dxb_dirty_queued_write_submit_io_t *io) {
+  if (unlikely(!storage || !io || !queued))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_dirty_queued_write_io_validate(storage, queued);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  io->queued = *queued;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_dirty_queued_write_submit_io_validate(
+    const dxb_storage_t *storage, const dxb_dirty_queued_write_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_dirty_queued_write_submit_io_t checked;
+  int rc = dxb_storage_make_dirty_queued_write_submit_io(storage, &io->queued, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.queued.data.pages.pgno != io->queued.data.pages.pgno ||
+               checked.queued.data.pages.end_pgno != io->queued.data.pages.end_pgno ||
+               checked.queued.data.pages.npages != io->queued.data.pages.npages ||
+               checked.queued.data.pages.offset != io->queued.data.pages.offset ||
+               checked.queued.data.pages.bytes != io->queued.data.pages.bytes ||
+               checked.queued.data.bytes.offset != io->queued.data.bytes.offset ||
+               checked.queued.data.bytes.bytes != io->queued.data.bytes.bytes ||
+               checked.queued.buffer != io->queued.buffer))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline dxb_queue_op_result_t dxb_storage_add_queued_write(dxb_storage_t *storage,
                                                                  const dxb_dirty_queued_write_io_t *io) {
   int rc = dxb_storage_dirty_queued_write_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false);
+    return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false, false);
   return osal_ioring_add(dxb_storage_write_queue(storage), io);
+}
+
+static inline dxb_queue_op_result_t dxb_storage_submit_add_queued_write(
+    dxb_storage_t *storage, const dxb_dirty_queued_write_submit_io_t *io) {
+  if (unlikely(!storage))
+    return dxb_queue_op_result(MDBX_EINVAL, nullptr, false, false, false, false, false);
+  int rc = dxb_storage_dirty_queued_write_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false, false);
+  return dxb_storage_add_queued_write(storage, &io->queued);
 }
 
 static inline int dxb_storage_make_dirty_write_walk_io(const dxb_storage_t *storage, iov_ctx_t *ctx,
@@ -22494,16 +27624,56 @@ static inline int dxb_storage_dirty_write_walk_io_validate(const dxb_storage_t *
              : MDBX_EINVAL;
 }
 
+static inline int dxb_storage_make_dirty_write_walk_submit_io(
+    const dxb_storage_t *storage, const dxb_dirty_write_walk_io_t *walk,
+    dxb_dirty_write_walk_submit_io_t *io) {
+  if (unlikely(!storage || !io || !walk))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_dirty_write_walk_io_validate(storage, walk);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  io->walk = *walk;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_dirty_write_walk_submit_io_validate(
+    const dxb_storage_t *storage, const dxb_dirty_write_walk_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_dirty_write_walk_submit_io_t checked;
+  int rc = dxb_storage_make_dirty_write_walk_submit_io(storage, &io->walk, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return likely(checked.walk.channel == io->walk.channel && checked.walk.ctx == io->walk.ctx &&
+                checked.walk.callback == io->walk.callback)
+             ? MDBX_SUCCESS
+             : MDBX_EINVAL;
+}
+
 static inline dxb_queue_op_result_t dxb_storage_walk_write_queue(dxb_storage_t *storage,
                                                                  const dxb_dirty_write_walk_io_t *io) {
   const int rc = dxb_storage_dirty_write_walk_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS)) {
     if (io && io->ctx && io->ctx->err == MDBX_SUCCESS)
       io->ctx->err = rc;
-    return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false);
+    return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false, false);
   }
 
   return osal_ioring_walk(dxb_storage_write_queue(storage), io);
+}
+
+static inline dxb_queue_op_result_t dxb_storage_submit_walk_write_queue(
+    dxb_storage_t *storage, const dxb_dirty_write_walk_submit_io_t *io) {
+  if (unlikely(!storage))
+    return dxb_queue_op_result(MDBX_EINVAL, nullptr, false, false, false, false, false);
+  const int rc = dxb_storage_dirty_write_walk_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    if (io && io->walk.ctx && io->walk.ctx->err == MDBX_SUCCESS)
+      io->walk.ctx->err = rc;
+    return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false, false);
+  }
+
+  return dxb_storage_walk_write_queue(storage, &io->walk);
 }
 
 static inline int dxb_storage_make_queued_write_io(const dxb_storage_t *storage, enum dxb_io_channel channel,
@@ -22549,6 +27719,30 @@ static inline int dxb_storage_queued_write_io_validate(const dxb_storage_t *stor
              : MDBX_EINVAL;
 }
 
+static inline int dxb_storage_make_queued_write_submit_io(const dxb_storage_t *storage,
+                                                          enum dxb_io_channel channel,
+                                                          dxb_queued_write_submit_io_t *io) {
+  if (unlikely(!storage || !io))
+    return MDBX_EINVAL;
+  dxb_queued_write_io_t checked;
+  int rc = dxb_storage_make_queued_write_io(storage, channel, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  io->channel = channel;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_queued_write_submit_io_validate(const dxb_storage_t *storage,
+                                                              const dxb_queued_write_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+  dxb_queued_write_submit_io_t checked;
+  int rc = dxb_storage_make_queued_write_submit_io(storage, io->channel, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return likely(checked.channel == io->channel) ? MDBX_SUCCESS : MDBX_EINVAL;
+}
+
 static inline dxb_queue_write_result_t dxb_storage_write_queued(dxb_storage_t *storage,
                                                                 enum dxb_io_channel channel) {
   dxb_queued_write_io_t io;
@@ -22573,6 +27767,16 @@ static inline dxb_queue_write_result_t dxb_storage_write_queued(dxb_storage_t *s
   return result;
 }
 
+static inline dxb_queue_write_result_t dxb_storage_submit_write_queued(
+    dxb_storage_t *storage, const dxb_queued_write_submit_io_t *io) {
+  if (unlikely(!storage))
+    return dxb_queue_write_result(MDBX_EINVAL, io ? io->channel : dxb_io_data, 0, 0, 0, 0, false, false);
+  int rc = dxb_storage_queued_write_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_queue_write_result(rc, io ? io->channel : dxb_io_data, 0, 0, 0, 0, false, false);
+  return dxb_storage_write_queued(storage, io->channel);
+}
+
 #if !defined(_WIN32) && !defined(_WIN64)
 static inline dxb_stat_result_t dxb_stat_result(int err, const struct stat *st, bool submitted, bool completed) {
   const dxb_stat_result_t result = {err, *st, submitted, completed};
@@ -22593,10 +27797,23 @@ static inline dxb_stat_result_t dxb_stat_zero_submitted_error(int err) {
   return dxb_stat_submitted_error(err, &st);
 }
 
+static inline dxb_stat_result_t dxb_stat_zero_error(int err) {
+  struct stat st;
+  memset(&st, 0, sizeof(st));
+  return dxb_stat_result(err, &st, false, false);
+}
+
 static dxb_stat_result_t dxb_storage_stat(const dxb_storage_t *storage) {
   struct stat st;
   return unlikely(fstat(dxb_storage_data_fd(storage), &st)) ? dxb_stat_zero_submitted_error(errno)
                                                             : dxb_stat_completed(&st);
+}
+
+static dxb_stat_result_t dxb_storage_submit_stat(const dxb_storage_t *storage, const dxb_stat_submit_io_t *io) {
+  int rc = dxb_storage_stat_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_stat_zero_error(rc);
+  return dxb_storage_stat(storage);
 }
 #endif /* !Windows */
 
@@ -22624,6 +27841,14 @@ static inline dxb_incore_result_t dxb_storage_check_incore(const dxb_storage_t *
   if (likely(rc == MDBX_SUCCESS))
     return dxb_incore_completed(false);
   return (rc == MDBX_ENOSYS) ? dxb_incore_unavailable(rc) : dxb_incore_submitted_error(rc);
+}
+
+static inline dxb_incore_result_t dxb_storage_submit_check_incore(const dxb_storage_t *storage,
+                                                                  const dxb_incore_submit_io_t *io) {
+  int rc = dxb_storage_incore_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_incore_result(rc, false, false, false);
+  return dxb_storage_check_incore(storage);
 }
 
 static inline dxb_sysinfo_result_t dxb_sysinfo_result(int err, uint64_t filesize, uint64_t allocated,
@@ -22695,6 +27920,14 @@ static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *stora
 #endif /* !Windows */
 }
 
+static dxb_sysinfo_result_t dxb_storage_submit_fetch_sysinfo(const dxb_storage_t *storage,
+                                                             const dxb_sysinfo_submit_io_t *io) {
+  int rc = dxb_storage_sysinfo_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_sysinfo_error(rc, false);
+  return dxb_storage_fetch_sysinfo(storage);
+}
+
 static inline dxb_readonly_result_t dxb_readonly_result(int err, int source_err, bool submitted, bool completed) {
   const dxb_readonly_result_t result = {err, source_err, err == MDBX_SUCCESS, err != MDBX_ENOSYS, submitted,
                                         completed};
@@ -22724,6 +27957,14 @@ static inline dxb_readonly_result_t dxb_readonly_from_probe(int err, int source_
 static dxb_readonly_result_t dxb_storage_check_readonly(const dxb_storage_t *storage, const pathchar_t *pathname,
                                                         int err) {
   return dxb_readonly_from_probe(osal_check_fs_rdonly(dxb_storage_data_fd(storage), pathname, err), err);
+}
+
+static dxb_readonly_result_t dxb_storage_submit_check_readonly(const dxb_storage_t *storage,
+                                                               const dxb_readonly_submit_io_t *io) {
+  int rc = dxb_storage_readonly_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_readonly_result(rc, io ? io->source_err : 0, false, false);
+  return dxb_storage_check_readonly(storage, io->pathname, io->source_err);
 }
 
 static inline dxb_range_result_t dxb_range_result(int err, size_t payload_bytes, bool submitted, bool completed) {
@@ -22806,6 +28047,14 @@ static dxb_range_result_t dxb_storage_advise_io(const dxb_storage_t *storage, co
 #endif /* POSIX_FADV_* */
 }
 
+static dxb_range_result_t dxb_storage_submit_advise_io(const dxb_storage_t *storage,
+                                                       const dxb_advice_submit_io_t *io) {
+  int rc = dxb_storage_advice_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_range_error(rc);
+  return dxb_storage_advise_io(storage, &io->advice);
+}
+
 static dxb_range_result_t dxb_storage_discard_io(dxb_storage_t *storage, const dxb_discard_io_t *io) {
   int rc = dxb_storage_discard_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -22824,7 +28073,7 @@ static dxb_range_result_t dxb_storage_discard_io(dxb_storage_t *storage, const d
       dxb_cache_invalidate_io_t invalidate;
       rc = dxb_storage_make_cache_invalidate_io(storage, &io->range.pages, true, &invalidate);
       if (likely(rc == MDBX_SUCCESS))
-        dxb_storage_invalidate_cached_io(storage, &invalidate);
+        dxb_storage_submit_invalidate_cached_request(storage, &invalidate);
     }
     if (rc == MDBX_SUCCESS)
       return dxb_range_completed(range->bytes);
@@ -22836,7 +28085,7 @@ static dxb_range_result_t dxb_storage_discard_io(dxb_storage_t *storage, const d
       dxb_cache_invalidate_io_t invalidate;
       rc = dxb_storage_make_cache_invalidate_io(storage, &io->range.pages, true, &invalidate);
       if (likely(rc == MDBX_SUCCESS))
-        dxb_storage_invalidate_cached_io(storage, &invalidate);
+        dxb_storage_submit_invalidate_cached_request(storage, &invalidate);
     }
     if (rc != MDBX_RESULT_TRUE)
       return rc == MDBX_SUCCESS ? dxb_range_completed(range->bytes) : dxb_range_error(rc);
@@ -22855,6 +28104,14 @@ static dxb_range_result_t dxb_storage_discard_io(dxb_storage_t *storage, const d
   (void)storage;
   return dxb_range_unavailable();
 #endif /* POSIX_FADV_DONTNEED */
+}
+
+static dxb_range_result_t dxb_storage_submit_discard_io(dxb_storage_t *storage,
+                                                        const dxb_discard_submit_io_t *io) {
+  int rc = dxb_storage_discard_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_range_error(rc);
+  return dxb_storage_discard_io(storage, &io->discard);
 }
 
 static inline dxb_readahead_result_t dxb_readahead_result(int err, bool enabled, bool supported, bool submitted,
@@ -22886,8 +28143,17 @@ static dxb_readahead_result_t dxb_storage_set_readahead(const dxb_storage_t *sto
 #endif /* F_RDAHEAD */
 }
 
+static dxb_readahead_result_t dxb_storage_submit_readahead(const dxb_storage_t *storage,
+                                                           const dxb_readahead_submit_io_t *io) {
+  int rc = dxb_storage_readahead_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_readahead_result(rc, false, false, false, false);
+  return dxb_storage_set_readahead(storage, io->enable);
+}
+
 static int dxb_fault_inject(const char *operation);
 static dxb_sync_result_t dxb_storage_sync_io(const dxb_storage_t *storage, const dxb_sync_io_t *io);
+static dxb_sync_result_t dxb_storage_submit_sync_io(const dxb_storage_t *storage, const dxb_sync_submit_io_t *io);
 
 static inline void dxb_note_fsync_pgop(const MDBX_env *env, enum osal_syncmode_bits mode_bits) {
   if (MDBX_ENABLE_PGOP_STAT)
@@ -23072,6 +28338,13 @@ static dxb_sync_result_t dxb_storage_sync_io(const dxb_storage_t *storage, const
   return dxb_sync_completed(io->bytes.bytes);
 }
 
+static dxb_sync_result_t dxb_storage_submit_sync_io(const dxb_storage_t *storage, const dxb_sync_submit_io_t *io) {
+  int rc = dxb_storage_sync_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_sync_error(rc);
+  return dxb_storage_sync_io(storage, &io->sync);
+}
+
 static inline dxb_read_result_t dxb_read_result(int err, size_t payload_bytes, bool submitted, bool completed) {
   const dxb_read_result_t result = {err, payload_bytes, submitted, completed};
   return result;
@@ -23079,6 +28352,10 @@ static inline dxb_read_result_t dxb_read_result(int err, size_t payload_bytes, b
 
 static inline dxb_read_result_t dxb_read_error(int err) {
   return dxb_read_result(err, 0, false, false);
+}
+
+static inline dxb_read_result_t dxb_read_submitted_error(int err) {
+  return dxb_read_result(err, 0, true, false);
 }
 
 static inline dxb_read_result_t dxb_read_completed(size_t payload_bytes) {
@@ -23094,11 +28371,19 @@ static dxb_read_result_t dxb_storage_read_data(const dxb_storage_t *storage, con
     return dxb_read_error(rc);
   rc = osal_pread(dxb_storage_data_fd(storage), buf, io->bytes.bytes, io->bytes.offset);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_read_error(rc);
+    return dxb_read_submitted_error(rc);
   rc = dxb_fault_inject("read-complete");
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_read_error(rc);
+    return dxb_read_submitted_error(rc);
   return dxb_read_completed(io->bytes.bytes);
+}
+
+static dxb_read_result_t dxb_storage_submit_read_data(const dxb_storage_t *storage,
+                                                      const dxb_read_submit_io_t *io) {
+  int rc = dxb_storage_read_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_read_error(rc);
+  return dxb_storage_read_data(storage, &io->data, io->buffer);
 }
 
 static dxb_read_result_t dxb_storage_read_meta(const dxb_storage_t *storage, const dxb_meta_read_io_t *io, void *buf) {
@@ -23110,11 +28395,19 @@ static dxb_read_result_t dxb_storage_read_meta(const dxb_storage_t *storage, con
     return dxb_read_error(rc);
   rc = osal_pread(dxb_storage_data_fd(storage), buf, io->bytes.bytes, io->bytes.offset);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_read_error(rc);
+    return dxb_read_submitted_error(rc);
   rc = dxb_fault_inject("read-complete");
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_read_error(rc);
+    return dxb_read_submitted_error(rc);
   return dxb_read_completed(io->bytes.bytes);
+}
+
+static dxb_read_result_t dxb_storage_submit_read_meta(const dxb_storage_t *storage,
+                                                      const dxb_meta_read_submit_io_t *io) {
+  int rc = dxb_storage_meta_read_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_read_error(rc);
+  return dxb_storage_read_meta(storage, &io->meta, io->buffer);
 }
 
 static inline dxb_write_result_t dxb_write_result(int err, unsigned wops, size_t payload_bytes, bool submitted,
@@ -23157,8 +28450,15 @@ static dxb_write_result_t dxb_storage_write_data(dxb_storage_t *storage, const d
   rc = dxb_storage_make_cache_invalidate_io(storage, &io->pages, false, &invalidate);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_completed_error(rc, io->bytes.bytes);
-  dxb_storage_invalidate_cached_io(storage, &invalidate);
+  dxb_storage_submit_invalidate_cached_request(storage, &invalidate);
   return dxb_write_completed(io->bytes.bytes);
+}
+
+static dxb_write_result_t dxb_storage_submit_write_data(dxb_storage_t *storage, const dxb_write_submit_io_t *io) {
+  int rc = dxb_storage_write_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_write_error(rc);
+  return dxb_storage_write_data(storage, &io->data, io->buffer);
 }
 
 static dxb_write_result_t dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_write_io_t *io,
@@ -23176,6 +28476,14 @@ static dxb_write_result_t dxb_storage_write_meta(dxb_storage_t *storage, const d
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_submitted_error(rc);
   return dxb_write_completed(io->payload_bytes);
+}
+
+static dxb_write_result_t dxb_storage_submit_write_meta(dxb_storage_t *storage,
+                                                        const dxb_meta_write_submit_io_t *io) {
+  int rc = dxb_storage_meta_write_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_write_error(rc);
+  return dxb_storage_write_meta(storage, &io->meta, io->buffer);
 }
 
 static int dxb_storage_iov_bytes(const struct iovec *iov, size_t sgvcnt, size_t *bytes) {
@@ -23219,8 +28527,15 @@ static dxb_write_result_t dxb_storage_writev_data(dxb_storage_t *storage, const 
   rc = dxb_storage_make_cache_invalidate_io(storage, &io->pages, false, &invalidate);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_completed_error(rc, io->bytes.bytes);
-  dxb_storage_invalidate_cached_io(storage, &invalidate);
+  dxb_storage_submit_invalidate_cached_request(storage, &invalidate);
   return dxb_write_completed(io->bytes.bytes);
+}
+
+static dxb_write_result_t dxb_storage_submit_writev_data(dxb_storage_t *storage, const dxb_writev_submit_io_t *io) {
+  int rc = dxb_storage_writev_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_write_error(rc);
+  return dxb_storage_writev_data(storage, &io->data, io->iov, io->sgvcnt);
 }
 
 static inline dxb_filesize_result_t dxb_filesize_result(int err, uint64_t filesize, bool submitted, bool completed) {
@@ -23244,23 +28559,39 @@ static inline dxb_filesize_result_t dxb_filesize_completed(uint64_t filesize) {
   return dxb_filesize_result(MDBX_SUCCESS, filesize, true, true);
 }
 
-static dxb_filesize_result_t dxb_storage_set_filesize_on_disk(const dxb_storage_t *storage, uint64_t target) {
-  int rc = dxb_fault_inject("setsize");
+static dxb_filesize_result_t dxb_storage_set_filesize_on_disk(const dxb_storage_t *storage,
+                                                              const dxb_filesize_submit_io_t *io) {
+  int rc = dxb_storage_filesize_set_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_filesize_error(rc);
-  rc = osal_fsetsize(dxb_storage_data_fd(storage), target);
+  rc = dxb_fault_inject("setsize");
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_filesize_error(rc);
+  rc = osal_fsetsize(dxb_storage_data_fd(storage), io->target);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_filesize_submitted_error(rc);
   rc = dxb_fault_inject("setsize-complete");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_filesize_submitted_error(rc);
-  return dxb_filesize_completed(target);
+  return dxb_filesize_completed(io->target);
+}
+
+static dxb_filesize_result_t dxb_storage_submit_set_filesize(const dxb_storage_t *storage,
+                                                             const dxb_filesize_submit_io_t *io) {
+  int rc = dxb_storage_filesize_set_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_filesize_error(rc);
+  return dxb_storage_set_filesize_on_disk(storage, io);
 }
 
 static dxb_filesize_result_t dxb_storage_set_filesize_bytes(dxb_storage_t *storage, uint64_t target) {
   const uint64_t old_filesize = dxb_storage_filesize(storage);
-  dxb_filesize_result_t setsize = dxb_storage_set_filesize_on_disk(storage, target);
-  int rc = setsize.err;
+  dxb_filesize_submit_io_t submit;
+  int rc = dxb_storage_make_filesize_set_submit_io(target, &submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_filesize_error(rc);
+  dxb_filesize_result_t setsize = dxb_storage_submit_set_filesize(storage, &submit);
+  rc = setsize.err;
   if (unlikely(rc != MDBX_SUCCESS))
     return setsize;
   if (target < old_filesize) {
@@ -23275,7 +28606,7 @@ static dxb_filesize_result_t dxb_storage_set_filesize_bytes(dxb_storage_t *stora
         dxb_cache_invalidate_io_t invalidate;
         err = dxb_storage_make_cache_invalidate_io(storage, &stale_coverage.pages, true, &invalidate);
         if (likely(err == MDBX_SUCCESS))
-          dxb_storage_invalidate_cached_io(storage, &invalidate);
+          dxb_storage_submit_invalidate_cached_request(storage, &invalidate);
       }
     }
   }
@@ -23295,8 +28626,13 @@ static dxb_filesize_result_t dxb_storage_set_filesize_as_current(dxb_storage_t *
   return setsize;
 }
 
-static dxb_filesize_result_t dxb_storage_fetch_filesize(dxb_storage_t *storage) {
-  int rc = dxb_fault_inject("filesize");
+static dxb_filesize_result_t dxb_storage_fetch_filesize_from_disk(const dxb_storage_t *storage,
+                                                                  const dxb_filesize_submit_io_t *io) {
+  int rc = dxb_storage_filesize_fetch_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_filesize_error(rc);
+
+  rc = dxb_fault_inject("filesize");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_filesize_error(rc);
 
@@ -23309,16 +28645,41 @@ static dxb_filesize_result_t dxb_storage_fetch_filesize(dxb_storage_t *storage) 
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_filesize_submitted_error(rc);
 
+  return dxb_filesize_completed(filesize);
+}
+
+static dxb_filesize_result_t dxb_storage_submit_fetch_filesize(dxb_storage_t *storage,
+                                                               const dxb_filesize_submit_io_t *io) {
+  int rc = dxb_storage_filesize_fetch_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_filesize_error(rc);
+
+  dxb_filesize_result_t fetched = dxb_storage_fetch_filesize_from_disk(storage, io);
+  if (unlikely(fetched.err != MDBX_SUCCESS))
+    return fetched;
+  const uint64_t filesize = fetched.filesize;
   rc = dxb_storage_note_filesize(storage, filesize).err;
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_filesize_completed_error(rc, filesize);
-  return dxb_filesize_completed(filesize);
+  return fetched;
+}
+
+static dxb_filesize_result_t dxb_storage_fetch_filesize(dxb_storage_t *storage) {
+  dxb_filesize_submit_io_t submit;
+  int rc = dxb_storage_make_filesize_fetch_submit_io(&submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_filesize_error(rc);
+  return dxb_storage_submit_fetch_filesize(storage, &submit);
 }
 
 static inline dxb_resize_result_t dxb_resize_result(int err, size_t current, size_t limit, uint64_t filesize,
                                                     bool submitted, bool completed) {
   const dxb_resize_result_t result = {err, current, limit, filesize, submitted, completed};
   return result;
+}
+
+static inline dxb_resize_result_t dxb_resize_unsubmitted_error(int err) {
+  return dxb_resize_result(err, 0, 0, 0, false, false);
 }
 
 static inline dxb_resize_result_t dxb_resize_state(const dxb_storage_t *storage, int err, bool submitted,
@@ -23403,6 +28764,14 @@ static dxb_copy_result_t dxb_storage_copy_data_to_fd(const dxb_storage_t *storag
   return dxb_copy_submitted_error(err);
 }
 
+static dxb_copy_result_t dxb_storage_submit_copy_data_to_fd(const dxb_storage_t *storage,
+                                                            const dxb_data_export_submit_io_t *io) {
+  int rc = dxb_storage_data_export_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_copy_error(rc);
+  return dxb_storage_copy_data_to_fd(storage, &io->export, io->dst_fd);
+}
+
 static dxb_copy_result_t dxb_storage_copy_data(dxb_storage_t *storage, const dxb_data_copy_io_t *io) {
   int rc = dxb_storage_data_copy_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -23431,8 +28800,15 @@ static dxb_copy_result_t dxb_storage_copy_data(dxb_storage_t *storage, const dxb
   rc = dxb_storage_make_cache_invalidate_io(storage, &io->dst_pages, false, &invalidate);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_copy_completed_error(rc, io->src_bytes.bytes);
-  dxb_storage_invalidate_cached_io(storage, &invalidate);
+  dxb_storage_submit_invalidate_cached_request(storage, &invalidate);
   return dxb_copy_completed(io->src_bytes.bytes);
+}
+
+static dxb_copy_result_t dxb_storage_submit_copy_data(dxb_storage_t *storage, const dxb_data_copy_submit_io_t *io) {
+  int rc = dxb_storage_data_copy_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_copy_error(rc);
+  return dxb_storage_copy_data(storage, &io->copy);
 }
 
 #endif /* MDBX_USE_COPYFILERANGE */
@@ -23462,6 +28838,14 @@ static dxb_copy_result_t dxb_storage_sendfile_data_to_fd(const dxb_storage_t *st
     return dxb_copy_unavailable();
   return dxb_copy_submitted_error(err);
 }
+
+static dxb_copy_result_t dxb_storage_submit_sendfile_data_to_fd(const dxb_storage_t *storage,
+                                                                const dxb_data_export_submit_io_t *io) {
+  int rc = dxb_storage_data_export_submit_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_copy_error(rc);
+  return dxb_storage_sendfile_data_to_fd(storage, &io->export, io->dst_fd);
+}
 #endif /* MDBX_USE_SENDFILE */
 
 static dxb_resize_result_t dxb_storage_setup_size(dxb_storage_t *storage, const dxb_size_io_t *target,
@@ -23489,6 +28873,15 @@ static dxb_resize_result_t dxb_storage_setup_size(dxb_storage_t *storage, const 
       return dxb_resize_after_filesize(storage, rc, filesize);
     return dxb_resize_after_filesize(storage, MDBX_SUCCESS, filesize);
   }
+}
+
+static dxb_resize_result_t dxb_storage_submit_setup_size(dxb_storage_t *storage,
+                                                         const dxb_setup_size_submit_io_t *io) {
+  int rc = dxb_storage_setup_size_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS || !storage))
+    return storage ? dxb_resize_error(storage, (rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL)
+                   : dxb_resize_unsubmitted_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
+  return dxb_storage_setup_size(storage, &io->target, io->flags, io->options);
 }
 
 static dxb_resize_result_t dxb_storage_resize_size(dxb_storage_t *storage, const dxb_size_io_t *target,
@@ -23528,6 +28921,15 @@ static dxb_resize_result_t dxb_storage_resize_size(dxb_storage_t *storage, const
   return dxb_resize_after_filesize(storage, rc, filesize_result);
 }
 
+static dxb_resize_result_t dxb_storage_submit_resize_size(dxb_storage_t *storage,
+                                                          const dxb_resize_size_submit_io_t *io) {
+  int rc = dxb_storage_resize_size_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS || !storage))
+    return storage ? dxb_resize_error(storage, (rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL)
+                   : dxb_resize_unsubmitted_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
+  return dxb_storage_resize_size(storage, &io->target, io->flags);
+}
+
 __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive, const mdbx_mode_t mode_bits) {
   dxb_storage_t *const storage = &env->dxb_storage;
   memset(dest, 0, sizeof(meta_t));
@@ -23554,11 +28956,15 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
       return err;
 
     char buffer[MDBX_MIN_PAGESIZE];
+    dxb_meta_read_submit_io_t submit;
+    err = dxb_storage_make_meta_read_submit_io(&request, buffer, &submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
     unsigned retryleft = 42;
     while (1) {
       TRACE("reading meta[%d]: offset %" PRIu64 ", bytes %zu, retry-left %u", meta_number, request.bytes.offset,
             request.bytes.bytes, retryleft);
-      err = dxb_storage_read_meta(storage, &request, buffer).err;
+      err = dxb_storage_submit_read_meta(storage, &submit).err;
       if (err == MDBX_ENODATA && request.bytes.offset == 0 && loop_count == 0 &&
           dxb_storage_filesize(storage) == 0 &&
           mode_bits /* non-zero for DB creation */ != 0) {
@@ -23568,7 +28974,7 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
 #if defined(_WIN32) || defined(_WIN64)
       if (err == ERROR_LOCK_VIOLATION) {
         SleepEx(0, true);
-        err = dxb_storage_read_meta(storage, &request, buffer).err;
+        err = dxb_storage_submit_read_meta(storage, &submit).err;
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
           WARNING("read meta[%" PRIu64 ",%zu]: %i, %s", request.bytes.offset, request.bytes.bytes, err,
                   mdbx_strerror(err));
@@ -23583,11 +28989,15 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
       }
 
       char again[MDBX_MIN_PAGESIZE];
-      err = dxb_storage_read_meta(storage, &request, again).err;
+      dxb_meta_read_submit_io_t again_submit;
+      err = dxb_storage_make_meta_read_submit_io(&request, again, &again_submit);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+      err = dxb_storage_submit_read_meta(storage, &again_submit).err;
 #if defined(_WIN32) || defined(_WIN64)
       if (err == ERROR_LOCK_VIOLATION) {
         SleepEx(0, true);
-        err = dxb_storage_read_meta(storage, &request, again).err;
+        err = dxb_storage_submit_read_meta(storage, &again_submit).err;
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
           WARNING("read meta[%" PRIu64 ",%zu]: %i, %s", request.bytes.offset, request.bytes.bytes, err,
                   mdbx_strerror(err));
@@ -23706,8 +29116,12 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
     if (likely(rc == MDBX_SUCCESS)) {
       dxb_discard_io_t discard_io;
       rc = dxb_storage_make_discard_io(storage, &discard_bytes, dxb_discard_clean, &discard_io);
-      if (likely(rc == MDBX_SUCCESS))
-        rc = dxb_storage_discard_io(storage, &discard_io).err;
+      if (likely(rc == MDBX_SUCCESS)) {
+        dxb_discard_submit_io_t discard_submit;
+        rc = dxb_storage_make_discard_submit_io(storage, &discard_io, &discard_submit);
+        if (likely(rc == MDBX_SUCCESS))
+          rc = dxb_storage_submit_discard_io(storage, &discard_submit).err;
+      }
     }
     if (unlikely(MDBX_IS_ERROR(rc))) {
       ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "resize", "DONTNEED", size_bytes, prev_size - size_bytes, rc);
@@ -23716,7 +29130,11 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
       env->lck->discarded_tail.weak = size_pgno;
   }
 
-  dxb_resize_result_t resize_result = dxb_storage_resize_size(storage, &target_size, resize_flags);
+  dxb_resize_size_submit_io_t resize_submit;
+  rc = dxb_storage_make_resize_size_submit_io(&target_size, resize_flags, &resize_submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    goto bailout;
+  dxb_resize_result_t resize_result = dxb_storage_submit_resize_size(storage, &resize_submit);
   rc = resize_result.err;
   eASSERT0(env, dxb_storage_current_within_limit(storage));
 
@@ -23816,8 +29234,12 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
          window_coverage.pages.end_pgno);
 
   if (toggle) {
-    dxb_readahead_result_t readahead_result = dxb_storage_set_readahead(storage, enable);
-    int err = readahead_result.err;
+    dxb_readahead_submit_io_t readahead_submit;
+    int err = dxb_storage_make_readahead_submit_io(enable, &readahead_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    dxb_readahead_result_t readahead_result = dxb_storage_submit_readahead(storage, &readahead_submit);
+    err = readahead_result.err;
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
@@ -23827,7 +29249,11 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
     err = dxb_storage_make_advice_io(storage, &window, dxb_advice_normal, &advice_io);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_storage_advise_io(storage, &advice_io).err;
+    dxb_advice_submit_io_t advice_submit;
+    err = dxb_storage_make_advice_submit_io(storage, &advice_io, &advice_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = dxb_storage_submit_advise_io(storage, &advice_submit).err;
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
     if (toggle) {
@@ -23839,7 +29265,10 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
       err = dxb_storage_make_advice_io(storage, &window_coverage.page_bytes, dxb_advice_willneed, &advice_io);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
-      err = dxb_storage_advise_io(storage, &advice_io).err;
+      err = dxb_storage_make_advice_submit_io(storage, &advice_io, &advice_submit);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+      err = dxb_storage_submit_advise_io(storage, &advice_submit).err;
       if (unlikely(MDBX_IS_ERROR(err)))
         return err;
     }
@@ -23849,7 +29278,11 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
     err = dxb_storage_make_advice_io(storage, &window, dxb_advice_random, &advice_io);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_storage_advise_io(storage, &advice_io).err;
+    dxb_advice_submit_io_t advice_submit;
+    err = dxb_storage_make_advice_submit_io(storage, &advice_io, &advice_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = dxb_storage_submit_advise_io(storage, &advice_submit).err;
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
   }
@@ -23894,7 +29327,11 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
     err = dxb_storage_make_data_write_io_from_page(storage, &meta_page_span, &meta_pages);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    dxb_write_result_t meta_pages_write = dxb_storage_write_data(storage, &meta_pages, env->page_auxbuf);
+    dxb_write_submit_io_t meta_pages_submit;
+    err = dxb_storage_make_write_submit_io(storage, &meta_pages, env->page_auxbuf, &meta_pages_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    dxb_write_result_t meta_pages_write = dxb_storage_submit_write_data(storage, &meta_pages_submit);
     err = meta_pages_write.err;
     if (unlikely(err != MDBX_SUCCESS))
       return err;
@@ -24066,7 +29503,11 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   err = dxb_storage_size_io(env->geo_in_bytes.now, env->geo_in_bytes.upper, &target_size);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  dxb_resize_result_t setup_size = dxb_storage_setup_size(storage, &target_size, env->flags, storage_options);
+  dxb_setup_size_submit_io_t setup_submit;
+  err = dxb_storage_make_setup_size_submit_io(&target_size, env->flags, storage_options, &setup_submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  dxb_resize_result_t setup_size = dxb_storage_submit_setup_size(storage, &setup_submit);
   err = setup_size.err;
   if (unlikely(err != MDBX_SUCCESS))
     return err;
@@ -24321,8 +29762,12 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
     if (likely(err == MDBX_SUCCESS)) {
       dxb_discard_io_t discard_io;
       err = dxb_storage_make_discard_io(storage, &discard_bytes, dxb_discard_clean, &discard_io);
-      if (likely(err == MDBX_SUCCESS))
-        err = dxb_storage_discard_io(storage, &discard_io).err;
+      if (likely(err == MDBX_SUCCESS)) {
+        dxb_discard_submit_io_t discard_submit;
+        err = dxb_storage_make_discard_submit_io(storage, &discard_io, &discard_submit);
+        if (likely(err == MDBX_SUCCESS))
+          err = dxb_storage_submit_discard_io(storage, &discard_submit).err;
+      }
     }
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
@@ -24397,8 +29842,12 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
           if (likely(err == MDBX_SUCCESS)) {
             dxb_discard_io_t discard_io;
             err = dxb_storage_make_discard_io(storage, &discard_bytes, dxb_discard_clean, &discard_io);
-            if (likely(err == MDBX_SUCCESS))
-              err = dxb_storage_discard_io(storage, &discard_io).err;
+            if (likely(err == MDBX_SUCCESS)) {
+              dxb_discard_submit_io_t discard_submit;
+              err = dxb_storage_make_discard_submit_io(storage, &discard_io, &discard_submit);
+              if (likely(err == MDBX_SUCCESS))
+                err = dxb_storage_submit_discard_io(storage, &discard_submit).err;
+            }
           }
           if (unlikely(MDBX_IS_ERROR(err))) {
             ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "shrink", "DONTNEED", discard_edge_bytes,
@@ -24475,8 +29924,12 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
     rc = dxb_storage_make_sync_io(storage, &sync_range, mode_bits, &sync_io);
     if (unlikely(rc != MDBX_SUCCESS))
       goto fail;
+    dxb_sync_submit_io_t sync_submit;
+    rc = dxb_storage_make_sync_submit_io(storage, &sync_io, &sync_submit);
+    if (unlikely(rc != MDBX_SUCCESS))
+      goto fail;
     dxb_note_fsync_pgop(env, mode_bits);
-    rc = dxb_storage_sync_io(storage, &sync_io).err;
+    rc = dxb_storage_submit_sync_io(storage, &sync_submit).err;
     if (unlikely(rc != MDBX_SUCCESS))
       goto fail;
     rc = (flags & MDBX_SAFE_NOSYNC) ? MDBX_RESULT_TRUE /* carry non-steady */
@@ -24561,14 +30014,20 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
   rc = dxb_storage_make_meta_payload_write_io(storage, target_number, 0, sizeof(meta_t), &target_write);
   if (unlikely(rc != MDBX_SUCCESS))
     goto fail;
-  dxb_write_result_t target_result = dxb_storage_write_meta(storage, &target_write, pending);
+  dxb_meta_write_submit_io_t target_submit;
+  rc = dxb_storage_make_meta_write_submit_io(storage, &target_write, pending, &target_submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    goto fail;
+  dxb_write_result_t target_result = dxb_storage_submit_write_meta(storage, &target_submit);
   rc = target_result.err;
   if (unlikely(rc != MDBX_SUCCESS)) {
   undo:
     DEBUG("%s", "write failed, disk error?");
     /* On a failure, the pagecache still contains the new data.
      * Try write some old data back, to prevent it from being used. */
-    (void)dxb_storage_write_meta(storage, &target_write, &undo_meta);
+    dxb_meta_write_submit_io_t undo_submit;
+    if (dxb_storage_make_meta_write_submit_io(storage, &target_write, &undo_meta, &undo_submit) == MDBX_SUCCESS)
+      (void)dxb_storage_submit_write_meta(storage, &undo_submit);
     goto fail;
   }
   /* sync meta-pages */
@@ -24581,7 +30040,11 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
       rc = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &meta_sync_io);
       if (unlikely(rc != MDBX_SUCCESS))
         goto undo;
-      rc = dxb_storage_sync_io(storage, &meta_sync_io).err;
+      dxb_sync_submit_io_t meta_sync_submit;
+      rc = dxb_storage_make_sync_submit_io(storage, &meta_sync_io, &meta_sync_submit);
+      if (unlikely(rc != MDBX_SUCCESS))
+        goto undo;
+      rc = dxb_storage_submit_sync_io(storage, &meta_sync_submit).err;
       if (rc != MDBX_SUCCESS)
         goto undo;
     }
@@ -24773,8 +30236,12 @@ retry:;
         err = dxb_storage_make_sync_io(storage, &sync_range, MDBX_SYNC_DATA, &sync_io);
         if (unlikely(err != MDBX_SUCCESS))
           return err;
+        dxb_sync_submit_io_t sync_submit;
+        err = dxb_storage_make_sync_submit_io(storage, &sync_io, &sync_submit);
+        if (unlikely(err != MDBX_SUCCESS))
+          return err;
         dxb_note_fsync_pgop(env, MDBX_SYNC_DATA);
-        err = dxb_storage_sync_io(storage, &sync_io).err;
+        err = dxb_storage_submit_sync_io(storage, &sync_submit).err;
 
         if (unlikely(err != MDBX_SUCCESS))
           return err;
@@ -24907,10 +30374,14 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
 
   env->pid = osal_getpid();
   dxb_storage_t *const storage = &env->dxb_storage;
-  dxb_open_result_t open_result =
-      dxb_storage_open_data(storage, env, env->pathname.dxb,
-                            (env->flags & MDBX_RDONLY) ? MDBX_OPEN_DXB_READ : MDBX_OPEN_DXB_LAZY, mode);
-  int rc = open_result.err;
+  dxb_open_submit_io_t open_submit;
+  int rc = dxb_storage_make_open_submit_io(env, env->pathname.dxb,
+                                           (env->flags & MDBX_RDONLY) ? MDBX_OPEN_DXB_READ : MDBX_OPEN_DXB_LAZY,
+                                           mode, false, &open_submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_open_result_t open_result = dxb_storage_submit_open_data(storage, &open_submit);
+  rc = open_result.err;
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
@@ -24927,7 +30398,11 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   rc = dxb_storage_byte_span_io(safe_parking_lot_offset, safe_parking_lot_offset, &safe_parking_lot);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  (void)dxb_storage_park_data(storage, &safe_parking_lot);
+  dxb_park_submit_io_t park_submit;
+  rc = dxb_storage_make_park_submit_io(dxb_io_data, &safe_parking_lot, &park_submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  (void)dxb_storage_submit_park_data(storage, &park_submit);
 #if defined(_WIN32) || defined(_WIN64)
   env->dxb_lock_event = CreateEventW(nullptr, true, false, nullptr);
   if (unlikely(!env->dxb_lock_event))
@@ -24936,17 +30411,28 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   if (unlikely(!env->lck_lock_event))
     return (int)GetLastError();
   if (!(env->flags & (MDBX_RDONLY | MDBX_SAFE_NOSYNC | MDBX_NOMETASYNC | MDBX_EXCLUSIVE))) {
-    open_result = dxb_storage_open_overlapped(storage, env, env->pathname.dxb);
+    rc = dxb_storage_make_open_submit_io(env, env->pathname.dxb, MDBX_OPEN_DXB_OVERLAPPED, 0, false, &open_submit);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+    open_result = dxb_storage_submit_open_overlapped(storage, &open_submit);
     rc = open_result.err;
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    (void)dxb_storage_park_overlapped(storage, &safe_parking_lot);
+    rc = dxb_storage_make_park_submit_io(dxb_io_data, &safe_parking_lot, &park_submit);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+    (void)dxb_storage_submit_park_overlapped(storage, &park_submit);
   }
 #else
   if (mode == 0) {
     /* pickup mode for lck-file */
-    dxb_stat_result_t stat_result = dxb_storage_stat(storage);
-    rc = stat_result.err;
+    dxb_stat_submit_io_t stat_submit;
+    rc = dxb_storage_make_stat_submit_io(&stat_submit);
+    dxb_stat_result_t stat_result;
+    if (likely(rc == MDBX_SUCCESS)) {
+      stat_result = dxb_storage_submit_stat(storage, &stat_submit);
+      rc = stat_result.err;
+    }
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
     mode = stat_result.st.st_mode;
@@ -24967,11 +30453,18 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
                       | MDBX_EXCLUSIVE
 #endif /* !Windows */
                       ))) {
-    open_result = dxb_storage_open_dsync(storage, env, env->pathname.dxb, (env->flags & MDBX_NOMETASYNC) == 0);
+    rc = dxb_storage_make_open_submit_io(env, env->pathname.dxb, MDBX_OPEN_DXB_DSYNC, 0,
+                                         (env->flags & MDBX_NOMETASYNC) == 0, &open_submit);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+    open_result = dxb_storage_submit_open_dsync(storage, &open_submit);
     rc = open_result.err;
     if (unlikely(MDBX_IS_ERROR(rc)))
       return rc;
-    (void)dxb_storage_park_dsync(storage, &safe_parking_lot);
+    rc = dxb_storage_make_park_submit_io(dxb_io_data_dsync, &safe_parking_lot, &park_submit);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+    (void)dxb_storage_submit_park_dsync(storage, &park_submit);
   }
 
   const MDBX_env_flags_t lazy_flags = MDBX_SAFE_NOSYNC | MDBX_UTTERLY_NOSYNC | MDBX_NOMETASYNC;
@@ -25029,7 +30522,11 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   if (MDBX_IS_ERROR(dxb_rc))
     return dxb_rc;
 
-  dxb_incore_result_t incore_result = dxb_storage_check_incore(storage);
+  dxb_incore_submit_io_t incore_submit;
+  rc = dxb_storage_make_incore_submit_io(&incore_submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_incore_result_t incore_result = dxb_storage_submit_check_incore(storage, &incore_submit);
   rc = incore_result.err;
   env->incore = incore_result.incore;
   if (env->incore) {
@@ -25069,7 +30566,11 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
     }
   }
 
-  dxb_queue_result_t queue_result = dxb_storage_create_write_queue(storage, (env->flags & MDBX_RDONLY) != 0);
+  dxb_write_queue_submit_io_t queue_submit;
+  rc = dxb_storage_make_write_queue_submit_io((env->flags & MDBX_RDONLY) != 0, true, &queue_submit);
+  dxb_queue_result_t queue_result =
+      likely(rc == MDBX_SUCCESS) ? dxb_storage_submit_create_write_queue(storage, &queue_submit)
+                                 : dxb_queue_submitted_error(rc, (env->flags & MDBX_RDONLY) != 0);
   return queue_result.err;
 }
 
@@ -25094,7 +30595,10 @@ __cold int env_close(MDBX_env *env, bool resurrect_after_fork) {
   env->defer_free = nullptr;
 #endif /* MDBX_ENABLE_DBI_LOCKFREE */
 
-  (void)dxb_storage_destroy_write_queue(storage, (flags & MDBX_RDONLY) != 0);
+  dxb_write_queue_submit_io_t queue_submit;
+  int queue_submit_rc = dxb_storage_make_write_queue_submit_io((flags & MDBX_RDONLY) != 0, false, &queue_submit);
+  if (likely(queue_submit_rc == MDBX_SUCCESS))
+    (void)dxb_storage_submit_destroy_write_queue(storage, &queue_submit);
 
   env->lck = nullptr;
   if (env->lck_mmap.lck)
@@ -25117,7 +30621,10 @@ __cold int env_close(MDBX_env *env, bool resurrect_after_fork) {
   }
 #endif /* Windows */
 
-  (void)dxb_storage_close(storage, (env->flags & ENV_ACTIVE) != 0);
+  dxb_close_submit_io_t close_submit;
+  int close_submit_rc = dxb_storage_make_close_submit_io((env->flags & ENV_ACTIVE) != 0, true, &close_submit);
+  if (likely(close_submit_rc == MDBX_SUCCESS))
+    (void)dxb_storage_submit_close(storage, &close_submit);
 
   if (env->lck_mmap.fd != INVALID_HANDLE_VALUE) {
     (void)osal_closefile(env->lck_mmap.fd);
@@ -28867,8 +34374,8 @@ static int lck_setlk_with3retries(const mdbx_filehandle_t fd, const int lck, con
 
 static inline dxb_lock_result_t dxb_lock_result(int err, int cmd, int lck, const dxb_lock_io_t *range,
                                                 bool attempted, bool with_retries) {
-  const dxb_lock_result_t result = {err, cmd, lck, range->offset, range->bytes,
-                                    attempted, attempted && err == MDBX_SUCCESS, with_retries};
+  const dxb_lock_result_t result = {err, cmd, lck, range ? range->offset : 0, range ? range->bytes : 0,
+                                    attempted, attempted, attempted && err == MDBX_SUCCESS, with_retries};
   return result;
 }
 
@@ -28881,6 +34388,17 @@ static dxb_lock_result_t dxb_storage_lock_op(const dxb_storage_t *storage, const
   return dxb_lock_result(rc, cmd, lck, range, true, false);
 }
 
+static dxb_lock_result_t dxb_storage_submit_lock_op(const dxb_storage_t *storage,
+                                                    const dxb_lock_submit_io_t *io) {
+  int rc = dxb_storage_lock_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS || !storage))
+    return dxb_lock_result((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL, io ? io->cmd : 0, io ? io->lck : 0,
+                           io ? &io->range : nullptr, false, io ? io->with_retries : false);
+  if (unlikely(io->with_retries))
+    return dxb_lock_result(MDBX_EINVAL, io->cmd, io->lck, &io->range, false, true);
+  return dxb_storage_lock_op(storage, io->cmd, io->lck, &io->range);
+}
+
 static dxb_lock_result_t dxb_storage_setlk_with3retries(const dxb_storage_t *storage, const int lck,
                                                         const dxb_lock_io_t *range) {
   int rc = dxb_storage_lock_io_validate(range);
@@ -28888,6 +34406,36 @@ static dxb_lock_result_t dxb_storage_setlk_with3retries(const dxb_storage_t *sto
     return dxb_lock_result(rc, op_setlk, lck, range, false, true);
   rc = lck_setlk_with3retries(dxb_storage_data_fd(storage), lck, (off_t)range->offset, (off_t)range->bytes);
   return dxb_lock_result(rc, op_setlk, lck, range, true, true);
+}
+
+static dxb_lock_result_t dxb_storage_submit_setlk_with3retries(const dxb_storage_t *storage,
+                                                               const dxb_lock_submit_io_t *io) {
+  int rc = dxb_storage_lock_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS || !storage))
+    return dxb_lock_result((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL, io ? io->cmd : 0, io ? io->lck : 0,
+                           io ? &io->range : nullptr, false, io ? io->with_retries : true);
+  if (unlikely(!io->with_retries || io->cmd != op_setlk))
+    return dxb_lock_result(MDBX_EINVAL, io->cmd, io->lck, &io->range, false, io->with_retries);
+  return dxb_storage_setlk_with3retries(storage, io->lck, &io->range);
+}
+
+static inline dxb_lock_result_t dxb_storage_submit_lock_request(const dxb_storage_t *storage, int cmd, int lck,
+                                                                const dxb_lock_io_t *range) {
+  dxb_lock_submit_io_t submit;
+  int rc = dxb_storage_make_lock_submit_io(cmd, lck, range, false, &submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_lock_result(rc, cmd, lck, range, false, false);
+  return dxb_storage_submit_lock_op(storage, &submit);
+}
+
+static inline dxb_lock_result_t dxb_storage_submit_setlk_with3retries_request(const dxb_storage_t *storage,
+                                                                              int lck,
+                                                                              const dxb_lock_io_t *range) {
+  dxb_lock_submit_io_t submit;
+  int rc = dxb_storage_make_lock_submit_io(op_setlk, lck, range, true, &submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_lock_result(rc, op_setlk, lck, range, false, true);
+  return dxb_storage_submit_setlk_with3retries(storage, &submit);
 }
 
 int osal_lockfile(mdbx_filehandle_t fd, bool wait) {
@@ -28945,8 +34493,12 @@ int lck_ipclock_destroy(osal_ipclock_t *ipc) {
 static int check_fstat(MDBX_env *env) {
   const dxb_storage_t *const storage = &env->dxb_storage;
 
-  dxb_stat_result_t dxb_stat = dxb_storage_stat(storage);
-  int rc = dxb_stat.err;
+  dxb_stat_submit_io_t stat_submit;
+  int rc = dxb_storage_make_stat_submit_io(&stat_submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_stat_result_t dxb_stat = dxb_storage_submit_stat(storage, &stat_submit);
+  rc = dxb_stat.err;
   if (unlikely(rc != MDBX_SUCCESS)) {
     ERROR("fstat(%s), err %d", "DXB", rc);
     return rc;
@@ -29026,7 +34578,9 @@ __cold int lck_seize(MDBX_env *env) {
 
   if (env->lck_mmap.fd == INVALID_HANDLE_VALUE) {
     /* LY: without-lck mode (e.g. exclusive or on read-only filesystem) */
-    rc = dxb_storage_setlk_with3retries(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, &whole_dxb).err;
+    rc = dxb_storage_submit_setlk_with3retries_request(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK,
+                                                       &whole_dxb)
+             .err;
     if (rc != MDBX_SUCCESS) {
       ERROR("%s, err %u", "without-lck", rc);
       eASSERT0(env, MDBX_IS_ERROR(rc));
@@ -29053,7 +34607,9 @@ retry:
       return rc;
 
   continue_dxb_exclusive:
-    rc = dxb_storage_setlk_with3retries(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, &whole_dxb).err;
+    rc = dxb_storage_submit_setlk_with3retries_request(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK,
+                                                       &whole_dxb)
+             .err;
     if (rc == MDBX_SUCCESS)
       return MDBX_RESULT_TRUE /* Done: return with exclusive locking. */;
 
@@ -29116,7 +34672,9 @@ retry:
   rc = dxb_storage_lock_io(env->pid, 1, &pid_dxb);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  rc = dxb_storage_setlk_with3retries(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, &pid_dxb).err;
+  rc = dxb_storage_submit_setlk_with3retries_request(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK,
+                                                     &pid_dxb)
+           .err;
   if (rc != MDBX_SUCCESS) {
     ERROR("%s, err %u", "lock-against-without-lck", rc);
     eASSERT0(env, MDBX_IS_ERROR(rc));
@@ -29139,12 +34697,12 @@ int lck_downgrade(MDBX_env *env) {
     dxb_lock_io_t lower_dxb;
     rc = dxb_storage_lock_io(0, env->pid, &lower_dxb);
     if (likely(rc == MDBX_SUCCESS))
-      rc = dxb_storage_lock_op(storage, op_setlk, F_UNLCK, &lower_dxb).err;
+      rc = dxb_storage_submit_lock_request(storage, op_setlk, F_UNLCK, &lower_dxb).err;
     if (rc == MDBX_SUCCESS) {
       dxb_lock_io_t upper_dxb;
       rc = dxb_storage_lock_io((uint64_t)env->pid + 1, (uint64_t)OFF_T_MAX - env->pid - 1, &upper_dxb);
       if (likely(rc == MDBX_SUCCESS))
-        rc = dxb_storage_lock_op(storage, op_setlk, F_UNLCK, &upper_dxb).err;
+        rc = dxb_storage_submit_lock_request(storage, op_setlk, F_UNLCK, &upper_dxb).err;
     }
   }
   if (rc == MDBX_SUCCESS)
@@ -29169,13 +34727,14 @@ int lck_upgrade(MDBX_env *env, bool dont_wait) {
     dxb_lock_io_t lower_dxb;
     rc = (env->pid > 1) ? dxb_storage_lock_io(0, env->pid - 1, &lower_dxb) : MDBX_SUCCESS;
     if (rc == MDBX_SUCCESS && env->pid > 1)
-      rc = dxb_storage_lock_op(storage, cmd, F_WRLCK, &lower_dxb).err;
+      rc = dxb_storage_submit_lock_request(storage, cmd, F_WRLCK, &lower_dxb).err;
     if (rc == MDBX_SUCCESS) {
       dxb_lock_io_t upper_dxb;
       rc = dxb_storage_lock_io((uint64_t)env->pid + 1, (uint64_t)OFF_T_MAX - env->pid - 1, &upper_dxb);
       if (likely(rc == MDBX_SUCCESS))
-        rc = dxb_storage_lock_op(storage, cmd, F_WRLCK, &upper_dxb).err;
-      if (rc != MDBX_SUCCESS && env->pid > 1 && dxb_storage_lock_op(storage, op_setlk, F_UNLCK, &lower_dxb).err)
+        rc = dxb_storage_submit_lock_request(storage, cmd, F_WRLCK, &upper_dxb).err;
+      if (rc != MDBX_SUCCESS && env->pid > 1 &&
+          dxb_storage_submit_lock_request(storage, op_setlk, F_UNLCK, &lower_dxb).err)
         rc = MDBX_PANIC;
     }
     if (rc != MDBX_SUCCESS && lck_setlk_with3retries(env->lck_mmap.fd, F_RDLCK, 0, 1))
@@ -29202,7 +34761,9 @@ __cold int lck_destroy(MDBX_env *env, MDBX_env *inprocess_neighbor, const mdbx_p
       /* if LCK was not removed */
       fstat(env->lck_mmap.fd, &lck_info) == 0 && lck_info.st_nlink > 0 &&
       rc == MDBX_SUCCESS &&
-      dxb_storage_lock_op(storage, op_setlk, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, &whole_dxb).err == 0) {
+      dxb_storage_submit_lock_request(storage, op_setlk, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK,
+                                      &whole_dxb)
+              .err == 0) {
 
     VERBOSE("%p got exclusive, drown ipc-locks", __Wpedantic_format_voidptr(env));
     eASSERT0(env, current_pid == env->pid);
@@ -29242,10 +34803,14 @@ __cold int lck_destroy(MDBX_env *env, MDBX_env *inprocess_neighbor, const mdbx_p
    *
    * 2) File locks would be released (by kernel) while the file-descriptors will
    * be closed. But to avoid false-positive EACCESS and EDEADLK from the kernel,
-   * locks should be released here explicitly with properly order. */
+  * locks should be released here explicitly with properly order. */
 
   /* close dxb and restore lock */
-  dxb_close_result_t close_dxb = dxb_storage_close_handles(storage);
+  dxb_close_submit_io_t close_submit;
+  int close_submit_rc = dxb_storage_make_close_submit_io((env->flags & ENV_ACTIVE) != 0, false, &close_submit);
+  dxb_close_result_t close_dxb = likely(close_submit_rc == MDBX_SUCCESS)
+                                     ? dxb_storage_submit_close(storage, &close_submit)
+                                     : dxb_close_error(close_submit_rc);
   const int close_dxb_rc = close_dxb.err;
   if (unlikely(close_dxb_rc != MDBX_SUCCESS) && rc == MDBX_SUCCESS)
     rc = close_dxb_rc;
@@ -29256,11 +34821,16 @@ __cold int lck_destroy(MDBX_env *env, MDBX_env *inprocess_neighbor, const mdbx_p
                              (inprocess_neighbor->flags & MDBX_EXCLUSIVE) ? OFF_T_MAX : 1, &restore_dxb);
     /* restore file-lock */
     if (likely(rc == MDBX_SUCCESS))
-      rc = dxb_storage_lock_op(neighbor_storage, F_SETLKW,
-                               (inprocess_neighbor->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK,
-                               &restore_dxb).err;
+      rc = dxb_storage_submit_lock_request(neighbor_storage, F_SETLKW,
+                                           (inprocess_neighbor->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK,
+                                           &restore_dxb)
+               .err;
   }
-  dxb_state_result_t reset_storage = dxb_storage_reset(storage, (env->flags & ENV_ACTIVE) != 0);
+  dxb_reset_submit_io_t reset_submit;
+  int reset_submit_rc = dxb_storage_make_reset_submit_io((env->flags & ENV_ACTIVE) != 0, &reset_submit);
+  dxb_state_result_t reset_storage = likely(reset_submit_rc == MDBX_SUCCESS)
+                                         ? dxb_storage_submit_reset(storage, &reset_submit)
+                                         : dxb_state_error(reset_submit_rc);
   if (unlikely(reset_storage.err != MDBX_SUCCESS) && rc == MDBX_SUCCESS)
     rc = reset_storage.err;
 
@@ -29291,8 +34861,13 @@ __cold int lck_init(MDBX_env *env, MDBX_env *inprocess_neighbor, int global_uniq
   (void)inprocess_neighbor;
   if (global_uniqueness_flag == MDBX_RESULT_TRUE) {
     const dxb_storage_t *const storage = &env->dxb_storage;
-    dxb_stat_result_t stat_result = dxb_storage_stat(storage);
-    int err = stat_result.err;
+    dxb_stat_submit_io_t stat_submit;
+    int err = dxb_storage_make_stat_submit_io(&stat_submit);
+    dxb_stat_result_t stat_result;
+    if (likely(err == MDBX_SUCCESS)) {
+      stat_result = dxb_storage_submit_stat(storage, &stat_submit);
+      err = stat_result.err;
+    }
     if (err)
       return err;
     struct stat st = stat_result.st;
@@ -30388,7 +35963,12 @@ __cold int lck_setup(MDBX_env *env, mdbx_mode_t mode) {
     case MDBX_EROFS:
       if (env->flags & MDBX_RDONLY) {
         /* ENSURE the file system is read-only */
-        dxb_readonly_result_t readonly = dxb_storage_check_readonly(storage, env->pathname.lck, err);
+        dxb_readonly_submit_io_t readonly_submit;
+        int probe_err = dxb_storage_make_readonly_submit_io(env->pathname.lck, err, &readonly_submit);
+        dxb_readonly_result_t readonly =
+            likely(probe_err == MDBX_SUCCESS)
+                ? dxb_storage_submit_check_readonly(storage, &readonly_submit)
+                : dxb_readonly_result(probe_err, err, false, false);
         if (readonly.readonly ||
             /* ignore ERROR_NOT_SUPPORTED for exclusive mode */
             (!readonly.supported && (env->flags & MDBX_EXCLUSIVE)))
@@ -30980,7 +36560,11 @@ static int meta_unsteady(MDBX_env *env, dxb_storage_t *const storage, const txni
                                                    &wipe_write);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  dxb_write_result_t wipe_result = dxb_storage_write_meta(storage, &wipe_write, ptr);
+  dxb_meta_write_submit_io_t wipe_submit;
+  err = dxb_storage_make_meta_write_submit_io(storage, &wipe_write, ptr, &wipe_submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  dxb_write_result_t wipe_result = dxb_storage_submit_write_meta(storage, &wipe_submit);
   err = wipe_result.err;
   if (likely(err == MDBX_SUCCESS)) {
     meta_shadow_copy_write(env, &wipe_write, ptr);
@@ -31003,8 +36587,12 @@ __cold int meta_wipe_steady(MDBX_env *env, txnid_t inclusive_upto) {
       dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
       dxb_sync_io_t sync_io;
       err = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_io);
-      if (likely(err == MDBX_SUCCESS))
-        err = dxb_storage_sync_io(storage, &sync_io).err;
+      if (likely(err == MDBX_SUCCESS)) {
+        dxb_sync_submit_io_t sync_submit;
+        err = dxb_storage_make_sync_submit_io(storage, &sync_io, &sync_submit);
+        if (likely(err == MDBX_SUCCESS))
+          err = dxb_storage_submit_sync_io(storage, &sync_submit).err;
+      }
     }
   }
 
@@ -31032,8 +36620,12 @@ int meta_sync(const MDBX_env *env, const meta_ptr_t head) {
   dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
   dxb_sync_io_t sync_io;
   int rc = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_io);
-  if (likely(rc == MDBX_SUCCESS))
-    rc = dxb_storage_sync_io(storage, &sync_io).err;
+  if (likely(rc == MDBX_SUCCESS)) {
+    dxb_sync_submit_io_t sync_submit;
+    rc = dxb_storage_make_sync_submit_io(storage, &sync_io, &sync_submit);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = dxb_storage_submit_sync_io(storage, &sync_submit).err;
+  }
 
   if (likely(rc == MDBX_SUCCESS))
     env->lck->meta_sync_txnid.weak = (uint32_t)head.txnid;
@@ -31161,14 +36753,22 @@ __cold int __must_check_result meta_override(MDBX_env *env, size_t target, txnid
   rc = dxb_storage_make_meta_page_write_io(storage, target_number, &target_page);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  dxb_write_result_t target_result = dxb_storage_write_meta(storage, &target_page, page);
+  dxb_meta_write_submit_io_t target_submit;
+  rc = dxb_storage_make_meta_write_submit_io(storage, &target_page, page, &target_submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_write_result_t target_result = dxb_storage_submit_write_meta(storage, &target_submit);
   rc = target_result.err;
   if (rc == MDBX_SUCCESS && dxb_storage_meta_write_uses_data_sync(storage)) {
     dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
     dxb_sync_io_t sync_io;
     rc = dxb_storage_make_meta_sync_io(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ, &sync_io);
-    if (likely(rc == MDBX_SUCCESS))
-      rc = dxb_storage_sync_io(storage, &sync_io).err;
+    if (likely(rc == MDBX_SUCCESS)) {
+      dxb_sync_submit_io_t sync_submit;
+      rc = dxb_storage_make_sync_submit_io(storage, &sync_io, &sync_submit);
+      if (likely(rc == MDBX_SUCCESS))
+        rc = dxb_storage_submit_sync_io(storage, &sync_submit).err;
+    }
   }
   eASSERT0(env,
            (!env->txn && (env->flags & ENV_ACTIVE) == 0) ||
@@ -32119,30 +37719,75 @@ __hot void node_del(MDBX_cursor *mc, size_t ksize) {
   }
 }
 
-__noinline int node_read_bigdata(MDBX_cursor *mc, const node_t *node, MDBX_val *data, const page_t *mp) {
-  cASSERT0(mc, node_flags(node) == N_BIG && data->iov_len == node_ds(node));
+static inline int node_make_bigdata_read_submit_io(MDBX_cursor *mc, const node_t *node, MDBX_val *data,
+                                                   const page_t *mp, dxb_bigdata_read_submit_io_t *io) {
+  if (unlikely(!mc || !mc->txn || !node || !data || !mp || !io))
+    return MDBX_EINVAL;
 
-  pgr_t lp = page_get_large(mc, node_largedata_pgno(node), mp->txnid);
+  cASSERT0(mc, node_flags(node) == N_BIG && data->iov_len == node_ds(node));
+  if (unlikely(node_flags(node) != N_BIG || data->iov_len != node_ds(node)))
+    return MDBX_EINVAL;
+
+  const pgno_t large_pgno = node_largedata_pgno(node);
+  const size_t bytes = data->iov_len;
+  io->cursor = mc;
+  io->data = data;
+  io->node = node;
+  io->source = mp;
+  io->large_pgno = large_pgno;
+  io->front = mp->txnid;
+  io->bytes = bytes;
+  io->npages = largechunk_npages(mc->txn->env, bytes);
+  return MDBX_SUCCESS;
+}
+
+static inline int node_bigdata_read_submit_io_validate(const dxb_bigdata_read_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->data || !io->node || !io->source))
+    return MDBX_EINVAL;
+
+  dxb_bigdata_read_submit_io_t checked;
+  int err = node_make_bigdata_read_submit_io(io->cursor, io->node, io->data, io->source, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.data != io->data ||
+               checked.node != io->node || checked.source != io->source ||
+               checked.large_pgno != io->large_pgno || checked.front != io->front ||
+               checked.bytes != io->bytes || checked.npages != io->npages))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static int node_submit_bigdata_read(const dxb_bigdata_read_submit_io_t *io) {
+  int err = node_bigdata_read_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  MDBX_cursor *const mc = io->cursor;
+  pgr_t lp = page_get_large(mc, io->large_pgno, io->front);
   if (unlikely((lp.err != MDBX_SUCCESS))) {
-    DEBUG("read large/overflow page %" PRIaPGNO " failed", node_largedata_pgno(node));
+    DEBUG("read large/overflow page %" PRIaPGNO " failed", io->large_pgno);
     return lp.err;
   }
 
   cASSERT0(mc, page_type(lp.page) == P_LARGE);
-  if (!MDBX_DISABLE_VALIDATION) {
-    const MDBX_env *env = mc->txn->env;
-    const size_t dsize = data->iov_len;
-    const unsigned npages = largechunk_npages(env, dsize);
-    if (unlikely(lp.page->pages < npages)) {
-      int err = bad_page(lp.page, "too less n-pages %u for bigdata-node (%zu bytes)", lp.page->pages, dsize);
-      pgr_release(mc, &lp);
-      return err;
-    }
+  if (!MDBX_DISABLE_VALIDATION && unlikely(lp.page->pages < io->npages)) {
+    err = bad_page(lp.page, "too less n-pages %u for bigdata-node (%zu bytes)", lp.page->pages, io->bytes);
+    pgr_release(mc, &lp);
+    return err;
   }
+
   cursor_value_set(mc, &lp);
-  data->iov_base = page2payload(lp.page);
+  io->data->iov_base = page2payload(lp.page);
   pgr_release(mc, &lp);
   return MDBX_SUCCESS;
+}
+
+__noinline int node_read_bigdata(MDBX_cursor *mc, const node_t *node, MDBX_val *data, const page_t *mp) {
+  dxb_bigdata_read_submit_io_t submit;
+  int err = node_make_bigdata_read_submit_io(mc, node, data, mp, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  return node_submit_bigdata_read(&submit);
 }
 
 node_t *node_shrink(page_t *mp, size_t indx, node_t *node) {
@@ -32835,7 +38480,7 @@ static inline int ior_item_make_merged_io(const ior_item_t *item, const dxb_data
 }
 
 static inline dxb_queue_op_result_t osal_ioring_add_result(osal_ioring_t *ior, int err, bool enqueued) {
-  return dxb_queue_op_result(err, ior, false, enqueued, false, false);
+  return dxb_queue_op_result(err, ior, false, enqueued, false, false, enqueued || err == MDBX_RESULT_TRUE);
 }
 
 dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued_write_io_t *io) {
@@ -33021,7 +38666,7 @@ dxb_queue_op_result_t osal_ioring_walk(osal_ioring_t *ior, const dxb_dirty_write
   if (unlikely(!ior || !io || !io->ctx || !io->callback)) {
     if (io && io->ctx && io->ctx->err == MDBX_SUCCESS)
       io->ctx->err = MDBX_EINVAL;
-    return dxb_queue_op_result(MDBX_EINVAL, ior, false, false, false, false);
+    return dxb_queue_op_result(MDBX_EINVAL, ior, false, false, false, false, false);
   }
 
   for (ior_item_t *item = ior->pool; item <= ior->last;) {
@@ -33062,7 +38707,7 @@ dxb_queue_op_result_t osal_ioring_walk(osal_ioring_t *ior, const dxb_dirty_write
 #endif
     item = ior_next(item, i);
   }
-  return dxb_queue_op_result(io->ctx->err, ior, false, false, true, false);
+  return dxb_queue_op_result(io->ctx->err, ior, false, false, true, false, true);
 }
 
 static int osal_ioring_item_io_validate(const ior_item_t *item, size_t bytes) {
@@ -33448,7 +39093,7 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, const dxb_queue
 
 dxb_queue_op_result_t osal_ioring_reset(osal_ioring_t *ior) {
   if (unlikely(!ior))
-    return dxb_queue_op_result(MDBX_EINVAL, nullptr, false, false, false, false);
+    return dxb_queue_op_result(MDBX_EINVAL, nullptr, false, false, false, false, false);
 #if defined(_WIN32) || defined(_WIN64)
   if (ior->last) {
     for (ior_item_t *item = ior->pool; item <= ior->last;) {
@@ -33474,7 +39119,7 @@ dxb_queue_op_result_t osal_ioring_reset(osal_ioring_t *ior) {
 #endif /* !Windows */
   ior->slots_left = ior->allocated;
   ior->last = nullptr;
-  return dxb_queue_op_result(MDBX_SUCCESS, ior, false, false, false, true);
+  return dxb_queue_op_result(MDBX_SUCCESS, ior, false, false, false, true, true);
 }
 
 static void ior_cleanup(osal_ioring_t *ior, const size_t since) {
@@ -35741,6 +41386,81 @@ MDBX_CONST_FUNCTION static clc_t value_clc(const MDBX_cursor *mc) {
   }
 }
 
+typedef struct dxb_page_check_bigdata_page_get_submit_io {
+  const MDBX_cursor *cursor;
+  const page_t *source;
+  const node_t *node;
+  size_t node_index;
+  pgno_t large_pgno;
+  txnid_t front;
+  size_t bytes;
+  uint8_t checking;
+} dxb_page_check_bigdata_page_get_submit_io_t;
+
+static inline int page_check_make_bigdata_page_get_submit_io(const MDBX_cursor *mc, const page_t *source,
+                                                             size_t node_index,
+                                                             dxb_page_check_bigdata_page_get_submit_io_t *io) {
+  if (unlikely(!mc || !mc->txn || !source || !io || (mc->checking & z_retiring) != 0))
+    return MDBX_EINVAL;
+  if (unlikely(!is_leaf(source) || node_index >= page_numkeys(source)))
+    return MDBX_EINVAL;
+
+  const node_t *const node = page_node(source, node_index);
+  if (unlikely(node_flags(node) != N_BIG))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->source = source;
+  io->node = node;
+  io->node_index = node_index;
+  io->large_pgno = node_largedata_pgno(node);
+  io->front = source->txnid;
+  io->bytes = node_ds(node);
+  io->checking = mc->checking;
+  return MDBX_SUCCESS;
+}
+
+static inline int
+page_check_bigdata_page_get_submit_io_validate(const dxb_page_check_bigdata_page_get_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->cursor->txn || !io->source || !io->node))
+    return MDBX_EINVAL;
+  if (unlikely(io->cursor->checking != io->checking || (io->checking & z_retiring) != 0))
+    return MDBX_EINVAL;
+  if (unlikely(!is_leaf(io->source) || io->node_index >= page_numkeys(io->source)))
+    return MDBX_EINVAL;
+
+  const node_t *const node = page_node(io->source, io->node_index);
+  if (unlikely(node != io->node || node_flags(node) != N_BIG || node_largedata_pgno(node) != io->large_pgno ||
+               io->source->txnid != io->front || node_ds(node) != io->bytes))
+    return MDBX_EINVAL;
+
+  dxb_page_check_bigdata_page_get_submit_io_t checked;
+  int err = page_check_make_bigdata_page_get_submit_io(io->cursor, io->source, io->node_index, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.source != io->source || checked.node != io->node ||
+               checked.node_index != io->node_index || checked.large_pgno != io->large_pgno ||
+               checked.front != io->front || checked.bytes != io->bytes || checked.checking != io->checking))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline pgr_t page_check_submit_bigdata_page_get(const dxb_page_check_bigdata_page_get_submit_io_t *io) {
+  int err = page_check_bigdata_page_get_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  return page_get_large(io->cursor, io->large_pgno, io->front);
+}
+
+static inline pgr_t page_check_bigdata_page_get(const MDBX_cursor *mc, const page_t *source, size_t node_index) {
+  dxb_page_check_bigdata_page_get_submit_io_t submit;
+  int err = page_check_make_bigdata_page_get_submit_io(mc, source, node_index, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return page_check_submit_bigdata_page_get(&submit);
+}
+
 __cold int page_check(const MDBX_cursor *const mc, const page_t *const mp) {
   DKBUF;
   int rc = MDBX_SUCCESS;
@@ -35916,7 +41636,7 @@ __cold int page_check(const MDBX_cursor *const mc, const page_t *const mp) {
           poor_page(mp, "too small data (%zu bytes) for bigdata-node", dsize);
 
         if ((mc->checking & z_retiring) == 0) {
-          pgr_t lp = page_get_large(mc, node_largedata_pgno(node), mp->txnid);
+          pgr_t lp = page_check_bigdata_page_get(mc, mp, i);
           if (unlikely(lp.err != MDBX_SUCCESS)) {
             rc = lp.err;
             pgr_release(mc, &lp);
@@ -36111,27 +41831,184 @@ __cold static __noinline pgr_t check_page_complete(const uint16_t ILL, pgr_t r, 
   return r;
 }
 
-static inline dxb_cache_page_result_t page_get_committed(MDBX_txn *txn, const dxb_page_io_t *request,
-                                                         const bool track_private) {
+static inline int page_make_committed_read_submit_io(MDBX_txn *txn, const dxb_page_io_t *request,
+                                                     bool track_private,
+                                                     dxb_committed_page_submit_io_t *io) {
+  if (unlikely(!txn || !request || !io))
+    return MDBX_EINVAL;
   tASSERT0(txn, (txn->flags & MDBX_WRITEMAP) == 0);
-  tASSERT0(txn, request->npages == 1);
-  return page_cache_read(txn, request, track_private);
+  if (unlikely((txn->flags & MDBX_WRITEMAP) != 0 || request->npages != 1))
+    return MDBX_EINVAL;
+
+  int err = dxb_storage_page_io_validate(&txn->env->dxb_storage, request);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  io->request = *request;
+  io->track_private = track_private;
+  return MDBX_SUCCESS;
 }
 
-static __hot pgr_t page_get_unchecked_ex(MDBX_txn *const txn, const pgno_t pgno, const txnid_t front,
-                                         const bool track_private) {
+static inline int page_committed_read_submit_io_validate(MDBX_txn *txn,
+                                                         const dxb_committed_page_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+
+  dxb_committed_page_submit_io_t checked;
+  int err = page_make_committed_read_submit_io(txn, &io->request, io->track_private, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.request.pgno != io->request.pgno ||
+               checked.request.end_pgno != io->request.end_pgno ||
+               checked.request.npages != io->request.npages ||
+               checked.request.offset != io->request.offset ||
+               checked.request.bytes != io->request.bytes ||
+               checked.track_private != io->track_private))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static dxb_cache_page_result_t page_submit_committed_read(MDBX_txn *txn,
+                                                          const dxb_committed_page_submit_io_t *io) {
+  int err = page_committed_read_submit_io_validate(txn, io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_page_error(err);
+  return page_cache_read(txn, &io->request, io->track_private);
+}
+
+static inline dxb_cache_page_result_t page_get_committed(MDBX_txn *txn, const dxb_page_io_t *request,
+                                                         const bool track_private) {
+  dxb_committed_page_submit_io_t submit;
+  int err = page_make_committed_read_submit_io(txn, request, track_private, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_page_error(err);
+  return page_submit_committed_read(txn, &submit);
+}
+
+static inline int page_make_large_page_read_submit_io(MDBX_txn *txn, const pgr_t *pgr,
+                                                      dxb_large_page_read_submit_io_t *io) {
+  if (unlikely(!txn || !pgr || !pgr->page || !io))
+    return MDBX_EINVAL;
+  if (unlikely(pgr->err != MDBX_SUCCESS || !is_largepage(pgr->page)))
+    return MDBX_EINVAL;
+
+  tASSERT0(txn, (txn->flags & MDBX_WRITEMAP) == 0);
+  if (unlikely((txn->flags & MDBX_WRITEMAP) != 0 || pgr->ref.page != pgr->page ||
+               pgr->ref.pgno != pgr->page->pgno || pgr->ref.npages == 0))
+    return MDBX_EINVAL;
+
+  dxb_storage_t *const storage = &txn->env->dxb_storage;
+  dxb_page_io_t span;
+  int err = dxb_storage_page_io(storage, pgr->page->pgno, pgr->page->pages, &span);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  const bool cache_backed = (pgr->ref.flags & PAGE_REF_CACHE) != 0;
+  bool materialize = false;
+  if (cache_backed) {
+    page_cache_entry_t *const entry = pgr->ref.cache;
+    if (unlikely(!entry || entry->storage != storage || entry->page != pgr->page ||
+                 entry->io.pgno != span.pgno || entry->io.npages == 0 ||
+                 entry->io.npages > span.npages || pgr->ref.npages > span.npages))
+      return MDBX_EINVAL;
+    err = dxb_storage_page_io_validate(storage, &entry->io);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    materialize = entry->io.npages < span.npages;
+  } else if (unlikely(pgr->ref.cache || pgr->ref.npages > span.npages)) {
+    return MDBX_EINVAL;
+  }
+
+  io->span = span;
+  io->cache_backed = cache_backed;
+  io->materialize = materialize;
+  return MDBX_SUCCESS;
+}
+
+static inline int page_large_read_submit_io_validate(MDBX_txn *txn, const pgr_t *pgr,
+                                                     const dxb_large_page_read_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+
+  dxb_large_page_read_submit_io_t checked;
+  int err = page_make_large_page_read_submit_io(txn, pgr, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.span.pgno != io->span.pgno || checked.span.end_pgno != io->span.end_pgno ||
+               checked.span.npages != io->span.npages || checked.span.offset != io->span.offset ||
+               checked.span.bytes != io->span.bytes || checked.cache_backed != io->cache_backed ||
+               checked.materialize != io->materialize))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static dxb_cache_result_t page_submit_large_read(MDBX_txn *txn, pgr_t *pgr,
+                                                 const dxb_large_page_read_submit_io_t *io) {
+  int err = page_large_read_submit_io_validate(txn, pgr, io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_error(err);
+  if (!io->materialize)
+    return dxb_cache_success();
+  return page_cache_read_large(txn, pgr);
+}
+
+static inline dxb_cache_result_t page_read_large(MDBX_txn *txn, pgr_t *pgr) {
+  dxb_large_page_read_submit_io_t submit;
+  int err = page_make_large_page_read_submit_io(txn, pgr, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_error(err);
+  return page_submit_large_read(txn, pgr, &submit);
+}
+
+static inline int page_make_get_submit_io(MDBX_txn *txn, const pgno_t pgno, const txnid_t front,
+                                          const bool track_private, dxb_page_get_submit_io_t *io) {
+  if (unlikely(!txn || !io))
+    return MDBX_EINVAL;
   tASSERT0(txn, front <= txn->front_txnid);
+  if (unlikely(front > txn->front_txnid))
+    return MDBX_EINVAL;
 
   if (unlikely(pgno >= txn->geo.first_unallocated)) {
     ERROR("page #%" PRIaPGNO " beyond next-pgno", pgno);
-    return pgr_error(MDBX_PAGE_NOTFOUND);
+    return MDBX_PAGE_NOTFOUND;
   }
 
   tASSERT0(txn, (txn->flags & MDBX_WRITEMAP) == 0);
+  if (unlikely((txn->flags & MDBX_WRITEMAP) != 0))
+    return MDBX_EINVAL;
 
-#if MDBX_ENABLE_PGET_STAT
-  txn->ops_pget += 1;
-#endif /* MDBX_ENABLE_PGET_STAT */
+  int err = dxb_storage_page_io(&txn->env->dxb_storage, pgno, 1, &io->request);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  io->front = front;
+  io->track_private = track_private != 0;
+  return MDBX_SUCCESS;
+}
+
+static inline int page_get_submit_io_validate(MDBX_txn *txn, const dxb_page_get_submit_io_t *io) {
+  if (unlikely(!io))
+    return MDBX_EINVAL;
+
+  dxb_page_get_submit_io_t checked;
+  int err = page_make_get_submit_io(txn, io->request.pgno, io->front, io->track_private, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.request.pgno != io->request.pgno ||
+               checked.request.end_pgno != io->request.end_pgno ||
+               checked.request.npages != io->request.npages ||
+               checked.request.offset != io->request.offset ||
+               checked.request.bytes != io->request.bytes ||
+               checked.front != io->front || checked.track_private != io->track_private))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static __hot pgr_t page_submit_get_unchecked(MDBX_txn *txn, const dxb_page_get_submit_io_t *io) {
+  int err = page_get_submit_io_validate(txn, io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  const pgno_t pgno = io->request.pgno;
 
   if ((txn->flags & txn_ro_flat) == 0) {
     const MDBX_txn *spiller = txn;
@@ -36159,12 +42036,7 @@ static __hot pgr_t page_get_unchecked_ex(MDBX_txn *const txn, const pgno_t pgno,
     } while (unlikely(spiller));
   }
 
-  dxb_page_io_t request;
-  int err = dxb_storage_page_io(&txn->env->dxb_storage, pgno, 1, &request);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-
-  dxb_cache_page_result_t committed = page_get_committed(txn, &request, track_private);
+  dxb_cache_page_result_t committed = page_get_committed(txn, &io->request, io->track_private);
   pgr_t r = committed.page;
   if (unlikely(r.err != MDBX_SUCCESS))
     return r;
@@ -36176,21 +42048,82 @@ static __hot pgr_t page_get_unchecked_ex(MDBX_txn *const txn, const pgno_t pgno,
   return r;
 }
 
+static __hot pgr_t page_get_unchecked_ex(MDBX_txn *const txn, const pgno_t pgno, const txnid_t front,
+                                         const bool track_private) {
+  dxb_page_get_submit_io_t submit;
+  int err = page_make_get_submit_io(txn, pgno, front, track_private, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+#if MDBX_ENABLE_PGET_STAT
+  txn->ops_pget += 1;
+#endif /* MDBX_ENABLE_PGET_STAT */
+
+  return page_submit_get_unchecked(txn, &submit);
+}
+
 __hot pgr_t page_get_unchecked(MDBX_txn *const txn, const pgno_t pgno, const txnid_t front) {
   return page_get_unchecked_ex(txn, pgno, front, false);
 }
 
-static __always_inline pgr_t page_get_inline(const uint16_t ILL, const MDBX_cursor *const mc, const pgno_t pgno,
-                                             const txnid_t front) {
-  MDBX_txn *const txn = mc->txn;
-  cASSERT0(txn, front <= txn->front_txnid);
+static inline int page_make_cursor_get_submit_io(const MDBX_cursor *mc, const uint16_t ill,
+                                                 const pgno_t pgno, const txnid_t front,
+                                                 dxb_cursor_page_get_submit_io_t *io) {
+  if (unlikely(!mc || !mc->txn || !io))
+    return MDBX_EINVAL;
 
-  pgr_t r = page_get_unchecked_ex(mc->txn, pgno, front, (mc->checking & z_pagecheck) != 0);
+  dxb_page_get_submit_io_t get;
+  int err = page_make_get_submit_io(mc->txn, pgno, front, (mc->checking & z_pagecheck) != 0, &get);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  io->get = get;
+  io->cursor = mc;
+  io->ill = ill;
+  return MDBX_SUCCESS;
+}
+
+static inline int page_cursor_get_submit_io_validate(const dxb_cursor_page_get_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor))
+    return MDBX_EINVAL;
+
+  dxb_cursor_page_get_submit_io_t checked;
+  int err = page_make_cursor_get_submit_io(io->cursor, io->ill, io->get.request.pgno, io->get.front, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.ill != io->ill ||
+               checked.get.request.pgno != io->get.request.pgno ||
+               checked.get.request.end_pgno != io->get.request.end_pgno ||
+               checked.get.request.npages != io->get.request.npages ||
+               checked.get.request.offset != io->get.request.offset ||
+               checked.get.request.bytes != io->get.request.bytes ||
+               checked.get.front != io->get.front || checked.get.track_private != io->get.track_private))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static __always_inline pgr_t page_submit_cursor_get(const dxb_cursor_page_get_submit_io_t *io) {
+  int validate_err = page_cursor_get_submit_io_validate(io);
+  if (unlikely(validate_err != MDBX_SUCCESS)) {
+    if (io && io->cursor && io->cursor->txn)
+      io->cursor->txn->flags |= MDBX_TXN_ERROR;
+    return pgr_error(validate_err);
+  }
+
+  const MDBX_cursor *const mc = io->cursor;
+  MDBX_txn *const txn = mc->txn;
+  cASSERT0(txn, io->get.front <= txn->front_txnid);
+
+#if MDBX_ENABLE_PGET_STAT
+  txn->ops_pget += 1;
+#endif /* MDBX_ENABLE_PGET_STAT */
+
+  pgr_t r = page_submit_get_unchecked(txn, &io->get);
   if (likely(r.err == MDBX_SUCCESS)) {
     if (likely(mc->checking & z_pagecheck) == 0) {
 #if MDBX_DISABLE_VALIDATION
-      if (is_largepage(r.page) && (ILL & (P_BRANCH | P_LEAF | P_DUPFIX)) == (P_BRANCH | P_LEAF | P_DUPFIX))
-        r.err = page_cache_read_large(txn, &r).err;
+      if (is_largepage(r.page) && (io->ill & (P_BRANCH | P_LEAF | P_DUPFIX)) == (P_BRANCH | P_LEAF | P_DUPFIX))
+        r.err = page_read_large(txn, &r).err;
       if (unlikely(r.err != MDBX_SUCCESS)) {
         txn->flags |= MDBX_TXN_ERROR;
         const int err = r.err;
@@ -36199,10 +42132,10 @@ static __always_inline pgr_t page_get_inline(const uint16_t ILL, const MDBX_curs
       }
       return r;
 #else
-      r.err = check_page_header(ILL, r.page, txn, front);
+      r.err = check_page_header(io->ill, r.page, txn, io->get.front);
       if (likely(r.err == MDBX_SUCCESS)) {
-        if (is_largepage(r.page) && (ILL & (P_BRANCH | P_LEAF | P_DUPFIX)) == (P_BRANCH | P_LEAF | P_DUPFIX))
-          r.err = page_cache_read_large(txn, &r).err;
+        if (is_largepage(r.page) && (io->ill & (P_BRANCH | P_LEAF | P_DUPFIX)) == (P_BRANCH | P_LEAF | P_DUPFIX))
+          r.err = page_read_large(txn, &r).err;
         if (likely(r.err == MDBX_SUCCESS)) {
           r.ref.npages = is_largepage(r.page) ? r.page->pages : 1;
           return r;
@@ -36210,10 +42143,10 @@ static __always_inline pgr_t page_get_inline(const uint16_t ILL, const MDBX_curs
       }
 #endif /* MDBX_DISABLE_VALIDATION */
     } else {
-      r = check_page_complete(ILL, r, mc, front);
+      r = check_page_complete(io->ill, r, mc, io->get.front);
       if (likely(r.err == MDBX_SUCCESS) && is_largepage(r.page) &&
-          (ILL & (P_BRANCH | P_LEAF | P_DUPFIX)) == (P_BRANCH | P_LEAF | P_DUPFIX))
-        r.err = page_cache_read_large(txn, &r).err;
+          (io->ill & (P_BRANCH | P_LEAF | P_DUPFIX)) == (P_BRANCH | P_LEAF | P_DUPFIX))
+        r.err = page_read_large(txn, &r).err;
       if (likely(r.err == MDBX_SUCCESS))
         return r;
     }
@@ -36223,6 +42156,18 @@ static __always_inline pgr_t page_get_inline(const uint16_t ILL, const MDBX_curs
   const int err = r.err;
   pgr_release(mc, &r);
   return pgr_error(err);
+}
+
+static __always_inline pgr_t page_get_inline(const uint16_t ILL, const MDBX_cursor *const mc, const pgno_t pgno,
+                                             const txnid_t front) {
+  dxb_cursor_page_get_submit_io_t submit;
+  const int err = page_make_cursor_get_submit_io(mc, ILL, pgno, front, &submit);
+  if (unlikely(err != MDBX_SUCCESS)) {
+    if (mc && mc->txn)
+      mc->txn->flags |= MDBX_TXN_ERROR;
+    return pgr_error(err);
+  }
+  return page_submit_cursor_get(&submit);
 }
 
 pgr_t page_get_any(const MDBX_cursor *const mc, const pgno_t pgno, const txnid_t front) {
@@ -36248,13 +42193,20 @@ int iov_init(MDBX_txn *const txn, iov_ctx_t *ctx, size_t items, size_t npages, e
   ctx->err = dxb_storage_make_dirty_write_queue_io(ctx->storage, channel, items, npages, &queue_io);
   if (unlikely(ctx->err != MDBX_SUCCESS))
     return ctx->err;
-  ctx->err = dxb_storage_prepare_write_queue(ctx->storage, &queue_io).err;
+  dxb_dirty_write_queue_submit_io_t queue_submit;
+  ctx->err = dxb_storage_make_dirty_write_queue_submit_io(ctx->storage, &queue_io, &queue_submit);
+  if (unlikely(ctx->err != MDBX_SUCCESS))
+    return ctx->err;
+  ctx->err = dxb_storage_submit_prepare_write_queue(ctx->storage, &queue_submit).err;
   if (likely(ctx->err == MDBX_SUCCESS)) {
 #if MDBX_NEED_WRITTEN_RANGE
     ctx->flush_begin = MAX_PAGENO;
     ctx->flush_end = MIN_PAGENO;
 #endif /* MDBX_NEED_WRITTEN_RANGE */
-    ctx->err = dxb_storage_reset_write_queue(ctx->storage).err;
+    dxb_write_queue_reset_submit_io_t reset_submit;
+    ctx->err = dxb_storage_make_write_queue_reset_submit_io(&reset_submit);
+    if (likely(ctx->err == MDBX_SUCCESS))
+      ctx->err = dxb_storage_submit_reset_write_queue(ctx->storage, &reset_submit).err;
   }
   return ctx->err;
 }
@@ -36282,7 +42234,7 @@ static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_data_write_io_t *q
       dxb_cache_invalidate_io_t invalidate;
       const int err = dxb_storage_make_cache_invalidate_io(storage, &queued->pages, false, &invalidate);
       if (likely(err == MDBX_SUCCESS))
-        dxb_storage_invalidate_cached_io(storage, &invalidate);
+        dxb_storage_submit_invalidate_cached_request(storage, &invalidate);
       else
         ctx->err = err;
     }
@@ -36318,19 +42270,36 @@ static void iov_complete(iov_ctx_t *ctx) {
   dxb_dirty_write_walk_io_t walk_io;
   const int err = dxb_storage_make_dirty_write_walk_io(ctx->storage, ctx, iov_callback4dirtypages, &walk_io);
   if (likely(err == MDBX_SUCCESS)) {
-    dxb_queue_op_result_t walk = dxb_storage_walk_write_queue(ctx->storage, &walk_io);
+    dxb_dirty_write_walk_submit_io_t walk_submit;
+    const int submit_err = dxb_storage_make_dirty_write_walk_submit_io(ctx->storage, &walk_io, &walk_submit);
+    dxb_queue_op_result_t walk =
+        likely(submit_err == MDBX_SUCCESS)
+            ? dxb_storage_submit_walk_write_queue(ctx->storage, &walk_submit)
+            : dxb_queue_op_result(submit_err, dxb_storage_write_queue_const(ctx->storage), false, false, false,
+                                  false, false);
     if (unlikely(ctx->err == MDBX_SUCCESS && walk.err != MDBX_SUCCESS))
       ctx->err = walk.err;
   } else if (ctx->err == MDBX_SUCCESS)
     ctx->err = err;
-  dxb_queue_op_result_t reset = dxb_storage_reset_write_queue(ctx->storage);
+  dxb_write_queue_reset_submit_io_t reset_submit;
+  int reset_err = dxb_storage_make_write_queue_reset_submit_io(&reset_submit);
+  dxb_queue_op_result_t reset =
+      likely(reset_err == MDBX_SUCCESS)
+          ? dxb_storage_submit_reset_write_queue(ctx->storage, &reset_submit)
+          : dxb_queue_op_result(reset_err, dxb_storage_write_queue_const(ctx->storage), false, false, false, false,
+                                false);
   if (unlikely(ctx->err == MDBX_SUCCESS && reset.err != MDBX_SUCCESS))
     ctx->err = reset.err;
 }
 
 int iov_write(iov_ctx_t *ctx) {
   eASSERT0(ctx->env, !iov_empty(ctx));
-  dxb_queue_write_result_t r = dxb_storage_write_queued(ctx->storage, ctx->channel);
+  dxb_queued_write_submit_io_t write_submit;
+  int submit_err = dxb_storage_make_queued_write_submit_io(ctx->storage, ctx->channel, &write_submit);
+  dxb_queue_write_result_t r =
+      likely(submit_err == MDBX_SUCCESS)
+          ? dxb_storage_submit_write_queued(ctx->storage, &write_submit)
+          : dxb_queue_write_result(submit_err, ctx->channel, 0, 0, 0, 0, false, false);
   if (likely(r.err == MDBX_SUCCESS) &&
       unlikely(!r.submitted || !r.completed || !r.wops || !r.write_items || !r.used_slots || !r.payload_bytes))
     r.err = MDBX_EINVAL;
@@ -36367,7 +42336,11 @@ int iov_page(MDBX_txn *txn, iov_ctx_t *ctx, page_t *dp, size_t npages) {
   int err = dxb_storage_make_dirty_queued_write_io(ctx->storage, dp->pgno, npages, dp, &queued_write);
   if (unlikely(err != MDBX_SUCCESS))
     return ctx->err = err;
-  err = dxb_storage_add_queued_write(ctx->storage, &queued_write).err;
+  dxb_dirty_queued_write_submit_io_t queued_submit;
+  err = dxb_storage_make_dirty_queued_write_submit_io(ctx->storage, &queued_write, &queued_submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return ctx->err = err;
+  err = dxb_storage_submit_add_queued_write(ctx->storage, &queued_submit).err;
   if (unlikely(err != MDBX_SUCCESS)) {
     ctx->err = err;
     if (unlikely(err != MDBX_RESULT_TRUE)) {
@@ -36377,7 +42350,7 @@ int iov_page(MDBX_txn *txn, iov_ctx_t *ctx, page_t *dp, size_t npages) {
     err = iov_write(ctx);
     cASSERT0(txn, iov_empty(ctx));
     if (likely(err == MDBX_SUCCESS)) {
-      err = dxb_storage_add_queued_write(ctx->storage, &queued_write).err;
+      err = dxb_storage_submit_add_queued_write(ctx->storage, &queued_submit).err;
       if (unlikely(err != MDBX_SUCCESS)) {
         iov_complete(ctx);
         return ctx->err = err;
@@ -36620,49 +42593,9 @@ __hot int page_touch_unmodifable(MDBX_txn *txn, MDBX_cursor *mc, const page_t *c
   }
 
 done:
-  /* Adjust cursors pointing to mp */
-  cursor_stack_set(mc, mc->top, np, np_ref);
-#ifdef MDBX_EVENBUG20260405_FIX
-  if (is_leaf(np) && inner_pointed(mc))
-    /* 2026-04-05: Нашёлся занятный баг, унаследованный от LMDB -- Отсутствовало обновление вложенного dupsort-курсора.
-     *
-     * С одной стороны, отсутствие этого обновления не приводило к проблемам, так как во всех существовавших путях
-     * выполнения вложенный курсор затем инициализировался заново.
-     *
-     * С другой стороны, такое обновление выполняется во всех остальных случаях, при условии что он связан с
-     * dupsort-узлом на текущей/обновлённой странице, указывающем на sub-страницу, а не отдельное дерево. Причем во
-     * многих вариантах развития событий, такая корректировка блокировалась явным присвоением `mc->pg[mc->top] = np`
-     * выше.
-     *
-     * Однако, исправление "всё сломало", буквально из-за нарушения чётности багов.
-     * В пути обработки put(append), позиция основного/внешнего курсора инкрементируется для последующей append-вставки,
-     * но вложенный курсор при этом не сбрасывается. В результате, состояние курсорной пары становилось несогласованным.
-     * При обновлении в отладочных сборках срабатывал assert, а в не-отладочных в dupsort-курсор записывалась чушь.
-     *
-     * По совокупности плюсов/минусов решено добавить это пояснение и оставить исправление под #ifdef, а обнаруженную
-     * специфику учитывать при последующей разработке. */
-    cursor_inner_refresh(mc, np, mc->ki[mc->top]);
-#endif /* MDBX_EVENBUG20260405_FIX */
-  MDBX_cursor *m2 = txn->cursors[cursor_dbi(mc)];
-  if (mc->flags & z_inner) {
-    for (; m2; m2 = m2->next) {
-      MDBX_cursor *m3 = &m2->subcur->cursor;
-      if (m3->top < mc->top)
-        continue;
-      if (m3->pg[mc->top] == mp)
-        cursor_stack_set(m3, mc->top, np, np_ref);
-    }
-  } else {
-    for (; m2; m2 = m2->next) {
-      if (m2->top < mc->top)
-        continue;
-      if (m2->pg[mc->top] == mp) {
-        cursor_stack_set(m2, mc->top, np, np_ref);
-        if (is_leaf(np) && inner_pointed(m2))
-          cursor_inner_refresh(m2, np, m2->ki[mc->top]);
-      }
-    }
-  }
+  rc = page_touch_redirect_cursors(txn, mc, mp, np, np_ref);
+  if (unlikely(rc != MDBX_SUCCESS))
+    goto fail;
   return MDBX_SUCCESS;
 
 fail:
@@ -36737,8 +42670,10 @@ static void page_kill_writev(dxb_storage_t *storage, pgno_t *pgno, struct iovec 
   dxb_page_io_t killed_pages;
   if (likely(dxb_storage_page_io(storage, *pgno, n, &killed_pages) == MDBX_SUCCESS)) {
     dxb_data_write_io_t killed_write;
-    if (likely(dxb_storage_make_data_write_io_from_page(storage, &killed_pages, &killed_write) == MDBX_SUCCESS))
-      (void)dxb_storage_writev_data(storage, &killed_write, iov, n);
+    dxb_writev_submit_io_t killed_submit;
+    if (likely(dxb_storage_make_data_write_io_from_page(storage, &killed_pages, &killed_write) == MDBX_SUCCESS &&
+               dxb_storage_make_writev_submit_io(storage, &killed_write, iov, n, &killed_submit) == MDBX_SUCCESS))
+      (void)dxb_storage_submit_writev_data(storage, &killed_submit);
     *pgno = killed_pages.end_pgno;
   }
 }
@@ -36754,8 +42689,10 @@ __cold static void page_kill(MDBX_txn *txn, page_t *mp, pgno_t pgno, size_t npag
       memset(mp, -1, killed_pages.bytes);
       mp->pgno = pgno;
       dxb_data_write_io_t killed_write;
-      if (likely(dxb_storage_make_data_write_io_from_page(storage, &killed_pages, &killed_write) == MDBX_SUCCESS))
-        (void)dxb_storage_write_data(storage, &killed_write, mp);
+      dxb_write_submit_io_t killed_submit;
+      if (likely(dxb_storage_make_data_write_io_from_page(storage, &killed_pages, &killed_write) == MDBX_SUCCESS &&
+                 dxb_storage_make_write_submit_io(storage, &killed_write, mp, &killed_submit) == MDBX_SUCCESS))
+        (void)dxb_storage_submit_write_data(storage, &killed_submit);
     }
   } else {
     dxb_page_io_t aux_page;
@@ -36788,6 +42725,70 @@ static inline bool suitable4loose(const MDBX_txn *txn, pgno_t pgno) {
           /* skip pages near to the end in favor of compactification */
           txn->geo.first_unallocated > pgno + txn->env->options.dp_loose_limit ||
           txn->geo.first_unallocated <= txn->env->options.dp_loose_limit);
+}
+
+typedef struct dxb_page_retire_page_get_submit_io {
+  MDBX_cursor *cursor;
+  MDBX_txn *txn;
+  pgno_t pgno;
+  txnid_t front;
+  unsigned pageflags;
+  bool check_pageflags;
+} dxb_page_retire_page_get_submit_io_t;
+
+static inline int page_retire_make_page_get_submit_io(MDBX_cursor *mc, pgno_t pgno, unsigned pageflags,
+                                                      bool check_pageflags,
+                                                      dxb_page_retire_page_get_submit_io_t *io) {
+  if (unlikely(!mc || !mc->txn || !io))
+    return MDBX_EINVAL;
+  if (unlikely(check_pageflags && !pageflags))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->txn = mc->txn;
+  io->pgno = pgno;
+  io->front = mc->txn->front_txnid;
+  io->pageflags = pageflags;
+  io->check_pageflags = check_pageflags;
+  return MDBX_SUCCESS;
+}
+
+static inline int page_retire_page_get_submit_io_validate(const dxb_page_retire_page_get_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->txn || io->cursor->txn != io->txn))
+    return MDBX_EINVAL;
+  if (unlikely(io->front != io->txn->front_txnid || (io->check_pageflags && !io->pageflags)))
+    return MDBX_EINVAL;
+
+  dxb_page_retire_page_get_submit_io_t checked;
+  int err = page_retire_make_page_get_submit_io(io->cursor, io->pgno, io->pageflags, io->check_pageflags, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.txn != io->txn || checked.pgno != io->pgno ||
+               checked.front != io->front || checked.pageflags != io->pageflags ||
+               checked.check_pageflags != io->check_pageflags))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline pgr_t page_retire_submit_page_get(const dxb_page_retire_page_get_submit_io_t *io) {
+  int err = page_retire_page_get_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  pgr_t pgr = page_get_any(io->cursor, io->pgno, io->front);
+  if (likely(pgr.err == MDBX_SUCCESS) && io->check_pageflags) {
+    cASSERT0(io->txn, ((unsigned)pgr.page->flags & ~P_SPILLED) == (io->pageflags & ~P_FROZEN));
+    cASSERT0(io->txn, !(io->pageflags & P_FROZEN) || is_frozen(io->txn, pgr.page));
+  }
+  return pgr;
+}
+
+static inline pgr_t page_retire_page_get(MDBX_cursor *mc, pgno_t pgno, unsigned pageflags, bool check_pageflags) {
+  dxb_page_retire_page_get_submit_io_t submit;
+  int err = page_retire_make_page_get_submit_io(mc, pgno, pageflags, check_pageflags, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return page_retire_submit_page_get(&submit);
 }
 
 /* Retire, loosen or free a single page.
@@ -36826,14 +42827,12 @@ int page_retire_ex(MDBX_cursor *mc, const pgno_t pgno, page_t *mp /* maybe null 
   if (unlikely(!mp)) {
     if (CHECKS1_ENABLED() && pageflags) {
       pgr_t check;
-      check = page_get_any(mc, pgno, txn->front_txnid);
+      check = page_retire_page_get(mc, pgno, pageflags, true);
       if (unlikely(check.err != MDBX_SUCCESS)) {
         rc = check.err;
         pgr_release(mc, &check);
         PAGE_RETIRE_RETURN(rc);
       }
-      cASSERT0(txn, ((unsigned)check.page->flags & ~P_SPILLED) == (pageflags & ~P_FROZEN));
-      cASSERT0(txn, !(pageflags & P_FROZEN) || is_frozen(txn, check.page));
       pgr_release(mc, &check);
     }
     if (pageflags & P_FROZEN) {
@@ -36873,7 +42872,7 @@ int page_retire_ex(MDBX_cursor *mc, const pgno_t pgno, page_t *mp /* maybe null 
       goto status_done;
     }
 
-    fetched = page_get_any(mc, pgno, txn->front_txnid);
+    fetched = page_retire_page_get(mc, pgno, pageflags, false);
     if (unlikely(fetched.err != MDBX_SUCCESS))
       PAGE_RETIRE_RETURN(fetched.err);
     mp = fetched.page;
@@ -37277,7 +43276,7 @@ __hot int page_split(MDBX_cursor *mc, const MDBX_val *const newkey, MDBX_val *co
   DEBUG("new sibling: page %" PRIaPGNO, sister->pgno);
   cursor_couple_t couple;
   MDBX_cursor *const mn = cursor_clone_slightly(mc, &couple);
-  cursor_stack_set(mn, mn->top, sister, npr.ref);
+  cursor_stack_set_pgr(mn, mn->top, &npr);
   mn->ki[mn->top] = 0;
   intptr_t prev_top = mc->top - 1;
   mn->ki[prev_top] = mc->ki[prev_top] + 1;
@@ -37529,7 +43528,7 @@ __hot int page_split(MDBX_cursor *mc, const MDBX_val *const newkey, MDBX_val *co
   }
 
   if (unlikely(pure_left | pure_right)) {
-    cursor_stack_set(mc, mc->top, sister, npr.ref);
+    cursor_stack_set_pgr(mc, mc->top, &npr);
     mc->ki[mc->top] = 0;
     cASSERT0(mc, newpgno == 0 || newpgno == P_INVALID);
     if (is_dupfix_leaf(sister)) {
@@ -37563,7 +43562,7 @@ __hot int page_split(MDBX_cursor *mc, const MDBX_val *const newkey, MDBX_val *co
     }
   } else if (tmp_ki_copy) { /* !is_dupfix_leaf(mp) */
     /* Move nodes */
-    cursor_stack_set(mc, mc->top, sister, npr.ref);
+    cursor_stack_set_pgr(mc, mc->top, &npr);
     size_t n = 0, ii = split_indx;
     do {
       TRACE("i %zu, nkeys %zu => n %zu, rp #%u", ii, nkeys, n, sister->pgno);
@@ -37626,7 +43625,7 @@ __hot int page_split(MDBX_cursor *mc, const MDBX_val *const newkey, MDBX_val *co
     if (newindx < split_indx) {
       cursor_stack_set_synthetic(mc, mc->top, mp);
     } else {
-      cursor_stack_set(mc, mc->top, sister, npr.ref);
+      cursor_stack_set_pgr(mc, mc->top, &npr);
       mc->ki[prev_top]++;
       /* Make sure ki is still valid. */
       if (mn->pg[prev_top] != mc->pg[prev_top] && mc->ki[prev_top] >= page_numkeys(mc->pg[prev_top])) {
@@ -37637,7 +43636,7 @@ __hot int page_split(MDBX_cursor *mc, const MDBX_val *const newkey, MDBX_val *co
       }
     }
   } else if (newindx >= split_indx) {
-    cursor_stack_set(mc, mc->top, sister, npr.ref);
+    cursor_stack_set_pgr(mc, mc->top, &npr);
     mc->ki[prev_top]++;
     /* Make sure ki is still valid. */
     if (mn->pg[prev_top] != mc->pg[prev_top] && mc->ki[prev_top] >= page_numkeys(mc->pg[prev_top])) {
@@ -37672,7 +43671,7 @@ __hot int page_split(MDBX_cursor *mc, const MDBX_val *const newkey, MDBX_val *co
       if (m3->ki[mc->top] >= newindx)
         m3->ki[mc->top] += !(naf & MDBX_SPLIT_REPLACE);
       if (m3->ki[mc->top] >= n) {
-        cursor_stack_set(m3, mc->top, sister, npr.ref);
+        cursor_stack_set_pgr(m3, mc->top, &npr);
         cASSERT0(mc, m3->ki[mc->top] >= n);
         m3->ki[mc->top] -= (indx_t)n;
         for (intptr_t i = 0; i < mc->top; i++) {
@@ -40253,6 +46252,70 @@ intptr_t tree_diff_level(const MDBX_cursor *left, const MDBX_cursor *right) {
   return MDBX_RESULT_TRUE;
 }
 
+typedef struct dxb_tree_cutoff_page_get_submit_io {
+  MDBX_cursor *cursor;
+  MDBX_txn *txn;
+  tree_t *tree;
+  pgno_t pgno;
+  txnid_t front;
+  size_t deep;
+  intptr_t top;
+  uint8_t checking;
+  bool whole_tree;
+} dxb_tree_cutoff_page_get_submit_io_t;
+
+static inline int tree_cutoff_make_page_get_submit_io(MDBX_cursor *mc, pgno_t pgno, size_t deep, txnid_t front,
+                                                      bool whole_tree, dxb_tree_cutoff_page_get_submit_io_t *io) {
+  if (unlikely(!mc || !mc->txn || !mc->tree || !io || pgno == P_INVALID))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->txn = mc->txn;
+  io->tree = mc->tree;
+  io->pgno = pgno;
+  io->front = front;
+  io->deep = deep;
+  io->top = mc->top;
+  io->checking = mc->checking;
+  io->whole_tree = whole_tree;
+  return MDBX_SUCCESS;
+}
+
+static inline int tree_cutoff_page_get_submit_io_validate(const dxb_tree_cutoff_page_get_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->txn || !io->tree || io->pgno == P_INVALID))
+    return MDBX_EINVAL;
+  if (unlikely(io->cursor->txn != io->txn || io->cursor->tree != io->tree || io->cursor->top != io->top ||
+               io->cursor->checking != io->checking))
+    return MDBX_EINVAL;
+
+  dxb_tree_cutoff_page_get_submit_io_t checked;
+  int err =
+      tree_cutoff_make_page_get_submit_io(io->cursor, io->pgno, io->deep, io->front, io->whole_tree, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.txn != io->txn || checked.tree != io->tree ||
+               checked.pgno != io->pgno || checked.front != io->front || checked.deep != io->deep ||
+               checked.top != io->top || checked.checking != io->checking || checked.whole_tree != io->whole_tree))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline pgr_t tree_cutoff_submit_page_get(const dxb_tree_cutoff_page_get_submit_io_t *io) {
+  int err = tree_cutoff_page_get_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  return page_get_three(io->cursor, io->pgno, io->front);
+}
+
+static inline pgr_t tree_cutoff_page_get(MDBX_cursor *mc, pgno_t pgno, size_t deep, txnid_t front, bool whole_tree) {
+  dxb_tree_cutoff_page_get_submit_io_t submit;
+  int err = tree_cutoff_make_page_get_submit_io(mc, pgno, deep, front, whole_tree, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return tree_cutoff_submit_page_get(&submit);
+}
+
 int tree_cutoff_twig(MDBX_cursor *mc, const pgno_t pgno, size_t deep, txnid_t parent_txnid, const bool whole_tree) {
   /* Пытаемся избежать чтения листовых страниц и связанных с этим page faults. */
   if (whole_tree && (mc->checking & z_pagecheck) == 0 && deep == mc->tree->height && !mc->tree->large_pages &&
@@ -40265,7 +46328,7 @@ int tree_cutoff_twig(MDBX_cursor *mc, const pgno_t pgno, size_t deep, txnid_t pa
   }
 
   int err;
-  pgr_t pgr = page_get_three(mc, pgno, parent_txnid);
+  pgr_t pgr = tree_cutoff_page_get(mc, pgno, deep, parent_txnid, whole_tree);
 #define TREE_CUTOFF_RETURN(result)                                                                                    \
   do {                                                                                                                \
     pgr_release(mc, &pgr);                                                                                            \
@@ -40883,10 +46946,9 @@ int tree_drop(MDBX_cursor *mc) {
       popup:
         cursor_pop(mc);
         mc->ki[0] = 0;
-        for (intptr_t i = 1; i <= mc->top; i++) {
-          cursor_stack_set(mc, i, stack[i], stack_ref[i]);
-          mc->ki[i] = 0;
-        }
+        rc = cursor_tree_drop_stack_restore(mc, stack, stack_ref, 1);
+        if (unlikely(rc != MDBX_SUCCESS))
+          goto bailout;
       }
     }
     rc = page_retire(mc, mc->pg[0]);
@@ -41358,11 +47420,20 @@ static int page_merge(MDBX_cursor *csrc, MDBX_cursor *cdst) {
   cASSERT0(cdst, cdst->tree->items > 0);
   cASSERT0(cdst, cdst->top + 1 <= cdst->tree->height);
   cASSERT0(cdst, cdst->top > 0);
-  page_t *const top_page = cdst->pg[cdst->top];
-  page_ref_t top_ref = cursor_ref_retain(cdst, cdst->pgref[cdst->top]);
-  const indx_t top_indx = cdst->ki[cdst->top];
-  const uint16_t save_height = cdst->tree->height;
-  const int save_top = cdst->top;
+  dxb_cursor_top_ref_retain_submit_io_t top_submit;
+  rc = cursor_make_top_ref_retain_submit_io(cdst, &top_submit);
+  cASSERT0(cdst, rc == MDBX_SUCCESS);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  page_ref_t top_ref = page_ref_empty();
+  rc = cursor_submit_top_ref_retain(&top_submit, &top_ref);
+  cASSERT0(cdst, rc == MDBX_SUCCESS);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  page_t *const top_page = top_submit.page;
+  const indx_t top_indx = top_submit.ki;
+  const uint16_t save_height = top_submit.tree_height;
+  const int save_top = (int)top_submit.top;
   cursor_pop(cdst);
   rc = tree_rebalance(cdst);
   if (unlikely(rc != MDBX_SUCCESS)) {
@@ -41419,8 +47490,7 @@ static int page_merge(MDBX_cursor *csrc, MDBX_cursor *cdst) {
       (save_height > cdst->tree->height &&
        (cdst->pg[save_top] == nullptr || (cdst->pg[save_top] == top_page && cdst->ki[save_top] == top_indx)))) {
     /* LY: restore cursor stack */
-    cursor_stack_set(cdst, new_top, top_page, top_ref);
-    cursor_ref_release(cdst, &top_ref);
+    cursor_stack_set_ref_consume(cdst, new_top, top_page, &top_ref);
     cdst->ki[new_top] = top_indx;
 #if MDBX_DEBUG > 0
     cursor_stack_set(cdst, new_top + 1, nullptr, page_ref_empty());
@@ -41519,14 +47589,9 @@ int tree_rebalance(MDBX_cursor *mc) {
     if (is_branch(mp) && nkeys == 1) {
       DEBUG("%s", "collapsing root page!");
       mc->tree->root = node_pgno(page_node(mp, 0));
-      page_t *child = nullptr;
-      page_ref_t child_ref;
-      rc = page_get_with_ref(mc, mc->tree->root, &child, &child_ref, mp->txnid);
-      if (unlikely(rc != MDBX_SUCCESS)) {
-        cursor_ref_release(mc, &child_ref);
+      rc = cursor_stack_page_get(mc, 0, mc->tree->root, mp->txnid);
+      if (unlikely(rc != MDBX_SUCCESS))
         return rc;
-      }
-      cursor_stack_set_ref_consume(mc, 0, child, &child_ref);
       mc->tree->height--;
       mc->ki[0] = mc->ki[1];
       for (intptr_t i = 1; i < mc->tree->height; i++) {
@@ -41572,9 +47637,7 @@ int tree_rebalance(MDBX_cursor *mc) {
   page_ref_t left_ref = page_ref_empty(), right_ref = page_ref_empty();
 #define REBALANCE_RETURN(result)                                                                                      \
   do {                                                                                                                \
-    cursor_ref_release(mc, &left_ref);                                                                                \
-    cursor_ref_release(mc, &right_ref);                                                                               \
-    cursor_stack_release_all(mn);                                                                                     \
+    cursor_rebalance_refs_release(mc, mn, left, &left_ref, right, &right_ref);                                        \
     return (result);                                                                                                  \
   } while (0)
   if (mn->ki[pre_top] > 0) {
@@ -41616,9 +47679,10 @@ int tree_rebalance(MDBX_cursor *mc) {
 
   if (unlikely(numkeys == 0)) {
     if (left) {
-      cursor_stack_set(mn, mn->top, left, left_ref);
-      mn->ki[mn->top - 1] = (indx_t)(ki_pre_top - 1);
-      mn->ki[mn->top] = (indx_t)(left_nkeys - 1);
+      rc = cursor_rebalance_neighbor_set(mn, left, left_ref, (indx_t)(ki_pre_top - 1),
+                                         (indx_t)(left_nkeys - 1));
+      if (unlikely(rc != MDBX_SUCCESS))
+        REBALANCE_RETURN(rc);
       mc->ki[mc->top] = 0;
       const size_t new_ki = ki_top + left_nkeys;
       mn->ki[mn->top] += mc->ki[mn->top] + 1;
@@ -41634,9 +47698,9 @@ int tree_rebalance(MDBX_cursor *mc) {
       }
     }
     cASSERT0(mc, right_nkeys >= minkeys);
-    cursor_stack_set(mn, mn->top, right, right_ref);
-    mn->ki[mn->top - 1] = (indx_t)(ki_pre_top + 1);
-    mn->ki[mn->top] = 0;
+    rc = cursor_rebalance_neighbor_set(mn, right, right_ref, (indx_t)(ki_pre_top + 1), 0);
+    if (unlikely(rc != MDBX_SUCCESS))
+      REBALANCE_RETURN(rc);
     mc->ki[mc->top] = (indx_t)numkeys;
     couple.outer.next = mn->txn->cursors[cursor_dbi(mn)];
     mn->txn->cursors[cursor_dbi(mn)] = &couple.outer;
@@ -41649,9 +47713,7 @@ int tree_rebalance(MDBX_cursor *mc) {
     }
 
   bailout:
-    cursor_ref_release(mc, &left_ref);
-    cursor_ref_release(mc, &right_ref);
-    cursor_stack_release_all(mn);
+    cursor_rebalance_refs_release(mc, mn, left, &left_ref, right, &right_ref);
     ERROR("Unable to merge/rebalance %s page %" PRIaPGNO " (has %zu keys, fill %u.%u%%, used %zu, room %zu bytes)",
           is_leaf(tp) ? "leaf" : "branch", tp->pgno, numkeys, page_fill_percentum_x10(mc->txn->env, tp) / 10,
           page_fill_percentum_x10(mc->txn->env, tp) % 10, page_used(mc->txn->env, tp), room);
@@ -41666,9 +47728,10 @@ retry:
   if (consider_left && left_room > room_threshold && left_room >= right_room) {
     /* try merge with left */
     cASSERT0(mc, left_nkeys >= minkeys);
-    cursor_stack_set(mn, mn->top, left, left_ref);
-    mn->ki[mn->top - 1] = (indx_t)(ki_pre_top - 1);
-    mn->ki[mn->top] = (indx_t)(left_nkeys - 1);
+    rc = cursor_rebalance_neighbor_set(mn, left, left_ref, (indx_t)(ki_pre_top - 1),
+                                       (indx_t)(left_nkeys - 1));
+    if (unlikely(rc != MDBX_SUCCESS))
+      REBALANCE_RETURN(rc);
     mc->ki[mc->top] = 0;
     const size_t new_ki = ki_top + left_nkeys;
     mn->ki[mn->top] += mc->ki[mn->top] + 1;
@@ -41686,9 +47749,9 @@ retry:
   if (consider_right && right_room > room_threshold) {
     /* try merge with right */
     cASSERT0(mc, right_nkeys >= minkeys);
-    cursor_stack_set(mn, mn->top, right, right_ref);
-    mn->ki[mn->top - 1] = (indx_t)(ki_pre_top + 1);
-    mn->ki[mn->top] = 0;
+    rc = cursor_rebalance_neighbor_set(mn, right, right_ref, (indx_t)(ki_pre_top + 1), 0);
+    if (unlikely(rc != MDBX_SUCCESS))
+      REBALANCE_RETURN(rc);
     mc->ki[mc->top] = (indx_t)numkeys;
     couple.outer.next = mn->txn->cursors[cursor_dbi(mn)];
     mn->txn->cursors[cursor_dbi(mn)] = &couple.outer;
@@ -41703,9 +47766,10 @@ retry:
 
   if (consider_left && left_nkeys > minkeys && (right_nkeys <= left_nkeys || right_room >= left_room)) {
     /* try move from left */
-    cursor_stack_set(mn, mn->top, left, left_ref);
-    mn->ki[mn->top - 1] = (indx_t)(ki_pre_top - 1);
-    mn->ki[mn->top] = (indx_t)(left_nkeys - 1);
+    rc = cursor_rebalance_neighbor_set(mn, left, left_ref, (indx_t)(ki_pre_top - 1),
+                                       (indx_t)(left_nkeys - 1));
+    if (unlikely(rc != MDBX_SUCCESS))
+      REBALANCE_RETURN(rc);
     mc->ki[mc->top] = 0;
     couple.outer.next = mn->txn->cursors[cursor_dbi(mn)];
     mn->txn->cursors[cursor_dbi(mn)] = &couple.outer;
@@ -41719,9 +47783,9 @@ retry:
   }
   if (consider_right && right_nkeys > minkeys) {
     /* try move from right */
-    cursor_stack_set(mn, mn->top, right, right_ref);
-    mn->ki[mn->top - 1] = (indx_t)(ki_pre_top + 1);
-    mn->ki[mn->top] = 0;
+    rc = cursor_rebalance_neighbor_set(mn, right, right_ref, (indx_t)(ki_pre_top + 1), 0);
+    if (unlikely(rc != MDBX_SUCCESS))
+      REBALANCE_RETURN(rc);
     mc->ki[mc->top] = (indx_t)numkeys;
     couple.outer.next = mn->txn->cursors[cursor_dbi(mn)];
     mn->txn->cursors[cursor_dbi(mn)] = &couple.outer;
@@ -41827,24 +47891,132 @@ int tree_propagate_key(MDBX_cursor *mc, const MDBX_val *key) {
   return MDBX_SUCCESS;
 }
 
+static inline int cursor_make_branch_child_push_submit_io_ex(MDBX_cursor *mc, indx_t parent_ki, indx_t child_ki,
+                                                             bool child_ki_last,
+                                                             dxb_cursor_branch_child_push_submit_io_t *io) {
+  if (unlikely(!mc || !io || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+
+  page_t *const parent = mc->pg[mc->top];
+  if (unlikely(!parent || !is_branch(parent)))
+    return MDBX_EINVAL;
+  if (unlikely(mc->pgref[mc->top].page != nullptr && mc->pgref[mc->top].page != parent))
+    return MDBX_EINVAL;
+  if (unlikely((size_t)parent_ki >= page_numkeys(parent)))
+    return MDBX_EINVAL;
+
+  const node_t *const node = page_node(parent, parent_ki);
+  if (unlikely(node_flags(node) != 0))
+    return MDBX_EINVAL;
+
+  io->cursor = mc;
+  io->parent = parent;
+  io->parent_ref = mc->pgref[mc->top];
+  io->child_pgno = node_pgno(node);
+  io->front = parent->txnid;
+  io->parent_top = mc->top;
+  io->parent_ki = parent_ki;
+  io->child_ki = child_ki;
+  io->child_ki_last = child_ki_last;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_make_branch_child_push_submit_io(MDBX_cursor *mc, indx_t parent_ki, indx_t child_ki,
+                                                          dxb_cursor_branch_child_push_submit_io_t *io) {
+  return cursor_make_branch_child_push_submit_io_ex(mc, parent_ki, child_ki, false, io);
+}
+
+static inline int cursor_make_branch_child_edge_push_submit_io(MDBX_cursor *mc, indx_t parent_ki, bool last_child_ki,
+                                                               dxb_cursor_branch_child_push_submit_io_t *io) {
+  return cursor_make_branch_child_push_submit_io_ex(mc, parent_ki, 0, last_child_ki, io);
+}
+
+static inline int cursor_branch_child_push_submit_io_validate(const dxb_cursor_branch_child_push_submit_io_t *io) {
+  if (unlikely(!io || !io->cursor || !io->parent || io->parent_top < 0 || io->parent_top >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+
+  MDBX_cursor *const mc = io->cursor;
+  if (unlikely(mc->top != io->parent_top || mc->pg[io->parent_top] != io->parent ||
+               !page_ref_equal(&mc->pgref[io->parent_top], &io->parent_ref)))
+    return MDBX_EINVAL;
+  if (unlikely(io->parent_ref.page != nullptr && io->parent_ref.page != io->parent))
+    return MDBX_EINVAL;
+  if (unlikely(!is_branch(io->parent) || (size_t)io->parent_ki >= page_numkeys(io->parent)))
+    return MDBX_EINVAL;
+
+  const node_t *const node = page_node(io->parent, io->parent_ki);
+  if (unlikely(node_flags(node) != 0 || node_pgno(node) != io->child_pgno || io->front != io->parent->txnid))
+    return MDBX_EINVAL;
+
+  dxb_cursor_branch_child_push_submit_io_t checked;
+  int err = cursor_make_branch_child_push_submit_io_ex(mc, io->parent_ki, io->child_ki, io->child_ki_last, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.cursor != io->cursor || checked.parent != io->parent ||
+               checked.child_pgno != io->child_pgno || checked.front != io->front ||
+               checked.parent_top != io->parent_top || checked.parent_ki != io->parent_ki ||
+               checked.child_ki != io->child_ki || checked.child_ki_last != io->child_ki_last ||
+               !page_ref_equal(&checked.parent_ref, &io->parent_ref)))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static inline int cursor_submit_branch_child_push(const dxb_cursor_branch_child_push_submit_io_t *io) {
+  int err = cursor_branch_child_push_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  pgr_t child = page_get_three(io->cursor, io->child_pgno, io->front);
+  if (unlikely(child.err != MDBX_SUCCESS)) {
+    err = child.err;
+    pgr_release(io->cursor, &child);
+    return err;
+  }
+
+  io->cursor->ki[io->parent_top] = io->parent_ki;
+  indx_t child_ki = io->child_ki;
+  if (io->child_ki_last) {
+    const size_t nkeys = page_numkeys(child.page);
+    cASSERT0(io->cursor, nkeys > 0);
+    if (unlikely(nkeys == 0)) {
+      pgr_release(io->cursor, &child);
+      return MDBX_CORRUPTED;
+    }
+    child_ki = (indx_t)(nkeys - 1);
+  }
+  return cursor_push_pgr_consume(io->cursor, &child, child_ki);
+}
+
+static inline int cursor_branch_child_push(MDBX_cursor *mc, indx_t parent_ki, indx_t child_ki) {
+  dxb_cursor_branch_child_push_submit_io_t submit;
+  int err = cursor_make_branch_child_push_submit_io(mc, parent_ki, child_ki, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_branch_child_push(&submit);
+    cASSERT0(mc, err != MDBX_RESULT_TRUE);
+  }
+  return err;
+}
+
+static inline int cursor_branch_child_edge_push(MDBX_cursor *mc, indx_t parent_ki, bool last_child_ki) {
+  dxb_cursor_branch_child_push_submit_io_t submit;
+  int err = cursor_make_branch_child_edge_push_submit_io(mc, parent_ki, last_child_ki, &submit);
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = cursor_submit_branch_child_push(&submit);
+    cASSERT0(mc, err != MDBX_RESULT_TRUE);
+  }
+  return err;
+}
+
 /* Search for the lowest key under the current branch page. This just bypasses a numkeys check in the current page
  * before calling tree_search_continue(), because the callers are all in situations where the current page is known
  * to be underfilled. */
 __hot __noinline int tree_deepen_lowest(MDBX_cursor *mc) {
   cASSERT0(mc, mc->top >= 0);
-  page_t *mp = mc->pg[mc->top];
-  cASSERT0(mc, is_branch(mp));
+  cASSERT0(mc, is_branch(mc->pg[mc->top]));
 
-  node_t *node = page_node(mp, 0);
-  pgr_t pgr = page_get_three(mc, node_pgno(node), mp->txnid);
-  if (unlikely(pgr.err != MDBX_SUCCESS)) {
-    pgr_release(mc, &pgr);
-    return pgr.err;
-  }
-  mp = pgr.page;
-
-  mc->ki[mc->top] = 0;
-  int err = cursor_push_pgr_consume(mc, &pgr, 0);
+  int err = cursor_branch_child_push(mc, 0, 0);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
   return tree_deepen_edge(mc, Z_FIRST);
@@ -41876,13 +48048,9 @@ __hot int tree_search(MDBX_cursor *mc, const MDBX_val *key, int flags) {
 
   cASSERT0(mc, root >= NUM_METAS && root < mc->txn->geo.first_unallocated);
   if (mc->top < 0 || mc->pg[0]->pgno != root) {
-    pgr_t root_pgr = page_get_three(mc, root, tbl_root_txnid(mc->txn, cursor_dbi(mc)));
-    err = root_pgr.err;
-    if (unlikely(err != MDBX_SUCCESS)) {
-      pgr_release(mc, &root_pgr);
+    err = cursor_stack_page_get(mc, 0, root, tbl_root_txnid(mc->txn, cursor_dbi(mc)));
+    if (unlikely(err != MDBX_SUCCESS))
       goto bailout;
-    }
-    cursor_stack_set_pgr_consume(mc, 0, &root_pgr);
   }
 
   mc->top = 0;
@@ -41911,18 +48079,10 @@ __hot int tree_search(MDBX_cursor *mc, const MDBX_val *key, int flags) {
     const intptr_t ki = tree_search_branch(mc, key);
     TRACE("following index %zu for key [%s]", ki, DKEY_DEBUG(key));
 
-    mc->ki[mc->top] = (indx_t)ki;
-    pgr_t child = page_get_three(mc, node_pgno(page_node(mp, ki)), mp->txnid);
-    if (unlikely(child.err != MDBX_SUCCESS)) {
-      err = child.err;
-      pgr_release(mc, &child);
-      goto bailout;
-    }
-    mp = child.page;
-
-    err = cursor_push_pgr_consume(mc, &child, 0);
+    err = cursor_branch_child_push(mc, (indx_t)ki, 0);
     if (unlikely(err != MDBX_SUCCESS))
       goto bailout;
+    mp = mc->pg[mc->top];
 
     if (unlikely(flags & Z_MODIFY)) {
       err = page_touch(mc);
@@ -41950,17 +48110,10 @@ __hot __noinline int tree_deepen_edge(MDBX_cursor *mc, int flags) {
     DEBUG("branch page %" PRIaPGNO " has %zu keys", mp->pgno, page_numkeys(mp));
     cASSERT0(mc, page_numkeys(mp) > 1);
 
-    pgr_t child = page_get_three(mc, node_pgno(page_node(mp, mc->ki[mc->top])), mp->txnid);
-    if (unlikely(child.err != MDBX_SUCCESS)) {
-      err = child.err;
-      pgr_release(mc, &child);
-      goto bailout;
-    }
-    mp = child.page;
-
-    err = cursor_push_pgr_consume(mc, &child, (flags & Z_FIRST) ? 0 : page_numkeys(mp) - 1);
+    err = cursor_branch_child_edge_push(mc, mc->ki[mc->top], (flags & Z_FIRST) == 0);
     if (unlikely(err != MDBX_SUCCESS))
       goto bailout;
+    mp = mc->pg[mc->top];
 
     if (unlikely(flags & Z_MODIFY)) {
       err = page_touch(mc);
@@ -44802,7 +50955,7 @@ static page_type_t walk_subpage_type(const page_t *sp) {
 __cold static int walk_pgno(walk_ctx_t *ctx, walk_tbl_t *tbl, const pgno_t pgno, txnid_t parent_txnid,
                             const pgno_t parent_pgno) {
   ASSERT(pgno != P_INVALID);
-  pgr_t pgr = page_get_three(ctx->cursor, pgno, parent_txnid);
+  pgr_t pgr = walk_page_get(ctx, pgno, parent_txnid);
   page_t *mp = pgr.page;
   int err = pgr.err;
 
@@ -44953,7 +51106,7 @@ __cold static int walk_pgno(walk_ctx_t *ctx, walk_tbl_t *tbl, const pgno_t pgno,
       const size_t over_header = PAGEHDRSZ;
 
       ASSERT(err == MDBX_SUCCESS);
-      pgr_t lp = page_get_large(ctx->cursor, large_pgno, mp->txnid);
+      pgr_t lp = walk_large_page_get(ctx, mp, i, node);
       const size_t npages = ((err = lp.err) == MDBX_SUCCESS) ? lp.page->pages : 1;
       const size_t pagesize = pgno2bytes(ctx->txn->env, npages);
       const size_t over_unused = pagesize - over_payload - over_header;

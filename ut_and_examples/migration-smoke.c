@@ -9,7 +9,8 @@
  * GC/reuse cycles, multiprocess reader/writer MVCC coordination with
  * writer-side geometry growth while a read transaction is pinned, default and
  * forced tiny-cache explicit backend compatibility, lck-less read-only opens,
- * and process-death/restart boundaries around committed and abandoned writers.
+ * MDBX_WRITEMAP rejection, and process-death/restart boundaries around
+ * committed and abandoned writers.
  */
 
 #include "mdbx.h"
@@ -5598,6 +5599,7 @@ int main(void) {
       {"file-safe-nosync", MDBX_NOSUBDIR | MDBX_NOSTICKYTHREADS | MDBX_LIFORECLAIM | MDBX_SAFE_NOSYNC, 0},
       {"file-lazy", MDBX_NOSUBDIR | MDBX_NOSTICKYTHREADS | MDBX_LIFORECLAIM | MDBX_SAFE_NOSYNC | MDBX_NOMETASYNC, 0},
       {"file-utterly", MDBX_NOSUBDIR | MDBX_NOSTICKYTHREADS | MDBX_LIFORECLAIM | MDBX_UTTERLY_NOSYNC, 0},
+      {"writemap-durable", MDBX_NOSUBDIR | MDBX_NOSTICKYTHREADS | MDBX_LIFORECLAIM | MDBX_WRITEMAP, 1},
       {"writemap-utterly", MDBX_NOSUBDIR | MDBX_NOSTICKYTHREADS | MDBX_LIFORECLAIM | MDBX_WRITEMAP |
                               MDBX_UTTERLY_NOSYNC,
        1},

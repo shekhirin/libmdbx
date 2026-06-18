@@ -1428,6 +1428,7 @@ typedef struct dxb_lock_result {
   uint64_t offset;
   uint64_t bytes;
   bool attempted;
+  bool submitted;
   bool completed;
   bool with_retries;
 } dxb_lock_result_t;
@@ -1438,6 +1439,8 @@ typedef struct dxb_state_result {
   size_t limit;
   uint64_t filesize;
   bool reset;
+  bool submitted;
+  bool completed;
 } dxb_state_result_t;
 
 typedef struct dxb_queue_result {
@@ -1446,6 +1449,8 @@ typedef struct dxb_queue_result {
   unsigned used_slots;
   bool readonly;
   bool active;
+  bool submitted;
+  bool completed;
 } dxb_queue_result_t;
 
 typedef struct dxb_queue_op_result {
@@ -1458,6 +1463,8 @@ typedef struct dxb_queue_op_result {
   bool enqueued;
   bool walked;
   bool reset;
+  bool submitted;
+  bool completed;
 } dxb_queue_op_result_t;
 
 typedef struct dxb_queue_write_result {
@@ -1498,6 +1505,8 @@ typedef struct dxb_init_result {
   size_t page_cache_limit;
   bool reset;
   bool cache_lock_initialized;
+  bool submitted;
+  bool completed;
 } dxb_init_result_t;
 
 typedef struct dxb_deinit_result {
@@ -1505,6 +1514,8 @@ typedef struct dxb_deinit_result {
   bool reset;
   bool cache_lock_was_initialized;
   bool cache_lock_destroyed;
+  bool submitted;
+  bool completed;
 } dxb_deinit_result_t;
 
 typedef struct dxb_resize_result {
@@ -1547,6 +1558,8 @@ typedef struct dxb_cache_result {
   size_t npages;
   size_t entries;
   bool detached;
+  bool submitted;
+  bool completed;
 } dxb_cache_result_t;
 
 typedef struct dxb_dirty_write_queue_io {
