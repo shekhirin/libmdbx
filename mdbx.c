@@ -28839,20 +28839,6 @@ dxb_queue_op_result_t osal_ioring_prepare(osal_ioring_t *ior, const dxb_dirty_wr
   return dxb_queue_op_result(rc, ior, rc == MDBX_SUCCESS, false, false, false, true);
 }
 
-static dxb_queue_result_t dxb_storage_create_write_queue(dxb_storage_t *storage, bool readonly) {
-  if (readonly)
-    return dxb_queue_noop_completed(true);
-  const int rc = osal_ioring_create(&storage->ioring
-#if defined(_WIN32) || defined(_WIN64)
-                                    ,
-                                    false, storage->ioring.overlapped_fd
-#endif /* Windows */
-  );
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_queue_submitted_error(rc, false);
-  return dxb_queue_completed(dxb_storage_write_queue_const(storage), false, true);
-}
-
 static dxb_queue_result_t dxb_storage_submit_create_write_queue(dxb_storage_t *storage,
                                                                 const dxb_write_queue_submit_io_t *io) {
   int rc = dxb_storage_write_queue_submit_io_validate(io);
@@ -28860,15 +28846,19 @@ static dxb_queue_result_t dxb_storage_submit_create_write_queue(dxb_storage_t *s
     return dxb_queue_submitted_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL, io ? io->readonly : false);
   if (unlikely(!io->create))
     return dxb_queue_submitted_error(MDBX_EINVAL, io->readonly);
-  return dxb_storage_create_write_queue(storage, io->readonly);
-}
 
-static dxb_queue_result_t dxb_storage_destroy_write_queue(dxb_storage_t *storage, bool readonly) {
-  if (readonly)
+  if (io->readonly)
     return dxb_queue_noop_completed(true);
-  dxb_queue_result_t result = dxb_queue_completed(dxb_storage_write_queue_const(storage), false, true);
-  osal_ioring_destroy(&storage->ioring);
-  return result;
+
+  rc = osal_ioring_create(&storage->ioring
+#if defined(_WIN32) || defined(_WIN64)
+                          ,
+                          false, storage->ioring.overlapped_fd
+#endif /* Windows */
+  );
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_queue_submitted_error(rc, false);
+  return dxb_queue_completed(dxb_storage_write_queue_const(storage), false, true);
 }
 
 static dxb_queue_result_t dxb_storage_submit_destroy_write_queue(dxb_storage_t *storage,
@@ -28878,11 +28868,13 @@ static dxb_queue_result_t dxb_storage_submit_destroy_write_queue(dxb_storage_t *
     return dxb_queue_submitted_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL, io ? io->readonly : false);
   if (unlikely(io->create))
     return dxb_queue_submitted_error(MDBX_EINVAL, io->readonly);
-  return dxb_storage_destroy_write_queue(storage, io->readonly);
-}
 
-static inline dxb_queue_op_result_t dxb_storage_reset_write_queue(dxb_storage_t *storage) {
-  return osal_ioring_reset(dxb_storage_write_queue(storage));
+  if (io->readonly)
+    return dxb_queue_noop_completed(true);
+
+  dxb_queue_result_t result = dxb_queue_completed(dxb_storage_write_queue_const(storage), false, true);
+  osal_ioring_destroy(&storage->ioring);
+  return result;
 }
 
 static inline dxb_queue_op_result_t dxb_storage_submit_reset_write_queue(
@@ -28890,7 +28882,7 @@ static inline dxb_queue_op_result_t dxb_storage_submit_reset_write_queue(
   int rc = dxb_storage_write_queue_reset_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS || !storage))
     return dxb_queue_op_result((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL, nullptr, false, false, false, false, false);
-  return dxb_storage_reset_write_queue(storage);
+  return osal_ioring_reset(dxb_storage_write_queue(storage));
 }
 
 static inline mdbx_filehandle_t dxb_storage_lock_fd(const dxb_storage_t *storage) {
@@ -28995,14 +28987,6 @@ static inline int dxb_storage_dirty_write_queue_submit_io_validate(
   return MDBX_SUCCESS;
 }
 
-static inline dxb_queue_op_result_t dxb_storage_prepare_write_queue(dxb_storage_t *storage,
-                                                                    const dxb_dirty_write_queue_io_t *io) {
-  int rc = dxb_storage_dirty_write_queue_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false, false);
-  return osal_ioring_prepare(dxb_storage_write_queue(storage), io);
-}
-
 static inline dxb_queue_op_result_t dxb_storage_submit_prepare_write_queue(
     dxb_storage_t *storage, const dxb_dirty_write_queue_submit_io_t *io) {
   if (unlikely(!storage))
@@ -29010,7 +28994,7 @@ static inline dxb_queue_op_result_t dxb_storage_submit_prepare_write_queue(
   int rc = dxb_storage_dirty_write_queue_submit_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false, false);
-  return dxb_storage_prepare_write_queue(storage, &io->queue);
+  return osal_ioring_prepare(dxb_storage_write_queue(storage), &io->queue);
 }
 
 static inline int dxb_storage_make_dirty_queued_write_io(const dxb_storage_t *storage, pgno_t pgno, size_t npages,
@@ -29086,14 +29070,6 @@ static inline int dxb_storage_dirty_queued_write_submit_io_validate(
   return MDBX_SUCCESS;
 }
 
-static inline dxb_queue_op_result_t dxb_storage_add_queued_write(dxb_storage_t *storage,
-                                                                 const dxb_dirty_queued_write_io_t *io) {
-  int rc = dxb_storage_dirty_queued_write_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false, false);
-  return osal_ioring_add(dxb_storage_write_queue(storage), io);
-}
-
 static inline dxb_queue_op_result_t dxb_storage_submit_add_queued_write(
     dxb_storage_t *storage, const dxb_dirty_queued_write_submit_io_t *io) {
   if (unlikely(!storage))
@@ -29101,7 +29077,7 @@ static inline dxb_queue_op_result_t dxb_storage_submit_add_queued_write(
   int rc = dxb_storage_dirty_queued_write_submit_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false, false);
-  return dxb_storage_add_queued_write(storage, &io->queued);
+  return osal_ioring_add(dxb_storage_write_queue(storage), &io->queued);
 }
 
 static inline int dxb_storage_make_dirty_write_walk_io(const dxb_storage_t *storage, iov_ctx_t *ctx,
@@ -29156,18 +29132,6 @@ static inline int dxb_storage_dirty_write_walk_submit_io_validate(
              : MDBX_EINVAL;
 }
 
-static inline dxb_queue_op_result_t dxb_storage_walk_write_queue(dxb_storage_t *storage,
-                                                                 const dxb_dirty_write_walk_io_t *io) {
-  const int rc = dxb_storage_dirty_write_walk_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS)) {
-    if (io && io->ctx && io->ctx->err == MDBX_SUCCESS)
-      io->ctx->err = rc;
-    return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false, false);
-  }
-
-  return osal_ioring_walk(dxb_storage_write_queue(storage), io);
-}
-
 static inline dxb_queue_op_result_t dxb_storage_submit_walk_write_queue(
     dxb_storage_t *storage, const dxb_dirty_write_walk_submit_io_t *io) {
   if (unlikely(!storage))
@@ -29179,7 +29143,7 @@ static inline dxb_queue_op_result_t dxb_storage_submit_walk_write_queue(
     return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false, false);
   }
 
-  return dxb_storage_walk_write_queue(storage, &io->walk);
+  return osal_ioring_walk(dxb_storage_write_queue(storage), &io->walk);
 }
 
 static inline int dxb_storage_make_queued_write_io(const dxb_storage_t *storage, enum dxb_io_channel channel,

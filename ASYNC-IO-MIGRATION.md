@@ -12500,6 +12500,32 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.101`
 batch, `1.135` crud, `1.043` iterate, `1.000` get, and `1.065` delete.
 
+A later dirty-write queue submit-boundary cleanup folded the raw storage queue
+lifecycle and operation helpers into their submitters. The
+`dxb_storage_submit_create_write_queue()` and
+`dxb_storage_submit_destroy_write_queue()` paths now validate the full
+`dxb_write_queue_submit_io_t` and call `osal_ioring_create()` /
+`osal_ioring_destroy()` directly, while preserving the read-only no-op result.
+`dxb_storage_submit_reset_write_queue()`,
+`dxb_storage_submit_prepare_write_queue()`,
+`dxb_storage_submit_add_queued_write()`, and
+`dxb_storage_submit_walk_write_queue()` now submit directly to
+`osal_ioring_reset()`, `osal_ioring_prepare()`, `osal_ioring_add()`, and
+`osal_ioring_walk()` after validating their submit payloads. This leaves the
+dirty-write queue with a single storage entry point per queue operation and a
+clearer future async backend handoff. Verification passed `git diff --check`,
+source scans confirming no raw storage write-queue lifecycle/operation helpers
+remain in `mdbx.c` or the public/internal headers, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.109` batch, `1.146` crud, `1.186`
+iterate, `1.019` get, and `1.066` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
