@@ -7280,6 +7280,26 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.104` batch, `1.161` crud, `1.233` iterate, `1.186`
 get, and `1.087` delete.
 
+A later dirty write-queue operation cleanup added `dxb_queue_op_result_t` for
+queue prepare, enqueue, walk, and reset helpers. `dxb_storage_prepare_write_queue()`,
+`dxb_storage_add_queued_write()`, `dxb_storage_walk_write_queue()`, and
+`dxb_storage_reset_write_queue()` now report the error code, allocated/used ring
+slots, queued write items, queued payload bytes, and which operation completed.
+`iov_init()`, `iov_complete()`, and `iov_page()` still unwrap `.err`, preserving
+the existing queue-full retry and dirty-page cleanup behavior while exposing
+batch-queue operation completions for future async-capable write submission.
+Verification passed `git diff --check`, source scans covering
+`dxb_queue_op_result_t`, the queue operation result helper, every converted
+queue operation wrapper, and each `.err`-unwrapping caller, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.109` batch, `1.142` crud,
+`0.961` iterate, `0.999` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -1430,6 +1430,18 @@ typedef struct dxb_queue_result {
   bool active;
 } dxb_queue_result_t;
 
+typedef struct dxb_queue_op_result {
+  int err;
+  unsigned allocated;
+  unsigned used_slots;
+  unsigned write_items;
+  size_t payload_bytes;
+  bool prepared;
+  bool enqueued;
+  bool walked;
+  bool reset;
+} dxb_queue_op_result_t;
+
 typedef struct dxb_open_result {
   int err;
   bool data_opened;
