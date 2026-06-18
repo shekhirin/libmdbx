@@ -5633,6 +5633,27 @@ focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.154` batch, `1.170` crud, `0.731` iterate, `0.841`
 get, and `1.089` delete.
 
+A later data-range adapter cleanup removed
+`dxb_storage_filesize_shrink_tail_io()`,
+`dxb_storage_readahead_window_bytes_io()`, and
+`dxb_storage_invalidate_cached_bytes_io()` from the C source. File-size shrink
+now derives the stale tail byte range and its cache-invalidation page coverage
+inside `dxb_storage_set_filesize_bytes()`, while readahead toggling derives its
+clamped byte window and page coverage directly in `dxb_set_readahead()`. This
+keeps explicit range construction at the storage operation boundary instead of
+hiding it behind one-call adapters. Verification passed `git diff --check`,
+source scans proving the shrink-tail, readahead-window, byte-invalidation,
+single-meta-page, meta-payload, meta-triplet, page-ref byte, page-subrange, and
+read/write page-span adapters are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.113` batch, `1.168` crud, `0.940` iterate, `0.971`
+get, and `1.086` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

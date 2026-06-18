@@ -1447,15 +1447,6 @@ static inline int dxb_storage_size_io_validate(const dxb_size_io_t *io) {
   return MDBX_SUCCESS;
 }
 
-static inline int dxb_storage_filesize_shrink_tail_io(uint64_t target, uint64_t old_filesize, dxb_byte_io_t *io) {
-  if (unlikely(target >= old_filesize))
-    return MDBX_EINVAL;
-
-  const uint64_t tail_bytes = old_filesize - target;
-  const size_t bytes = tail_bytes > SIZE_MAX ? SIZE_MAX : (size_t)tail_bytes;
-  return dxb_storage_byte_span_io(target, target + bytes, io);
-}
-
 static inline int dxb_storage_page_io(const dxb_storage_t *storage, pgno_t pgno, size_t npages, dxb_page_io_t *io) {
   const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
   const uint64_t max_pgno = (uint64_t)MAX_PAGENO + 1u;
@@ -1620,25 +1611,6 @@ static inline size_t dxb_storage_pgno_ceil2os_bytes(const dxb_storage_t *storage
 
 static inline pgno_t dxb_storage_pgno_ceil2os_pgno(const dxb_storage_t *storage, size_t pgno) {
   return (pgno_t)dxb_storage_bytes2pgno(storage, dxb_storage_pgno_ceil2os_bytes(storage, pgno));
-}
-
-static inline int dxb_storage_readahead_window_bytes_io(const dxb_storage_t *storage, pgno_t prev_edge, pgno_t edge,
-                                                        bool force_whole, dxb_byte_io_t *io) {
-  const uint64_t max_pgno = (uint64_t)MAX_PAGENO + 1u;
-  if (unlikely((uint64_t)prev_edge > max_pgno || (uint64_t)edge > max_pgno))
-    return MDBX_EINVAL;
-
-  const pgno_t begin_edge = (prev_edge < edge) ? prev_edge : edge;
-  const pgno_t end_edge = (prev_edge < edge) ? edge : prev_edge;
-  const size_t limit = dxb_storage_limit_size(storage);
-  size_t offset = force_whole ? 0 : dxb_storage_pgno_ceil2os_bytes(storage, begin_edge);
-  offset = (offset < limit) ? offset : limit;
-  size_t end = dxb_storage_pgno_ceil2os_bytes(storage, end_edge);
-  end = (end < limit) ? end : limit;
-  if (unlikely(end < offset))
-    return MDBX_EINVAL;
-
-  return dxb_storage_byte_span_io(offset, end, io);
 }
 
 static inline bool dxb_storage_contains_range(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
@@ -20937,16 +20909,6 @@ static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_p
   page_cache_unlock(storage);
 }
 
-static int dxb_storage_invalidate_cached_bytes_io(dxb_storage_t *storage, const dxb_byte_io_t *io,
-                                                  bool include_reusable) {
-  dxb_page_io_t pages;
-  int rc = dxb_storage_page_io_from_bytes(storage, io, &pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_storage_invalidate_cached_io(storage, &pages, include_reusable);
-  return MDBX_SUCCESS;
-}
-
 static inline bool page_cache_can_reuse(const MDBX_txn *txn) {
   return (txn->flags & txn_ro_both) != 0;
 }
@@ -22077,9 +22039,15 @@ static int dxb_storage_set_filesize_bytes(dxb_storage_t *storage, uint64_t targe
     return rc;
   if (target < old_filesize) {
     dxb_byte_io_t stale;
-    int err = dxb_storage_filesize_shrink_tail_io(target, old_filesize, &stale);
-    if (likely(err == MDBX_SUCCESS))
-      (void)dxb_storage_invalidate_cached_bytes_io(storage, &stale, true);
+    const uint64_t tail_bytes = old_filesize - target;
+    const size_t bytes = tail_bytes > SIZE_MAX ? SIZE_MAX : (size_t)tail_bytes;
+    int err = dxb_storage_byte_span_io(target, target + bytes, &stale);
+    if (likely(err == MDBX_SUCCESS)) {
+      dxb_page_io_t stale_pages;
+      err = dxb_storage_page_io_from_bytes(storage, &stale, &stale_pages);
+      if (likely(err == MDBX_SUCCESS))
+        dxb_storage_invalidate_cached_io(storage, &stale_pages, true);
+    }
   }
   return dxb_storage_set_filesize(storage, target);
 }
@@ -22511,8 +22479,22 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
   const bool toggle = force_whole || ((enable ^ env->lck->readahead_anchor) & 1) || !env->lck->readahead_anchor;
   const pgno_t prev_edge = env->lck->readahead_anchor >> 1;
 
+  const uint64_t max_pgno = (uint64_t)MAX_PAGENO + 1u;
+  if (unlikely((uint64_t)prev_edge > max_pgno || (uint64_t)edge > max_pgno))
+    return MDBX_EINVAL;
+
+  const pgno_t begin_edge = (prev_edge < edge) ? prev_edge : edge;
+  const pgno_t end_edge = (prev_edge < edge) ? edge : prev_edge;
+  const size_t limit = dxb_storage_limit_size(storage);
+  size_t offset = toggle ? 0 : dxb_storage_pgno_ceil2os_bytes(storage, begin_edge);
+  offset = (offset < limit) ? offset : limit;
+  size_t end = dxb_storage_pgno_ceil2os_bytes(storage, end_edge);
+  end = (end < limit) ? end : limit;
+  if (unlikely(end < offset))
+    return MDBX_EINVAL;
+
   dxb_byte_io_t window;
-  int err = dxb_storage_readahead_window_bytes_io(storage, prev_edge, edge, toggle, &window);
+  int err = dxb_storage_byte_span_io(offset, end, &window);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
   if (window.bytes == 0)
