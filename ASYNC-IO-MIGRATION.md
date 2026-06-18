@@ -5604,14 +5604,34 @@ converting that coverage to a `dxb_byte_io_t`. Verification passed
 `git diff --check`, source scans proving the meta-triplet byte adapter,
 page-ref byte adapter, page-subrange adapter, read/write page-span wrappers,
 and the unused `dxb_storage_meta_pages_io()` helper are gone from `mdbx.c`,
-the GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
-forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
-`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+the GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the
+six focused `migration_smoke` CTest entries, the full 15-test public migration CTest suite,
 forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
 focused ASAN `migration_smoke` CTest entries, and
 `mdbx_migration_bench_lazy`. The paired benchmark gate passed with
 forced/default ratios of `1.135` batch, `1.172` crud, `0.865` iterate, `0.960`
 get, and `1.077` delete.
+
+A later single-meta-page byte adapter cleanup removed
+`dxb_storage_meta_page_bytes_io()`,
+`dxb_storage_meta_payload_bytes_io()`, and the raw
+`dxb_storage_meta_page_offset()` helper from the C source. Meta-shadow page
+lookup, shadow page/payload copies, explicit meta writes, aux-buffer zero-page
+placement, and explicit meta override now derive a checked one-page
+`dxb_page_io_t` first, convert it to `dxb_byte_io_t`, and take payload
+subranges with `dxb_storage_byte_subrange_io()` where needed. Verification
+passed `git diff --check`, source scans proving the single-meta-page,
+meta-payload, meta-triplet, page-ref byte, page-subrange, and read/write
+page-span adapters are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, `cmake --build @cmake-ninja-build`, the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.154` batch, `1.170` crud, `0.731` iterate, `0.841`
+get, and `1.089` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
