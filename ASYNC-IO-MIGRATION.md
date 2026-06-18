@@ -7684,6 +7684,27 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.121` batch, `1.176`
 crud, `0.992` iterate, `0.970` get, and `1.106` delete.
 
+A later descriptor parking result cleanup extended `dxb_park_result_t` with
+`submitted` and `completed` flags, matching the async-facing state used by the
+storage I/O and probe result types. Descriptor parking now reports validation
+failures as unsubmitted/uncompleted, missing-descriptor parking as an
+unsubmitted completed no-op, and actual `osal_fseek()` parking requests as
+submitted with terminal completion. `env_open()` still ignores the parking
+results, preserving the existing best-effort behavior while giving a future
+async-capable storage backend a concrete lifecycle state for the parking
+boundary. Verification passed `git diff --check`, source scans covering
+`dxb_park_result_t`, `dxb_park_result()`, `dxb_park_error()`,
+`dxb_park_noop()`, `dxb_park_completed()`, and every
+`dxb_storage_park_*()` call site, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.117` batch, `1.165` crud, `0.969` iterate, `0.971`
+get, and `1.090` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

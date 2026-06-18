@@ -1417,6 +1417,8 @@ typedef struct dxb_park_result {
   uint64_t offset;
   bool fd_opened;
   bool parked;
+  bool submitted;
+  bool completed;
 } dxb_park_result_t;
 
 typedef struct dxb_lock_result {

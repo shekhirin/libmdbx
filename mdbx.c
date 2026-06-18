@@ -21931,20 +21931,33 @@ void dxb_storage_mark_overlapped_closed(dxb_storage_t *storage) {
 #endif /* Windows */
 
 static inline dxb_park_result_t dxb_park_result(int err, enum dxb_io_channel channel, uint64_t offset,
-                                                bool fd_opened, bool parked) {
-  const dxb_park_result_t result = {err, channel, offset, fd_opened, parked};
+                                                bool fd_opened, bool parked, bool submitted, bool completed) {
+  const dxb_park_result_t result = {err, channel, offset, fd_opened, parked, submitted, completed};
   return result;
+}
+
+static inline dxb_park_result_t dxb_park_error(int err, enum dxb_io_channel channel, uint64_t offset,
+                                               bool fd_opened) {
+  return dxb_park_result(err, channel, offset, fd_opened, false, false, false);
+}
+
+static inline dxb_park_result_t dxb_park_noop(enum dxb_io_channel channel, uint64_t offset) {
+  return dxb_park_result(MDBX_SUCCESS, channel, offset, false, false, false, true);
+}
+
+static inline dxb_park_result_t dxb_park_completed(int err, enum dxb_io_channel channel, uint64_t offset) {
+  return dxb_park_result(err, channel, offset, true, err == MDBX_SUCCESS, true, true);
 }
 
 static inline dxb_park_result_t dxb_storage_park_fd(enum dxb_io_channel channel, mdbx_filehandle_t fd,
                                                     const dxb_byte_io_t *position) {
   ASSERT(position->bytes == 0);
   if (unlikely(position->bytes != 0))
-    return dxb_park_result(MDBX_EINVAL, channel, position->offset, fd != INVALID_HANDLE_VALUE, false);
+    return dxb_park_error(MDBX_EINVAL, channel, position->offset, fd != INVALID_HANDLE_VALUE);
   if (fd == INVALID_HANDLE_VALUE)
-    return dxb_park_result(MDBX_SUCCESS, channel, position->offset, false, false);
+    return dxb_park_noop(channel, position->offset);
   const int err = osal_fseek(fd, position->offset);
-  return dxb_park_result(err, channel, position->offset, true, err == MDBX_SUCCESS);
+  return dxb_park_completed(err, channel, position->offset);
 }
 
 static inline dxb_open_result_t dxb_open_result(const dxb_storage_t *storage, int err) {
