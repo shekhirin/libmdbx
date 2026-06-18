@@ -27786,10 +27786,9 @@ static inline bool page_cache_entry_can_reuse(const page_cache_entry_t *entry, c
   return entry->io.npages > 1 || !is_largepage(entry->page);
 }
 
-static dxb_cache_result_t dxb_storage_insert_cached_page(dxb_storage_t *storage,
-                                                         const dxb_cache_insert_submit_io_t *io) {
-  const int err = dxb_storage_cache_insert_submit_io_validate(storage, io);
-  ASSERT(err == MDBX_SUCCESS);
+static dxb_cache_result_t dxb_storage_submit_insert_cached_page(dxb_storage_t *storage,
+                                                                const dxb_cache_insert_submit_io_t *io) {
+  int err = dxb_storage_cache_insert_submit_io_validate(storage, io);
   if (unlikely(err != MDBX_SUCCESS))
     return dxb_cache_error(err);
 
@@ -27804,15 +27803,7 @@ static dxb_cache_result_t dxb_storage_insert_cached_page(dxb_storage_t *storage,
   cache->pinned += 1;
   page_cache_prune_locked(storage);
   page_cache_unlock(storage);
-  return dxb_cache_inserted(io);
-}
-
-static dxb_cache_result_t dxb_storage_submit_insert_cached_page(dxb_storage_t *storage,
-                                                                const dxb_cache_insert_submit_io_t *io) {
-  int err = dxb_storage_cache_insert_submit_io_validate(storage, io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return dxb_cache_error(err);
-  return dxb_cache_submitted(dxb_storage_insert_cached_page(storage, io));
+  return dxb_cache_submitted(dxb_cache_inserted(io));
 }
 
 static dxb_read_result_t dxb_storage_submit_cache_fill_read(const dxb_storage_t *storage,
