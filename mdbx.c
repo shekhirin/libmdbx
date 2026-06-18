@@ -32147,6 +32147,65 @@ static dxb_park_result_t env_submit_data_park(const dxb_env_data_park_submit_io_
   return dxb_park_error(MDBX_EINVAL, io->channel, io->position.offset, false);
 }
 
+#if !defined(_WIN32) && !defined(_WIN64)
+typedef struct dxb_env_mode_stat_submit_io {
+  MDBX_env *env;
+  const dxb_storage_t *storage;
+  mdbx_mode_t mode_bits;
+  dxb_stat_submit_io_t stat;
+} dxb_env_mode_stat_submit_io_t;
+
+static inline int env_make_mode_stat_submit_io(MDBX_env *env, mdbx_mode_t mode_bits,
+                                               dxb_env_mode_stat_submit_io_t *io) {
+  if (unlikely(!env || !io || mode_bits != 0))
+    return MDBX_EINVAL;
+
+  dxb_stat_submit_io_t stat;
+  int rc = dxb_storage_make_stat_submit_io(&stat);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->env = env;
+  io->storage = &env->dxb_storage;
+  io->mode_bits = mode_bits;
+  io->stat = stat;
+  return MDBX_SUCCESS;
+}
+
+static inline int env_mode_stat_submit_io_validate(const dxb_env_mode_stat_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage || io->mode_bits != 0))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_stat_submit_io_validate(&io->stat);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_env_mode_stat_submit_io_t checked;
+  rc = env_make_mode_stat_submit_io(io->env, io->mode_bits, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env != io->env || checked.storage != io->storage || checked.mode_bits != io->mode_bits ||
+               checked.stat.fetch != io->stat.fetch))
+    return MDBX_EINVAL;
+
+  return MDBX_SUCCESS;
+}
+
+static int env_submit_mode_stat(const dxb_env_mode_stat_submit_io_t *io, mdbx_mode_t *mode_bits) {
+  if (unlikely(!mode_bits))
+    return MDBX_EINVAL;
+  int rc = env_mode_stat_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_stat_result_t stat_result = dxb_storage_submit_stat(io->storage, &io->stat);
+  if (unlikely(stat_result.err != MDBX_SUCCESS))
+    return stat_result.err;
+  *mode_bits = stat_result.st.st_mode;
+  return MDBX_SUCCESS;
+}
+#endif /* !Windows */
+
 __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   /* Использование O_DSYNC или FILE_FLAG_WRITE_THROUGH:
    *
@@ -32268,16 +32327,12 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
 #else
   if (mode == 0) {
     /* pickup mode for lck-file */
-    dxb_stat_submit_io_t stat_submit;
-    rc = dxb_storage_make_stat_submit_io(&stat_submit);
-    dxb_stat_result_t stat_result;
-    if (likely(rc == MDBX_SUCCESS)) {
-      stat_result = dxb_storage_submit_stat(storage, &stat_submit);
-      rc = stat_result.err;
-    }
+    dxb_env_mode_stat_submit_io_t mode_stat_submit;
+    rc = env_make_mode_stat_submit_io(env, mode, &mode_stat_submit);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = env_submit_mode_stat(&mode_stat_submit, &mode);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    mode = stat_result.st.st_mode;
   }
   mode = (/* inherit read permissions for group and others */ mode & (S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH)) |
          /* always add read/write for owner */ S_IRUSR | S_IWUSR |
