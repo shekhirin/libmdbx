@@ -1328,6 +1328,8 @@ typedef struct osal_mmap {
 #endif
 #endif /* MDBX_HAVE_PWRITEV */
 
+enum dxb_io_channel { dxb_io_data, dxb_io_data_dsync, dxb_io_meta };
+
 typedef struct dxb_byte_io {
   uint64_t offset;
   size_t bytes;
@@ -1347,6 +1349,7 @@ typedef struct dxb_data_write_io {
 } dxb_data_write_io_t;
 
 typedef struct dxb_queued_write_io {
+  enum dxb_io_channel channel;
   mdbx_filehandle_t fd;
 } dxb_queued_write_io_t;
 

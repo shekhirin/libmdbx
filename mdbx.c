@@ -75,7 +75,6 @@ enum page_ref_flags {
   PAGE_REF_CACHE = 1u << 2
 };
 
-enum dxb_io_channel { dxb_io_data, dxb_io_data_dsync, dxb_io_meta };
 enum dxb_discard_mode { dxb_discard_clean, dxb_discard_remove, dxb_discard_remove_or_clean };
 enum dxb_advice { dxb_advice_normal, dxb_advice_willneed, dxb_advice_random };
 
@@ -2152,7 +2151,9 @@ static inline int dxb_storage_queued_data_write_io_validate(const dxb_storage_t 
 }
 
 static inline int dxb_queued_write_io_validate(const dxb_queued_write_io_t *io) {
-  return likely(io && io->fd != INVALID_HANDLE_VALUE) ? MDBX_SUCCESS : MDBX_EINVAL;
+  if (unlikely(!io || !dxb_storage_io_channel_valid(io->channel) || io->fd == INVALID_HANDLE_VALUE))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
 }
 
 static inline int dxb_storage_make_cache_invalidate_io(const dxb_storage_t *storage, const dxb_page_io_t *pages,
@@ -22137,6 +22138,7 @@ static inline int dxb_storage_make_queued_write_io(const dxb_storage_t *storage,
   if (unlikely(fd == INVALID_HANDLE_VALUE))
     return MDBX_EINVAL;
 
+  io->channel = channel;
   io->fd = fd;
   return MDBX_SUCCESS;
 }
@@ -22151,7 +22153,7 @@ static inline int dxb_storage_queued_write_io_validate(const dxb_storage_t *stor
   rc = dxb_storage_make_queued_write_io(storage, channel, &checked);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return likely(checked.fd == io->fd) ? MDBX_SUCCESS : MDBX_EINVAL;
+  return likely(checked.channel == io->channel && checked.fd == io->fd) ? MDBX_SUCCESS : MDBX_EINVAL;
 }
 
 static inline osal_ioring_write_result_t dxb_storage_write_queued(dxb_storage_t *storage,

@@ -6509,6 +6509,26 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.122` batch, `1.154` crud, `0.779` iterate,
 `0.968` get, and `1.081` delete.
 
+A later queued-write submit-channel cleanup moved `dxb_io_channel` into the
+internal header and added it to `dxb_queued_write_io_t`. The storage submit
+builder now carries both logical channel intent and the resolved fd into the
+OSAL queue execution descriptor, and validation checks that both fields still
+match the storage channel before submission. `osal_ioring_write()` also rejects
+descriptors with invalid channels before any backend writes execute. This keeps
+future async submission from seeing an fd-only request that has lost the data
+vs. dsync/meta channel decision. Verification passed `git diff --check`,
+source scans covering the header-level channel enum, queued submit channel
+population/comparison, and removed local enum duplicate, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.144` batch, `1.137` crud, `1.197` iterate,
+`0.947` get, and `1.087` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
