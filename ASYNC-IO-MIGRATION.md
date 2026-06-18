@@ -11748,6 +11748,28 @@ focused ASAN `migration_smoke` entries with
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.100`
 batch, `1.140` crud, `0.763` iterate, `1.031` get, and `1.070` delete.
 
+A later filesize-fetch submission cleanup removed the
+`dxb_storage_fetch_filesize()` shortcut so filesize refreshes now build a
+`dxb_filesize_submit_io_t` with
+`dxb_storage_make_filesize_fetch_submit_io()` before calling
+`dxb_storage_submit_fetch_filesize()`. This routes transaction coherency
+refresh, setup/resize filesize refreshes, header probing, meta validation
+retry after a shrink race, and primal transaction setup through explicit
+fetch-submit descriptors while preserving cached filesize/current/limit update
+behavior inside the storage submitter. Verification passed `git diff --check`,
+source scans confirming `dxb_storage_fetch_filesize()` was removed and covering
+`dxb_storage_make_filesize_fetch_submit_io()` /
+`dxb_storage_submit_fetch_filesize()` call sites, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.070`
+batch, `1.134` crud, `1.212` iterate, `0.952` get, and `1.060` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
