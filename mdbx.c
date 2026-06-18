@@ -4116,11 +4116,11 @@ int meta_shadow_refresh(MDBX_env *env) {
   err = dxb_storage_page_prefix_io(storage, NUM_METAS, &meta_page_span);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  dxb_byte_io_t meta_pages;
-  err = dxb_storage_byte_io_from_page(&meta_page_span, &meta_pages);
+  dxb_data_read_io_t meta_pages;
+  err = dxb_storage_make_data_read_io(storage, &meta_page_span, &meta_pages);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  return dxb_storage_read_bytes(storage, &meta_pages, env->meta_shadow);
+  return dxb_storage_read_data(storage, &meta_pages, env->meta_shadow);
 }
 
 void meta_shadow_copy_page(const MDBX_env *env, unsigned number, const page_t *page) {
