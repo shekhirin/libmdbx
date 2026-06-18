@@ -6837,6 +6837,29 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.117` batch, `1.158` crud, `0.968` iterate,
 `1.005` get, and `1.081` delete.
 
+A later direct-write cleanup added `dxb_write_result_t` for storage writes that
+do not go through the dirty-page queue. `dxb_storage_write_data()`,
+`dxb_storage_write_meta()`, and `dxb_storage_writev_data()` now return an
+explicit result containing the error code, completed write-operation count, and
+payload byte count instead of returning only `int`. Existing callers still
+thread the same `.err` value through their control flow, and best-effort page
+kill paths explicitly discard the result, so this keeps current success/error
+semantics while making direct write completions look more like queued write
+completions. This gives future async storage backends a common place to report
+direct data/meta write completion details without rediscovering them at call
+sites. Verification passed `git diff --check`, source scans covering
+`dxb_write_result_t`, direct storage write wrappers, and every
+`dxb_storage_write_data()`, `dxb_storage_write_meta()`, and
+`dxb_storage_writev_data()` call site, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.142` batch, `1.165` crud, `1.211` iterate,
+`0.957` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
