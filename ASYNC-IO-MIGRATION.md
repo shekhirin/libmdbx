@@ -6548,6 +6548,27 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.131` batch, `1.168` crud, `1.014` iterate,
 `0.949` get, and `1.064` delete.
 
+A later dirty-write context cleanup made `iov_ctx` data-channel only.
+`iov_init()` now accepts only `dxb_io_data` or `dxb_io_data_dsync`, and
+`iov_page()` rechecks the same invariant before adding dirty pages to the write
+queue. Dirty-page completion records `MDBX_EINVAL` if a corrupted context
+somehow reaches shadow-page release with a non-data channel, but still
+continues cleanup. This leaves metadata page writes on the explicit
+`dxb_storage_write_meta()` path and keeps the OSAL write queue scoped to dirty
+data-file batches before future async submission has to model queue contexts.
+Verification passed `git diff --check`, source scans covering `iov_init()`,
+`iov_page()`, queued-write submission, and the absence of stale
+`dxb_storage_io_channel_valid(ctx->channel)` checks, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.135` batch, `1.161` crud, `0.984` iterate,
+`0.904` get, and `1.075` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

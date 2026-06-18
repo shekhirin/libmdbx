@@ -35390,7 +35390,7 @@ int iov_init(MDBX_txn *const txn, iov_ctx_t *ctx, size_t items, size_t npages, e
   ctx->env = txn->env;
   ctx->storage = &ctx->env->dxb_storage;
   ctx->channel = channel;
-  if (unlikely(!dxb_storage_io_channel_valid(channel)))
+  if (unlikely(!dxb_io_channel_is_data(channel)))
     return ctx->err = MDBX_EINVAL;
   eASSERT0(ctx->env, dxb_storage_iov_channel_is_ready(ctx->storage, channel));
   dxb_page_io_t queue_pages;
@@ -35428,13 +35428,17 @@ static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_data_write_io_t *q
   eASSERT0(env, queued->pages.npages >= (is_largepage(wp) ? wp->pages : 1u));
   eASSERT0(env, (wp->flags & P_ILL_BITS) == 0);
 
-  if (ctx->err == MDBX_SUCCESS && dxb_io_channel_is_data(ctx->channel)) {
-    dxb_cache_invalidate_io_t invalidate;
-    const int err = dxb_storage_make_cache_invalidate_io(storage, &queued->pages, false, &invalidate);
-    if (likely(err == MDBX_SUCCESS))
-      dxb_storage_invalidate_cached_io(storage, &invalidate);
-    else
-      ctx->err = err;
+  if (ctx->err == MDBX_SUCCESS) {
+    if (unlikely(!dxb_io_channel_is_data(ctx->channel)))
+      ctx->err = MDBX_EINVAL;
+    else {
+      dxb_cache_invalidate_io_t invalidate;
+      const int err = dxb_storage_make_cache_invalidate_io(storage, &queued->pages, false, &invalidate);
+      if (likely(err == MDBX_SUCCESS))
+        dxb_storage_invalidate_cached_io(storage, &invalidate);
+      else
+        ctx->err = err;
+    }
   }
 
   if (likely(queued->pages.npages == 1))
@@ -35497,8 +35501,8 @@ int iov_page(MDBX_txn *txn, iov_ctx_t *ctx, page_t *dp, size_t npages) {
 
   dp->txnid = txn->txnid;
   cASSERT0(txn, is_spilled(txn, dp));
-  cASSERT0(txn, dxb_storage_io_channel_valid(ctx->channel));
-  if (unlikely(!dxb_storage_io_channel_valid(ctx->channel)))
+  cASSERT0(txn, dxb_io_channel_is_data(ctx->channel));
+  if (unlikely(!dxb_io_channel_is_data(ctx->channel)))
     return ctx->err = MDBX_EINVAL;
   dxb_page_io_t queued_pages;
   int err = dxb_storage_page_io(ctx->storage, dp->pgno, npages, &queued_pages);
