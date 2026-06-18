@@ -12477,6 +12477,29 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.129`
 batch, `1.142` crud, `0.860` iterate, `1.059` get, and `1.081` delete.
 
+A later materialized large-page follow-up submit-boundary cleanup folded the raw
+`dxb_storage_detach_materialized_large_page()` and
+`dxb_storage_replace_materialized_large_page()` helpers into
+`dxb_storage_submit_detach_materialized_large_page()` and
+`dxb_storage_submit_replace_materialized_large_page()`. The detach submitter now
+validates the full `dxb_cache_detach_submit_io_t`, allocates the private
+unlisted cache entry, transfers the `pgr_t` to the materialized buffer, and
+releases the old cache ref directly from the submit boundary. The replace
+submitter now validates the full `dxb_cache_replace_submit_io_t`, preserves the
+tracked-entry cache lock around replacement accounting and pruning, and updates
+the cache entry plus `pgr_t` directly from the submit boundary. Verification
+passed `git diff --check`, source scans confirming no raw detach/replace
+materialized-large-page helpers remain in `mdbx.c` or the public/internal
+headers, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.101`
+batch, `1.135` crud, `1.043` iterate, `1.000` get, and `1.065` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
