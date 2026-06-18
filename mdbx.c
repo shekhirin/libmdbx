@@ -24568,6 +24568,133 @@ static int defrag_read_page(dfc_t *dfc, pgno_t pgno, page_t *buffer) {
   return defrag_submit_page_read(&submit);
 }
 
+typedef struct dxb_defrag_page_write_submit_io {
+  dfc_t *dfc;
+  MDBX_txn *txn;
+  dxb_storage_t *storage;
+  pgno_t pgno;
+  pgno_t first_unallocated;
+  dxb_data_write_io_t write_page;
+  dxb_write_submit_io_t write;
+  const void *buffer;
+  size_t buffer_bytes;
+} dxb_defrag_page_write_submit_io_t;
+
+static inline int defrag_make_page_write_submit_io(dfc_t *dfc, pgno_t pgno, const void *buffer,
+                                                   size_t buffer_bytes,
+                                                   dxb_defrag_page_write_submit_io_t *io) {
+  if (unlikely(!dfc || !dfc->txn || !buffer || !io))
+    return MDBX_EINVAL;
+
+  MDBX_txn *const txn = dfc->txn;
+  MDBX_env *const env = txn->env;
+  dxb_storage_t *const storage = &env->dxb_storage;
+  if (unlikely(pgno < NUM_METAS || pgno >= txn->geo.first_unallocated ||
+               buffer_bytes < dxb_storage_pagesize(storage)))
+    return MDBX_EINVAL;
+
+  dxb_page_io_t dst_page;
+  int rc = dxb_storage_page_io(storage, pgno, 1, &dst_page);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_data_write_io_t write_page;
+  rc = dxb_storage_make_data_write_io_from_page(storage, &dst_page, &write_page);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(write_page.bytes.bytes > buffer_bytes))
+    return MDBX_EINVAL;
+
+  dxb_write_submit_io_t write;
+  rc = dxb_storage_make_write_submit_io(storage, &write_page, buffer, &write);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->dfc = dfc;
+  io->txn = txn;
+  io->storage = storage;
+  io->pgno = pgno;
+  io->first_unallocated = txn->geo.first_unallocated;
+  io->write_page = write_page;
+  io->write = write;
+  io->buffer = buffer;
+  io->buffer_bytes = buffer_bytes;
+  return MDBX_SUCCESS;
+}
+
+static inline int defrag_page_write_submit_io_validate(const dxb_defrag_page_write_submit_io_t *io) {
+  if (unlikely(!io || !io->dfc || !io->txn || !io->storage || !io->buffer || io->dfc->txn != io->txn ||
+               io->storage != &io->txn->env->dxb_storage))
+    return MDBX_EINVAL;
+  if (unlikely(io->pgno < NUM_METAS || io->pgno >= io->txn->geo.first_unallocated ||
+               io->first_unallocated != io->txn->geo.first_unallocated ||
+               io->buffer_bytes < dxb_storage_pagesize(io->storage) || io->write.buffer != io->buffer ||
+               io->write.data.bytes.bytes > io->buffer_bytes))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_data_write_io_validate(io->storage, &io->write_page);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_write_submit_io_validate(io->storage, &io->write);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(io->write_page.pages.pgno != io->pgno || io->write_page.pages.npages != 1 ||
+               io->write.data.pages.pgno != io->write_page.pages.pgno ||
+               io->write.data.pages.end_pgno != io->write_page.pages.end_pgno ||
+               io->write.data.pages.npages != io->write_page.pages.npages ||
+               io->write.data.pages.offset != io->write_page.pages.offset ||
+               io->write.data.pages.bytes != io->write_page.pages.bytes ||
+               io->write.data.bytes.offset != io->write_page.bytes.offset ||
+               io->write.data.bytes.bytes != io->write_page.bytes.bytes))
+    return MDBX_EINVAL;
+
+  dxb_defrag_page_write_submit_io_t checked;
+  rc = defrag_make_page_write_submit_io(io->dfc, io->pgno, io->buffer, io->buffer_bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.dfc != io->dfc || checked.txn != io->txn || checked.storage != io->storage ||
+               checked.pgno != io->pgno || checked.first_unallocated != io->first_unallocated ||
+               checked.buffer != io->buffer || checked.buffer_bytes != io->buffer_bytes ||
+               checked.write_page.pages.pgno != io->write_page.pages.pgno ||
+               checked.write_page.pages.end_pgno != io->write_page.pages.end_pgno ||
+               checked.write_page.pages.npages != io->write_page.pages.npages ||
+               checked.write_page.pages.offset != io->write_page.pages.offset ||
+               checked.write_page.pages.bytes != io->write_page.pages.bytes ||
+               checked.write_page.bytes.offset != io->write_page.bytes.offset ||
+               checked.write_page.bytes.bytes != io->write_page.bytes.bytes ||
+               checked.write.data.pages.pgno != io->write.data.pages.pgno ||
+               checked.write.data.pages.end_pgno != io->write.data.pages.end_pgno ||
+               checked.write.data.pages.npages != io->write.data.pages.npages ||
+               checked.write.data.pages.offset != io->write.data.pages.offset ||
+               checked.write.data.pages.bytes != io->write.data.pages.bytes ||
+               checked.write.data.bytes.offset != io->write.data.bytes.offset ||
+               checked.write.data.bytes.bytes != io->write.data.bytes.bytes || checked.write.buffer != io->write.buffer))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static dxb_write_result_t defrag_submit_page_write(const dxb_defrag_page_write_submit_io_t *io) {
+  int rc = defrag_page_write_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    const dxb_write_result_t result = {rc, 0, 0, false, false};
+    return result;
+  }
+  return dxb_storage_submit_write_data(io->storage, &io->write);
+}
+
+static dxb_write_result_t defrag_write_page(dfc_t *dfc, pgno_t pgno, const page_t *buffer) {
+  if (unlikely(!dfc || !dfc->txn)) {
+    const dxb_write_result_t result = {MDBX_EINVAL, 0, 0, false, false};
+    return result;
+  }
+  dxb_defrag_page_write_submit_io_t submit;
+  int rc = defrag_make_page_write_submit_io(dfc, pgno, buffer, dfc->txn->env->ps, &submit);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    const dxb_write_result_t result = {rc, 0, 0, false, false};
+    return result;
+  }
+  return defrag_submit_page_write(&submit);
+}
+
 static int defrag_fixup_ref(dfc_t *dfc, void *pgno_ptr) {
   const pgno_t pgno = peek_pgno(pgno_ptr);
   if (pgno < NUM_METAS || pgno == P_INVALID)
@@ -24705,19 +24832,7 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
 #if MDBX_CHECKING > 1
   ASSERT(pnl_contains(dfc->repnl_clone, arc->mapped));
 #endif /* MDBX_CHECKING > 1 */
-  dxb_page_io_t mapped_page;
-  err = dxb_storage_page_io(storage, arc->mapped, 1, &mapped_page);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  dxb_data_write_io_t mapped_write;
-  err = dxb_storage_make_data_write_io_from_page(storage, &mapped_page, &mapped_write);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  dxb_write_submit_io_t mapped_submit;
-  err = dxb_storage_make_write_submit_io(storage, &mapped_write, dst, &mapped_submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  dxb_write_result_t mapped_result = dxb_storage_submit_write_data(storage, &mapped_submit);
+  dxb_write_result_t mapped_result = defrag_write_page(dfc, arc->mapped, dst);
   err = mapped_result.err;
   if (unlikely(err != MDBX_SUCCESS))
     return err;
@@ -24758,19 +24873,7 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
 #if MDBX_CHECKING > 1
       ASSERT(pnl_contains(dfc->repnl_clone, dst_pgno));
 #endif /* MDBX_CHECKING > 1 */
-      dxb_page_io_t dst_page;
-      err = dxb_storage_page_io(storage, dst_pgno, 1, &dst_page);
-      if (unlikely(err != MDBX_SUCCESS))
-        return err;
-      dxb_data_write_io_t dst_write;
-      err = dxb_storage_make_data_write_io_from_page(storage, &dst_page, &dst_write);
-      if (unlikely(err != MDBX_SUCCESS))
-        return err;
-      dxb_write_submit_io_t dst_submit;
-      err = dxb_storage_make_write_submit_io(storage, &dst_write, env->page_auxbuf, &dst_submit);
-      if (unlikely(err != MDBX_SUCCESS))
-        return err;
-      dxb_write_result_t dst_result = dxb_storage_submit_write_data(storage, &dst_submit);
+      dxb_write_result_t dst_result = defrag_write_page(dfc, dst_pgno, env->page_auxbuf);
       err = dst_result.err;
       if (unlikely(err != MDBX_SUCCESS))
         return err;
