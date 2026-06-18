@@ -5814,6 +5814,25 @@ CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
 passed with forced/default ratios of `1.131` batch, `1.150` crud, `0.975`
 iterate, `1.004` get, and `1.071` delete.
 
+A later dirty-write queue descriptor cleanup made queue preparation and enqueue
+consume checked `dxb_data_write_io_t` descriptors instead of loose byte
+requests. Page-derived dirty-write spans now build a data-write descriptor from
+the checked `dxb_page_io_t`; the storage queue helpers validate that page/byte
+pair before sizing the queue or inserting an item, and only the OSAL queue keeps
+the internal byte descriptor it needs for coalesced subrange walking. This keeps
+future async dirty-write submission tied to exact full-page data-write
+descriptors at the storage boundary. Verification passed `git diff --check`,
+source scans proving `dxb_storage_prepare_write_queue_bytes()` and
+`dxb_storage_add_queued_bytes()` are gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke`
+CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
+passed with forced/default ratios of `1.121` batch, `1.151` crud, `1.021`
+iterate, `0.990` get, and `1.066` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
