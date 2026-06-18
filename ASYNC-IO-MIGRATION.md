@@ -6096,6 +6096,25 @@ CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
 passed with forced/default ratios of `1.152` batch, `1.158` crud, `0.979`
 iterate, `1.023` get, and `1.083` delete.
 
+A later readahead prefetch coverage cleanup removed the private
+`dxb_storage_prefetch_readahead_bytes()` wrapper from the C source.
+`dxb_set_readahead()` already builds checked page coverage for the clamped
+toggle-time window, so the `WILLNEED` advice path now reuses
+`window_coverage.page_bytes` directly instead of rebuilding the same coverage
+inside another helper. This keeps the toggle-time prefetch advice behind the
+same validated window as the surrounding readahead logging and leaves no
+references to `dxb_storage_prefetch_readahead_bytes()` in `mdbx.c`.
+Verification passed `git diff --check`, source scans proving the removed
+prefetch helper is gone from `mdbx.c`, the GNUmake `mdbx_migration_smoke`
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.134` batch, `1.154` crud, `0.996` iterate, `1.038`
+get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

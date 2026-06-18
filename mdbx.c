@@ -21878,16 +21878,6 @@ static int dxb_storage_advise_range(const dxb_storage_t *storage, const dxb_byte
 #endif /* POSIX_FADV_* */
 }
 
-static int dxb_storage_prefetch_readahead_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
-  dxb_page_coverage_io_t coverage;
-  int rc = dxb_storage_make_page_coverage_io(storage, io, &coverage);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (coverage.pages.npages == 0)
-    return MDBX_SUCCESS;
-  return dxb_storage_advise_range(storage, &coverage.page_bytes, dxb_advice_willneed);
-}
-
 static int dxb_storage_discard_clean_range(const dxb_storage_t *storage, const dxb_byte_io_t *io) {
   int rc = dxb_storage_byte_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -22739,7 +22729,7 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
        * on following access to the hinted region.
        * 19.6.0 Darwin Kernel Version 19.6.0: Tue Jan 12 22:13:05 PST 2021;
        * root:xnu-6153.141.16~1/RELEASE_X86_64 x86_64 */
-      err = dxb_storage_prefetch_readahead_bytes(storage, &window);
+      err = dxb_storage_advise_range(storage, &window_coverage.page_bytes, dxb_advice_willneed);
       if (unlikely(MDBX_IS_ERROR(err)))
         return err;
     }
