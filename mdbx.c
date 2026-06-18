@@ -206,18 +206,20 @@ static inline pgr_t pgr_empty(void) {
 
 typedef struct dxb_cache_page_result {
   pgr_t page;
+  size_t payload_bytes;
   bool hit;
   bool filled;
   bool tracked;
 } dxb_cache_page_result_t;
 
-static inline dxb_cache_page_result_t dxb_cache_page_result(pgr_t page, bool hit, bool filled, bool tracked) {
-  const dxb_cache_page_result_t result = {page, hit, filled, tracked};
+static inline dxb_cache_page_result_t dxb_cache_page_result(pgr_t page, size_t payload_bytes, bool hit, bool filled,
+                                                            bool tracked) {
+  const dxb_cache_page_result_t result = {page, payload_bytes, hit, filled, tracked};
   return result;
 }
 
 static inline dxb_cache_page_result_t dxb_cache_page_error(int err) {
-  return dxb_cache_page_result(pgr_error(err), false, false, false);
+  return dxb_cache_page_result(pgr_error(err), 0, false, false, false);
 }
 
 static inline dxb_cache_page_result_t dxb_cache_page_miss(void) {
@@ -21686,8 +21688,9 @@ static dxb_cache_page_result_t dxb_storage_lookup_cached_page(dxb_storage_t *sto
       entry->pins += 1;
       entry->owner->pinned += 1;
       pgr_t ret = dxb_storage_make_cached_pgr(entry);
+      const size_t payload_bytes = entry->io.bytes;
       page_cache_unlock(storage);
-      return dxb_cache_page_result(ret, true, false, entry->owner != nullptr);
+      return dxb_cache_page_result(ret, payload_bytes, true, false, entry->owner != nullptr);
     }
   }
   page_cache_unlock(storage);
@@ -21716,7 +21719,8 @@ static dxb_cache_page_result_t dxb_storage_read_cached_page(dxb_storage_t *stora
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
-  err = dxb_storage_read_data(storage, &io->data, entry->page).err;
+  dxb_read_result_t read_result = dxb_storage_read_data(storage, &io->data, entry->page);
+  err = read_result.err;
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
@@ -21733,7 +21737,8 @@ static dxb_cache_page_result_t dxb_storage_read_cached_page(dxb_storage_t *stora
     page_cache_unlock(storage);
   }
 
-  return dxb_cache_page_result(dxb_storage_make_cached_pgr(entry), false, true, io->tracked);
+  return dxb_cache_page_result(dxb_storage_make_cached_pgr(entry), read_result.payload_bytes, false, true,
+                               io->tracked);
 
 bailout:
   if (entry->page)

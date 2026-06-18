@@ -7425,6 +7425,24 @@ ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The
 paired benchmark gate passed with forced/default ratios of `1.108` batch,
 `1.158` crud, `1.211` iterate, `0.949` get, and `1.074` delete.
 
+A later cache-read completion cleanup extended `dxb_cache_page_result_t` with a
+`payload_bytes` field. Cache hits now report the cached page span size, and
+miss fills preserve the `dxb_storage_read_data()` completion byte count instead
+of collapsing the storage read result to an error code. Existing callers still
+unwrap the same `pgr_t`, but the async-facing cache read result now carries the
+completed payload size needed by a future submitted-read completion path.
+Verification passed `git diff --check`, source scans covering
+`dxb_cache_page_result_t`, `dxb_cache_page_result()`, `payload_bytes`, and the
+cache hit/fill paths, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.111` batch, `1.148` crud, `1.171` iterate, `0.931`
+get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
