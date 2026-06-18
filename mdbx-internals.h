@@ -1353,6 +1353,14 @@ typedef struct dxb_dirty_queued_write_io {
   void *buffer;
 } dxb_dirty_queued_write_io_t;
 
+typedef void (*dxb_dirty_write_walk_callback_t)(iov_ctx_t *ctx, const dxb_data_write_io_t *io, void *data);
+
+typedef struct dxb_dirty_write_walk_io {
+  enum dxb_io_channel channel;
+  iov_ctx_t *ctx;
+  dxb_dirty_write_walk_callback_t callback;
+} dxb_dirty_write_walk_io_t;
+
 typedef struct dxb_queued_write_io {
   enum dxb_io_channel channel;
   mdbx_filehandle_t fd;
@@ -1447,8 +1455,7 @@ typedef struct osal_ioring_write_result {
 MDBX_INTERNAL osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior,
                                                            const dxb_queued_write_io_t *io);
 
-MDBX_INTERNAL void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
-                                    void (*callback)(iov_ctx_t *ctx, const dxb_data_write_io_t *io, void *data));
+MDBX_INTERNAL void osal_ioring_walk(osal_ioring_t *ior, const dxb_dirty_write_walk_io_t *io);
 
 MDBX_MAYBE_UNUSED static inline unsigned osal_ioring_left(const osal_ioring_t *ior) { return ior->slots_left; }
 

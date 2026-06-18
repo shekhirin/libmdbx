@@ -6652,6 +6652,27 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.109` batch, `1.158` crud, `0.997` iterate,
 `0.979` get, and `1.071` delete.
 
+A later OSAL queue-walk cleanup moved `dxb_dirty_write_walk_io_t` into the
+internal header and changed `osal_ioring_walk()` to accept that descriptor
+directly. Storage still validates the dirty walk descriptor against the active
+queue context before completion, and OSAL now replays queued write items with
+the same descriptor carrying the callback context and release callback instead
+of receiving loose `iov_ctx_t *` and callback arguments. Channel-invariant
+errors remain in the dirty-page callback so shadow pages are still released
+after earlier write failures or corrupted context state. This makes the final
+completion-walk boundary descriptor-shaped for future async completion replay.
+Verification passed `git diff --check`, source scans covering the header-level
+walk descriptor, the new `osal_ioring_walk()` signature, removal of the stale
+split-signature call, and the remaining dirty walk users, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.073` batch, `1.166`
+crud, `1.033` iterate, `0.998` get, and `1.087` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

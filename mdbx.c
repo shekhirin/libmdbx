@@ -113,14 +113,6 @@ typedef struct dxb_dirty_write_queue_io {
   dxb_data_write_io_t data;
 } dxb_dirty_write_queue_io_t;
 
-typedef void (*dxb_dirty_write_walk_callback_t)(iov_ctx_t *ctx, const dxb_data_write_io_t *io, void *data);
-
-typedef struct dxb_dirty_write_walk_io {
-  enum dxb_io_channel channel;
-  iov_ctx_t *ctx;
-  dxb_dirty_write_walk_callback_t callback;
-} dxb_dirty_write_walk_io_t;
-
 typedef struct dxb_cache_read_io {
   dxb_data_read_io_t data;
   txnid_t snapshot;
@@ -22245,7 +22237,7 @@ static inline void dxb_storage_walk_write_queue(dxb_storage_t *storage, const dx
     return;
   }
 
-  osal_ioring_walk(dxb_storage_write_queue(storage), io->ctx, io->callback);
+  osal_ioring_walk(dxb_storage_write_queue(storage), io);
 }
 
 static inline int dxb_storage_make_queued_write_io(const dxb_storage_t *storage, enum dxb_io_channel channel,
@@ -32337,21 +32329,25 @@ static int dxb_data_write_subrange_io(const dxb_data_write_io_t *base, size_t of
   return MDBX_SUCCESS;
 }
 
-static void osal_ioring_walk_write_io(iov_ctx_t *ctx,
-                                      void (*callback)(iov_ctx_t *ctx, const dxb_data_write_io_t *io, void *data),
+static void osal_ioring_walk_write_io(const dxb_dirty_write_walk_io_t *walk_io,
                                       const dxb_data_write_io_t *base, size_t offset, size_t bytes, void *data) {
   dxb_data_write_io_t request;
   const int err = dxb_data_write_subrange_io(base, offset, bytes, &request);
   if (unlikely(err != MDBX_SUCCESS)) {
-    if (ctx->err == MDBX_SUCCESS)
-      ctx->err = err;
+    if (walk_io->ctx->err == MDBX_SUCCESS)
+      walk_io->ctx->err = err;
     return;
   }
-  callback(ctx, &request, data);
+  walk_io->callback(walk_io->ctx, &request, data);
 }
 
-void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
-                      void (*callback)(iov_ctx_t *ctx, const dxb_data_write_io_t *io, void *data)) {
+void osal_ioring_walk(osal_ioring_t *ior, const dxb_dirty_write_walk_io_t *io) {
+  if (unlikely(!io || !io->ctx || !io->callback)) {
+    if (io && io->ctx && io->ctx->err == MDBX_SUCCESS)
+      io->ctx->err = MDBX_EINVAL;
+    return;
+  }
+
   for (ior_item_t *item = ior->pool; item <= ior->last;) {
 #if defined(_WIN32) || defined(_WIN64)
     size_t offset = 0;
@@ -32365,7 +32361,7 @@ void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
       MDBX_SUPPRESS_GOOFY_MSVC_ANALYZER(6385);
       while (item->sgv[i].Buffer) {
         if (data + ior->pagesize != item->sgv[i].Buffer) {
-          osal_ioring_walk_write_io(ctx, callback, &item->io, offset, bytes, data);
+          osal_ioring_walk_write_io(io, &item->io, offset, bytes, data);
           offset += bytes;
           data = Ptr64ToPtr(item->sgv[i].Buffer);
           bytes = 0;
@@ -32375,18 +32371,18 @@ void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
       }
     }
     ASSERT(bytes < MAX_WRITE);
-    osal_ioring_walk_write_io(ctx, callback, &item->io, offset, bytes, data);
+    osal_ioring_walk_write_io(io, &item->io, offset, bytes, data);
 #elif MDBX_HAVE_PWRITEV
     ASSERT(item->sgvcnt > 0);
     size_t offset = 0;
     size_t i = 0;
     do {
-      osal_ioring_walk_write_io(ctx, callback, &item->io, offset, item->sgv[i].iov_len, item->sgv[i].iov_base);
+      osal_ioring_walk_write_io(io, &item->io, offset, item->sgv[i].iov_len, item->sgv[i].iov_base);
       offset += item->sgv[i].iov_len;
     } while (++i != item->sgvcnt);
 #else
     const size_t i = 1;
-    osal_ioring_walk_write_io(ctx, callback, &item->io, 0, item->single.iov_len, item->single.iov_base);
+    osal_ioring_walk_write_io(io, &item->io, 0, item->single.iov_len, item->single.iov_base);
 #endif
     item = ior_next(item, i);
   }
