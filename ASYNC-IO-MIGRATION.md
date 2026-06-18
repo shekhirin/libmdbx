@@ -6294,6 +6294,25 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.100` batch, `1.162`
 crud, `1.176` iterate, `1.042` get, and `1.068` delete.
 
+A later queued-write execution validation cleanup added a storage-independent
+`dxb_data_write_io_validate_queued()` helper. Queue execution now validates the
+retained data-write descriptor's byte span, page coverage, page count, page
+size, and end page before writing or deriving walk subranges. The test-only
+partial-write fault injector now receives the full `dxb_data_write_io_t`
+instead of a bare `dxb_byte_io_t`, so injected partial `writev` failures are
+also tied to the same queued descriptor coverage. Source scans prove the old
+partial-write byte-descriptor call shape and queue-item byte-only validation
+are gone. Verification passed `git diff --check`, source scans covering
+queued-write descriptor validation and stale byte-only fault-injection shapes,
+the GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.131` batch, `1.157`
+crud, `0.842` iterate, `1.045` get, and `1.076` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

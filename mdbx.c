@@ -1946,6 +1946,24 @@ static inline int dxb_storage_data_write_io_validate(const dxb_storage_t *storag
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_data_write_io_validate_queued(const dxb_data_write_io_t *io, size_t bytes) {
+  int rc = dxb_storage_byte_io_validate(&io->bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(bytes != io->bytes.bytes || io->pages.npages == 0 ||
+               io->pages.npages > (size_t)(UINT32_MAX - io->pages.pgno) ||
+               io->pages.end_pgno != io->pages.pgno + (uint32_t)io->pages.npages ||
+               io->pages.offset != io->bytes.offset || io->pages.bytes != io->bytes.bytes ||
+               io->pages.bytes % io->pages.npages != 0))
+    return MDBX_EINVAL;
+
+  const size_t pagesize = io->pages.bytes / io->pages.npages;
+  if (unlikely(!is_powerof2(pagesize) || pagesize < MDBX_MIN_PAGESIZE || pagesize > MDBX_MAX_PAGESIZE))
+    return MDBX_EINVAL;
+
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_make_data_copy_io(const dxb_storage_t *storage, const dxb_page_io_t *src_pages,
                                                 const dxb_page_io_t *dst_pages, dxb_data_copy_io_t *io) {
   int rc = dxb_storage_page_io_validate(storage, src_pages);
@@ -22084,8 +22102,8 @@ __cold static int dxb_fault_inject(const char *operation) {
 
 __cold static int dxb_fault_inject_after_partial_writev(const char *operation, mdbx_filehandle_t fd,
                                                         const struct iovec *iov, size_t sgvcnt,
-                                                        const dxb_byte_io_t *io) {
-  int rc = dxb_storage_byte_io_validate(io);
+                                                        const dxb_data_write_io_t *io) {
+  int rc = dxb_data_write_io_validate_queued(io, io->bytes.bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   rc = dxb_fault_inject(operation);
@@ -22093,9 +22111,9 @@ __cold static int dxb_fault_inject_after_partial_writev(const char *operation, m
     return MDBX_SUCCESS;
   /* Test-only corruption model: write a real queued prefix, then fail before meta advances. */
   if (sgvcnt > 0 && iov[0].iov_len > 0) {
-    if (unlikely(iov[0].iov_len > io->bytes))
+    if (unlikely(iov[0].iov_len > io->bytes.bytes))
       return MDBX_EINVAL;
-    const int write_rc = osal_pwrite(fd, iov[0].iov_base, iov[0].iov_len, io->offset);
+    const int write_rc = osal_pwrite(fd, iov[0].iov_base, iov[0].iov_len, io->bytes.offset);
     if (unlikely(write_rc != MDBX_SUCCESS))
       return write_rc;
   }
@@ -22133,7 +22151,7 @@ static inline int dxb_fault_inject(const char *operation) {
 
 static inline int dxb_fault_inject_after_partial_writev(const char *operation, mdbx_filehandle_t fd,
                                                         const struct iovec *iov, size_t sgvcnt,
-                                                        const dxb_byte_io_t *io) {
+                                                        const dxb_data_write_io_t *io) {
   (void)operation;
   (void)fd;
   (void)iov;
@@ -22243,7 +22261,7 @@ static int dxb_storage_writev_data(dxb_storage_t *storage, const dxb_data_write_
     return MDBX_EINVAL;
 
   const mdbx_filehandle_t fd = dxb_storage_fd(storage, dxb_io_data);
-  rc = dxb_fault_inject_after_partial_writev("writev-partial", fd, iov, sgvcnt, &io->bytes);
+  rc = dxb_fault_inject_after_partial_writev("writev-partial", fd, iov, sgvcnt, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   rc = dxb_fault_inject("writev");
@@ -31803,12 +31821,9 @@ int osal_ioring_add(osal_ioring_t *ior, const dxb_data_write_io_t *io, void *dat
 
 static int dxb_data_write_subrange_io(const dxb_data_write_io_t *base, size_t offset, size_t bytes,
                                       dxb_data_write_io_t *io) {
-  int rc = dxb_storage_byte_io_validate(&base->bytes);
+  int rc = dxb_data_write_io_validate_queued(base, base->bytes.bytes);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  if (unlikely(base->pages.npages == 0 || base->pages.bytes != base->bytes.bytes ||
-               base->pages.offset != base->bytes.offset || base->pages.bytes % base->pages.npages != 0))
-    return MDBX_EINVAL;
 
   const size_t pagesize = base->pages.bytes / base->pages.npages;
   if (unlikely(pagesize == 0 || offset % pagesize != 0 || bytes % pagesize != 0))
@@ -31896,10 +31911,7 @@ void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
 }
 
 static int osal_ioring_item_io_validate(const ior_item_t *item, size_t bytes) {
-  int rc = dxb_storage_byte_io_validate(&item->io.bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return likely(bytes == item->io.bytes.bytes) ? MDBX_SUCCESS : MDBX_EINVAL;
+  return dxb_data_write_io_validate_queued(&item->io, bytes);
 }
 
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -31934,8 +31946,7 @@ static size_t osal_ioring_write_item(osal_ioring_write_result_t *result, ior_ite
     if (likely(result->err == MDBX_SUCCESS))
       result->err = dxb_fault_inject("write-complete");
   } else {
-    result->err =
-        dxb_fault_inject_after_partial_writev("writev-partial", fd, item->sgv, item->sgvcnt, &item->io.bytes);
+    result->err = dxb_fault_inject_after_partial_writev("writev-partial", fd, item->sgv, item->sgvcnt, &item->io);
     if (likely(result->err == MDBX_SUCCESS))
       result->err = dxb_fault_inject("writev");
     if (likely(result->err == MDBX_SUCCESS))
