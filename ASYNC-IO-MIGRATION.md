@@ -12708,6 +12708,26 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.121` batch, `1.138` crud, `1.009` iterate,
 `0.903` get, and `1.061` delete.
 
+A later incore-probe submit-boundary cleanup folded the raw
+`dxb_storage_check_incore()` helper into `dxb_storage_submit_check_incore()`.
+The submitter now validates the full `dxb_incore_submit_io_t` payload before
+issuing `osal_check_fs_incore()` directly, then returns the same completed,
+unavailable, or submitted-error result variants from the submit boundary. This
+leaves the data-file in-core filesystem probe with one descriptor-shaped
+storage entry point and no parallel raw incore helper path in the C source or
+public/internal headers. Verification passed `git diff --check`, source scans
+confirming no raw storage incore helper remains in `mdbx.c` or the
+public/internal headers, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.115` batch, `1.136` crud, `0.823` iterate,
+`1.071` get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -29279,21 +29279,17 @@ static inline dxb_incore_result_t dxb_incore_completed(bool incore) {
   return dxb_incore_result(MDBX_SUCCESS, incore, true, true);
 }
 
-static inline dxb_incore_result_t dxb_storage_check_incore(const dxb_storage_t *storage) {
-  const int rc = osal_check_fs_incore(dxb_storage_data_fd(storage));
-  if (rc == MDBX_RESULT_TRUE)
-    return dxb_incore_completed(true);
-  if (likely(rc == MDBX_SUCCESS))
-    return dxb_incore_completed(false);
-  return (rc == MDBX_ENOSYS) ? dxb_incore_unavailable(rc) : dxb_incore_submitted_error(rc);
-}
-
 static inline dxb_incore_result_t dxb_storage_submit_check_incore(const dxb_storage_t *storage,
                                                                   const dxb_incore_submit_io_t *io) {
   int rc = dxb_storage_incore_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_incore_result(rc, false, false, false);
-  return dxb_storage_check_incore(storage);
+  rc = osal_check_fs_incore(dxb_storage_data_fd(storage));
+  if (rc == MDBX_RESULT_TRUE)
+    return dxb_incore_completed(true);
+  if (likely(rc == MDBX_SUCCESS))
+    return dxb_incore_completed(false);
+  return (rc == MDBX_ENOSYS) ? dxb_incore_unavailable(rc) : dxb_incore_submitted_error(rc);
 }
 
 static inline dxb_sysinfo_result_t dxb_sysinfo_result(int err, uint64_t filesize, uint64_t allocated,
