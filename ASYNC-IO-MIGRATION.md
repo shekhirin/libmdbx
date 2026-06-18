@@ -11840,6 +11840,32 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.134`
 batch, `1.136` crud, `0.838` iterate, `1.063` get, and `1.061` delete.
 
+A later data-write submission cleanup moved post-write page-cache invalidation
+into caller-built write submit descriptors. `dxb_write_submit_io_t` and
+`dxb_writev_submit_io_t` now carry a prepared
+`dxb_write_cache_invalidate_submit_io_t` derived from the write page span, and
+`dxb_storage_write_data()` / `dxb_storage_writev_data()` validate and consume
+that descriptor after successful `pwrite`/`pwritev` completion instead of
+constructing it in the raw write backend. This keeps the synchronous file write
+behavior unchanged while making the post-write cache maintenance part of the
+explicit write submission payload. Verification passed `git diff --check`,
+source scans covering `dxb_write_submit_io_t`, `dxb_writev_submit_io_t`,
+`dxb_write_cache_invalidate_submit_io_t`,
+`dxb_storage_make_write_submit_io()`,
+`dxb_storage_make_writev_submit_io()`,
+`dxb_storage_write_submit_io_validate()`,
+`dxb_storage_writev_submit_io_validate()`, `dxb_storage_write_data()`, and
+`dxb_storage_writev_data()`, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.110` batch, `1.132` crud, `0.997` iterate,
+`1.000` get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
