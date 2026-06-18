@@ -5851,6 +5851,22 @@ CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
 passed with forced/default ratios of `1.153` batch, `1.163` crud, `0.800`
 iterate, `0.992` get, and `1.079` delete.
 
+A later direct data-read descriptor cleanup added `dxb_storage_read_data()` for
+full-page data-file reads. Page-cache single-page fills, large-overflow
+materialization, and defrag source-page reads now submit checked
+`dxb_data_read_io_t` descriptors; metadata reads, header probes, and portable
+environment-copy chunk reads remain byte-oriented. Verification passed
+`git diff --check`, source scans proving data-read descriptor submissions no
+longer call `dxb_storage_read_bytes()` directly in `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke`
+CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
+passed with forced/default ratios of `1.123` batch, `1.162` crud, `0.841`
+iterate, `1.067` get, and `1.081` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

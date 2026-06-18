@@ -1551,6 +1551,19 @@ static inline int dxb_storage_make_data_read_io(const dxb_storage_t *storage, co
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_data_read_io_validate(const dxb_storage_t *storage, const dxb_data_read_io_t *io) {
+  dxb_data_read_io_t checked;
+  int rc = dxb_storage_make_data_read_io(storage, &io->pages, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.pages.pgno != io->pages.pgno || checked.pages.end_pgno != io->pages.end_pgno ||
+               checked.pages.npages != io->pages.npages || checked.pages.offset != io->pages.offset ||
+               checked.pages.bytes != io->pages.bytes || checked.bytes.offset != io->bytes.offset ||
+               checked.bytes.bytes != io->bytes.bytes))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_make_data_write_io_from_page(const dxb_storage_t *storage, const dxb_page_io_t *pages,
                                                           dxb_data_write_io_t *io) {
   int rc = dxb_storage_page_io_validate(storage, pages);
@@ -2003,6 +2016,7 @@ MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno
                                                  pgno_t limit_pgno, const enum resize_mode mode);
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
 static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_io_t *io, void *buf);
+static int dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_read_io_t *io, void *buf);
 static int dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_io_t *io, const void *buf);
 static int dxb_storage_write_meta_bytes(dxb_storage_t *storage, const dxb_byte_io_t *io, const void *buf);
 static int dxb_storage_write_meta(dxb_storage_t *storage, unsigned number, size_t payload_offset, size_t bytes,
@@ -19421,11 +19435,11 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
     err = dxb_storage_page_io(storage, arc->key_or_pgno, 1, &source_page);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    dxb_byte_io_t source_bytes;
-    err = dxb_storage_byte_io_from_page(&source_page, &source_bytes);
+    dxb_data_read_io_t source_read;
+    err = dxb_storage_make_data_read_io(storage, &source_page, &source_read);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_storage_read_bytes(storage, &source_bytes, dst);
+    err = dxb_storage_read_data(storage, &source_read, dst);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
@@ -19485,11 +19499,11 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
       err = dxb_storage_page_io(storage, src_pgno, 1, &source_page);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
-      dxb_byte_io_t source_bytes;
-      err = dxb_storage_byte_io_from_page(&source_page, &source_bytes);
+      dxb_data_read_io_t source_read;
+      err = dxb_storage_make_data_read_io(storage, &source_page, &source_read);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
-      err = dxb_storage_read_bytes(storage, &source_bytes, env->page_auxbuf);
+      err = dxb_storage_read_data(storage, &source_read, env->page_auxbuf);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
 #if MDBX_CHECKING > 1
@@ -21091,7 +21105,7 @@ static pgr_t dxb_storage_read_cached_page(dxb_storage_t *storage, const dxb_page
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
-  err = dxb_storage_read_bytes(storage, &read_io.bytes, entry->page);
+  err = dxb_storage_read_data(storage, &read_io, entry->page);
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
@@ -21180,7 +21194,7 @@ static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  err = dxb_storage_read_bytes(storage, &read_io.bytes, large);
+  err = dxb_storage_read_data(storage, &read_io, large);
   if (unlikely(err != MDBX_SUCCESS)) {
     osal_memalign_free(large);
     return err;
@@ -22010,6 +22024,13 @@ static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_i
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   return dxb_fault_inject("read-complete");
+}
+
+static int dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_read_io_t *io, void *buf) {
+  int rc = dxb_storage_data_read_io_validate(storage, io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_read_bytes(storage, &io->bytes, buf);
 }
 
 static int dxb_storage_write_bytes_to_channel(dxb_storage_t *storage, enum dxb_io_channel channel,
