@@ -21678,18 +21678,32 @@ bailout:
   return pgr_error(err);
 }
 
-static int dxb_storage_detach_materialized_large_page(dxb_storage_t *storage, pgr_t *pgr, page_t *large,
-                                                      const dxb_cache_materialize_io_t *io) {
+static inline dxb_cache_result_t dxb_cache_result(int err, size_t payload_bytes, size_t npages, bool detached) {
+  const dxb_cache_result_t result = {err, payload_bytes, npages, detached};
+  return result;
+}
+
+static inline dxb_cache_result_t dxb_cache_error(int err) {
+  return dxb_cache_result(err, 0, 0, false);
+}
+
+static inline dxb_cache_result_t dxb_cache_materialized(const dxb_cache_materialize_io_t *io, bool detached) {
+  return dxb_cache_result(MDBX_SUCCESS, io->data.bytes.bytes, io->data.pages.npages, detached);
+}
+
+static dxb_cache_result_t dxb_storage_detach_materialized_large_page(dxb_storage_t *storage, pgr_t *pgr,
+                                                                     page_t *large,
+                                                                     const dxb_cache_materialize_io_t *io) {
   int err = dxb_storage_cache_materialize_io_validate(storage, io);
   if (unlikely(err != MDBX_SUCCESS)) {
     osal_memalign_free(large);
-    return err;
+    return dxb_cache_error(err);
   }
 
   page_cache_entry_t *const detached = osal_calloc(1, sizeof(*detached));
   if (unlikely(!detached)) {
     osal_memalign_free(large);
-    return MDBX_ENOMEM;
+    return dxb_cache_error(MDBX_ENOMEM);
   }
 
   page_ref_t old = pgr->ref;
@@ -21706,7 +21720,7 @@ static int dxb_storage_detach_materialized_large_page(dxb_storage_t *storage, pg
   pgr->ref.cache = detached;
   pgr->ref.npages = io->data.pages.npages;
   cursor_ref_release(nullptr, &old);
-  return MDBX_SUCCESS;
+  return dxb_cache_materialized(io, true);
 }
 
 static pgr_t page_cache_read_io(MDBX_txn *txn, const dxb_cache_read_io_t *io) {
@@ -21747,24 +21761,24 @@ static pgr_t page_cache_read(MDBX_txn *txn, const dxb_page_io_t *request, const 
   return page_cache_read_io(txn, &read);
 }
 
-static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr_t *pgr) {
+static dxb_cache_result_t dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr_t *pgr) {
   page_cache_entry_t *const entry = pgr->ref.cache;
   ASSERT(entry != nullptr && entry->storage == storage);
   const size_t npages = pgr->page->pages;
   dxb_cache_materialize_io_t materialize;
   int err = dxb_storage_make_cache_materialize_io(storage, &pgr->ref, npages, &materialize);
   if (unlikely(err != MDBX_SUCCESS))
-    return err;
+    return dxb_cache_error(err);
 
   page_t *large = nullptr;
   err = osal_memalign_alloc(globals.sys_pagesize, materialize.data.bytes.bytes, (void **)&large);
   if (unlikely(err != MDBX_SUCCESS))
-    return err;
+    return dxb_cache_error(err);
 
   err = dxb_storage_read_data(storage, &materialize.data, large).err;
   if (unlikely(err != MDBX_SUCCESS)) {
     osal_memalign_free(large);
-    return err;
+    return dxb_cache_error(err);
   }
 
   if (entry->owner) {
@@ -21791,7 +21805,7 @@ static int dxb_storage_materialize_cached_large_page(dxb_storage_t *storage, pgr
     pgr->ref.page = large;
     pgr->ref.npages = materialize.data.pages.npages;
   }
-  return MDBX_SUCCESS;
+  return dxb_cache_materialized(&materialize, false);
 }
 
 static int page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
@@ -21801,7 +21815,8 @@ static int page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
 
   const size_t npages = pgr->page->pages;
   tASSERT0(txn, npages > 1 && (size_t)pgr->page->pgno + npages <= txn->geo.first_unallocated);
-  return dxb_storage_materialize_cached_large_page(entry->storage, pgr);
+  dxb_cache_result_t result = dxb_storage_materialize_cached_large_page(entry->storage, pgr);
+  return result.err;
 }
 
 int dxb_storage_init(dxb_storage_t *storage) {

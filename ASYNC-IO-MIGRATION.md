@@ -6984,6 +6984,28 @@ ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The
 paired benchmark gate passed with forced/default ratios of `1.101` batch,
 `1.128` crud, `0.903` iterate, `1.047` get, and `1.068` delete.
 
+A later page-cache cleanup added `dxb_cache_result_t` for cache
+materialization. `dxb_storage_materialize_cached_large_page()` and
+`dxb_storage_detach_materialized_large_page()` now return an explicit result
+containing the error code, materialized payload byte count, materialized page
+count, and whether a shared pinned cache entry had to be detached. The existing
+`page_cache_read_large()` caller still unwraps the same `.err` value, preserving
+overflow-page read behavior and cursor-visible page lifetimes while exposing
+materialization completion data. This gives future async page-cache read
+backends a place to report extent completion and detach decisions without
+threading state through side effects only. Verification passed
+`git diff --check`, source scans covering `dxb_cache_result_t`, cache result helpers, and
+every `dxb_storage_materialize_cached_large_page()` and
+`dxb_storage_detach_materialized_large_page()` call site, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.140` batch, `1.153`
+crud, `0.867` iterate, `1.074` get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
