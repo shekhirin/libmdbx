@@ -120,6 +120,15 @@ typedef struct dxb_data_write_io {
   dxb_byte_io_t bytes;
 } dxb_data_write_io_t;
 
+typedef struct dxb_meta_write_io {
+  dxb_page_io_t page;
+  dxb_byte_io_t bytes;
+  unsigned number;
+  size_t payload_offset;
+  size_t payload_bytes;
+  bool full_page;
+} dxb_meta_write_io_t;
+
 typedef struct dxb_page_coverage_io {
   dxb_byte_io_t request;
   dxb_page_io_t pages;
@@ -1580,6 +1589,75 @@ static inline int dxb_storage_make_data_write_io_from_page(const dxb_storage_t *
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_make_meta_page_write_io(const dxb_storage_t *storage, unsigned number,
+                                                      dxb_meta_write_io_t *io) {
+  if (unlikely(number >= NUM_METAS))
+    return MDBX_EINVAL;
+
+  dxb_page_io_t page;
+  int rc = dxb_storage_page_io(storage, number, 1, &page);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_byte_io_t bytes;
+  rc = dxb_storage_byte_io_from_page(&page, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->page = page;
+  io->bytes = bytes;
+  io->number = number;
+  io->payload_offset = 0;
+  io->payload_bytes = bytes.bytes;
+  io->full_page = true;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_meta_payload_write_io(const dxb_storage_t *storage, unsigned number,
+                                                         size_t payload_offset, size_t payload_bytes,
+                                                         dxb_meta_write_io_t *io) {
+  if (unlikely(number >= NUM_METAS || payload_offset > sizeof(meta_t) ||
+               payload_bytes > sizeof(meta_t) - payload_offset || payload_offset > SIZE_MAX - PAGEHDRSZ))
+    return MDBX_EINVAL;
+
+  dxb_page_io_t page;
+  int rc = dxb_storage_page_io(storage, number, 1, &page);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_byte_io_t page_bytes;
+  rc = dxb_storage_byte_io_from_page(&page, &page_bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_byte_io_t bytes;
+  rc = dxb_storage_byte_subrange_io(&page_bytes, PAGEHDRSZ + payload_offset, payload_bytes, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->page = page;
+  io->bytes = bytes;
+  io->number = number;
+  io->payload_offset = payload_offset;
+  io->payload_bytes = payload_bytes;
+  io->full_page = false;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_meta_write_io_validate(const dxb_storage_t *storage, const dxb_meta_write_io_t *io) {
+  dxb_meta_write_io_t checked;
+  int rc = io->full_page ? dxb_storage_make_meta_page_write_io(storage, io->number, &checked)
+                         : dxb_storage_make_meta_payload_write_io(storage, io->number, io->payload_offset,
+                                                                  io->payload_bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.page.pgno != io->page.pgno || checked.page.end_pgno != io->page.end_pgno ||
+               checked.page.npages != io->page.npages || checked.page.offset != io->page.offset ||
+               checked.page.bytes != io->page.bytes || checked.bytes.offset != io->bytes.offset ||
+               checked.bytes.bytes != io->bytes.bytes || checked.number != io->number ||
+               checked.payload_offset != io->payload_offset || checked.payload_bytes != io->payload_bytes ||
+               checked.full_page != io->full_page))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_page_ref_span_io(const dxb_storage_t *storage, const page_ref_t *ref, size_t npages,
                                                dxb_page_io_t *io) {
   if (unlikely(!ref->page))
@@ -2019,8 +2097,7 @@ static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_i
 static int dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_read_io_t *io, void *buf);
 static int dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_io_t *io, const void *buf);
 static int dxb_storage_write_meta_bytes(dxb_storage_t *storage, const dxb_byte_io_t *io, const void *buf);
-static int dxb_storage_write_meta(dxb_storage_t *storage, unsigned number, size_t payload_offset, size_t bytes,
-                                  const void *buf);
+static int dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_write_io_t *io, const void *buf);
 static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_page_io_t *io,
                                              bool include_reusable);
 #if MDBX_USE_COPYFILERANGE
@@ -22100,25 +22177,11 @@ static int dxb_storage_write_meta_bytes(dxb_storage_t *storage, const dxb_byte_i
   return dxb_storage_write_bytes_to_channel(storage, dxb_io_meta, io, buf);
 }
 
-static int dxb_storage_write_meta(dxb_storage_t *storage, unsigned number, size_t payload_offset, size_t bytes,
-                                  const void *buf) {
-  if (unlikely(number >= NUM_METAS || payload_offset > sizeof(meta_t) || bytes > sizeof(meta_t) - payload_offset ||
-               payload_offset > SIZE_MAX - PAGEHDRSZ))
-    return MDBX_EINVAL;
-
-  dxb_page_io_t page_span;
-  int rc = dxb_storage_page_io(storage, number, 1, &page_span);
+static int dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_write_io_t *io, const void *buf) {
+  int rc = dxb_storage_meta_write_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  dxb_byte_io_t page_io;
-  rc = dxb_storage_byte_io_from_page(&page_span, &page_io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_byte_io_t io;
-  rc = dxb_storage_byte_subrange_io(&page_io, PAGEHDRSZ + payload_offset, bytes, &io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_write_meta_bytes(storage, &io, buf);
+  return dxb_storage_write_meta_bytes(storage, &io->bytes, buf);
 }
 
 static int dxb_storage_iov_bytes(const struct iovec *iov, size_t sgvcnt, size_t *bytes) {
@@ -23369,13 +23432,17 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
   const meta_t undo_meta = *target;
   eASSERT0(env, pending->trees.gc.flags == MDBX_INTEGERKEY);
   eASSERT0(env, check_table_flags(pending->trees.main.flags));
-  rc = dxb_storage_write_meta(storage, target_number, 0, sizeof(meta_t), pending);
+  dxb_meta_write_io_t target_write;
+  rc = dxb_storage_make_meta_payload_write_io(storage, target_number, 0, sizeof(meta_t), &target_write);
+  if (unlikely(rc != MDBX_SUCCESS))
+    goto fail;
+  rc = dxb_storage_write_meta(storage, &target_write, pending);
   if (unlikely(rc != MDBX_SUCCESS)) {
   undo:
     DEBUG("%s", "write failed, disk error?");
     /* On a failure, the pagecache still contains the new data.
      * Try write some old data back, to prevent it from being used. */
-    dxb_storage_write_meta(storage, target_number, 0, sizeof(meta_t), &undo_meta);
+    dxb_storage_write_meta(storage, &target_write, &undo_meta);
     goto fail;
   }
   /* sync meta-pages */
@@ -29760,7 +29827,12 @@ static int meta_unsteady(MDBX_env *env, dxb_storage_t *const storage, const txni
 
   if (MDBX_ENABLE_PGOP_STAT)
     env->lck->pgops.wops.weak += 1;
-  int err = dxb_storage_write_meta(storage, pgno, offsetof(meta_t, sign), sizeof(meta->sign), ptr);
+  dxb_meta_write_io_t wipe_write;
+  int err = dxb_storage_make_meta_payload_write_io(storage, pgno, offsetof(meta_t, sign), sizeof(meta->sign),
+                                                   &wipe_write);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  err = dxb_storage_write_meta(storage, &wipe_write, ptr);
   if (likely(err == MDBX_SUCCESS)) {
     meta_shadow_copy_bytes(env, pgno, offsetof(meta_t, sign), sizeof(meta->sign), &wipe);
     return MDBX_RESULT_TRUE;
@@ -29930,15 +30002,11 @@ __cold int __must_check_result meta_override(MDBX_env *env, size_t target, txnid
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
   if (MDBX_ENABLE_PGOP_STAT)
     env->lck->pgops.wops.weak += 1;
-  dxb_page_io_t target_page_span;
-  rc = dxb_storage_page_io(storage, target_number, 1, &target_page_span);
+  dxb_meta_write_io_t target_page;
+  rc = dxb_storage_make_meta_page_write_io(storage, target_number, &target_page);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  dxb_byte_io_t target_page;
-  rc = dxb_storage_byte_io_from_page(&target_page_span, &target_page);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_write_meta_bytes(storage, &target_page, page);
+  rc = dxb_storage_write_meta(storage, &target_page, page);
   if (rc == MDBX_SUCCESS && dxb_storage_meta_write_uses_data_sync(storage)) {
     dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
     rc = dxb_storage_sync(storage, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);

@@ -5935,6 +5935,24 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.146` batch, `1.150`
 crud, `1.251` iterate, `0.972` get, and `1.067` delete.
 
+A later metadata write descriptor cleanup added `dxb_meta_write_io_t` for meta
+page writes. Meta commit, undo, steady-wipe, and full-page override paths now
+build checked metadata write descriptors before calling
+`dxb_storage_write_meta()`, so the storage boundary receives the meta page span
+and exact byte request together instead of loose `(number, payload offset,
+bytes)` arguments. Full meta-page overrides use a full-page descriptor, while
+normal commit and steady-wipe updates use payload subrange descriptors.
+Verification passed `git diff --check`, source scans proving the old loose
+`dxb_storage_write_meta()` call shape is gone from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.089` batch, `1.158` crud, `1.008` iterate,
+`1.000` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
