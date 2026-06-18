@@ -7705,6 +7705,27 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.117` batch, `1.165` crud, `0.969` iterate, `0.971`
 get, and `1.090` delete.
 
+A later data-file open result cleanup extended `dxb_open_result_t` with
+`submitted` and `completed` flags, matching the async-facing state used by the
+other explicit storage result types. Data, dsync, and Windows overlapped
+storage opens now report submitted/completed successful descriptor opens and
+submitted/not-completed open failures while keeping descriptor-state fields for
+data/meta/dsync/overlapped handles. Existing callers still unwrap only `.err`,
+preserving public open/setup behavior while giving a future async-capable
+backend a concrete lifecycle state for descriptor-open completion. Verification
+passed `git diff --check`, source scans covering `dxb_open_result_t`,
+`dxb_open_result()`, `dxb_open_completed()`,
+`dxb_open_submitted_error()`, `dxb_open_from_rc()`, and every
+`dxb_storage_open_*()` call site, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.091` batch, `1.149` crud, `0.872` iterate, `1.035`
+get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

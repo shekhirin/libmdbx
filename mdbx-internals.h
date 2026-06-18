@@ -1478,6 +1478,8 @@ typedef struct dxb_open_result {
   bool dsync_opened;
   bool overlapped_opened;
   bool meta_uses_dsync;
+  bool submitted;
+  bool completed;
 } dxb_open_result_t;
 
 typedef struct dxb_close_result {
