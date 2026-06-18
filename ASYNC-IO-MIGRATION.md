@@ -10284,6 +10284,38 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.107` batch, `1.151` crud, `1.214` iterate,
 `1.019` get, and `1.089` delete.
 
+A later environment-copy export cleanup added
+`dxb_copy_asis_export_submit_io_t`, `copy_asis_submit_sendfile()`, and
+`copy_asis_submit_copyrange()` for the `copy_asis()` `sendfile()` and
+destination-file `copy_file_range()` acceleration paths. The request captures
+the data storage handle, requested source byte range, destination offset,
+destination fd, rebuilt export descriptor, and generic export-submit
+descriptor. Validation rechecks the export descriptor, generic submit
+descriptor, fd and offset identity, source-range coverage, and a rebuilt request
+before submitting. Submit still delegates to
+`dxb_storage_submit_sendfile_data_to_fd()` or
+`dxb_storage_submit_copy_data_to_fd()`, preserving short-copy advancement,
+fallback/unavailable handling, cross-filesystem detection, MVCC throttle
+parking, and the portable read/write fallback. This removes the remaining inline
+direct kernel-assisted export submits from `copy_asis()` and gives
+environment-copy fast-path export dispatch explicit async-capable request
+points. Verification passed `git diff --check`, source scans covering
+`dxb_copy_asis_export_submit_io_t`, `copy_asis_make_export_submit_io()`,
+`copy_asis_export_submit_io_validate()`, `copy_asis_submit_sendfile()`,
+`copy_asis_submit_copyrange()`, the updated `copy_asis()` fast-path call sites,
+and the absence of the old inline
+`dxb_storage_submit_sendfile_data_to_fd(storage, &export_submit)` and
+`dxb_storage_submit_copy_data_to_fd(storage, &export_submit)` calls, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.107` batch, `1.157` crud, `0.983` iterate,
+`1.072` get, and `1.094` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
