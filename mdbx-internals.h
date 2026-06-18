@@ -1366,6 +1366,8 @@ typedef struct dxb_write_result {
 typedef struct dxb_sync_result {
   int err;
   size_t payload_bytes;
+  bool submitted;
+  bool completed;
 } dxb_sync_result_t;
 
 typedef struct dxb_filesize_result {

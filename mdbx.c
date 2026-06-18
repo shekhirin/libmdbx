@@ -22931,17 +22931,25 @@ static inline int dxb_fault_inject_after_partial_writev(const char *operation, m
 static inline enum dxb_fault_write_order dxb_fault_write_order(void) { return dxb_fault_write_order_forward; }
 #endif /* MDBX_ENABLE_DXB_FAULT_INJECTION */
 
-static inline dxb_sync_result_t dxb_sync_result(int err, size_t payload_bytes) {
-  const dxb_sync_result_t result = {err, payload_bytes};
+static inline dxb_sync_result_t dxb_sync_result(int err, size_t payload_bytes, bool submitted, bool completed) {
+  const dxb_sync_result_t result = {err, payload_bytes, submitted, completed};
   return result;
 }
 
 static inline dxb_sync_result_t dxb_sync_error(int err) {
-  return dxb_sync_result(err, 0);
+  return dxb_sync_result(err, 0, false, false);
+}
+
+static inline dxb_sync_result_t dxb_sync_submitted_error(int err) {
+  return dxb_sync_result(err, 0, true, false);
+}
+
+static inline dxb_sync_result_t dxb_sync_noop_completed(void) {
+  return dxb_sync_result(MDBX_SUCCESS, 0, false, true);
 }
 
 static inline dxb_sync_result_t dxb_sync_completed(size_t payload_bytes) {
-  return dxb_sync_result(MDBX_SUCCESS, payload_bytes);
+  return dxb_sync_result(MDBX_SUCCESS, payload_bytes, true, true);
 }
 
 static dxb_sync_result_t dxb_storage_sync_io(const dxb_storage_t *storage, const dxb_sync_io_t *io) {
@@ -22958,12 +22966,12 @@ static dxb_sync_result_t dxb_storage_sync_io(const dxb_storage_t *storage, const
   }
   rc = osal_fsync(dxb_storage_data_fd(storage), mode_bits);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_sync_error(rc);
+    return has_sync_work ? dxb_sync_submitted_error(rc) : dxb_sync_error(rc);
   if (!has_sync_work)
-    return dxb_sync_completed(0);
+    return dxb_sync_noop_completed();
   rc = dxb_fault_inject("sync-complete");
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_sync_error(rc);
+    return dxb_sync_submitted_error(rc);
   return dxb_sync_completed(io->bytes.bytes);
 }
 

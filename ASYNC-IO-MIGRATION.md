@@ -7507,6 +7507,27 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.112` batch, `1.142` crud, `1.003` iterate, `0.914`
 get, and `1.079` delete.
 
+A later sync result cleanup extended `dxb_sync_result_t` with `submitted` and
+`completed` flags, matching the direct read/write and queued dirty-write
+completion shape. `dxb_storage_sync_io()` now distinguishes validation and
+pre-submit sync faults from submitted-but-not-completed fsync/fdatasync
+failures, while `MDBX_SYNC_NONE`/`MDBX_SYNC_KICK` no-op syncs can report
+completed without a submitted kernel operation. This keeps data and metadata
+sync boundaries explicit for future async completion handling without changing
+current callers that still unwrap only `.err`. Verification passed `git diff
+--check`, source scans covering `dxb_sync_result_t`, `dxb_sync_result()`,
+`dxb_sync_error()`, `dxb_sync_submitted_error()`,
+`dxb_sync_noop_completed()`, `dxb_sync_completed()`, and the storage sync path,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.113` batch, `1.155` crud, `0.977` iterate, `1.080`
+get, and `1.080` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
