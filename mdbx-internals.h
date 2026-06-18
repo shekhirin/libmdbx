@@ -1519,6 +1519,8 @@ typedef struct dxb_copy_result {
   bool copied;
   bool unavailable;
   bool not_same_filesystem;
+  bool submitted;
+  bool completed;
 } dxb_copy_result_t;
 
 typedef struct dxb_cache_result {

@@ -23244,25 +23244,38 @@ static inline dxb_resize_result_t dxb_resize_state(const dxb_storage_t *storage,
 
 #if MDBX_USE_COPYFILERANGE || MDBX_USE_SENDFILE
 static inline dxb_copy_result_t dxb_copy_result(int err, size_t payload_bytes, bool copied, bool unavailable,
-                                                bool not_same_filesystem) {
-  const dxb_copy_result_t result = {err, payload_bytes, copied, unavailable, not_same_filesystem};
+                                                bool not_same_filesystem, bool submitted, bool completed) {
+  const dxb_copy_result_t result = {err, payload_bytes, copied, unavailable, not_same_filesystem, submitted,
+                                    completed};
   return result;
 }
 
 static inline dxb_copy_result_t dxb_copy_error(int err) {
-  return dxb_copy_result(err, 0, false, false, false);
+  return dxb_copy_result(err, 0, false, false, false, false, false);
+}
+
+static inline dxb_copy_result_t dxb_copy_submitted_error(int err) {
+  return dxb_copy_result(err, 0, false, false, false, true, false);
+}
+
+static inline dxb_copy_result_t dxb_copy_incomplete_error(int err, size_t payload_bytes) {
+  return dxb_copy_result(err, payload_bytes, false, false, false, true, false);
+}
+
+static inline dxb_copy_result_t dxb_copy_completed_error(int err, size_t payload_bytes) {
+  return dxb_copy_result(err, payload_bytes, false, false, false, true, true);
 }
 
 static inline dxb_copy_result_t dxb_copy_completed(size_t payload_bytes) {
-  return dxb_copy_result(MDBX_SUCCESS, payload_bytes, true, false, false);
+  return dxb_copy_result(MDBX_SUCCESS, payload_bytes, true, false, false, true, true);
 }
 
 static inline dxb_copy_result_t dxb_copy_unavailable(void) {
-  return dxb_copy_result(MDBX_RESULT_TRUE, 0, false, true, false);
+  return dxb_copy_result(MDBX_RESULT_TRUE, 0, false, true, false, true, false);
 }
 
 static inline dxb_copy_result_t dxb_copy_cross_device(void) {
-  return dxb_copy_result(MDBX_RESULT_TRUE, 0, false, false, true);
+  return dxb_copy_result(MDBX_RESULT_TRUE, 0, false, false, true, true, false);
 }
 #endif /* MDBX_USE_COPYFILERANGE || MDBX_USE_SENDFILE */
 
@@ -23282,18 +23295,18 @@ static dxb_copy_result_t dxb_storage_copy_data_to_fd(const dxb_storage_t *storag
       copy_file_range(dxb_storage_data_fd(storage), &src_offset_arg, dst_fd, &dst_offset_arg, src->bytes, 0);
   if (likely(bytes_copied > 0)) {
     if (unlikely((size_t)bytes_copied > src->bytes))
-      return dxb_copy_error(MDBX_EIO);
+      return dxb_copy_incomplete_error(MDBX_EIO, (size_t)bytes_copied);
     return dxb_copy_completed((size_t)bytes_copied);
   }
   if (bytes_copied == 0)
-    return dxb_copy_error(MDBX_ENODATA);
+    return dxb_copy_submitted_error(MDBX_ENODATA);
 
   const int err = errno;
   if (err == EXDEV || err == /* workaround for ecryptfs bug(s), maybe useful for others FS */ EINVAL)
     return dxb_copy_cross_device();
   if (ignore_enosys_and_eagain(err) == MDBX_RESULT_TRUE)
     return dxb_copy_unavailable();
-  return dxb_copy_error(err);
+  return dxb_copy_submitted_error(err);
 }
 
 static dxb_copy_result_t dxb_storage_copy_data(dxb_storage_t *storage, const dxb_data_copy_io_t *io) {
@@ -23312,15 +23325,18 @@ static dxb_copy_result_t dxb_storage_copy_data(dxb_storage_t *storage, const dxb
   off_t dst_offset = (off_t)io->dst_bytes.offset;
   const mdbx_filehandle_t data_fd = dxb_storage_data_fd(storage);
   const ssize_t copied = copy_file_range(data_fd, &src_offset, data_fd, &dst_offset, io->src_bytes.bytes, 0);
-  if (unlikely(copied != (ssize_t)io->src_bytes.bytes))
-    return dxb_copy_error((copied < 0) ? errno : MDBX_EIO);
+  if (unlikely(copied != (ssize_t)io->src_bytes.bytes)) {
+    if (copied > 0)
+      return dxb_copy_incomplete_error(MDBX_EIO, (size_t)copied);
+    return dxb_copy_submitted_error((copied < 0) ? errno : MDBX_EIO);
+  }
   rc = dxb_fault_inject("copy-complete");
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_copy_error(rc);
+    return dxb_copy_submitted_error(rc);
   dxb_cache_invalidate_io_t invalidate;
   rc = dxb_storage_make_cache_invalidate_io(storage, &io->dst_pages, false, &invalidate);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_copy_error(rc);
+    return dxb_copy_completed_error(rc, io->src_bytes.bytes);
   dxb_storage_invalidate_cached_io(storage, &invalidate);
   return dxb_copy_completed(io->src_bytes.bytes);
 }
@@ -23341,16 +23357,16 @@ static dxb_copy_result_t dxb_storage_sendfile_data_to_fd(const dxb_storage_t *st
   const ssize_t written = sendfile(dst_fd, dxb_storage_data_fd(storage), &src_offset_arg, src->bytes);
   if (likely(written > 0)) {
     if (unlikely((size_t)written > src->bytes))
-      return dxb_copy_error(MDBX_EIO);
+      return dxb_copy_incomplete_error(MDBX_EIO, (size_t)written);
     return dxb_copy_completed((size_t)written);
   }
   if (written == 0)
-    return dxb_copy_error(MDBX_ENODATA);
+    return dxb_copy_submitted_error(MDBX_ENODATA);
 
   const int err = errno;
   if (ignore_enosys_and_eagain(err) == MDBX_RESULT_TRUE)
     return dxb_copy_unavailable();
-  return dxb_copy_error(err);
+  return dxb_copy_submitted_error(err);
 }
 #endif /* MDBX_USE_SENDFILE */
 

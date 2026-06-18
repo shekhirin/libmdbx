@@ -7571,6 +7571,29 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.105` batch, `1.154`
 crud, `0.881` iterate, `1.030` get, and `1.079` delete.
 
+A later copy result cleanup extended `dxb_copy_result_t` with `submitted` and
+`completed` flags, matching the async-facing state used by the other explicit
+storage operations. Export `copy_file_range()`/`sendfile()` helpers and the
+internal same-file copy path now distinguish validation/pre-submit failures from
+submitted-but-incomplete syscall failures, unavailable/cross-device fallback
+results, partial copy completions, and post-copy cache-invalidation descriptor
+failures that occur after the kernel copy completed. `copied` remains true only
+on successful copies so existing fallback control flow is unchanged.
+Verification passed `git diff --check`, source scans covering
+`dxb_copy_result_t`, `dxb_copy_result()`, `dxb_copy_error()`,
+`dxb_copy_submitted_error()`, `dxb_copy_incomplete_error()`,
+`dxb_copy_completed_error()`, `dxb_copy_completed()`,
+`dxb_copy_unavailable()`, `dxb_copy_cross_device()`, and the copy result
+callers, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.106` batch, `1.163` crud, `1.183` iterate, `0.953`
+get, and `1.080` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
