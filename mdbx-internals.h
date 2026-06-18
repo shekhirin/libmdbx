@@ -1498,6 +1498,8 @@ typedef struct dxb_resize_result {
   size_t current;
   size_t limit;
   uint64_t filesize;
+  bool submitted;
+  bool completed;
 } dxb_resize_result_t;
 
 typedef struct dxb_range_result {

@@ -7594,6 +7594,27 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.106` batch, `1.163` crud, `1.183` iterate, `0.953`
 get, and `1.080` delete.
 
+A later resize result cleanup extended `dxb_resize_result_t` with `submitted`
+and `completed` flags, matching the async-facing state used by the lower-level
+filesize operations that perform `ftruncate()`/filesize probes. Storage setup
+and resize helpers now distinguish validation/pre-submit failures from
+submitted filesystem size operations, preserve the submitted/completed state
+when post-operation storage-state updates fail, and report successful setup or
+resize after the underlying filesize operation completes. Current callers still
+unwrap only `.err`, so the public behavior is unchanged while future async
+resize completion handling gets an explicit state boundary. Verification passed
+`git diff --check`, source scans covering `dxb_resize_result_t`,
+`dxb_resize_result()`, `dxb_resize_state()`, `dxb_resize_error()`,
+`dxb_resize_after_filesize()`, and the setup/resize callers, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.107` batch, `1.160`
+crud, `1.298` iterate, `0.955` get, and `1.067` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

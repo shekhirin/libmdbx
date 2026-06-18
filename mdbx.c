@@ -23232,14 +23232,25 @@ static dxb_filesize_result_t dxb_storage_fetch_filesize(dxb_storage_t *storage) 
   return dxb_filesize_completed(filesize);
 }
 
-static inline dxb_resize_result_t dxb_resize_result(int err, size_t current, size_t limit, uint64_t filesize) {
-  const dxb_resize_result_t result = {err, current, limit, filesize};
+static inline dxb_resize_result_t dxb_resize_result(int err, size_t current, size_t limit, uint64_t filesize,
+                                                    bool submitted, bool completed) {
+  const dxb_resize_result_t result = {err, current, limit, filesize, submitted, completed};
   return result;
 }
 
-static inline dxb_resize_result_t dxb_resize_state(const dxb_storage_t *storage, int err) {
+static inline dxb_resize_result_t dxb_resize_state(const dxb_storage_t *storage, int err, bool submitted,
+                                                   bool completed) {
   return dxb_resize_result(err, dxb_storage_current_size(storage), dxb_storage_limit_size(storage),
-                           dxb_storage_filesize(storage));
+                           dxb_storage_filesize(storage), submitted, completed);
+}
+
+static inline dxb_resize_result_t dxb_resize_error(const dxb_storage_t *storage, int err) {
+  return dxb_resize_state(storage, err, false, false);
+}
+
+static inline dxb_resize_result_t dxb_resize_after_filesize(const dxb_storage_t *storage, int err,
+                                                            dxb_filesize_result_t io) {
+  return dxb_resize_state(storage, err, io.submitted, io.completed);
 }
 
 #if MDBX_USE_COPYFILERANGE || MDBX_USE_SENDFILE
@@ -23375,58 +23386,63 @@ static dxb_resize_result_t dxb_storage_setup_size(dxb_storage_t *storage, const 
   ASSERT(dxb_storage_pagesize_ln(storage) > 0);
   int rc = dxb_storage_size_io_validate(target);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_resize_state(storage, rc);
+    return dxb_resize_error(storage, rc);
   if ((flags & MDBX_RDONLY) == 0 && (options & MMAP_OPTION_SETLENGTH) != 0) {
-    rc = dxb_storage_set_filesize_bytes(storage, target->current).err;
+    dxb_filesize_result_t setsize = dxb_storage_set_filesize_bytes(storage, target->current);
+    rc = setsize.err;
     if (unlikely(rc != MDBX_SUCCESS))
-      return dxb_resize_state(storage, rc);
+      return dxb_resize_after_filesize(storage, rc, setsize);
     rc = dxb_storage_set_size_with_known_filesize(storage, target).err;
     if (unlikely(rc != MDBX_SUCCESS))
-      return dxb_resize_state(storage, rc);
+      return dxb_resize_after_filesize(storage, rc, setsize);
+    return dxb_resize_after_filesize(storage, MDBX_SUCCESS, setsize);
   } else {
-    rc = dxb_storage_fetch_filesize(storage).err;
+    dxb_filesize_result_t filesize = dxb_storage_fetch_filesize(storage);
+    rc = filesize.err;
     if (unlikely(rc != MDBX_SUCCESS))
-      return dxb_resize_state(storage, rc);
+      return dxb_resize_after_filesize(storage, rc, filesize);
     rc = dxb_storage_set_limit_from_filesize(storage, target->limit).err;
     if (unlikely(rc != MDBX_SUCCESS))
-      return dxb_resize_state(storage, rc);
+      return dxb_resize_after_filesize(storage, rc, filesize);
+    return dxb_resize_after_filesize(storage, MDBX_SUCCESS, filesize);
   }
-  return dxb_resize_state(storage, MDBX_SUCCESS);
 }
 
 static dxb_resize_result_t dxb_storage_resize_size(dxb_storage_t *storage, const dxb_size_io_t *target,
                                                    const unsigned flags) {
   int rc = dxb_storage_size_io_validate(target);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_resize_state(storage, rc);
+    return dxb_resize_error(storage, rc);
 
-  rc = dxb_storage_fetch_filesize(storage).err;
+  dxb_filesize_result_t filesize_result = dxb_storage_fetch_filesize(storage);
+  rc = filesize_result.err;
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_resize_state(storage, rc);
+    return dxb_resize_after_filesize(storage, rc, filesize_result);
 
   if (flags & MDBX_RDONLY) {
-    const uint64_t filesize = dxb_storage_filesize(storage);
-    if (target->current > filesize)
+    const uint64_t observed_filesize = dxb_storage_filesize(storage);
+    if (target->current > observed_filesize)
       rc = MDBX_UNABLE_EXTEND_MAPSIZE;
-    else if (target->current < filesize && filesize > target->limit)
+    else if (target->current < observed_filesize && observed_filesize > target->limit)
       rc = MDBX_EPERM;
     const int err = dxb_storage_set_limit_from_filesize(storage, target->limit).err;
     if (unlikely(err != MDBX_SUCCESS))
-      return dxb_resize_state(storage, err);
-    return dxb_resize_state(storage, rc);
+      return dxb_resize_after_filesize(storage, err, filesize_result);
+    return dxb_resize_after_filesize(storage, rc, filesize_result);
   }
 
-  const uint64_t filesize = dxb_storage_filesize(storage);
-  if (filesize != target->current) {
-    if (target->current > filesize || (flags & txn_shrink_allowed)) {
-      rc = dxb_storage_set_filesize_bytes(storage, target->current).err;
+  const uint64_t observed_filesize = dxb_storage_filesize(storage);
+  if (observed_filesize != target->current) {
+    if (target->current > observed_filesize || (flags & txn_shrink_allowed)) {
+      filesize_result = dxb_storage_set_filesize_bytes(storage, target->current);
+      rc = filesize_result.err;
       if (unlikely(rc != MDBX_SUCCESS))
-        return dxb_resize_state(storage, rc);
+        return dxb_resize_after_filesize(storage, rc, filesize_result);
     }
   }
 
   rc = dxb_storage_set_size_with_known_filesize(storage, target).err;
-  return dxb_resize_state(storage, rc);
+  return dxb_resize_after_filesize(storage, rc, filesize_result);
 }
 
 __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive, const mdbx_mode_t mode_bits) {
