@@ -1381,6 +1381,12 @@ typedef struct dxb_range_result {
   size_t payload_bytes;
 } dxb_range_result_t;
 
+typedef struct dxb_readahead_result {
+  int err;
+  bool enabled;
+  bool supported;
+} dxb_readahead_result_t;
+
 typedef struct dxb_copy_result {
   int err;
   size_t payload_bytes;

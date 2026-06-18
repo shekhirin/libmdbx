@@ -22508,13 +22508,27 @@ static dxb_range_result_t dxb_storage_discard_io(dxb_storage_t *storage, const d
 #endif /* POSIX_FADV_DONTNEED */
 }
 
-static int dxb_storage_set_readahead(const dxb_storage_t *storage, bool enable) {
+static inline dxb_readahead_result_t dxb_readahead_result(int err, bool enabled, bool supported) {
+  const dxb_readahead_result_t result = {err, enabled, supported};
+  return result;
+}
+
+static inline dxb_readahead_result_t dxb_readahead_error(int err, bool enabled, bool supported) {
+  return dxb_readahead_result(err, enabled, supported);
+}
+
+static inline dxb_readahead_result_t dxb_readahead_completed(bool enabled, bool supported) {
+  return dxb_readahead_result(MDBX_SUCCESS, enabled, supported);
+}
+
+static dxb_readahead_result_t dxb_storage_set_readahead(const dxb_storage_t *storage, bool enable) {
 #if defined(F_RDAHEAD)
-  return unlikely(fcntl(dxb_storage_data_fd(storage), F_RDAHEAD, enable) == -1) ? errno : MDBX_SUCCESS;
+  if (unlikely(fcntl(dxb_storage_data_fd(storage), F_RDAHEAD, enable) == -1))
+    return dxb_readahead_error(errno, enable, true);
+  return dxb_readahead_completed(enable, true);
 #else
   (void)storage;
-  (void)enable;
-  return MDBX_SUCCESS;
+  return dxb_readahead_completed(enable, false);
 #endif /* F_RDAHEAD */
 }
 
@@ -23391,7 +23405,8 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
          window_coverage.pages.end_pgno);
 
   if (toggle) {
-    int err = dxb_storage_set_readahead(storage, enable);
+    dxb_readahead_result_t readahead_result = dxb_storage_set_readahead(storage, enable);
+    int err = readahead_result.err;
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }

@@ -7026,6 +7026,24 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.122` batch, `1.153`
 crud, `0.970` iterate, `0.962` get, and `1.071` delete.
 
+A later readahead-toggle cleanup added `dxb_readahead_result_t` for the direct
+data-file `F_RDAHEAD` switch. `dxb_storage_set_readahead()` now returns an
+explicit result containing the error code, requested enabled state, and whether
+the platform had a concrete toggle instead of returning only `int`. The public
+`dxb_set_readahead()` path still unwraps the same `.err` value, preserving
+resize/open readahead behavior while letting future async-capable advisory
+backends report no-op versus real descriptor-toggle completion. Verification
+passed `git diff --check`, source scans covering `dxb_readahead_result_t`,
+readahead result helpers, and every `dxb_storage_set_readahead()` call site,
+the GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six focused
+ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The
+paired benchmark gate passed with forced/default ratios of `1.077` batch,
+`1.145` crud, `0.991` iterate, `0.961` get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
