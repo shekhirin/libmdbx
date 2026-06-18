@@ -5990,6 +5990,25 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.100` batch, `1.167` crud, `0.819` iterate,
 `1.041` get, and `1.068` delete.
 
+A later typed write submission cleanup removed the private
+`dxb_storage_write_bytes_to_channel()` and `dxb_storage_write_meta_bytes()`
+shims. `dxb_storage_write_data()` and `dxb_storage_write_meta()` now validate
+their `dxb_data_write_io_t`/`dxb_meta_write_io_t` descriptors, preserve the
+same `write` and `write-complete` fault-injection hooks, and submit directly
+to `dxb_storage_pwrite()` on the data or metadata channel. Data writes still
+invalidate the page cache from the validated page span, while metadata writes
+remain descriptor-only at the storage boundary. Verification passed
+`git diff --check`, source scans proving the removed byte-channel and meta-byte
+write helpers are gone from `mdbx.c`, the GNUmake `mdbx_migration_smoke`
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite,
+forced tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six
+focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.163` batch, `1.164` crud, `1.021` iterate, `0.998`
+get, and `1.078` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -2135,7 +2135,6 @@ static int dxb_storage_read_bytes(const dxb_storage_t *storage, const dxb_byte_i
 static int dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_read_io_t *io, void *buf);
 static int dxb_storage_read_meta(const dxb_storage_t *storage, const dxb_meta_read_io_t *io, void *buf);
 static int dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_io_t *io, const void *buf);
-static int dxb_storage_write_meta_bytes(dxb_storage_t *storage, const dxb_byte_io_t *io, const void *buf);
 static int dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_write_io_t *io, const void *buf);
 static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_page_io_t *io,
                                              bool include_reusable);
@@ -22140,45 +22139,34 @@ static int dxb_storage_read_meta(const dxb_storage_t *storage, const dxb_meta_re
   return dxb_storage_read_bytes(storage, &io->bytes, buf);
 }
 
-static int dxb_storage_write_bytes_to_channel(dxb_storage_t *storage, enum dxb_io_channel channel,
-                                              const dxb_byte_io_t *io, const void *buf) {
-  if (unlikely(!dxb_storage_io_channel_valid(channel)))
-    return MDBX_EINVAL;
-  int rc = dxb_storage_byte_io_validate(io);
+static int dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_io_t *io, const void *buf) {
+  int rc = dxb_storage_data_write_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   rc = dxb_fault_inject("write");
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  rc = dxb_storage_pwrite(storage, channel, io, buf);
+  rc = dxb_storage_pwrite(storage, dxb_io_data, &io->bytes, buf);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   rc = dxb_fault_inject("write-complete");
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return MDBX_SUCCESS;
-}
-
-static int dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_io_t *io, const void *buf) {
-  int rc = dxb_storage_data_write_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_write_bytes_to_channel(storage, dxb_io_data, &io->bytes, buf);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   dxb_storage_invalidate_cached_io(storage, &io->pages, false);
   return MDBX_SUCCESS;
 }
 
-static int dxb_storage_write_meta_bytes(dxb_storage_t *storage, const dxb_byte_io_t *io, const void *buf) {
-  return dxb_storage_write_bytes_to_channel(storage, dxb_io_meta, io, buf);
-}
-
 static int dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_write_io_t *io, const void *buf) {
   int rc = dxb_storage_meta_write_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return dxb_storage_write_meta_bytes(storage, &io->bytes, buf);
+  rc = dxb_fault_inject("write");
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = dxb_storage_pwrite(storage, dxb_io_meta, &io->bytes, buf);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_fault_inject("write-complete");
 }
 
 static int dxb_storage_iov_bytes(const struct iovec *iov, size_t sgvcnt, size_t *bytes) {
