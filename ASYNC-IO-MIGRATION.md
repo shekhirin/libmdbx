@@ -6413,6 +6413,26 @@ the six focused ASAN `migration_smoke` CTest entries, and
 forced/default ratios of `1.130` batch, `1.170` crud, `0.869` iterate,
 `1.050` get, and `1.069` delete.
 
+A later portable export fallback cleanup added `dxb_data_export_read_io_t` for
+environment-copy fallback reads. The accelerated outbound copy paths already
+use `dxb_data_export_io_t`; the portable fallback now derives one checked
+descriptor carrying the source export byte range, the page-aligned data-read
+span, and the payload offset inside the read buffer. `copy_asis()` now consumes
+that descriptor instead of rebuilding a byte subrange, page coverage, read
+span, and payload offset inline before `osal_write()`. This keeps the last
+environment-copy read fallback behind a descriptor boundary that can later be
+submitted or completed asynchronously without changing the public synchronous
+copy API. Verification passed `git diff --check`, source scans covering export
+read descriptors and stale loose fallback range construction, the GNUmake
+`mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default and forced
+tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`), the six
+focused `migration_smoke` CTest entries, the full 15-test public migration
+CTest suite including tool roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke`
+CTest entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate
+passed with forced/default ratios of `1.008` batch, `0.995` crud, `1.112`
+iterate, `0.989` get, and `0.998` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -167,6 +167,12 @@ typedef struct dxb_data_export_io {
   uint64_t dst_offset;
 } dxb_data_export_io_t;
 
+typedef struct dxb_data_export_read_io {
+  dxb_data_export_io_t export;
+  dxb_data_read_io_t read;
+  size_t payload_offset;
+} dxb_data_export_read_io_t;
+
 struct page_cache_entry {
   page_cache_entry_t *next;
   page_cache_t *owner;
@@ -1892,6 +1898,80 @@ static inline int dxb_storage_make_data_export_io(const dxb_storage_t *storage, 
 
   io->source = source_coverage;
   io->dst_offset = dst_offset;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_make_data_export_read_io(const dxb_storage_t *storage, const dxb_byte_io_t *source,
+                                                       uint64_t dst_offset, size_t buffer_bytes,
+                                                       dxb_data_export_read_io_t *io) {
+  const size_t pagesize = dxb_storage_pagesize(storage);
+  if (unlikely(buffer_bytes < pagesize))
+    return MDBX_EINVAL;
+  int rc = dxb_storage_byte_io_validate(source);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  const size_t inpage_offset = (size_t)(source->offset & (uint64_t)(pagesize - 1));
+  const size_t max_payload = buffer_bytes - inpage_offset;
+  if (unlikely(max_payload == 0))
+    return MDBX_EINVAL;
+  const size_t payload_bytes = (max_payload < source->bytes) ? max_payload : source->bytes;
+
+  dxb_byte_io_t payload;
+  rc = dxb_storage_byte_subrange_io(source, 0, payload_bytes, &payload);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_data_export_io_t source_io;
+  rc = dxb_storage_make_data_export_io(storage, &payload, dst_offset, &source_io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_data_read_io_t read;
+  rc = dxb_storage_make_data_read_io(storage, &source_io.source.pages, &read);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  const uint64_t payload_offset64 = payload.offset - source_io.source.page_bytes.offset;
+  if (unlikely(payload_offset64 > SIZE_MAX))
+    return MDBX_EINVAL;
+  const size_t payload_offset = (size_t)payload_offset64;
+  if (unlikely(read.bytes.bytes > buffer_bytes || payload_offset > read.bytes.bytes ||
+               payload.bytes > read.bytes.bytes - payload_offset))
+    return MDBX_EINVAL;
+
+  io->export = source_io;
+  io->read = read;
+  io->payload_offset = payload_offset;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_data_export_read_io_validate(const dxb_storage_t *storage,
+                                                           const dxb_data_export_read_io_t *io) {
+  dxb_data_export_read_io_t checked;
+  int rc = dxb_storage_make_data_export_read_io(storage, &io->export.source.request, io->export.dst_offset,
+                                               io->read.bytes.bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.export.source.request.offset != io->export.source.request.offset ||
+               checked.export.source.request.bytes != io->export.source.request.bytes ||
+               checked.export.source.pages.pgno != io->export.source.pages.pgno ||
+               checked.export.source.pages.end_pgno != io->export.source.pages.end_pgno ||
+               checked.export.source.pages.npages != io->export.source.pages.npages ||
+               checked.export.source.pages.offset != io->export.source.pages.offset ||
+               checked.export.source.pages.bytes != io->export.source.pages.bytes ||
+               checked.export.source.page_bytes.offset != io->export.source.page_bytes.offset ||
+               checked.export.source.page_bytes.bytes != io->export.source.page_bytes.bytes ||
+               checked.export.dst_offset != io->export.dst_offset ||
+               checked.read.pages.pgno != io->read.pages.pgno ||
+               checked.read.pages.end_pgno != io->read.pages.end_pgno ||
+               checked.read.pages.npages != io->read.pages.npages ||
+               checked.read.pages.offset != io->read.pages.offset ||
+               checked.read.pages.bytes != io->read.pages.bytes ||
+               checked.read.bytes.offset != io->read.bytes.offset ||
+               checked.read.bytes.bytes != io->read.bytes.bytes ||
+               checked.payload_offset != io->payload_offset))
+    return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
 
@@ -6547,34 +6627,15 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
 #endif /* MDBX_USE_COPYFILERANGE */
 
     /* fallback to portable */
-    const size_t copy_buffer_bytes = (size_t)MDBX_ENVCOPY_WRITEBUF;
-    const size_t pagesize = dxb_storage_pagesize(storage);
-    if (unlikely(copy_buffer_bytes < pagesize)) {
-      rc = MDBX_EINVAL;
-      break;
-    }
-    const size_t inpage_offset = (size_t)(remaining.offset & (pagesize - 1));
-    const size_t max_payload = copy_buffer_bytes - inpage_offset;
-    const size_t chunk = (max_payload < remaining.bytes) ? max_payload : remaining.bytes;
-    dxb_byte_io_t request;
-    rc = dxb_storage_byte_subrange_io(&remaining, 0, chunk, &request);
+    dxb_data_export_read_io_t read_io;
+    rc = dxb_storage_make_data_export_read_io(storage, &remaining, dest_is_pipe ? 0 : offset,
+                                              (size_t)MDBX_ENVCOPY_WRITEBUF, &read_io);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
-    dxb_page_coverage_io_t coverage;
-    rc = dxb_storage_make_page_coverage_io(storage, &request, &coverage);
+    rc = dxb_storage_data_export_read_io_validate(storage, &read_io);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
-    dxb_data_read_io_t read_io;
-    rc = dxb_storage_make_data_read_io(storage, &coverage.pages, &read_io);
-    if (unlikely(rc != MDBX_SUCCESS))
-      break;
-    const size_t payload_offset = (size_t)(request.offset - coverage.page_bytes.offset);
-    if (unlikely(read_io.bytes.bytes > copy_buffer_bytes || payload_offset > read_io.bytes.bytes ||
-                 request.bytes > read_io.bytes.bytes - payload_offset)) {
-      rc = MDBX_EINVAL;
-      break;
-    }
-    rc = dxb_storage_read_data(storage, &read_io, data_buffer);
+    rc = dxb_storage_read_data(storage, &read_io.read, data_buffer);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     if (flags & MDBX_CP_THROTTLE_MVCC) {
@@ -6582,8 +6643,8 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
       if (unlikely(rc != MDBX_SUCCESS))
         break;
     }
-    rc = osal_write(fd, data_buffer + payload_offset, chunk);
-    offset += chunk;
+    rc = osal_write(fd, data_buffer + read_io.payload_offset, read_io.export.source.request.bytes);
+    offset += read_io.export.source.request.bytes;
   }
 
   /* Extend file if required */
