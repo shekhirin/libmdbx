@@ -45099,6 +45099,11 @@ static inline bool iov_dirty_write_walk_io_equal(const dxb_dirty_write_walk_io_t
   return a->channel == b->channel && a->ctx == b->ctx && a->callback == b->callback;
 }
 
+static inline bool iov_page_io_equal(const dxb_page_io_t *a, const dxb_page_io_t *b) {
+  return a->pgno == b->pgno && a->end_pgno == b->end_pgno && a->npages == b->npages &&
+         a->offset == b->offset && a->bytes == b->bytes;
+}
+
 static inline dxb_queue_op_result_t iov_queue_op_error(int err, const dxb_storage_t *storage) {
   return dxb_queue_op_result(err, storage ? dxb_storage_write_queue_const(storage) : nullptr, false, false, false,
                              false, false);
@@ -45271,6 +45276,95 @@ static dxb_queue_op_result_t iov_submit_queue_walk(const dxb_iov_queue_walk_subm
   return dxb_storage_submit_walk_write_queue(io->storage, &io->submit);
 }
 
+typedef struct dxb_iov_dirty_cache_invalidate_submit_io {
+  iov_ctx_t *ctx;
+  dxb_storage_t *storage;
+  enum dxb_io_channel channel;
+  dxb_data_write_io_t queued;
+  dxb_cache_invalidate_io_t invalidate;
+  dxb_cache_invalidate_submit_io_t submit;
+} dxb_iov_dirty_cache_invalidate_submit_io_t;
+
+static inline bool iov_data_write_io_equal(const dxb_data_write_io_t *a, const dxb_data_write_io_t *b) {
+  return iov_page_io_equal(&a->pages, &b->pages) && a->bytes.offset == b->bytes.offset &&
+         a->bytes.bytes == b->bytes.bytes;
+}
+
+static inline bool iov_cache_invalidate_io_equal(const dxb_cache_invalidate_io_t *a,
+                                                 const dxb_cache_invalidate_io_t *b) {
+  return iov_page_io_equal(&a->pages, &b->pages) && a->include_reusable == b->include_reusable;
+}
+
+static inline int iov_make_dirty_cache_invalidate_submit_io(
+    iov_ctx_t *ctx, const dxb_data_write_io_t *queued, dxb_iov_dirty_cache_invalidate_submit_io_t *io) {
+  if (unlikely(!ctx || !ctx->env || !ctx->storage || !queued || !io || ctx->err != MDBX_SUCCESS ||
+               ctx->storage != &ctx->env->dxb_storage || !dxb_io_channel_is_data(ctx->channel)))
+    return MDBX_EINVAL;
+
+  int err = dxb_storage_queued_data_write_io_validate(ctx->storage, queued);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  dxb_cache_invalidate_io_t invalidate;
+  err = dxb_storage_make_cache_invalidate_io(ctx->storage, &queued->pages, false, &invalidate);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  dxb_cache_invalidate_submit_io_t submit;
+  err = dxb_storage_make_cache_invalidate_submit_io(ctx->storage, &invalidate, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  io->ctx = ctx;
+  io->storage = ctx->storage;
+  io->channel = ctx->channel;
+  io->queued = *queued;
+  io->invalidate = invalidate;
+  io->submit = submit;
+  return MDBX_SUCCESS;
+}
+
+static inline int iov_dirty_cache_invalidate_submit_io_validate(
+    const dxb_iov_dirty_cache_invalidate_submit_io_t *io) {
+  if (unlikely(!io || !io->ctx || !io->ctx->env || !io->storage || io->ctx->err != MDBX_SUCCESS ||
+               io->storage != io->ctx->storage || io->storage != &io->ctx->env->dxb_storage ||
+               io->channel != io->ctx->channel || !dxb_io_channel_is_data(io->channel)))
+    return MDBX_EINVAL;
+
+  int err = dxb_storage_queued_data_write_io_validate(io->storage, &io->queued);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  err = dxb_storage_cache_invalidate_io_validate(io->storage, &io->invalidate);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  err = dxb_storage_cache_invalidate_submit_io_validate(io->storage, &io->submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(!iov_page_io_equal(&io->queued.pages, &io->invalidate.pages) || io->invalidate.include_reusable ||
+               !iov_cache_invalidate_io_equal(&io->invalidate, &io->submit.invalidate)))
+    return MDBX_EINVAL;
+
+  dxb_iov_dirty_cache_invalidate_submit_io_t checked;
+  err = iov_make_dirty_cache_invalidate_submit_io(io->ctx, &io->queued, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(checked.ctx != io->ctx || checked.storage != io->storage || checked.channel != io->channel ||
+               !iov_data_write_io_equal(&checked.queued, &io->queued) ||
+               !iov_cache_invalidate_io_equal(&checked.invalidate, &io->invalidate) ||
+               !iov_cache_invalidate_io_equal(&checked.submit.invalidate, &io->submit.invalidate)))
+    return MDBX_EINVAL;
+
+  return MDBX_SUCCESS;
+}
+
+static dxb_cache_result_t iov_submit_dirty_cache_invalidate(
+    const dxb_iov_dirty_cache_invalidate_submit_io_t *io) {
+  int err = iov_dirty_cache_invalidate_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_error(err);
+  return dxb_storage_submit_invalidate_cached_io(io->storage, &io->submit);
+}
+
 int iov_init(MDBX_txn *const txn, iov_ctx_t *ctx, size_t items, size_t npages, enum dxb_io_channel channel) {
   ctx->env = txn->env;
   ctx->storage = &ctx->env->dxb_storage;
@@ -45316,11 +45410,13 @@ static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_data_write_io_t *q
     if (unlikely(!dxb_io_channel_is_data(ctx->channel)))
       ctx->err = MDBX_EINVAL;
     else {
-      dxb_cache_invalidate_io_t invalidate;
-      const int err = dxb_storage_make_cache_invalidate_io(storage, &queued->pages, false, &invalidate);
-      if (likely(err == MDBX_SUCCESS))
-        dxb_storage_submit_invalidate_cached_request(storage, &invalidate);
-      else
+      dxb_iov_dirty_cache_invalidate_submit_io_t invalidate_submit;
+      const int err = iov_make_dirty_cache_invalidate_submit_io(ctx, queued, &invalidate_submit);
+      if (likely(err == MDBX_SUCCESS)) {
+        dxb_cache_result_t invalidate = iov_submit_dirty_cache_invalidate(&invalidate_submit);
+        if (unlikely(invalidate.err != MDBX_SUCCESS))
+          ctx->err = invalidate.err;
+      } else
         ctx->err = err;
     }
   }
