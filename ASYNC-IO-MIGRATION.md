@@ -11698,6 +11698,29 @@ tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.111`
 batch, `1.146` crud, `0.811` iterate, `1.062` get, and `1.059` delete.
 
+A later storage lifecycle reset cleanup reused the existing
+`dxb_reset_submit_io_t`, `dxb_storage_make_reset_submit_io()`, and
+`dxb_storage_submit_reset()` helpers for the reset work inside
+`dxb_storage_init()`, close-with-reset handling in `dxb_storage_submit_close()`,
+and `dxb_storage_deinit()`. These paths now construct and validate a reset
+submit descriptor before submitting, while raw `dxb_storage_reset()` remains
+the synchronous backend implementation behind that submit layer. This adds no
+new top-level submit structs, preserves init/deinit result accounting and
+close error propagation, and leaves the env-level data-reset submit wrappers
+unchanged. Verification passed `git diff --check`, source scans covering
+`dxb_storage_init()`, `dxb_storage_submit_close()`, `dxb_storage_deinit()`,
+`dxb_storage_reset()`, `dxb_storage_submit_reset()`, and
+`dxb_storage_make_reset_submit_io()`, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.153` batch, `1.122` crud, `0.804` iterate,
+`0.892` get, and `1.055` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

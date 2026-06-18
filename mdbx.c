@@ -27596,8 +27596,11 @@ static inline dxb_state_result_t dxb_state_error(int err) {
 dxb_init_result_t dxb_storage_init(dxb_storage_t *storage) {
   memset(storage, 0, sizeof(*storage));
   storage->page_cache_limit = page_cache_limit_from_env();
-  dxb_state_result_t reset = dxb_storage_reset(storage, false);
-  int rc = reset.err;
+  dxb_reset_submit_io_t reset_submit;
+  int rc = dxb_storage_make_reset_submit_io(false, &reset_submit);
+  dxb_state_result_t reset =
+      likely(rc == MDBX_SUCCESS) ? dxb_storage_submit_reset(storage, &reset_submit) : dxb_state_error(rc);
+  rc = reset.err;
   bool submitted = false;
   if (likely(rc == MDBX_SUCCESS)) {
     submitted = true;
@@ -27858,7 +27861,10 @@ dxb_close_result_t dxb_storage_submit_close(dxb_storage_t *storage, const dxb_cl
   if (!io->reset)
     return result;
 
-  dxb_state_result_t reset = dxb_storage_reset(storage, io->env_active);
+  dxb_reset_submit_io_t reset_submit;
+  rc = dxb_storage_make_reset_submit_io(io->env_active, &reset_submit);
+  dxb_state_result_t reset =
+      likely(rc == MDBX_SUCCESS) ? dxb_storage_submit_reset(storage, &reset_submit) : dxb_state_error(rc);
   if (unlikely(result.err == MDBX_SUCCESS && reset.err != MDBX_SUCCESS))
     result.err = reset.err;
   return reset.reset ? dxb_close_with_reset(result) : result;
@@ -27873,12 +27879,15 @@ static inline dxb_deinit_result_t dxb_deinit_result(int err, bool reset, bool ca
 
 dxb_deinit_result_t dxb_storage_deinit(dxb_storage_t *storage, bool env_active) {
   const bool cache_lock_was_initialized = storage->page_cache_lock_initialized;
-  dxb_state_result_t reset = dxb_storage_reset(storage, env_active);
+  dxb_reset_submit_io_t reset_submit;
+  int rc = dxb_storage_make_reset_submit_io(env_active, &reset_submit);
+  dxb_state_result_t reset =
+      likely(rc == MDBX_SUCCESS) ? dxb_storage_submit_reset(storage, &reset_submit) : dxb_state_error(rc);
   if (!cache_lock_was_initialized)
     return dxb_deinit_result(reset.err, reset.reset, false, false, false, reset.err == MDBX_SUCCESS);
   if (unlikely(reset.err != MDBX_SUCCESS))
     return dxb_deinit_result(reset.err, reset.reset, true, false, false, false);
-  const int rc = osal_fastmutex_destroy(&storage->page_cache_lock);
+  rc = osal_fastmutex_destroy(&storage->page_cache_lock);
   const bool cache_lock_destroyed = rc == MDBX_SUCCESS;
   if (likely(cache_lock_destroyed))
     storage->page_cache_lock_initialized = false;
