@@ -11629,6 +11629,45 @@ tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.082`
 batch, `1.139` crud, `1.036` iterate, `0.963` get, and `1.066` delete.
 
+A later filesize-shrink cache-invalidation cleanup added
+`dxb_filesize_shrink_cache_invalidate_submit_io_t`,
+`dxb_storage_make_filesize_shrink_cache_invalidate_submit_io()`,
+`dxb_storage_filesize_shrink_cache_invalidate_submit_io_validate()`, and
+`dxb_storage_submit_filesize_shrink_cache_invalidate()` for the
+post-`ftruncate()` shrink tail in `dxb_storage_set_filesize_bytes()`. The
+request captures the submitted target filesize, previous storage filesize,
+derived stale byte/page coverage, derived page-cache invalidation request, and
+generic cache-invalidation submit descriptor. Validation rechecks filesize-set
+descriptor validity, actual shrink direction, rebuilt stale coverage,
+cache-invalidation descriptor validity, submit descriptor validity, shrink
+target/stale-range correspondence, stale-page/invalidate range correspondence,
+true reusable-entry invalidation policy, and a fully rebuilt request before
+submitting. Submit delegates to `dxb_storage_submit_invalidate_cached_io()`,
+preserving cache eviction for pages beyond the new filesize while surfacing
+post-truncate invalidation-submit failures as completed-filesize errors. This
+removes inline `dxb_storage_byte_span_io()` /
+`dxb_storage_make_page_coverage_io()` /
+`dxb_storage_make_cache_invalidate_io()` construction from the shrink path and
+removes the now-unused `dxb_storage_submit_invalidate_cached_request()`
+shortcut, so cache invalidation submissions now go through typed submit
+descriptors. Verification passed `git diff --check`, source scans covering
+`dxb_filesize_shrink_cache_invalidate_submit_io_t`,
+`dxb_storage_make_filesize_shrink_cache_invalidate_submit_io()`,
+`dxb_storage_filesize_shrink_cache_invalidate_submit_io_validate()`,
+`dxb_storage_submit_filesize_shrink_cache_invalidate()`, the updated
+`dxb_storage_set_filesize_bytes()` path, absence of
+`dxb_storage_submit_invalidate_cached_request()`, and the remaining typed
+`dxb_storage_submit_invalidate_cached_io()` call sites, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.102`
+batch, `1.149` crud, `0.975` iterate, `0.991` get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
