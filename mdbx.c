@@ -141,6 +141,11 @@ typedef struct dxb_discard_io {
   enum dxb_discard_mode mode;
 } dxb_discard_io_t;
 
+typedef struct dxb_cache_invalidate_io {
+  dxb_page_io_t pages;
+  bool include_reusable;
+} dxb_cache_invalidate_io_t;
+
 typedef struct dxb_advice_io {
   dxb_page_coverage_io_t range;
   enum dxb_advice advice;
@@ -1964,6 +1969,32 @@ static inline int dxb_data_write_io_validate_queued(const dxb_data_write_io_t *i
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_make_cache_invalidate_io(const dxb_storage_t *storage, const dxb_page_io_t *pages,
+                                                       bool include_reusable,
+                                                       dxb_cache_invalidate_io_t *io) {
+  int rc = dxb_storage_page_io_validate(storage, pages);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->pages = *pages;
+  io->include_reusable = include_reusable;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_storage_cache_invalidate_io_validate(const dxb_storage_t *storage,
+                                                          const dxb_cache_invalidate_io_t *io) {
+  dxb_cache_invalidate_io_t checked;
+  int rc = dxb_storage_make_cache_invalidate_io(storage, &io->pages, io->include_reusable, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.pages.pgno != io->pages.pgno || checked.pages.end_pgno != io->pages.end_pgno ||
+               checked.pages.npages != io->pages.npages || checked.pages.offset != io->pages.offset ||
+               checked.pages.bytes != io->pages.bytes ||
+               checked.include_reusable != io->include_reusable))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_make_data_copy_io(const dxb_storage_t *storage, const dxb_page_io_t *src_pages,
                                                 const dxb_page_io_t *dst_pages, dxb_data_copy_io_t *io) {
   int rc = dxb_storage_page_io_validate(storage, src_pages);
@@ -2324,8 +2355,7 @@ static int dxb_storage_read_data(const dxb_storage_t *storage, const dxb_data_re
 static int dxb_storage_read_meta(const dxb_storage_t *storage, const dxb_meta_read_io_t *io, void *buf);
 static int dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_io_t *io, const void *buf);
 static int dxb_storage_write_meta(dxb_storage_t *storage, const dxb_meta_write_io_t *io, const void *buf);
-static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_page_io_t *io,
-                                             bool include_reusable);
+static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_cache_invalidate_io_t *io);
 #if MDBX_USE_COPYFILERANGE
 static int dxb_storage_copy_data(dxb_storage_t *storage, const dxb_data_copy_io_t *io);
 static int dxb_storage_copy_data_to_fd(const dxb_storage_t *storage, const dxb_data_export_io_t *io,
@@ -21294,13 +21324,12 @@ static void page_cache_release_all(dxb_storage_t *storage, bool env_active) {
   page_cache_unlock(storage);
 }
 
-static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_page_io_t *io,
-                                             bool include_reusable) {
-  const int rc = dxb_storage_page_io_validate(storage, io);
+static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_cache_invalidate_io_t *io) {
+  const int rc = dxb_storage_cache_invalidate_io_validate(storage, io);
   ASSERT(rc == MDBX_SUCCESS);
   if (unlikely(rc != MDBX_SUCCESS))
     return;
-  if (io->npages == 0)
+  if (io->pages.npages == 0)
     return;
 
   page_cache_lock(storage);
@@ -21308,10 +21337,10 @@ static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_p
   page_cache_entry_t *entry = cache->entries;
   while (entry) {
     page_cache_entry_t *const next = entry->next;
-    if (entry->io.pgno < io->end_pgno && io->pgno < entry->io.end_pgno) {
+    if (entry->io.pgno < io->pages.end_pgno && io->pages.pgno < entry->io.end_pgno) {
       /* Snapshot-keyed reusable entries remain valid across ordinary CoW
        * writes. Only destructive truncate/remove operations force them out. */
-      if (include_reusable || !entry->reusable) {
+      if (io->include_reusable || !entry->reusable) {
         entry->reusable = false;
         if (entry->pins == 0)
           page_cache_release_entry_locked(entry);
@@ -22015,14 +22044,22 @@ static int dxb_storage_discard_io(dxb_storage_t *storage, const dxb_discard_io_t
     break;
   case dxb_discard_remove: {
     rc = MDBX_RESULT_TRUE;
-    if (rc == MDBX_SUCCESS)
-      dxb_storage_invalidate_cached_io(storage, &io->range.pages, true);
+    if (rc == MDBX_SUCCESS) {
+      dxb_cache_invalidate_io_t invalidate;
+      rc = dxb_storage_make_cache_invalidate_io(storage, &io->range.pages, true, &invalidate);
+      if (likely(rc == MDBX_SUCCESS))
+        dxb_storage_invalidate_cached_io(storage, &invalidate);
+    }
     return rc;
   }
   case dxb_discard_remove_or_clean: {
     rc = MDBX_RESULT_TRUE;
-    if (rc == MDBX_SUCCESS)
-      dxb_storage_invalidate_cached_io(storage, &io->range.pages, true);
+    if (rc == MDBX_SUCCESS) {
+      dxb_cache_invalidate_io_t invalidate;
+      rc = dxb_storage_make_cache_invalidate_io(storage, &io->range.pages, true, &invalidate);
+      if (likely(rc == MDBX_SUCCESS))
+        dxb_storage_invalidate_cached_io(storage, &invalidate);
+    }
     if (rc != MDBX_RESULT_TRUE)
       return rc;
     break;
@@ -22248,7 +22285,11 @@ static int dxb_storage_write_data(dxb_storage_t *storage, const dxb_data_write_i
   rc = dxb_fault_inject("write-complete");
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  dxb_storage_invalidate_cached_io(storage, &io->pages, false);
+  dxb_cache_invalidate_io_t invalidate;
+  rc = dxb_storage_make_cache_invalidate_io(storage, &io->pages, false, &invalidate);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_storage_invalidate_cached_io(storage, &invalidate);
   return MDBX_SUCCESS;
 }
 
@@ -22302,7 +22343,11 @@ static int dxb_storage_writev_data(dxb_storage_t *storage, const dxb_data_write_
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  dxb_storage_invalidate_cached_io(storage, &io->pages, false);
+  dxb_cache_invalidate_io_t invalidate;
+  rc = dxb_storage_make_cache_invalidate_io(storage, &io->pages, false, &invalidate);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_storage_invalidate_cached_io(storage, &invalidate);
   return MDBX_SUCCESS;
 }
 
@@ -22329,8 +22374,12 @@ static int dxb_storage_set_filesize_bytes(dxb_storage_t *storage, uint64_t targe
     if (likely(err == MDBX_SUCCESS)) {
       dxb_page_coverage_io_t stale_coverage;
       err = dxb_storage_make_page_coverage_io(storage, &stale, &stale_coverage);
-      if (likely(err == MDBX_SUCCESS))
-        dxb_storage_invalidate_cached_io(storage, &stale_coverage.pages, true);
+      if (likely(err == MDBX_SUCCESS)) {
+        dxb_cache_invalidate_io_t invalidate;
+        err = dxb_storage_make_cache_invalidate_io(storage, &stale_coverage.pages, true, &invalidate);
+        if (likely(err == MDBX_SUCCESS))
+          dxb_storage_invalidate_cached_io(storage, &invalidate);
+      }
     }
   }
   return dxb_storage_set_filesize(storage, target);
@@ -22422,7 +22471,11 @@ static int dxb_storage_copy_data(dxb_storage_t *storage, const dxb_data_copy_io_
   rc = dxb_fault_inject("copy-complete");
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  dxb_storage_invalidate_cached_io(storage, &io->dst_pages, false);
+  dxb_cache_invalidate_io_t invalidate;
+  rc = dxb_storage_make_cache_invalidate_io(storage, &io->dst_pages, false, &invalidate);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_storage_invalidate_cached_io(storage, &invalidate);
   return MDBX_SUCCESS;
 }
 
@@ -35096,8 +35149,14 @@ static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_data_write_io_t *q
   eASSERT0(env, queued->pages.npages >= (is_largepage(wp) ? wp->pages : 1u));
   eASSERT0(env, (wp->flags & P_ILL_BITS) == 0);
 
-  if (ctx->err == MDBX_SUCCESS && dxb_io_channel_is_data(ctx->channel))
-    dxb_storage_invalidate_cached_io(storage, &queued->pages, false);
+  if (ctx->err == MDBX_SUCCESS && dxb_io_channel_is_data(ctx->channel)) {
+    dxb_cache_invalidate_io_t invalidate;
+    const int err = dxb_storage_make_cache_invalidate_io(storage, &queued->pages, false, &invalidate);
+    if (likely(err == MDBX_SUCCESS))
+      dxb_storage_invalidate_cached_io(storage, &invalidate);
+    else
+      ctx->err = err;
+  }
 
   if (likely(queued->pages.npages == 1))
     page_shadow_release(env, wp, 1);
