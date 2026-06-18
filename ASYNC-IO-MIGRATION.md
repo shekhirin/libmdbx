@@ -12417,6 +12417,29 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.100` batch, `1.160` crud, `0.938` iterate,
 `1.088` get, and `1.071` delete.
 
+A later page-cache lookup/fill submit-boundary cleanup folded the raw
+`dxb_storage_lookup_cached_page()` and `dxb_storage_read_cached_page()` helpers
+into `dxb_storage_submit_lookup_cached_page()` and
+`dxb_storage_submit_read_cached_page()`. Cache hits and miss fills now validate
+and consume the full `dxb_cache_page_submit_io_t` payload directly, including
+the lookup-versus-fill mode bit, instead of validating that submit descriptor
+and then entering a parallel helper that only accepted `dxb_cache_read_io_t`.
+The miss-fill path still allocates the cache entry, submits the lower
+`dxb_cache_fill_read_submit_io_t` storage read, and registers tracked entries
+with the same cache insert submission. Verification passed `git diff --check`,
+source scans confirming no `dxb_storage_lookup_cached_page()` or
+`dxb_storage_read_cached_page()` calls remain in `mdbx.c` or the
+public/internal headers, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.138` batch, `1.140` crud, `0.970` iterate,
+`0.944` get, and `1.093` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
