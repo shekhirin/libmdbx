@@ -13180,6 +13180,61 @@ __cold int mdbx_env_resurrect_after_fork(MDBX_env *env) {
 }
 #endif /* Windows */
 
+#if !defined(_WIN32) && !defined(_WIN64)
+typedef struct dxb_env_close_sync_stat_submit_io {
+  MDBX_env *env;
+  const dxb_storage_t *storage;
+  dxb_stat_submit_io_t stat;
+} dxb_env_close_sync_stat_submit_io_t;
+
+static inline int env_make_close_sync_stat_submit_io(MDBX_env *env, dxb_env_close_sync_stat_submit_io_t *io) {
+  if (unlikely(!env || !io))
+    return MDBX_EINVAL;
+
+  dxb_stat_submit_io_t stat;
+  int rc = dxb_storage_make_stat_submit_io(&stat);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->env = env;
+  io->storage = &env->dxb_storage;
+  io->stat = stat;
+  return MDBX_SUCCESS;
+}
+
+static inline int env_close_sync_stat_submit_io_validate(const dxb_env_close_sync_stat_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_stat_submit_io_validate(&io->stat);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_env_close_sync_stat_submit_io_t checked;
+  rc = env_make_close_sync_stat_submit_io(io->env, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env != io->env || checked.storage != io->storage || checked.stat.fetch != io->stat.fetch))
+    return MDBX_EINVAL;
+
+  return MDBX_SUCCESS;
+}
+
+static int env_submit_close_sync_stat(const dxb_env_close_sync_stat_submit_io_t *io, bool *linked) {
+  if (unlikely(!linked))
+    return MDBX_EINVAL;
+  int rc = env_close_sync_stat_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_stat_result_t stat_result = dxb_storage_submit_stat(io->storage, &io->stat);
+  if (unlikely(stat_result.err != MDBX_SUCCESS))
+    return stat_result.err;
+  *linked = stat_result.st.st_nlink > 0;
+  return MDBX_SUCCESS;
+}
+#endif /* !Windows */
+
 __cold int mdbx_env_close_ex(MDBX_env *env, bool dont_sync) {
   page_t *dp;
   int rc = MDBX_SUCCESS;
@@ -13219,14 +13274,12 @@ __cold int mdbx_env_close_ex(MDBX_env *env, bool dont_sync) {
     rc = env_sync(env, true, false);
     rc = (rc == MDBX_RESULT_TRUE) ? MDBX_SUCCESS : rc;
 #else
-    dxb_stat_submit_io_t stat_submit;
-    rc = dxb_storage_make_stat_submit_io(&stat_submit);
-    dxb_stat_result_t stat_result;
-    if (likely(rc == MDBX_SUCCESS)) {
-      stat_result = dxb_storage_submit_stat(storage, &stat_submit);
-      rc = stat_result.err;
-    }
-    if (likely(rc == MDBX_SUCCESS) && stat_result.st.st_nlink > 0 /* don't sync deleted files */) {
+    dxb_env_close_sync_stat_submit_io_t close_sync_stat_submit;
+    bool linked = false;
+    rc = env_make_close_sync_stat_submit_io(env, &close_sync_stat_submit);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = env_submit_close_sync_stat(&close_sync_stat_submit, &linked);
+    if (likely(rc == MDBX_SUCCESS) && linked /* don't sync deleted files */) {
       rc = env_sync(env, true, true);
       rc = (rc == MDBX_BUSY || rc == EAGAIN || rc == EACCES || rc == EBUSY || rc == EWOULDBLOCK ||
             rc == MDBX_RESULT_TRUE)
