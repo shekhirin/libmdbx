@@ -11452,6 +11452,43 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.080` batch, `1.145` crud, `1.196` iterate,
 `0.934` get, and `1.071` delete.
 
+A later `iov_init()`/`iov_complete()` dirty-write queue lifecycle cleanup added
+`dxb_iov_queue_prepare_submit_io_t`, `dxb_iov_queue_reset_submit_io_t`,
+`dxb_iov_queue_walk_submit_io_t`, `iov_make_queue_prepare_submit_io()`,
+`iov_queue_prepare_submit_io_validate()`, `iov_submit_queue_prepare()`,
+`iov_make_queue_reset_submit_io()`, `iov_queue_reset_submit_io_validate()`,
+`iov_submit_queue_reset()`, `iov_make_queue_walk_submit_io()`,
+`iov_queue_walk_submit_io_validate()`, and `iov_submit_queue_walk()`. The
+prepare request captures the write context, bound storage handle, data channel,
+item and page reservation inputs, generic dirty-write queue descriptor, and
+generic prepare-submit descriptor. The walk request captures the write context,
+bound storage handle, data channel, callback, generic walk descriptor, and
+generic walk-submit descriptor. The reset request captures the write context,
+bound storage handle, and generic reset-submit descriptor. Validation rechecks
+context/environment/storage identity, data-channel eligibility, channel
+readiness for prepare, queue/walk/reset descriptor validity, descriptor
+correspondence, and rebuilt requests before submitting. Submit delegates to
+`dxb_storage_submit_prepare_write_queue()`,
+`dxb_storage_submit_walk_write_queue()`, and
+`dxb_storage_submit_reset_write_queue()`, preserving queue allocation,
+written-range initialization, dirty-page cache invalidation/release callbacks,
+error propagation, and the unconditional cleanup reset in `iov_complete()`.
+This removes inline dirty-write queue prepare, walk, and reset submit
+construction from `iov_init()` and `iov_complete()`, leaving the generic queue
+storage submitters plus iov-level wrappers. Verification passed
+`git diff --check`, source scans covering the new queue lifecycle wrapper
+types/functions, the updated `iov_init()` and `iov_complete()` paths, and the
+remaining generic queue submitter definitions, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.119` batch, `1.149` crud, `0.987` iterate,
+`0.981` get, and `1.080` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
