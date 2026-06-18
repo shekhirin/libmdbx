@@ -4630,8 +4630,6 @@ MDBX_INTERNAL dxb_open_result_t dxb_storage_open_overlapped(dxb_storage_t *stora
                                                             const pathchar_t *pathname);
 MDBX_INTERNAL dxb_open_result_t dxb_storage_submit_open_overlapped(dxb_storage_t *storage,
                                                                    const dxb_open_submit_io_t *io);
-MDBX_INTERNAL dxb_park_result_t dxb_storage_park_overlapped(const dxb_storage_t *storage,
-                                                            const dxb_byte_io_t *position);
 MDBX_INTERNAL dxb_park_result_t dxb_storage_submit_park_overlapped(const dxb_storage_t *storage,
                                                                    const dxb_park_submit_io_t *io);
 #endif /* Windows */
@@ -4639,10 +4637,8 @@ MDBX_INTERNAL dxb_open_result_t dxb_storage_open_dsync(dxb_storage_t *storage, c
                                                        const pathchar_t *pathname, bool meta_sync);
 MDBX_INTERNAL dxb_open_result_t dxb_storage_submit_open_dsync(dxb_storage_t *storage,
                                                               const dxb_open_submit_io_t *io);
-MDBX_INTERNAL dxb_park_result_t dxb_storage_park_data(const dxb_storage_t *storage, const dxb_byte_io_t *position);
 MDBX_INTERNAL dxb_park_result_t dxb_storage_submit_park_data(const dxb_storage_t *storage,
                                                              const dxb_park_submit_io_t *io);
-MDBX_INTERNAL dxb_park_result_t dxb_storage_park_dsync(const dxb_storage_t *storage, const dxb_byte_io_t *position);
 MDBX_INTERNAL dxb_park_result_t dxb_storage_submit_park_dsync(const dxb_storage_t *storage,
                                                               const dxb_park_submit_io_t *io);
 MDBX_INTERNAL dxb_close_result_t dxb_storage_submit_close(dxb_storage_t *storage,
@@ -28182,17 +28178,6 @@ static inline dxb_park_result_t dxb_park_completed(int err, enum dxb_io_channel 
   return dxb_park_result(err, channel, offset, true, err == MDBX_SUCCESS, true, true);
 }
 
-static inline dxb_park_result_t dxb_storage_park_fd(enum dxb_io_channel channel, mdbx_filehandle_t fd,
-                                                    const dxb_byte_io_t *position) {
-  ASSERT(position->bytes == 0);
-  if (unlikely(position->bytes != 0))
-    return dxb_park_error(MDBX_EINVAL, channel, position->offset, fd != INVALID_HANDLE_VALUE);
-  if (fd == INVALID_HANDLE_VALUE)
-    return dxb_park_noop(channel, position->offset);
-  const int err = osal_fseek(fd, position->offset);
-  return dxb_park_completed(err, channel, position->offset);
-}
-
 static inline dxb_open_result_t dxb_open_result(const dxb_storage_t *storage, int err, bool submitted,
                                                 bool completed) {
 #if defined(_WIN32) || defined(_WIN64)
@@ -28258,17 +28243,17 @@ dxb_open_result_t dxb_storage_submit_open_overlapped(dxb_storage_t *storage, con
   return dxb_storage_open_overlapped(storage, io->env, io->pathname);
 }
 
-dxb_park_result_t dxb_storage_park_overlapped(const dxb_storage_t *storage, const dxb_byte_io_t *position) {
-  return dxb_storage_park_fd(dxb_io_data, storage->ioring.overlapped_fd, position);
-}
-
 dxb_park_result_t dxb_storage_submit_park_overlapped(const dxb_storage_t *storage, const dxb_park_submit_io_t *io) {
   int rc = dxb_storage_park_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_park_error(rc, io ? io->channel : dxb_io_data, io ? io->position.offset : 0, false);
   if (unlikely(io->channel != dxb_io_data))
     return dxb_park_error(MDBX_EINVAL, io->channel, io->position.offset, false);
-  return dxb_storage_park_overlapped(storage, &io->position);
+  ASSERT(io->position.bytes == 0);
+  const mdbx_filehandle_t fd = storage->ioring.overlapped_fd;
+  if (fd == INVALID_HANDLE_VALUE)
+    return dxb_park_noop(io->channel, io->position.offset);
+  return dxb_park_completed(osal_fseek(fd, io->position.offset), io->channel, io->position.offset);
 }
 #endif /* Windows */
 
@@ -28292,21 +28277,17 @@ dxb_open_result_t dxb_storage_submit_open_dsync(dxb_storage_t *storage, const dx
   return dxb_storage_open_dsync(storage, io->env, io->pathname, io->meta_sync);
 }
 
-dxb_park_result_t dxb_storage_park_data(const dxb_storage_t *storage, const dxb_byte_io_t *position) {
-  return dxb_storage_park_fd(dxb_io_data, dxb_storage_data_fd(storage), position);
-}
-
 dxb_park_result_t dxb_storage_submit_park_data(const dxb_storage_t *storage, const dxb_park_submit_io_t *io) {
   int rc = dxb_storage_park_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_park_error(rc, io ? io->channel : dxb_io_data, io ? io->position.offset : 0, false);
   if (unlikely(io->channel != dxb_io_data))
     return dxb_park_error(MDBX_EINVAL, io->channel, io->position.offset, false);
-  return dxb_storage_park_data(storage, &io->position);
-}
-
-dxb_park_result_t dxb_storage_park_dsync(const dxb_storage_t *storage, const dxb_byte_io_t *position) {
-  return dxb_storage_park_fd(dxb_io_data_dsync, storage->dsync_fd, position);
+  ASSERT(io->position.bytes == 0);
+  const mdbx_filehandle_t fd = dxb_storage_data_fd(storage);
+  if (fd == INVALID_HANDLE_VALUE)
+    return dxb_park_noop(io->channel, io->position.offset);
+  return dxb_park_completed(osal_fseek(fd, io->position.offset), io->channel, io->position.offset);
 }
 
 dxb_park_result_t dxb_storage_submit_park_dsync(const dxb_storage_t *storage, const dxb_park_submit_io_t *io) {
@@ -28315,7 +28296,11 @@ dxb_park_result_t dxb_storage_submit_park_dsync(const dxb_storage_t *storage, co
     return dxb_park_error(rc, io ? io->channel : dxb_io_data_dsync, io ? io->position.offset : 0, false);
   if (unlikely(io->channel != dxb_io_data_dsync))
     return dxb_park_error(MDBX_EINVAL, io->channel, io->position.offset, false);
-  return dxb_storage_park_dsync(storage, &io->position);
+  ASSERT(io->position.bytes == 0);
+  const mdbx_filehandle_t fd = storage->dsync_fd;
+  if (fd == INVALID_HANDLE_VALUE)
+    return dxb_park_noop(io->channel, io->position.offset);
+  return dxb_park_completed(osal_fseek(fd, io->position.offset), io->channel, io->position.offset);
 }
 
 static inline dxb_close_result_t dxb_close_result(int err, bool had_data, bool had_dsync, bool closed_data,
