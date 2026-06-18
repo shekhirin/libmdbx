@@ -10249,6 +10249,41 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.112`
 batch, `1.165` crud, `0.976` iterate, `1.086` get, and `1.072` delete.
 
+A later page-kill poison-write cleanup added
+`dxb_page_kill_write_submit_io_t`, `dxb_page_kill_writev_submit_io_t`,
+`page_kill_submit_write()`, and `page_kill_submit_writev()` for the
+best-effort overwrite paths in `page_kill()`. The scalar request captures the
+data storage handle, killed page span, rebuilt data-write descriptor, generic
+write-submit descriptor, and poisoned page buffer. The vector request captures
+the same killed page span and rebuilt data-write descriptor plus the generic
+writev-submit descriptor, iovec array, and scatter/gather count. Validation
+rechecks page bounds, span/data-write shape, buffer or iovec identity,
+scatter/gather page count, generic write/writev-submit descriptors, and rebuilt
+requests before submitting. Submit still delegates to
+`dxb_storage_submit_write_data()` or `dxb_storage_submit_writev_data()`,
+preserving the existing best-effort error suppression, page buffer poisoning,
+cache invalidation, submitted/completed write accounting, and vector cursor
+advance after the killed span is built. This removes the remaining inline direct
+storage-write submits from `page_kill()` and gives dirty-page poison overwrites
+explicit async-capable request points. Verification passed `git diff --check`,
+source scans covering `dxb_page_kill_write_submit_io_t`,
+`dxb_page_kill_writev_submit_io_t`, `page_kill_make_write_submit_io()`,
+`page_kill_make_writev_submit_io()`, `page_kill_write_submit_io_validate()`,
+`page_kill_writev_submit_io_validate()`, `page_kill_submit_write()`,
+`page_kill_submit_writev()`, the updated `page_kill()` and
+`page_kill_writev()` call sites, and the absence of the old inline
+`dxb_storage_submit_write_data(storage, &killed_submit)` and
+`dxb_storage_submit_writev_data(storage, &killed_submit)` calls, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.107` batch, `1.151` crud, `1.214` iterate,
+`1.019` get, and `1.089` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
