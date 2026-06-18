@@ -1403,6 +1403,17 @@ typedef struct dxb_park_result {
   bool parked;
 } dxb_park_result_t;
 
+typedef struct dxb_lock_result {
+  int err;
+  int cmd;
+  int lock;
+  uint64_t offset;
+  uint64_t bytes;
+  bool attempted;
+  bool completed;
+  bool with_retries;
+} dxb_lock_result_t;
+
 typedef struct dxb_queue_result {
   int err;
   unsigned allocated;

@@ -7239,6 +7239,25 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.113` batch, `1.149`
 crud, `0.982` iterate, `0.954` get, and `1.071` delete.
 
+A later data-file lock completion cleanup added `dxb_lock_result_t` for the
+POSIX DXB `fcntl()` lock wrappers. `dxb_storage_lock_op()` and
+`dxb_storage_setlk_with3retries()` now return the error code, command, lock
+type, byte range, attempted/completed state, and whether the retry wrapper was
+used. Lock seize, downgrade, upgrade, destroy, and neighbor lock restore still
+unwrap `.err`, preserving the existing ordering and retry behavior while
+exposing data-file lock completion state for future async-capable storage
+backends. Verification passed `git diff --check`, source scans covering
+`dxb_lock_result_t`, the lock result helper, and every
+`dxb_storage_lock_op()`/`dxb_storage_setlk_with3retries()` call site, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six focused
+ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The
+paired benchmark gate passed with forced/default ratios of `1.115` batch,
+`1.156` crud, `0.828` iterate, `1.037` get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

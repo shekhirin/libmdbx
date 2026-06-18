@@ -28594,20 +28594,29 @@ static int lck_setlk_with3retries(const mdbx_filehandle_t fd, const int lck, con
   }
 }
 
-static int dxb_storage_lock_op(const dxb_storage_t *storage, const int cmd, const int lck,
-                               const dxb_lock_io_t *range) {
-  int rc = dxb_storage_lock_io_validate(range);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return lck_op(dxb_storage_data_fd(storage), cmd, lck, (off_t)range->offset, (off_t)range->bytes);
+static inline dxb_lock_result_t dxb_lock_result(int err, int cmd, int lck, const dxb_lock_io_t *range,
+                                                bool attempted, bool with_retries) {
+  const dxb_lock_result_t result = {err, cmd, lck, range->offset, range->bytes,
+                                    attempted, attempted && err == MDBX_SUCCESS, with_retries};
+  return result;
 }
 
-static int dxb_storage_setlk_with3retries(const dxb_storage_t *storage, const int lck,
-                                          const dxb_lock_io_t *range) {
+static dxb_lock_result_t dxb_storage_lock_op(const dxb_storage_t *storage, const int cmd, const int lck,
+                                             const dxb_lock_io_t *range) {
   int rc = dxb_storage_lock_io_validate(range);
   if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return lck_setlk_with3retries(dxb_storage_data_fd(storage), lck, (off_t)range->offset, (off_t)range->bytes);
+    return dxb_lock_result(rc, cmd, lck, range, false, false);
+  rc = lck_op(dxb_storage_data_fd(storage), cmd, lck, (off_t)range->offset, (off_t)range->bytes);
+  return dxb_lock_result(rc, cmd, lck, range, true, false);
+}
+
+static dxb_lock_result_t dxb_storage_setlk_with3retries(const dxb_storage_t *storage, const int lck,
+                                                        const dxb_lock_io_t *range) {
+  int rc = dxb_storage_lock_io_validate(range);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_lock_result(rc, op_setlk, lck, range, false, true);
+  rc = lck_setlk_with3retries(dxb_storage_data_fd(storage), lck, (off_t)range->offset, (off_t)range->bytes);
+  return dxb_lock_result(rc, op_setlk, lck, range, true, true);
 }
 
 int osal_lockfile(mdbx_filehandle_t fd, bool wait) {
@@ -28746,7 +28755,7 @@ __cold int lck_seize(MDBX_env *env) {
 
   if (env->lck_mmap.fd == INVALID_HANDLE_VALUE) {
     /* LY: without-lck mode (e.g. exclusive or on read-only filesystem) */
-    rc = dxb_storage_setlk_with3retries(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, &whole_dxb);
+    rc = dxb_storage_setlk_with3retries(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, &whole_dxb).err;
     if (rc != MDBX_SUCCESS) {
       ERROR("%s, err %u", "without-lck", rc);
       eASSERT0(env, MDBX_IS_ERROR(rc));
@@ -28773,7 +28782,7 @@ retry:
       return rc;
 
   continue_dxb_exclusive:
-    rc = dxb_storage_setlk_with3retries(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, &whole_dxb);
+    rc = dxb_storage_setlk_with3retries(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, &whole_dxb).err;
     if (rc == MDBX_SUCCESS)
       return MDBX_RESULT_TRUE /* Done: return with exclusive locking. */;
 
@@ -28836,7 +28845,7 @@ retry:
   rc = dxb_storage_lock_io(env->pid, 1, &pid_dxb);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  rc = dxb_storage_setlk_with3retries(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, &pid_dxb);
+  rc = dxb_storage_setlk_with3retries(storage, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, &pid_dxb).err;
   if (rc != MDBX_SUCCESS) {
     ERROR("%s, err %u", "lock-against-without-lck", rc);
     eASSERT0(env, MDBX_IS_ERROR(rc));
@@ -28859,12 +28868,12 @@ int lck_downgrade(MDBX_env *env) {
     dxb_lock_io_t lower_dxb;
     rc = dxb_storage_lock_io(0, env->pid, &lower_dxb);
     if (likely(rc == MDBX_SUCCESS))
-      rc = dxb_storage_lock_op(storage, op_setlk, F_UNLCK, &lower_dxb);
+      rc = dxb_storage_lock_op(storage, op_setlk, F_UNLCK, &lower_dxb).err;
     if (rc == MDBX_SUCCESS) {
       dxb_lock_io_t upper_dxb;
       rc = dxb_storage_lock_io((uint64_t)env->pid + 1, (uint64_t)OFF_T_MAX - env->pid - 1, &upper_dxb);
       if (likely(rc == MDBX_SUCCESS))
-        rc = dxb_storage_lock_op(storage, op_setlk, F_UNLCK, &upper_dxb);
+        rc = dxb_storage_lock_op(storage, op_setlk, F_UNLCK, &upper_dxb).err;
     }
   }
   if (rc == MDBX_SUCCESS)
@@ -28889,13 +28898,13 @@ int lck_upgrade(MDBX_env *env, bool dont_wait) {
     dxb_lock_io_t lower_dxb;
     rc = (env->pid > 1) ? dxb_storage_lock_io(0, env->pid - 1, &lower_dxb) : MDBX_SUCCESS;
     if (rc == MDBX_SUCCESS && env->pid > 1)
-      rc = dxb_storage_lock_op(storage, cmd, F_WRLCK, &lower_dxb);
+      rc = dxb_storage_lock_op(storage, cmd, F_WRLCK, &lower_dxb).err;
     if (rc == MDBX_SUCCESS) {
       dxb_lock_io_t upper_dxb;
       rc = dxb_storage_lock_io((uint64_t)env->pid + 1, (uint64_t)OFF_T_MAX - env->pid - 1, &upper_dxb);
       if (likely(rc == MDBX_SUCCESS))
-        rc = dxb_storage_lock_op(storage, cmd, F_WRLCK, &upper_dxb);
-      if (rc != MDBX_SUCCESS && env->pid > 1 && dxb_storage_lock_op(storage, op_setlk, F_UNLCK, &lower_dxb))
+        rc = dxb_storage_lock_op(storage, cmd, F_WRLCK, &upper_dxb).err;
+      if (rc != MDBX_SUCCESS && env->pid > 1 && dxb_storage_lock_op(storage, op_setlk, F_UNLCK, &lower_dxb).err)
         rc = MDBX_PANIC;
     }
     if (rc != MDBX_SUCCESS && lck_setlk_with3retries(env->lck_mmap.fd, F_RDLCK, 0, 1))
@@ -28922,7 +28931,7 @@ __cold int lck_destroy(MDBX_env *env, MDBX_env *inprocess_neighbor, const mdbx_p
       /* if LCK was not removed */
       fstat(env->lck_mmap.fd, &lck_info) == 0 && lck_info.st_nlink > 0 &&
       rc == MDBX_SUCCESS &&
-      dxb_storage_lock_op(storage, op_setlk, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, &whole_dxb) == 0) {
+      dxb_storage_lock_op(storage, op_setlk, (env->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, &whole_dxb).err == 0) {
 
     VERBOSE("%p got exclusive, drown ipc-locks", __Wpedantic_format_voidptr(env));
     eASSERT0(env, current_pid == env->pid);
@@ -28978,7 +28987,7 @@ __cold int lck_destroy(MDBX_env *env, MDBX_env *inprocess_neighbor, const mdbx_p
     if (likely(rc == MDBX_SUCCESS))
       rc = dxb_storage_lock_op(neighbor_storage, F_SETLKW,
                                (inprocess_neighbor->flags & MDBX_RDONLY) ? F_RDLCK : F_WRLCK,
-                               &restore_dxb);
+                               &restore_dxb).err;
   }
   dxb_storage_reset(storage, (env->flags & ENV_ACTIVE) != 0);
 
