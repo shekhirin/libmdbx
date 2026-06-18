@@ -36437,21 +36437,71 @@ int lck_ipclock_destroy(osal_ipclock_t *ipc) {
 }
 #endif /* MDBX_LOCKING > MDBX_LOCKING_SYSV */
 
-static int check_fstat(MDBX_env *env) {
-  const dxb_storage_t *const storage = &env->dxb_storage;
+typedef struct dxb_env_check_fstat_submit_io {
+  MDBX_env *env;
+  const dxb_storage_t *storage;
+  dxb_stat_submit_io_t stat;
+} dxb_env_check_fstat_submit_io_t;
 
-  dxb_stat_submit_io_t stat_submit;
-  int rc = dxb_storage_make_stat_submit_io(&stat_submit);
+static inline int env_make_check_fstat_submit_io(MDBX_env *env, dxb_env_check_fstat_submit_io_t *io) {
+  if (unlikely(!env || !io))
+    return MDBX_EINVAL;
+
+  dxb_stat_submit_io_t stat;
+  int rc = dxb_storage_make_stat_submit_io(&stat);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  dxb_stat_result_t dxb_stat = dxb_storage_submit_stat(storage, &stat_submit);
-  rc = dxb_stat.err;
+
+  io->env = env;
+  io->storage = &env->dxb_storage;
+  io->stat = stat;
+  return MDBX_SUCCESS;
+}
+
+static inline int env_check_fstat_submit_io_validate(const dxb_env_check_fstat_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_stat_submit_io_validate(&io->stat);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_env_check_fstat_submit_io_t checked;
+  rc = env_make_check_fstat_submit_io(io->env, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env != io->env || checked.storage != io->storage || checked.stat.fetch != io->stat.fetch))
+    return MDBX_EINVAL;
+
+  return MDBX_SUCCESS;
+}
+
+static int env_submit_check_fstat(const dxb_env_check_fstat_submit_io_t *io, struct stat *st) {
+  if (unlikely(!st))
+    return MDBX_EINVAL;
+  int rc = env_check_fstat_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_stat_result_t dxb_stat = dxb_storage_submit_stat(io->storage, &io->stat);
+  if (unlikely(dxb_stat.err != MDBX_SUCCESS))
+    return dxb_stat.err;
+  *st = dxb_stat.st;
+  return MDBX_SUCCESS;
+}
+
+static int check_fstat(MDBX_env *env) {
+  struct stat st;
+  dxb_env_check_fstat_submit_io_t stat_submit;
+  int rc = env_make_check_fstat_submit_io(env, &stat_submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  rc = env_submit_check_fstat(&stat_submit, &st);
   if (unlikely(rc != MDBX_SUCCESS)) {
     ERROR("fstat(%s), err %d", "DXB", rc);
     return rc;
   }
 
-  struct stat st = dxb_stat.st;
   if (!S_ISREG(st.st_mode) || st.st_nlink < 1) {
 #ifdef EBADFD
     rc = EBADFD;

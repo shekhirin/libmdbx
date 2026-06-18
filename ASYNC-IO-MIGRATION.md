@@ -10981,6 +10981,35 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.109` batch, `1.156` crud, `1.011` iterate,
 `0.975` get, and `1.070` delete.
 
+A later `check_fstat()` validation cleanup added
+`dxb_env_check_fstat_submit_io_t`, `env_make_check_fstat_submit_io()`,
+`env_check_fstat_submit_io_validate()`, and `env_submit_check_fstat()` for the
+POSIX DXB file stat used while seizing locks. The request captures the
+environment, bound data storage handle, and generic stat-submit descriptor.
+Validation rechecks environment/storage identity, generic stat-submit
+descriptor, and a rebuilt request before submitting. Submit delegates to
+`dxb_storage_submit_stat()` and returns the DXB `struct stat` to the existing
+regular-file, link-count, and minimum-size checks, preserving the original DXB
+`fstat()` error logging, exclusive-lock-needed result for too-short files,
+lock-seize retry behavior, and the direct lock-file `fstat()` path. This
+removes inline `dxb_storage_make_stat_submit_io()` /
+`dxb_storage_submit_stat()` construction from the build-covered `check_fstat()`
+DXB validation path; the SysV lock-initialization stat remains the last direct
+non-wrapper stat-submit call site outside the generic submitter and existing
+wrappers. Verification passed `git diff --check`, source scans covering
+`dxb_env_check_fstat_submit_io_t`, `env_make_check_fstat_submit_io()`,
+`env_check_fstat_submit_io_validate()`, `env_submit_check_fstat()`, the updated
+`check_fstat()` path, and the remaining direct stat-submit sites, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.094` batch, `1.165` crud, `1.181` iterate,
+`0.935` get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
