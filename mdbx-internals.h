@@ -1407,6 +1407,13 @@ typedef struct dxb_close_result {
   bool reset;
 } dxb_close_result_t;
 
+typedef struct dxb_deinit_result {
+  int err;
+  bool reset;
+  bool cache_lock_was_initialized;
+  bool cache_lock_destroyed;
+} dxb_deinit_result_t;
+
 typedef struct dxb_resize_result {
   int err;
   size_t current;

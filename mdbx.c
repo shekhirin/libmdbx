@@ -2536,7 +2536,7 @@ MDBX_INTERNAL dxb_open_result_t dxb_storage_open_dsync(dxb_storage_t *storage, c
 MDBX_INTERNAL void dxb_storage_park_data(const dxb_storage_t *storage, const dxb_byte_io_t *position);
 MDBX_INTERNAL void dxb_storage_park_dsync(const dxb_storage_t *storage, const dxb_byte_io_t *position);
 MDBX_INTERNAL dxb_close_result_t dxb_storage_close(dxb_storage_t *storage, bool env_active);
-MDBX_INTERNAL int dxb_storage_deinit(dxb_storage_t *storage, bool env_active);
+MDBX_INTERNAL dxb_deinit_result_t dxb_storage_deinit(dxb_storage_t *storage, bool env_active);
 #if !defined(_WIN32) && !defined(_WIN64)
 static int dxb_storage_stat(const dxb_storage_t *storage, struct stat *st);
 #endif /* !Windows */
@@ -8614,7 +8614,7 @@ __cold int mdbx_env_create(MDBX_env **penv) {
   return MDBX_SUCCESS;
 
 bailout:
-  dxb_storage_deinit(storage, false);
+  (void)dxb_storage_deinit(storage, false);
   osal_free(env);
   return LOG_IFERR(rc);
 }
@@ -8978,7 +8978,7 @@ __cold int mdbx_env_close_ex(MDBX_env *env, bool dont_sync) {
 
   eASSERT0(env, env->signature.weak == 0);
   rc = env_close(env, false) ? MDBX_PANIC : rc;
-  ENSURE_OBJ(env, dxb_storage_deinit(storage, false) == MDBX_SUCCESS);
+  ENSURE_OBJ(env, dxb_storage_deinit(storage, false).err == MDBX_SUCCESS);
   ENSURE_OBJ(env, osal_fastmutex_destroy(&env->dbi_lock) == MDBX_SUCCESS);
 #if defined(_WIN32) || defined(_WIN64)
   /* remap_lock don't have destructor (Slim Reader/Writer Lock) */
@@ -21972,14 +21972,22 @@ dxb_close_result_t dxb_storage_close(dxb_storage_t *storage, bool env_active) {
   return dxb_close_with_reset(result);
 }
 
-int dxb_storage_deinit(dxb_storage_t *storage, bool env_active) {
+static inline dxb_deinit_result_t dxb_deinit_result(int err, bool reset, bool cache_lock_was_initialized,
+                                                    bool cache_lock_destroyed) {
+  const dxb_deinit_result_t result = {err, reset, cache_lock_was_initialized, cache_lock_destroyed};
+  return result;
+}
+
+dxb_deinit_result_t dxb_storage_deinit(dxb_storage_t *storage, bool env_active) {
+  const bool cache_lock_was_initialized = storage->page_cache_lock_initialized;
   dxb_storage_reset(storage, env_active);
-  if (!storage->page_cache_lock_initialized)
-    return MDBX_SUCCESS;
+  if (!cache_lock_was_initialized)
+    return dxb_deinit_result(MDBX_SUCCESS, true, false, false);
   const int rc = osal_fastmutex_destroy(&storage->page_cache_lock);
-  if (likely(rc == MDBX_SUCCESS))
+  const bool cache_lock_destroyed = rc == MDBX_SUCCESS;
+  if (likely(cache_lock_destroyed))
     storage->page_cache_lock_initialized = false;
-  return rc;
+  return dxb_deinit_result(rc, true, true, cache_lock_destroyed);
 }
 
 static inline int dxb_storage_set_filesize(dxb_storage_t *storage, uint64_t filesize) {

@@ -7146,6 +7146,26 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.127` batch, `1.154`
 crud, `0.781` iterate, `1.038` get, and `1.079` delete.
 
+A later storage lifecycle cleanup added `dxb_deinit_result_t` for storage
+teardown after environment close. `dxb_storage_deinit()` now returns an
+explicit result with the error code, whether storage state was reset, whether
+the page-cache mutex had been initialized, and whether that mutex was destroyed
+successfully. The environment creation bailout still ignores storage deinit
+errors as before, while final environment destruction asserts the same `.err`
+value it previously compared directly. This keeps public teardown behavior
+unchanged while preserving cache/queue lifecycle completion metadata for future
+async-capable storage backends. Verification passed `git diff --check`, source
+scans covering `dxb_deinit_result_t`, deinit result helpers, and every
+`dxb_storage_deinit()` call site, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.121` batch, `1.160` crud, `1.053` iterate,
+`0.937` get, and `1.088` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
