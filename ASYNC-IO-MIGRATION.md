@@ -11143,7 +11143,7 @@ descriptor validity, reset state, and a rebuilt request before submitting.
 Submit delegates to `dxb_storage_submit_close()`, preserving close-time ignored
 result handling, handle close ordering, reset after close, and the existing
 inactive reset semantics caused by stripping `ENV_INTERNAL_FLAGS` before this
-point. The lock-destroy close/reset submit remains a later checkpoint.
+point. The separate lock-destroy reset submit remains a later checkpoint.
 Verification passed `git diff --check`, source scans covering
 `dxb_env_data_close_submit_io_t`, `env_make_data_close_submit_io()`,
 `env_data_close_submit_io_validate()`, `env_submit_data_close()`, the updated
@@ -11157,6 +11157,32 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.104`
 batch, `1.140` crud, `0.795` iterate, `0.983` get, and `1.068` delete.
+
+A later `lck_destroy()` close-submit cleanup reused
+`dxb_env_data_close_submit_io_t`, `env_make_data_close_submit_io()`,
+`env_data_close_submit_io_validate()`, and `env_submit_data_close()` for the
+data-file close submit performed before restoring process-local fcntl locks.
+The request captures the environment, bound data storage handle, current
+`ENV_ACTIVE` state, `reset=false`, and generic close-submit descriptor.
+Validation rechecks environment/storage identity, current active state, generic
+close descriptor validity, reset state, and a rebuilt request before
+submitting. Submit delegates to `dxb_storage_submit_close()`, preserving the
+`dxb_close_result_t` fields used to decide whether to restore the neighbor DXB
+lock, preserving the close error propagation into `lck_destroy()`'s return
+code, and leaving the separate post-close storage reset submit as a later
+checkpoint. Verification passed `git diff --check`, source scans covering
+`dxb_env_data_close_submit_io_t`, `env_make_data_close_submit_io()`,
+`env_data_close_submit_io_validate()`, `env_submit_data_close()`, the updated
+`lck_destroy()` data close path, and the remaining direct close-submit
+matches, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.109`
+batch, `1.141` crud, `0.914` iterate, `0.989` get, and `1.083` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.

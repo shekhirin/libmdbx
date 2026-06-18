@@ -37017,11 +37017,10 @@ __cold int lck_destroy(MDBX_env *env, MDBX_env *inprocess_neighbor, const mdbx_p
   * locks should be released here explicitly with properly order. */
 
   /* close dxb and restore lock */
-  dxb_close_submit_io_t close_submit;
-  int close_submit_rc = dxb_storage_make_close_submit_io((env->flags & ENV_ACTIVE) != 0, false, &close_submit);
-  dxb_close_result_t close_dxb = likely(close_submit_rc == MDBX_SUCCESS)
-                                     ? dxb_storage_submit_close(storage, &close_submit)
-                                     : dxb_close_error(close_submit_rc);
+  dxb_env_data_close_submit_io_t close_submit;
+  int close_submit_rc = env_make_data_close_submit_io(env, false, &close_submit);
+  dxb_close_result_t close_dxb =
+      likely(close_submit_rc == MDBX_SUCCESS) ? env_submit_data_close(&close_submit) : dxb_close_error(close_submit_rc);
   const int close_dxb_rc = close_dxb.err;
   if (unlikely(close_dxb_rc != MDBX_SUCCESS) && rc == MDBX_SUCCESS)
     rc = close_dxb_rc;
