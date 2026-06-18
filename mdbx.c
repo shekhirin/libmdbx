@@ -29934,6 +29934,98 @@ dxb_readahead_submit_advice(const dxb_readahead_advice_submit_io_t *io) {
   return dxb_storage_submit_advise_io(io->storage, &io->submit);
 }
 
+typedef struct dxb_resize_storage_size_submit_io {
+  MDBX_env *env;
+  dxb_storage_t *storage;
+  pgno_t size_pgno;
+  pgno_t limit_pgno;
+  size_t size_bytes;
+  size_t limit_bytes;
+  unsigned flags;
+  dxb_size_io_t target;
+  dxb_resize_size_submit_io_t submit;
+} dxb_resize_storage_size_submit_io_t;
+
+static inline int dxb_resize_make_storage_size_submit_io(
+    MDBX_env *env, pgno_t size_pgno, pgno_t limit_pgno, unsigned flags,
+    dxb_resize_storage_size_submit_io_t *io) {
+  if (unlikely(!env || !io || limit_pgno < size_pgno))
+    return MDBX_EINVAL;
+
+  dxb_storage_t *const storage = &env->dxb_storage;
+  const size_t limit_bytes = dxb_storage_pgno_ceil2os_bytes(storage, limit_pgno);
+  const size_t size_bytes = dxb_storage_pgno_ceil2os_bytes(storage, size_pgno);
+  dxb_size_io_t target;
+  int rc = dxb_storage_size_io(size_bytes, limit_bytes, &target);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_resize_size_submit_io_t submit;
+  rc = dxb_storage_make_resize_size_submit_io(&target, flags, &submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->env = env;
+  io->storage = storage;
+  io->size_pgno = size_pgno;
+  io->limit_pgno = limit_pgno;
+  io->size_bytes = size_bytes;
+  io->limit_bytes = limit_bytes;
+  io->flags = flags;
+  io->target = target;
+  io->submit = submit;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_resize_storage_size_submit_io_validate(
+    const dxb_resize_storage_size_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage ||
+               io->storage != &io->env->dxb_storage ||
+               io->limit_pgno < io->size_pgno))
+    return MDBX_EINVAL;
+  if (unlikely(io->size_bytes !=
+                   dxb_storage_pgno_ceil2os_bytes(io->storage, io->size_pgno) ||
+               io->limit_bytes !=
+                   dxb_storage_pgno_ceil2os_bytes(io->storage, io->limit_pgno) ||
+               io->target.current != io->size_bytes ||
+               io->target.limit != io->limit_bytes ||
+               io->submit.target.current != io->target.current ||
+               io->submit.target.limit != io->target.limit ||
+               io->submit.flags != io->flags))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_resize_size_submit_io_validate(&io->submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_resize_storage_size_submit_io_t checked;
+  rc = dxb_resize_make_storage_size_submit_io(
+      io->env, io->size_pgno, io->limit_pgno, io->flags, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env != io->env || checked.storage != io->storage ||
+               checked.size_pgno != io->size_pgno ||
+               checked.limit_pgno != io->limit_pgno ||
+               checked.size_bytes != io->size_bytes ||
+               checked.limit_bytes != io->limit_bytes ||
+               checked.flags != io->flags ||
+               checked.target.current != io->target.current ||
+               checked.target.limit != io->target.limit ||
+               checked.submit.target.current != io->submit.target.current ||
+               checked.submit.target.limit != io->submit.target.limit ||
+               checked.submit.flags != io->submit.flags))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static dxb_resize_result_t dxb_resize_submit_storage_size(
+    const dxb_resize_storage_size_submit_io_t *io) {
+  int rc = dxb_resize_storage_size_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return io && io->storage ? dxb_resize_error(io->storage, rc)
+                             : dxb_resize_unsubmitted_error(rc);
+  return dxb_storage_submit_resize_size(io->storage, &io->submit);
+}
+
 __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pgno_t size_pgno, pgno_t limit_pgno,
                       const enum resize_mode mode) {
   /* Acquire guard to avoid collision between read and write txns
@@ -29969,10 +30061,6 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
   eASSERT0(env, limit_bytes >= size_bytes);
   eASSERT0(env, dxb_storage_bytes2pgno(storage, size_bytes) >= size_pgno);
   eASSERT0(env, dxb_storage_bytes2pgno(storage, limit_bytes) >= limit_pgno);
-  dxb_size_io_t target_size;
-  rc = dxb_storage_size_io(size_bytes, limit_bytes, &target_size);
-  if (unlikely(rc != MDBX_SUCCESS))
-    goto bailout;
 
   unsigned resize_flags = env->flags & (MDBX_RDONLY | MDBX_UTTERLY_NOSYNC);
   if (mode >= impilict_shrink)
@@ -29997,11 +30085,12 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
       env->lck->discarded_tail.weak = size_pgno;
   }
 
-  dxb_resize_size_submit_io_t resize_submit;
-  rc = dxb_storage_make_resize_size_submit_io(&target_size, resize_flags, &resize_submit);
+  dxb_resize_storage_size_submit_io_t resize_submit;
+  rc = dxb_resize_make_storage_size_submit_io(
+      env, size_pgno, limit_pgno, resize_flags, &resize_submit);
   if (unlikely(rc != MDBX_SUCCESS))
     goto bailout;
-  dxb_resize_result_t resize_result = dxb_storage_submit_resize_size(storage, &resize_submit);
+  dxb_resize_result_t resize_result = dxb_resize_submit_storage_size(&resize_submit);
   rc = resize_result.err;
   eASSERT0(env, dxb_storage_current_within_limit(storage));
 

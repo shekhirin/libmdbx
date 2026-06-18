@@ -10754,6 +10754,42 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.164` batch, `1.150` crud, `0.996`
 iterate, `0.964` get, and `1.079` delete.
 
+A later live-resize size cleanup added
+`dxb_resize_storage_size_submit_io_t`,
+`dxb_resize_make_storage_size_submit_io()`,
+`dxb_resize_storage_size_submit_io_validate()`, and
+`dxb_resize_submit_storage_size()` for the `dxb_resize()` storage sizing step
+that applies live growth/shrink current and limit changes after resize policy
+selection. The request captures the environment, data storage handle, requested
+current page, requested limit page, computed current bytes, computed limit
+bytes, resize flags, checked size descriptor, and generic resize-size submit
+descriptor. Validation rechecks environment/storage identity, page-ordering,
+page-to-byte correspondence, target size shape, generic resize-size descriptor,
+and a rebuilt request before submitting. Submit delegates to
+`dxb_storage_submit_resize_size()`, preserving the existing resize lock scope,
+limit reuse for implicit resize, shrink-tail discard ordering,
+`txn_shrink_allowed` flag selection, early no-op check, post-resize assertions,
+`discarded_tail` update, readahead recalculation, and bailout error handling.
+This removes inline `dxb_storage_size_io()`,
+`dxb_storage_make_resize_size_submit_io()`, and
+`dxb_storage_submit_resize_size()` construction from the live `dxb_resize()`
+path. Verification passed `git diff --check`, source scans covering
+`dxb_resize_storage_size_submit_io_t`,
+`dxb_resize_make_storage_size_submit_io()`,
+`dxb_resize_storage_size_submit_io_validate()`,
+`dxb_resize_submit_storage_size()`, the updated `dxb_resize()` path, and the
+absence of old inline resize-size storage request construction in that block,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment.
+The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
+of `1.067` batch, `1.154` crud, `1.044` iterate, `0.975` get, and `1.069`
+delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
