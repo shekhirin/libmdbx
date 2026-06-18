@@ -2154,11 +2154,13 @@ static inline int dxb_storage_queued_data_write_io_validate(const dxb_storage_t 
   return dxb_data_write_io_validate_queued(io, io->bytes.bytes);
 }
 
+static unsigned osal_ioring_write_items(const osal_ioring_t *ior);
 static size_t osal_ioring_payload_bytes(const osal_ioring_t *ior);
 
 static inline int dxb_queued_write_io_validate(const dxb_queued_write_io_t *io) {
   if (unlikely(!io || !dxb_io_channel_is_data(io->channel) || io->fd == INVALID_HANDLE_VALUE ||
-               io->used_slots == 0 || io->payload_bytes == 0 || io->payload_bytes == SIZE_MAX))
+               io->used_slots == 0 || io->write_items == 0 || io->write_items == UINT_MAX ||
+               io->payload_bytes == 0 || io->payload_bytes == SIZE_MAX))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -22258,6 +22260,9 @@ static inline int dxb_storage_make_queued_write_io(const dxb_storage_t *storage,
   const unsigned used_slots = osal_ioring_used(queue);
   if (unlikely(!used_slots))
     return MDBX_EINVAL;
+  const unsigned write_items = osal_ioring_write_items(queue);
+  if (unlikely(!write_items || write_items == UINT_MAX))
+    return MDBX_EINVAL;
   const size_t payload_bytes = osal_ioring_payload_bytes(queue);
   if (unlikely(!payload_bytes || payload_bytes == SIZE_MAX))
     return MDBX_EINVAL;
@@ -22265,6 +22270,7 @@ static inline int dxb_storage_make_queued_write_io(const dxb_storage_t *storage,
   io->channel = channel;
   io->fd = fd;
   io->used_slots = used_slots;
+  io->write_items = write_items;
   io->payload_bytes = payload_bytes;
   return MDBX_SUCCESS;
 }
@@ -22280,7 +22286,7 @@ static inline int dxb_storage_queued_write_io_validate(const dxb_storage_t *stor
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   return likely(checked.channel == io->channel && checked.fd == io->fd && checked.used_slots == io->used_slots &&
-                checked.payload_bytes == io->payload_bytes)
+                checked.write_items == io->write_items && checked.payload_bytes == io->payload_bytes)
              ? MDBX_SUCCESS
              : MDBX_EINVAL;
 }
@@ -22294,7 +22300,8 @@ static inline osal_ioring_write_result_t dxb_storage_write_queued(dxb_storage_t 
   if (likely(result.err == MDBX_SUCCESS)) {
     result = osal_ioring_write(dxb_storage_write_queue(storage), &io);
     if (likely(result.err == MDBX_SUCCESS) &&
-        unlikely(result.used_slots != io.used_slots || result.payload_bytes != io.payload_bytes))
+        unlikely(result.wops != io.write_items || result.used_slots != io.used_slots ||
+                 result.payload_bytes != io.payload_bytes))
       result.err = MDBX_EINVAL;
   }
   return result;
@@ -32151,6 +32158,41 @@ static inline ior_item_t *ior_next(ior_item_t *item, size_t sgvcnt) {
 #endif
 }
 
+static size_t osal_ioring_item_sgvcnt(const osal_ioring_t *ior, const ior_item_t *item) {
+#if defined(_WIN32) || defined(_WIN64)
+  (void)ior;
+  size_t sgvcnt = 1;
+  size_t single_bytes = item->single.iov_len - ior_WriteFile_flag;
+  if (single_bytes & ior_WriteFile_flag) {
+    MDBX_SUPPRESS_GOOFY_MSVC_ANALYZER(6385);
+    while (item->sgv[sgvcnt].Buffer)
+      ++sgvcnt;
+  }
+  return sgvcnt;
+#elif MDBX_HAVE_PWRITEV
+  (void)ior;
+  return item->sgvcnt;
+#else
+  (void)ior;
+  (void)item;
+  return 1;
+#endif /* !Windows */
+}
+
+static unsigned osal_ioring_write_items(const osal_ioring_t *ior) {
+  if (unlikely(!ior || !ior->last))
+    return 0;
+
+  unsigned items = 0;
+  for (ior_item_t *item = ior->pool; item <= ior->last;) {
+    if (unlikely(items == UINT_MAX))
+      return UINT_MAX;
+    ++items;
+    item = ior_next(item, osal_ioring_item_sgvcnt(ior, item));
+  }
+  return items;
+}
+
 static size_t osal_ioring_payload_bytes(const osal_ioring_t *ior) {
   if (unlikely(!ior || !ior->last))
     return 0;
@@ -32162,18 +32204,7 @@ static size_t osal_ioring_payload_bytes(const osal_ioring_t *ior) {
       return SIZE_MAX;
     total += bytes;
 
-#if defined(_WIN32) || defined(_WIN64)
-    size_t sgvcnt = 1;
-    size_t single_bytes = item->single.iov_len - ior_WriteFile_flag;
-    if (single_bytes & ior_WriteFile_flag) {
-      MDBX_SUPPRESS_GOOFY_MSVC_ANALYZER(6385);
-      while (item->sgv[sgvcnt].Buffer)
-        ++sgvcnt;
-    }
-    item = ior_next(item, sgvcnt);
-#else
-    item = ior_next(item, ior_last_sgvcnt(ior, item));
-#endif /* !Windows */
+    item = ior_next(item, osal_ioring_item_sgvcnt(ior, item));
   }
   return total;
 }
@@ -32554,6 +32585,10 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, const dxb_queue
   if (unlikely(r.err != MDBX_SUCCESS))
     return r;
   if (unlikely(osal_ioring_used(ior) != io->used_slots)) {
+    r.err = MDBX_EINVAL;
+    return r;
+  }
+  if (unlikely(osal_ioring_write_items(ior) != io->write_items)) {
     r.err = MDBX_EINVAL;
     return r;
   }
@@ -35689,7 +35724,7 @@ static void iov_complete(iov_ctx_t *ctx) {
 int iov_write(iov_ctx_t *ctx) {
   eASSERT0(ctx->env, !iov_empty(ctx));
   osal_ioring_write_result_t r = dxb_storage_write_queued(ctx->storage, ctx->channel);
-  if (likely(r.err == MDBX_SUCCESS) && unlikely(!r.used_slots || !r.payload_bytes))
+  if (likely(r.err == MDBX_SUCCESS) && unlikely(!r.wops || !r.used_slots || !r.payload_bytes))
     r.err = MDBX_EINVAL;
   if (MDBX_ENABLE_PGOP_STAT)
     ctx->env->lck->pgops.wops.weak += r.wops;

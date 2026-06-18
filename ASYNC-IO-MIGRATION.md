@@ -6796,6 +6796,27 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.112` batch, `1.161` crud, `1.015` iterate,
 `1.009` get, and `1.079` delete.
 
+A later queued-write submission cleanup added `write_items` to
+`dxb_queued_write_io_t`. Storage now captures the logical OSAL ring item count
+beside the used slot count and queued payload bytes, and both storage
+revalidation and `osal_ioring_write()` reject a descriptor whose item count no
+longer matches the live ring. Successful queued writes must now report `wops`
+matching that descriptor item count, and `iov_write()` treats a zero-operation
+successful write result as invalid for non-empty dirty queues. The OSAL ring
+now uses one item-stride helper for item counting and payload-byte accounting,
+which keeps future async backends from depending on duplicated traversal logic
+when validating submitted batches and completions. Verification passed
+`git diff --check`, source scans covering `write_items`, the OSAL item-count
+helper, result `wops` checks, and queued-write descriptors, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.128` batch, `1.173`
+crud, `1.112` iterate, `0.964` get, and `1.080` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
