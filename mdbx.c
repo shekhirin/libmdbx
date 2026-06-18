@@ -20996,6 +20996,54 @@ __cold int coherency_timeout(uint64_t *timestamp, intptr_t pgno, const MDBX_env 
   return MDBX_RESULT_TRUE;
 }
 
+typedef struct dxb_coherency_filesize_fetch_submit_io {
+  MDBX_env *env;
+  dxb_storage_t *storage;
+  dxb_filesize_submit_io_t submit;
+} dxb_coherency_filesize_fetch_submit_io_t;
+
+static inline int coherency_make_filesize_fetch_submit_io(MDBX_env *env,
+                                                          dxb_coherency_filesize_fetch_submit_io_t *io) {
+  if (unlikely(!env || !io))
+    return MDBX_EINVAL;
+
+  dxb_filesize_submit_io_t submit;
+  int err = dxb_storage_make_filesize_fetch_submit_io(&submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  io->env = env;
+  io->storage = &env->dxb_storage;
+  io->submit = submit;
+  return MDBX_SUCCESS;
+}
+
+static inline int coherency_filesize_fetch_submit_io_validate(
+    const dxb_coherency_filesize_fetch_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage))
+    return MDBX_EINVAL;
+
+  int err = dxb_storage_filesize_fetch_submit_io_validate(&io->submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  dxb_coherency_filesize_fetch_submit_io_t checked;
+  err = coherency_make_filesize_fetch_submit_io(io->env, &checked);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  return likely(checked.env == io->env && checked.storage == io->storage &&
+                checked.submit.target == io->submit.target && checked.submit.set == io->submit.set)
+             ? MDBX_SUCCESS
+             : MDBX_EINVAL;
+}
+
+static int coherency_submit_filesize_fetch(const dxb_coherency_filesize_fetch_submit_io_t *io) {
+  int err = coherency_filesize_fetch_submit_io_validate(io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  return dxb_storage_submit_fetch_filesize(io->storage, &io->submit).err;
+}
+
 /* check with timeout as the workaround
  * for https://libmdbx.dqdkfa.ru/dead-github/issues/269 */
 __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *timestamp) {
@@ -21018,11 +21066,11 @@ __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *t
     return err;
   const uint64_t current_size = dxb_storage_current_size(storage);
   if (unlikely(required_bytes.offset > current_size || required_bytes.bytes > current_size - required_bytes.offset)) {
-    dxb_filesize_submit_io_t filesize_submit;
-    err = dxb_storage_make_filesize_fetch_submit_io(&filesize_submit);
+    dxb_coherency_filesize_fetch_submit_io_t filesize_submit;
+    err = coherency_make_filesize_fetch_submit_io(txn->env, &filesize_submit);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_storage_submit_fetch_filesize(storage, &filesize_submit).err;
+    err = coherency_submit_filesize_fetch(&filesize_submit);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }

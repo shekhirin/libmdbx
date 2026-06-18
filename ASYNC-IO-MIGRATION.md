@@ -12144,6 +12144,29 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.096` batch, `1.137` crud, `0.759`
 iterate, `0.993` get, and `1.034` delete.
 
+A later coherency filesize-fetch submission cleanup removed the remaining
+high-level direct filesize-fetch construction from `coherency_fetch_head()`.
+The coherency head refresh path now carries its deterministic fetch request in
+`dxb_coherency_filesize_fetch_submit_io_t`, validates it through
+`coherency_filesize_fetch_submit_io_validate()`, and submits it through
+`coherency_submit_filesize_fetch()` before retrying checks against the current
+file view. This keeps the early coherency code independent of the later
+env-level helper placement while still making the storage operation explicit in
+a caller-owned submit payload. Verification passed `git diff --check`, source
+scans covering `dxb_coherency_filesize_fetch_submit_io_t`,
+`coherency_make_filesize_fetch_submit_io()`,
+`coherency_submit_filesize_fetch()`, `dxb_env_make_filesize_fetch_submit_io()`,
+`dxb_env_submit_filesize_fetch()`, and the remaining direct storage
+filesize-fetch call sites, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.084`
+batch, `1.127` crud, `0.971` iterate, `1.022` get, and `0.982` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
