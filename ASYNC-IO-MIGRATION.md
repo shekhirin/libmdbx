@@ -12612,6 +12612,30 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.097`
 batch, `1.137` crud, `0.986` iterate, `1.064` get, and `1.079` delete.
 
+A later range/sync submit-boundary cleanup folded the raw
+`dxb_storage_advise_io()`, `dxb_storage_discard_io()`, and
+`dxb_storage_sync_io()` helpers into `dxb_storage_submit_advise_io()`,
+`dxb_storage_submit_discard_io()`, and `dxb_storage_submit_sync_io()`. The
+range submitters now validate full submit descriptors before issuing
+`F_RDADVISE`, `posix_fadvise()`, destination cache invalidation for destructive
+discard, and `POSIX_FADV_DONTNEED` directly from the submit boundary. The sync
+submitter now validates `dxb_sync_submit_io_t`, runs sync fault-injection
+hooks, calls `osal_fsync()` directly, and returns completed byte counts from
+the submit descriptor. This leaves fd-backed advice, discard, and data sync
+with descriptor-shaped storage entry points and no parallel raw range/sync
+helper paths in the C source or public/internal headers. Verification passed
+`git diff --check`, source scans confirming no raw storage advice, discard, or
+sync helpers remain in `mdbx.c` or the public/internal headers, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.144` batch, `1.142` crud, `0.996`
+iterate, `1.010` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -29451,16 +29451,19 @@ static inline dxb_range_result_t dxb_range_completed(size_t payload_bytes) {
   return dxb_range_result(MDBX_SUCCESS, payload_bytes, true, true);
 }
 
-static dxb_range_result_t dxb_storage_advise_io(const dxb_storage_t *storage, const dxb_advice_io_t *io) {
-  int rc = dxb_storage_advice_io_validate(storage, io);
+static dxb_range_result_t dxb_storage_submit_advise_io(const dxb_storage_t *storage,
+                                                       const dxb_advice_submit_io_t *io) {
+  int rc = dxb_storage_advice_submit_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_range_error(rc);
-  const dxb_byte_io_t *const range = &io->range.request;
+
+  const dxb_advice_io_t *const advice = &io->advice;
+  const dxb_byte_io_t *const range = &advice->range.request;
   if (range->bytes == 0)
     return dxb_range_noop_completed();
 
 #if defined(F_RDADVISE)
-  if (io->advice == dxb_advice_willneed) {
+  if (advice->advice == dxb_advice_willneed) {
     if (unlikely(range->offset > (uint64_t)OFF_T_MAX))
       return dxb_range_error(MDBX_EINVAL);
     struct radvisory hint;
@@ -29475,7 +29478,7 @@ static dxb_range_result_t dxb_storage_advise_io(const dxb_storage_t *storage, co
 #endif /* F_RDADVISE */
 #if defined(POSIX_FADV_NORMAL) || defined(POSIX_FADV_WILLNEED) || defined(POSIX_FADV_RANDOM)
   int hint;
-  switch (io->advice) {
+  switch (advice->advice) {
 #if defined(POSIX_FADV_NORMAL)
   case dxb_advice_normal:
     hint = POSIX_FADV_NORMAL;
@@ -29504,14 +29507,6 @@ static dxb_range_result_t dxb_storage_advise_io(const dxb_storage_t *storage, co
   (void)storage;
   return dxb_range_noop_completed();
 #endif /* POSIX_FADV_* */
-}
-
-static dxb_range_result_t dxb_storage_submit_advise_io(const dxb_storage_t *storage,
-                                                       const dxb_advice_submit_io_t *io) {
-  int rc = dxb_storage_advice_submit_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_range_error(rc);
-  return dxb_storage_advise_io(storage, &io->advice);
 }
 
 static inline bool dxb_discard_cache_invalidate_page_io_equal(const dxb_page_io_t *a, const dxb_page_io_t *b) {
@@ -29613,7 +29608,8 @@ static dxb_cache_result_t dxb_storage_submit_discard_cache_invalidate(
   return dxb_storage_submit_invalidate_cached_io(storage, &io->submit);
 }
 
-static dxb_range_result_t dxb_storage_discard_io(dxb_storage_t *storage, const dxb_discard_submit_io_t *io) {
+static dxb_range_result_t dxb_storage_submit_discard_io(dxb_storage_t *storage,
+                                                        const dxb_discard_submit_io_t *io) {
   int rc = dxb_storage_discard_submit_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_range_error(rc);
@@ -29659,14 +29655,6 @@ static dxb_range_result_t dxb_storage_discard_io(dxb_storage_t *storage, const d
 #endif /* POSIX_FADV_DONTNEED */
 }
 
-static dxb_range_result_t dxb_storage_submit_discard_io(dxb_storage_t *storage,
-                                                        const dxb_discard_submit_io_t *io) {
-  int rc = dxb_storage_discard_submit_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_range_error(rc);
-  return dxb_storage_discard_io(storage, io);
-}
-
 static inline dxb_readahead_result_t dxb_readahead_result(int err, bool enabled, bool supported, bool submitted,
                                                           bool completed) {
   const dxb_readahead_result_t result = {err, enabled, supported, submitted, completed};
@@ -29705,7 +29693,6 @@ static dxb_readahead_result_t dxb_storage_submit_readahead(const dxb_storage_t *
 }
 
 static int dxb_fault_inject(const char *operation);
-static dxb_sync_result_t dxb_storage_sync_io(const dxb_storage_t *storage, const dxb_sync_io_t *io);
 static dxb_sync_result_t dxb_storage_submit_sync_io(const dxb_storage_t *storage, const dxb_sync_submit_io_t *io);
 
 static inline void dxb_note_fsync_pgop(const MDBX_env *env, enum osal_syncmode_bits mode_bits) {
@@ -29868,12 +29855,13 @@ static inline dxb_sync_result_t dxb_sync_completed(size_t payload_bytes) {
   return dxb_sync_result(MDBX_SUCCESS, payload_bytes, true, true);
 }
 
-static dxb_sync_result_t dxb_storage_sync_io(const dxb_storage_t *storage, const dxb_sync_io_t *io) {
-  int rc = dxb_storage_sync_io_validate(storage, io);
+static dxb_sync_result_t dxb_storage_submit_sync_io(const dxb_storage_t *storage, const dxb_sync_submit_io_t *io) {
+  int rc = dxb_storage_sync_submit_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_sync_error(rc);
 
-  const enum osal_syncmode_bits mode_bits = io->mode_bits;
+  const dxb_sync_io_t *const sync = &io->sync;
+  const enum osal_syncmode_bits mode_bits = sync->mode_bits;
   const bool has_sync_work = (mode_bits & (MDBX_SYNC_DATA | MDBX_SYNC_IODQ | MDBX_SYNC_SIZE)) != 0;
   if (has_sync_work) {
     rc = dxb_fault_inject("sync");
@@ -29888,14 +29876,7 @@ static dxb_sync_result_t dxb_storage_sync_io(const dxb_storage_t *storage, const
   rc = dxb_fault_inject("sync-complete");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_sync_submitted_error(rc);
-  return dxb_sync_completed(io->bytes.bytes);
-}
-
-static dxb_sync_result_t dxb_storage_submit_sync_io(const dxb_storage_t *storage, const dxb_sync_submit_io_t *io) {
-  int rc = dxb_storage_sync_submit_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_sync_error(rc);
-  return dxb_storage_sync_io(storage, &io->sync);
+  return dxb_sync_completed(sync->bytes.bytes);
 }
 
 static inline dxb_read_result_t dxb_read_result(int err, size_t payload_bytes, bool submitted, bool completed) {
