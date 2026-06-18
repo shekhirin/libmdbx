@@ -12039,6 +12039,31 @@ tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.092`
 batch, `1.147` crud, `0.975` iterate, `0.980` get, and `1.068` delete.
 
+A later setup-size state submission cleanup moved the deterministic post-set
+size-state descriptor into the caller-built setup-size request.
+`dxb_setup_size_submit_io_t` now carries a `has_size_state` flag plus a nested
+`dxb_size_state_submit_io_t` for non-read-only set-length setup,
+`dxb_storage_make_setup_size_submit_io()` builds it, setup validators check it
+against the requested geometry, and `dxb_storage_setup_size()` consumes that
+prepared descriptor after a successful file-size set instead of constructing a
+local size-state descriptor. Fetched-filesize setup and resize branches remain
+completion-driven because their size-state descriptors depend on the observed
+on-disk file size. Verification passed `git diff --check`, source scans
+covering `dxb_setup_size_submit_io_t`,
+`dxb_storage_make_setup_size_submit_io()`,
+`dxb_storage_setup_size_submit_io_validate()`,
+`dxb_storage_setup_size()`, and
+`dxb_setup_storage_size_submit_io_validate()`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.111` batch, `1.146` crud, `0.999`
+iterate, `1.072` get, and `1.067` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
