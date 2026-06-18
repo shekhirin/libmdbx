@@ -4690,8 +4690,6 @@ static dxb_write_result_t dxb_storage_writev_data(dxb_storage_t *storage, const 
                                                   struct iovec *iov, size_t sgvcnt,
                                                   const dxb_write_cache_invalidate_submit_io_t *invalidate_submit);
 static dxb_write_result_t dxb_storage_submit_writev_data(dxb_storage_t *storage, const dxb_writev_submit_io_t *io);
-static dxb_cache_result_t dxb_storage_invalidate_cached_io(dxb_storage_t *storage,
-                                                           const dxb_cache_invalidate_io_t *io);
 #if MDBX_USE_COPYFILERANGE
 static dxb_copy_result_t dxb_storage_copy_data(dxb_storage_t *storage, const dxb_data_copy_io_t *io,
                                                const dxb_copy_cache_invalidate_submit_io_t *invalidate_submit);
@@ -27732,14 +27730,15 @@ static inline dxb_cache_result_t dxb_cache_materialized(const dxb_cache_material
   return dxb_cache_result(MDBX_SUCCESS, payload_bytes, io->data.pages.npages, 1, detached, true, true);
 }
 
-static dxb_cache_result_t dxb_storage_invalidate_cached_io(dxb_storage_t *storage,
-                                                           const dxb_cache_invalidate_io_t *io) {
-  const int rc = dxb_storage_cache_invalidate_io_validate(storage, io);
-  ASSERT(rc == MDBX_SUCCESS);
+static dxb_cache_result_t dxb_storage_submit_invalidate_cached_io(dxb_storage_t *storage,
+                                                                  const dxb_cache_invalidate_submit_io_t *io) {
+  int rc = dxb_storage_cache_invalidate_submit_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_cache_error(rc);
-  if (io->pages.npages == 0)
-    return dxb_cache_invalidated(io, 0);
+
+  const dxb_cache_invalidate_io_t *const invalidate = &io->invalidate;
+  if (invalidate->pages.npages == 0)
+    return dxb_cache_submitted(dxb_cache_invalidated(invalidate, 0));
 
   size_t entries = 0;
   page_cache_lock(storage);
@@ -27747,10 +27746,10 @@ static dxb_cache_result_t dxb_storage_invalidate_cached_io(dxb_storage_t *storag
   page_cache_entry_t *entry = cache->entries;
   while (entry) {
     page_cache_entry_t *const next = entry->next;
-    if (entry->io.pgno < io->pages.end_pgno && io->pages.pgno < entry->io.end_pgno) {
+    if (entry->io.pgno < invalidate->pages.end_pgno && invalidate->pages.pgno < entry->io.end_pgno) {
       /* Snapshot-keyed reusable entries remain valid across ordinary CoW
        * writes. Only destructive truncate/remove operations force them out. */
-      if (io->include_reusable || !entry->reusable) {
+      if (invalidate->include_reusable || !entry->reusable) {
         entry->reusable = false;
         entries += 1;
         if (entry->pins == 0)
@@ -27760,15 +27759,7 @@ static dxb_cache_result_t dxb_storage_invalidate_cached_io(dxb_storage_t *storag
     entry = next;
   }
   page_cache_unlock(storage);
-  return dxb_cache_invalidated(io, entries);
-}
-
-static dxb_cache_result_t dxb_storage_submit_invalidate_cached_io(dxb_storage_t *storage,
-                                                                  const dxb_cache_invalidate_submit_io_t *io) {
-  int rc = dxb_storage_cache_invalidate_submit_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_cache_error(rc);
-  return dxb_cache_submitted(dxb_storage_invalidate_cached_io(storage, &io->invalidate));
+  return dxb_cache_submitted(dxb_cache_invalidated(invalidate, entries));
 }
 
 static inline bool page_cache_entry_can_reuse(const page_cache_entry_t *entry, const dxb_cache_read_io_t *io) {
