@@ -22102,20 +22102,40 @@ static inline bool dxb_storage_can_lazy_meta_sync_with_data(const dxb_storage_t 
 #endif /* Windows */
 }
 
-static int dxb_storage_create_write_queue(dxb_storage_t *storage, bool readonly) {
-  if (readonly)
-    return MDBX_SUCCESS;
-  return osal_ioring_create(&storage->ioring
-#if defined(_WIN32) || defined(_WIN64)
-                            ,
-                            false, storage->ioring.overlapped_fd
-#endif /* Windows */
-  );
+static inline dxb_queue_result_t dxb_queue_result(int err, const osal_ioring_t *queue, bool readonly, bool active) {
+  const dxb_queue_result_t result = {err, queue ? queue->allocated : 0,
+                                     queue ? osal_ioring_used(queue) : 0, readonly, active};
+  return result;
 }
 
-static void dxb_storage_destroy_write_queue(dxb_storage_t *storage, bool readonly) {
-  if (!readonly)
-    osal_ioring_destroy(&storage->ioring);
+static inline dxb_queue_result_t dxb_queue_error(int err, bool readonly) {
+  return dxb_queue_result(err, nullptr, readonly, false);
+}
+
+static inline dxb_queue_result_t dxb_queue_completed(const osal_ioring_t *queue, bool readonly, bool active) {
+  return dxb_queue_result(MDBX_SUCCESS, queue, readonly, active);
+}
+
+static dxb_queue_result_t dxb_storage_create_write_queue(dxb_storage_t *storage, bool readonly) {
+  if (readonly)
+    return dxb_queue_completed(nullptr, true, false);
+  const int rc = osal_ioring_create(&storage->ioring
+#if defined(_WIN32) || defined(_WIN64)
+                                    ,
+                                    false, storage->ioring.overlapped_fd
+#endif /* Windows */
+  );
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_queue_error(rc, false);
+  return dxb_queue_completed(dxb_storage_write_queue_const(storage), false, true);
+}
+
+static dxb_queue_result_t dxb_storage_destroy_write_queue(dxb_storage_t *storage, bool readonly) {
+  if (readonly)
+    return dxb_queue_completed(nullptr, true, false);
+  dxb_queue_result_t result = dxb_queue_completed(dxb_storage_write_queue_const(storage), false, true);
+  osal_ioring_destroy(&storage->ioring);
+  return result;
 }
 
 static inline mdbx_filehandle_t dxb_storage_lock_fd(const dxb_storage_t *storage) {
@@ -24690,8 +24710,8 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
     }
   }
 
-  rc = dxb_storage_create_write_queue(storage, (env->flags & MDBX_RDONLY) != 0);
-  return rc;
+  dxb_queue_result_t queue_result = dxb_storage_create_write_queue(storage, (env->flags & MDBX_RDONLY) != 0);
+  return queue_result.err;
 }
 
 __cold int env_close(MDBX_env *env, bool resurrect_after_fork) {
@@ -24715,7 +24735,7 @@ __cold int env_close(MDBX_env *env, bool resurrect_after_fork) {
   env->defer_free = nullptr;
 #endif /* MDBX_ENABLE_DBI_LOCKFREE */
 
-  dxb_storage_destroy_write_queue(storage, (flags & MDBX_RDONLY) != 0);
+  (void)dxb_storage_destroy_write_queue(storage, (flags & MDBX_RDONLY) != 0);
 
   env->lck = nullptr;
   if (env->lck_mmap.lck)

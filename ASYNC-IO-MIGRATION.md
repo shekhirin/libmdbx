@@ -7084,6 +7084,27 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.109` batch, `1.149` crud, `0.772` iterate,
 `1.074` get, and `1.073` delete.
 
+A later write-queue lifecycle cleanup added `dxb_queue_result_t` for the dirty
+page write queue used by the explicit data-file write path.
+`dxb_storage_create_write_queue()` and `dxb_storage_destroy_write_queue()` now
+return an explicit result containing the error code, readonly/no-op state, and
+queue slot counts instead of returning only `int` or `void`. The `env_open()`
+caller still unwraps the same create error, while `env_close()` still treats
+destroy as cleanup, preserving open/close behavior while making queued-write
+backend setup and teardown completion data available for future async-capable
+storage. Verification passed `git diff --check`, source scans covering
+`dxb_queue_result_t`, queue result helpers, and every
+`dxb_storage_create_write_queue()` and `dxb_storage_destroy_write_queue()` call
+site, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.107` batch, `1.149` crud, `0.966` iterate,
+`1.016` get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
