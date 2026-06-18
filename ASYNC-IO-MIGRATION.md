@@ -10623,8 +10623,8 @@ descriptor, and a rebuilt request before submitting. Submit still delegates to
 readahead setup sequencing, and cache invalidation behavior for future
 destructive discard modes. This removes the inline byte-span, discard
 descriptor, submit descriptor, and direct discard submit construction from the
-open-time stale-tail cleanup while leaving commit-time shrink discard as a
-future checkpoint. Verification passed `git diff --check`, source scans
+open-time stale-tail cleanup while leaving commit-time shrink discard for the
+follow-up checkpoint. Verification passed `git diff --check`, source scans
 covering `dxb_setup_stale_tail_discard_submit_io_t`,
 `dxb_setup_make_stale_tail_discard_submit_io()`,
 `dxb_setup_stale_tail_discard_submit_io_validate()`,
@@ -10641,6 +10641,40 @@ injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
 ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.128` batch, `1.163` crud, `1.209` iterate,
 `1.004` get, and `1.089` delete.
+
+A later commit-time shrink discard cleanup added
+`dxb_sync_shrink_discard_submit_io_t`,
+`dxb_sync_make_shrink_discard_submit_io()`,
+`dxb_sync_shrink_discard_submit_io_validate()`, and
+`dxb_sync_submit_shrink_discard()` for the `dxb_sync_locked()` shrink
+`DONTNEED` branch. The request captures the environment, data storage handle,
+discard-edge pgno, previous discarded-tail pgno, computed byte range, checked
+byte descriptor, rebuilt discard descriptor, and rebuilt discard-submit
+descriptor. Validation rechecks environment/storage identity, page-number and
+byte-range correspondence, clean-discard mode, discard page coverage, generic
+discard-submit descriptor, and a rebuilt request before submitting. Submit still
+delegates to `dxb_storage_submit_discard_io()`, preserving the MVCC
+largest-page check, threshold checks, alignment guard for empty aligned byte
+ranges, existing `NOTICE`/error handling, and `discarded_tail` update. This
+removes the inline byte-span, discard descriptor, submit descriptor, and direct
+discard submit construction from the commit-time shrink branch. Verification
+passed `git diff --check`, source scans covering
+`dxb_sync_shrink_discard_submit_io_t`,
+`dxb_sync_make_shrink_discard_submit_io()`,
+`dxb_sync_shrink_discard_submit_io_validate()`,
+`dxb_sync_submit_shrink_discard()`, the updated `dxb_sync_locked()` branch, and
+the absence of old inline `dxb_storage_byte_span_io()`,
+`dxb_storage_make_discard_io()`, `dxb_storage_make_discard_submit_io()`, and
+`dxb_storage_submit_discard_io()` calls in that branch, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.113` batch, `1.164` crud, `0.968` iterate,
+`1.061` get, and `1.076` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
