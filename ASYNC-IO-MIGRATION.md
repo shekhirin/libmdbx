@@ -10822,6 +10822,40 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.095`
 batch, `1.159` crud, `0.818` iterate, `1.026` get, and `1.085` delete.
 
+A later `env_open()` dsync-open cleanup added
+`dxb_env_dsync_open_submit_io_t`,
+`env_dsync_open_flags()`, `env_dsync_open_needed()`,
+`env_make_dsync_open_submit_io()`,
+`env_dsync_open_submit_io_validate()`, and `env_submit_dsync_open()` for the
+secondary data-file handle used by durable/non-readonly opens. The request
+captures the environment, data storage handle, pathname, dsync eligibility flag
+snapshot, meta-sync selection, and the generic open-submit descriptor.
+Validation rechecks environment/storage identity, pathname identity, live
+eligibility flags, skip policy, meta-sync derivation, generic open-submit
+descriptor, dsync purpose, zero mode bits, and a rebuilt request before
+submitting. Submit delegates to `dxb_storage_submit_open_dsync()`, preserving
+the previous read-only and safe-nosync skip policy, the Windows exclusive skip,
+`MDBX_NOMETASYNC` meta-fd selection, open-result error handling, and following
+dsync parking. This removes inline `dxb_storage_make_open_submit_io()` /
+`dxb_storage_submit_open_dsync()` construction from the `env_open()` dsync path;
+the Windows overlapped open and preopen snapinfo read-only open remain future
+checkpoints. Verification passed `git diff --check`, source scans covering
+`env_open_unsubmitted_error()`, `env_dsync_open_flags()`,
+`env_dsync_open_needed()`, `dxb_env_dsync_open_submit_io_t`,
+`env_make_dsync_open_submit_io()`,
+`env_dsync_open_submit_io_validate()`, `env_submit_dsync_open()`, the updated
+`env_open()` dsync path, and the absence of direct
+`dxb_storage_submit_open_dsync()` construction there, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.093` batch, `1.159` crud, `0.950` iterate,
+`0.998` get, and `1.075` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

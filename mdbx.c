@@ -31913,18 +31913,107 @@ static inline int env_primary_open_submit_io_validate(const dxb_env_primary_open
   return MDBX_SUCCESS;
 }
 
-static inline dxb_open_result_t env_primary_open_error(int err) {
+static inline dxb_open_result_t env_open_unsubmitted_error(int err) {
   const dxb_open_result_t result = {err, false, false, false, false, false, false, false};
   return result;
 }
 
 static dxb_open_result_t env_submit_primary_open(const dxb_env_primary_open_submit_io_t *io) {
   if (unlikely(!io || !io->storage))
-    return env_primary_open_error(MDBX_EINVAL);
+    return env_open_unsubmitted_error(MDBX_EINVAL);
   int rc = env_primary_open_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_open_result(io->storage, rc, false, false);
   return dxb_storage_submit_open_data(io->storage, &io->open);
+}
+
+static inline MDBX_env_flags_t env_dsync_open_flags(const MDBX_env *env) {
+  MDBX_env_flags_t mask = MDBX_RDONLY | MDBX_SAFE_NOSYNC | MDBX_NOMETASYNC;
+#if defined(_WIN32) || defined(_WIN64)
+  mask |= MDBX_EXCLUSIVE;
+#endif /* Windows */
+  return env ? env->flags & mask : 0;
+}
+
+static inline bool env_dsync_open_needed(MDBX_env_flags_t flags) {
+  MDBX_env_flags_t skip = MDBX_RDONLY | MDBX_SAFE_NOSYNC;
+#if defined(_WIN32) || defined(_WIN64)
+  skip |= MDBX_EXCLUSIVE;
+#endif /* Windows */
+  return (flags & skip) == 0;
+}
+
+typedef struct dxb_env_dsync_open_submit_io {
+  MDBX_env *env;
+  dxb_storage_t *storage;
+  const pathchar_t *pathname;
+  MDBX_env_flags_t env_flags;
+  bool meta_sync;
+  dxb_open_submit_io_t open;
+} dxb_env_dsync_open_submit_io_t;
+
+static inline int env_make_dsync_open_submit_io(MDBX_env *env, dxb_env_dsync_open_submit_io_t *io) {
+  if (unlikely(!env || !io))
+    return MDBX_EINVAL;
+
+  const MDBX_env_flags_t env_flags = env_dsync_open_flags(env);
+  if (unlikely(!env_dsync_open_needed(env_flags)))
+    return MDBX_EINVAL;
+  dxb_storage_t *const storage = &env->dxb_storage;
+  const pathchar_t *const pathname = env->pathname.dxb;
+  const bool meta_sync = (env_flags & MDBX_NOMETASYNC) == 0;
+
+  dxb_open_submit_io_t open;
+  int rc = dxb_storage_make_open_submit_io(env, pathname, MDBX_OPEN_DXB_DSYNC, 0, meta_sync, &open);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->env = env;
+  io->storage = storage;
+  io->pathname = pathname;
+  io->env_flags = env_flags;
+  io->meta_sync = meta_sync;
+  io->open = open;
+  return MDBX_SUCCESS;
+}
+
+static inline int env_dsync_open_submit_io_validate(const dxb_env_dsync_open_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage || !io->pathname))
+    return MDBX_EINVAL;
+  if (unlikely(io->storage != &io->env->dxb_storage || io->pathname != io->env->pathname.dxb ||
+               io->env_flags != env_dsync_open_flags(io->env) || !env_dsync_open_needed(io->env_flags) ||
+               io->meta_sync != ((io->env_flags & MDBX_NOMETASYNC) == 0)))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_open_submit_io_validate(&io->open);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(io->open.env != io->env || io->open.pathname != io->pathname ||
+               io->open.purpose != MDBX_OPEN_DXB_DSYNC || io->open.mode_bits != 0 ||
+               io->open.meta_sync != io->meta_sync))
+    return MDBX_EINVAL;
+
+  dxb_env_dsync_open_submit_io_t checked;
+  rc = env_make_dsync_open_submit_io(io->env, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env != io->env || checked.storage != io->storage || checked.pathname != io->pathname ||
+               checked.env_flags != io->env_flags || checked.meta_sync != io->meta_sync ||
+               checked.open.env != io->open.env || checked.open.pathname != io->open.pathname ||
+               checked.open.purpose != io->open.purpose || checked.open.mode_bits != io->open.mode_bits ||
+               checked.open.meta_sync != io->open.meta_sync))
+    return MDBX_EINVAL;
+
+  return MDBX_SUCCESS;
+}
+
+static dxb_open_result_t env_submit_dsync_open(const dxb_env_dsync_open_submit_io_t *io) {
+  if (unlikely(!io || !io->storage))
+    return env_open_unsubmitted_error(MDBX_EINVAL);
+  int rc = env_dsync_open_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_open_result(io->storage, rc, false, false);
+  return dxb_storage_submit_open_dsync(io->storage, &io->open);
 }
 
 __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
@@ -32069,17 +32158,12 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   if (env->lck_mmap.fd != INVALID_HANDLE_VALUE)
     osal_fseek(env->lck_mmap.fd, safe_parking_lot.offset);
 
-  if (!(env->flags & (MDBX_RDONLY | MDBX_SAFE_NOSYNC
-#if defined(_WIN32) || defined(_WIN64)
-                      | MDBX_EXCLUSIVE
-#endif /* !Windows */
-                      ))) {
-    dxb_open_submit_io_t open_submit;
-    rc = dxb_storage_make_open_submit_io(env, env->pathname.dxb, MDBX_OPEN_DXB_DSYNC, 0,
-                                         (env->flags & MDBX_NOMETASYNC) == 0, &open_submit);
+  if (env_dsync_open_needed(env_dsync_open_flags(env))) {
+    dxb_env_dsync_open_submit_io_t dsync_open_submit;
+    rc = env_make_dsync_open_submit_io(env, &dsync_open_submit);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    dxb_open_result_t dsync_result = dxb_storage_submit_open_dsync(storage, &open_submit);
+    dxb_open_result_t dsync_result = env_submit_dsync_open(&dsync_open_submit);
     rc = dsync_result.err;
     if (unlikely(MDBX_IS_ERROR(rc)))
       return rc;
