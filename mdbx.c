@@ -2520,7 +2520,7 @@ MDBX_INTERNAL int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t m
 MDBX_INTERNAL int __must_check_result dxb_read_header(MDBX_env *env, meta_t *meta, const int lck_exclusive,
                                                       const mdbx_mode_t mode_bits);
 enum resize_mode { implicit_grow, impilict_shrink, explicit_resize };
-MDBX_INTERNAL int dxb_storage_init(dxb_storage_t *storage);
+MDBX_INTERNAL dxb_init_result_t dxb_storage_init(dxb_storage_t *storage);
 MDBX_INTERNAL void dxb_storage_reset(dxb_storage_t *storage, bool env_active);
 MDBX_INTERNAL dxb_open_result_t dxb_storage_open_data(dxb_storage_t *storage, const MDBX_env *env,
                                                       const pathchar_t *pathname,
@@ -8578,7 +8578,8 @@ __cold int mdbx_env_create(MDBX_env **penv) {
   env_setup_pagesize(env, (globals.sys_pagesize < MDBX_MAX_PAGESIZE) ? globals.sys_pagesize : MDBX_MAX_PAGESIZE);
 
   dxb_storage_t *const storage = &env->dxb_storage;
-  int rc = dxb_storage_init(storage);
+  dxb_init_result_t storage_init = dxb_storage_init(storage);
+  int rc = storage_init.err;
   if (unlikely(rc != MDBX_SUCCESS))
     goto bailout;
 
@@ -21837,14 +21838,19 @@ static int page_cache_read_large(MDBX_txn *txn, pgr_t *pgr) {
   return result.err;
 }
 
-int dxb_storage_init(dxb_storage_t *storage) {
+static inline dxb_init_result_t dxb_init_result(int err, const dxb_storage_t *storage, bool reset) {
+  const dxb_init_result_t result = {err, storage->page_cache_limit, reset, storage->page_cache_lock_initialized};
+  return result;
+}
+
+dxb_init_result_t dxb_storage_init(dxb_storage_t *storage) {
   memset(storage, 0, sizeof(*storage));
   storage->page_cache_limit = page_cache_limit_from_env();
   dxb_storage_reset(storage, false);
   int rc = osal_fastmutex_init(&storage->page_cache_lock);
   if (likely(rc == MDBX_SUCCESS))
     storage->page_cache_lock_initialized = true;
-  return rc;
+  return dxb_init_result(rc, storage, true);
 }
 
 void dxb_storage_reset(dxb_storage_t *storage, bool env_active) {

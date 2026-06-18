@@ -7166,6 +7166,24 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.121` batch, `1.160` crud, `1.053` iterate,
 `0.937` get, and `1.088` delete.
 
+A later storage initialization cleanup added `dxb_init_result_t` for the
+storage lifecycle entry point. `dxb_storage_init()` now returns an explicit
+result with the error code, configured explicit page-cache limit, whether reset
+state was established, and whether the page-cache mutex was initialized
+successfully. `mdbx_env_create()` still gates creation on the same error value,
+but storage-owned initialization completion is now available to future
+async-capable cache and queue setup. Verification passed `git diff --check`,
+source scans covering `dxb_init_result_t`, init result helpers, and every
+`dxb_storage_init()` call site, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.129` batch, `1.156` crud, `1.003` iterate,
+`0.992` get, and `1.077` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
