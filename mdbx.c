@@ -22779,27 +22779,32 @@ static dxb_range_result_t dxb_storage_discard_io(dxb_storage_t *storage, const d
 #endif /* POSIX_FADV_DONTNEED */
 }
 
-static inline dxb_readahead_result_t dxb_readahead_result(int err, bool enabled, bool supported) {
-  const dxb_readahead_result_t result = {err, enabled, supported};
+static inline dxb_readahead_result_t dxb_readahead_result(int err, bool enabled, bool supported, bool submitted,
+                                                          bool completed) {
+  const dxb_readahead_result_t result = {err, enabled, supported, submitted, completed};
   return result;
 }
 
-static inline dxb_readahead_result_t dxb_readahead_error(int err, bool enabled, bool supported) {
-  return dxb_readahead_result(err, enabled, supported);
+static inline dxb_readahead_result_t dxb_readahead_submitted_error(int err, bool enabled) {
+  return dxb_readahead_result(err, enabled, true, true, false);
 }
 
-static inline dxb_readahead_result_t dxb_readahead_completed(bool enabled, bool supported) {
-  return dxb_readahead_result(MDBX_SUCCESS, enabled, supported);
+static inline dxb_readahead_result_t dxb_readahead_noop_completed(bool enabled) {
+  return dxb_readahead_result(MDBX_SUCCESS, enabled, false, false, true);
+}
+
+static inline dxb_readahead_result_t dxb_readahead_completed(bool enabled) {
+  return dxb_readahead_result(MDBX_SUCCESS, enabled, true, true, true);
 }
 
 static dxb_readahead_result_t dxb_storage_set_readahead(const dxb_storage_t *storage, bool enable) {
 #if defined(F_RDAHEAD)
   if (unlikely(fcntl(dxb_storage_data_fd(storage), F_RDAHEAD, enable) == -1))
-    return dxb_readahead_error(errno, enable, true);
-  return dxb_readahead_completed(enable, true);
+    return dxb_readahead_submitted_error(errno, enable);
+  return dxb_readahead_completed(enable);
 #else
   (void)storage;
-  return dxb_readahead_completed(enable, false);
+  return dxb_readahead_noop_completed(enable);
 #endif /* F_RDAHEAD */
 }
 

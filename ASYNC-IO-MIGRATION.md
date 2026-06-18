@@ -7615,6 +7615,27 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.107` batch, `1.160`
 crud, `1.298` iterate, `0.955` get, and `1.067` delete.
 
+A later readahead result cleanup extended `dxb_readahead_result_t` with
+`submitted` and `completed` flags, matching the async-facing state used by
+range advice and other explicit storage operations. The direct
+`F_RDAHEAD` toggle now reports submitted-but-not-completed syscall failures,
+submitted/completed successful toggles, and unsupported no-op completion when
+the platform has no direct toggle. `enabled` and `supported` remain available
+for policy decisions, and current callers still unwrap only `.err`.
+Verification passed `git diff --check`, source scans covering
+`dxb_readahead_result_t`, `dxb_readahead_result()`,
+`dxb_readahead_submitted_error()`, `dxb_readahead_noop_completed()`,
+`dxb_readahead_completed()`, and the `dxb_storage_set_readahead()` call site,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.104` batch, `1.150` crud, `0.813` iterate, `1.049`
+get, and `1.078` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

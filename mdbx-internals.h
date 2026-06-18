@@ -1513,6 +1513,8 @@ typedef struct dxb_readahead_result {
   int err;
   bool enabled;
   bool supported;
+  bool submitted;
+  bool completed;
 } dxb_readahead_result_t;
 
 typedef struct dxb_copy_result {
