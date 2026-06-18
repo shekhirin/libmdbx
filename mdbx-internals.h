@@ -1369,6 +1369,13 @@ typedef struct dxb_filesize_result {
   uint64_t filesize;
 } dxb_filesize_result_t;
 
+#if !defined(_WIN32) && !defined(_WIN64)
+typedef struct dxb_stat_result {
+  int err;
+  struct stat st;
+} dxb_stat_result_t;
+#endif /* !Windows */
+
 typedef struct dxb_sysinfo_result {
   int err;
   uint64_t filesize;

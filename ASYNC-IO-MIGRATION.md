@@ -7184,6 +7184,24 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.129` batch, `1.156` crud, `1.003` iterate,
 `0.992` get, and `1.077` delete.
 
+A later POSIX descriptor stat cleanup added `dxb_stat_result_t` for
+`dxb_storage_stat()`. The storage stat helper now returns an explicit result
+with the error code and `struct stat` payload instead of using an out parameter.
+Environment close, POSIX lock-file mode inheritance, storage sysinfo fetch,
+DXB/LCK validation, and SysV IPC permission setup still use the same metadata
+and error values, but stat completion is now represented like the other
+storage-owned probes for future async-capable backends. Verification passed
+`git diff --check`, source scans covering `dxb_stat_result_t`, stat result
+helpers, and every `dxb_storage_stat()` call site, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.137` batch, `1.159`
+crud, `0.998` iterate, `0.980` get, and `1.077` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

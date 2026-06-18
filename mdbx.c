@@ -2538,7 +2538,7 @@ MDBX_INTERNAL void dxb_storage_park_dsync(const dxb_storage_t *storage, const dx
 MDBX_INTERNAL dxb_close_result_t dxb_storage_close(dxb_storage_t *storage, bool env_active);
 MDBX_INTERNAL dxb_deinit_result_t dxb_storage_deinit(dxb_storage_t *storage, bool env_active);
 #if !defined(_WIN32) && !defined(_WIN64)
-static int dxb_storage_stat(const dxb_storage_t *storage, struct stat *st);
+static dxb_stat_result_t dxb_storage_stat(const dxb_storage_t *storage);
 #endif /* !Windows */
 static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *storage);
 static int dxb_storage_check_readonly(const dxb_storage_t *storage, const pathchar_t *pathname, int err);
@@ -8962,9 +8962,9 @@ __cold int mdbx_env_close_ex(MDBX_env *env, bool dont_sync) {
     rc = env_sync(env, true, false);
     rc = (rc == MDBX_RESULT_TRUE) ? MDBX_SUCCESS : rc;
 #else
-    struct stat st;
-    rc = dxb_storage_stat(storage, &st);
-    if (likely(rc == MDBX_SUCCESS) && st.st_nlink > 0 /* don't sync deleted files */) {
+    dxb_stat_result_t stat_result = dxb_storage_stat(storage);
+    rc = stat_result.err;
+    if (likely(rc == MDBX_SUCCESS) && stat_result.st.st_nlink > 0 /* don't sync deleted files */) {
       rc = env_sync(env, true, true);
       rc = (rc == MDBX_BUSY || rc == EAGAIN || rc == EACCES || rc == EBUSY || rc == EWOULDBLOCK ||
             rc == MDBX_RESULT_TRUE)
@@ -22413,8 +22413,19 @@ static inline osal_ioring_write_result_t dxb_storage_write_queued(dxb_storage_t 
 }
 
 #if !defined(_WIN32) && !defined(_WIN64)
-static int dxb_storage_stat(const dxb_storage_t *storage, struct stat *st) {
-  return unlikely(fstat(dxb_storage_data_fd(storage), st)) ? errno : MDBX_SUCCESS;
+static inline dxb_stat_result_t dxb_stat_result(int err, const struct stat *st) {
+  const dxb_stat_result_t result = {err, *st};
+  return result;
+}
+
+static dxb_stat_result_t dxb_storage_stat(const dxb_storage_t *storage) {
+  struct stat st;
+  if (unlikely(fstat(dxb_storage_data_fd(storage), &st))) {
+    const int err = errno;
+    memset(&st, 0, sizeof(st));
+    return dxb_stat_result(err, &st);
+  }
+  return dxb_stat_result(MDBX_SUCCESS, &st);
 }
 #endif /* !Windows */
 
@@ -22489,11 +22500,11 @@ static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *stora
   }
   return dxb_sysinfo_error(GetLastError());
 #else
-  struct stat sys_fstat;
-  int rc = dxb_storage_stat(storage, &sys_fstat);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_sysinfo_error(rc);
-  return dxb_sysinfo_completed(sys_fstat.st_size, UINT64_C(512) * sys_fstat.st_blocks, sys_fstat.st_blksize);
+  dxb_stat_result_t stat_result = dxb_storage_stat(storage);
+  if (unlikely(stat_result.err != MDBX_SUCCESS))
+    return dxb_sysinfo_error(stat_result.err);
+  return dxb_sysinfo_completed(stat_result.st.st_size, UINT64_C(512) * stat_result.st.st_blocks,
+                               stat_result.st.st_blksize);
 #endif /* !Windows */
 }
 
@@ -24644,11 +24655,11 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
 #else
   if (mode == 0) {
     /* pickup mode for lck-file */
-    struct stat st;
-    rc = dxb_storage_stat(storage, &st);
+    dxb_stat_result_t stat_result = dxb_storage_stat(storage);
+    rc = stat_result.err;
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    mode = st.st_mode;
+    mode = stat_result.st.st_mode;
   }
   mode = (/* inherit read permissions for group and others */ mode & (S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH)) |
          /* always add read/write for owner */ S_IRUSR | S_IWUSR |
@@ -28634,15 +28645,15 @@ int lck_ipclock_destroy(osal_ipclock_t *ipc) {
 
 static int check_fstat(MDBX_env *env) {
   const dxb_storage_t *const storage = &env->dxb_storage;
-  struct stat st;
 
-  int rc = MDBX_SUCCESS;
-  rc = dxb_storage_stat(storage, &st);
+  dxb_stat_result_t dxb_stat = dxb_storage_stat(storage);
+  int rc = dxb_stat.err;
   if (unlikely(rc != MDBX_SUCCESS)) {
     ERROR("fstat(%s), err %d", "DXB", rc);
     return rc;
   }
 
+  struct stat st = dxb_stat.st;
   if (!S_ISREG(st.st_mode) || st.st_nlink < 1) {
 #ifdef EBADFD
     rc = EBADFD;
@@ -28979,10 +28990,11 @@ __cold int lck_init(MDBX_env *env, MDBX_env *inprocess_neighbor, int global_uniq
   (void)inprocess_neighbor;
   if (global_uniqueness_flag == MDBX_RESULT_TRUE) {
     const dxb_storage_t *const storage = &env->dxb_storage;
-    struct stat st;
-    int err = dxb_storage_stat(storage, &st);
+    dxb_stat_result_t stat_result = dxb_storage_stat(storage);
+    int err = stat_result.err;
     if (err)
       return err;
+    struct stat st = stat_result.st;
   sysv_retry_create:
     semid = semget(env->me_sysv_ipc.key, 2, IPC_CREAT | IPC_EXCL | (st.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO)));
     if (unlikely(semid == -1)) {
