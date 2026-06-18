@@ -11770,6 +11770,32 @@ focused ASAN `migration_smoke` entries with
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.070`
 batch, `1.134` crud, `1.212` iterate, `0.952` get, and `1.060` delete.
 
+A later filesize-set submission cleanup converted the high-level set-size path
+to accept explicit `dxb_filesize_submit_io_t` descriptors instead of building
+them internally. `dxb_storage_submit_set_filesize_bytes()` now validates and
+submits a caller-provided set descriptor, still preserving shrink-cache
+invalidation and cached filesize state updates after successful file resizing.
+`dxb_storage_submit_set_filesize_as_current()` layers the existing current-size
+state update on top of that descriptor. The setup setlength path, resize
+growth/shrink path, and new-database setup path now call
+`dxb_storage_make_filesize_set_submit_io()` before submitting, removing the
+older `dxb_storage_set_filesize_bytes()` and
+`dxb_storage_set_filesize_as_current()` shortcuts. Verification passed
+`git diff --check`, source scans covering
+`dxb_storage_make_filesize_set_submit_io()`,
+`dxb_storage_submit_set_filesize_bytes()`,
+`dxb_storage_submit_set_filesize_as_current()`, and confirming the removed
+shortcut names are absent, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.104` batch, `1.144` crud, `1.000` iterate,
+`1.007` get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
