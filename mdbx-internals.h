@@ -1369,6 +1369,11 @@ typedef struct dxb_filesize_result {
   uint64_t filesize;
 } dxb_filesize_result_t;
 
+typedef struct dxb_range_result {
+  int err;
+  size_t payload_bytes;
+} dxb_range_result_t;
+
 typedef struct dxb_dirty_write_queue_io {
   enum dxb_io_channel channel;
   size_t items;
