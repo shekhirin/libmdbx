@@ -1381,6 +1381,8 @@ typedef struct dxb_filesize_result {
 typedef struct dxb_stat_result {
   int err;
   struct stat st;
+  bool submitted;
+  bool completed;
 } dxb_stat_result_t;
 #endif /* !Windows */
 
@@ -1389,6 +1391,8 @@ typedef struct dxb_sysinfo_result {
   uint64_t filesize;
   uint64_t allocated;
   uint32_t io_block;
+  bool submitted;
+  bool completed;
 } dxb_sysinfo_result_t;
 
 typedef struct dxb_incore_result {

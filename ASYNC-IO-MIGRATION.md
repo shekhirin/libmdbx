@@ -7636,6 +7636,30 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.104` batch, `1.150` crud, `0.813` iterate, `1.049`
 get, and `1.078` delete.
 
+A later stat/sysinfo result cleanup extended `dxb_stat_result_t` and
+`dxb_sysinfo_result_t` with `submitted` and `completed` flags, matching the
+async-facing state used by the other explicit storage probes. POSIX `fstat()`
+results now distinguish submitted metadata-probe failures from successful
+submitted/completed probes, while sysinfo treats an invalid data descriptor as
+an unsubmitted completed no-op and propagates POSIX stat submission state into
+derived sysinfo errors. Windows file-info probes report submitted/completed
+success or submitted/not-completed failure. Current callers still unwrap only
+`.err` and the value fields. Verification passed `git diff --check`, source
+scans covering `dxb_stat_result_t`, `dxb_stat_result()`,
+`dxb_stat_submitted_error()`, `dxb_stat_completed()`,
+`dxb_stat_zero_submitted_error()`, `dxb_sysinfo_result_t`,
+`dxb_sysinfo_result()`, `dxb_sysinfo_error()`,
+`dxb_sysinfo_from_stat_error()`, `dxb_sysinfo_noop_completed()`,
+`dxb_sysinfo_completed()`, and the stat/sysinfo callers, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.131` batch, `1.157`
+crud, `1.071` iterate, `1.060` get, and `1.077` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

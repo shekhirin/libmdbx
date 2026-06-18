@@ -22543,19 +22543,29 @@ static inline dxb_queue_write_result_t dxb_storage_write_queued(dxb_storage_t *s
 }
 
 #if !defined(_WIN32) && !defined(_WIN64)
-static inline dxb_stat_result_t dxb_stat_result(int err, const struct stat *st) {
-  const dxb_stat_result_t result = {err, *st};
+static inline dxb_stat_result_t dxb_stat_result(int err, const struct stat *st, bool submitted, bool completed) {
+  const dxb_stat_result_t result = {err, *st, submitted, completed};
   return result;
+}
+
+static inline dxb_stat_result_t dxb_stat_submitted_error(int err, const struct stat *st) {
+  return dxb_stat_result(err, st, true, false);
+}
+
+static inline dxb_stat_result_t dxb_stat_completed(const struct stat *st) {
+  return dxb_stat_result(MDBX_SUCCESS, st, true, true);
+}
+
+static inline dxb_stat_result_t dxb_stat_zero_submitted_error(int err) {
+  struct stat st;
+  memset(&st, 0, sizeof(st));
+  return dxb_stat_submitted_error(err, &st);
 }
 
 static dxb_stat_result_t dxb_storage_stat(const dxb_storage_t *storage) {
   struct stat st;
-  if (unlikely(fstat(dxb_storage_data_fd(storage), &st))) {
-    const int err = errno;
-    memset(&st, 0, sizeof(st));
-    return dxb_stat_result(err, &st);
-  }
-  return dxb_stat_result(MDBX_SUCCESS, &st);
+  return unlikely(fstat(dxb_storage_data_fd(storage), &st)) ? dxb_stat_zero_submitted_error(errno)
+                                                            : dxb_stat_completed(&st);
 }
 #endif /* !Windows */
 
@@ -22580,23 +22590,33 @@ static inline dxb_incore_result_t dxb_storage_check_incore(const dxb_storage_t *
 }
 
 static inline dxb_sysinfo_result_t dxb_sysinfo_result(int err, uint64_t filesize, uint64_t allocated,
-                                                      uint32_t io_block) {
-  const dxb_sysinfo_result_t result = {err, filesize, allocated, io_block};
+                                                      uint32_t io_block, bool submitted, bool completed) {
+  const dxb_sysinfo_result_t result = {err, filesize, allocated, io_block, submitted, completed};
   return result;
 }
 
-static inline dxb_sysinfo_result_t dxb_sysinfo_error(int err) {
-  return dxb_sysinfo_result(err, 0, 0, 0);
+static inline dxb_sysinfo_result_t dxb_sysinfo_error(int err, bool submitted) {
+  return dxb_sysinfo_result(err, 0, 0, 0, submitted, false);
+}
+
+#if !defined(_WIN32) && !defined(_WIN64)
+static inline dxb_sysinfo_result_t dxb_sysinfo_from_stat_error(dxb_stat_result_t stat) {
+  return dxb_sysinfo_result(stat.err, 0, 0, 0, stat.submitted, stat.completed);
+}
+#endif /* !Windows */
+
+static inline dxb_sysinfo_result_t dxb_sysinfo_noop_completed(void) {
+  return dxb_sysinfo_result(MDBX_SUCCESS, 0, 0, 0, false, true);
 }
 
 static inline dxb_sysinfo_result_t dxb_sysinfo_completed(uint64_t filesize, uint64_t allocated, uint32_t io_block) {
-  return dxb_sysinfo_result(MDBX_SUCCESS, filesize, allocated, io_block);
+  return dxb_sysinfo_result(MDBX_SUCCESS, filesize, allocated, io_block, true, true);
 }
 
 static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *storage) {
   const mdbx_filehandle_t dxb_fd = dxb_storage_data_fd(storage);
   if (dxb_fd == INVALID_HANDLE_VALUE)
-    return dxb_sysinfo_completed(0, 0, 0);
+    return dxb_sysinfo_noop_completed();
 
 #if defined(_WIN32) || defined(_WIN64)
   union {
@@ -22628,11 +22648,11 @@ static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *stora
     filesize = sys_finfo.bh.nFileSizeLow | (uint64_t)sys_finfo.bh.nFileSizeHigh << 32;
     return dxb_sysinfo_completed(filesize, 0, 0);
   }
-  return dxb_sysinfo_error(GetLastError());
+  return dxb_sysinfo_error(GetLastError(), true);
 #else
   dxb_stat_result_t stat_result = dxb_storage_stat(storage);
   if (unlikely(stat_result.err != MDBX_SUCCESS))
-    return dxb_sysinfo_error(stat_result.err);
+    return dxb_sysinfo_from_stat_error(stat_result);
   return dxb_sysinfo_completed(stat_result.st.st_size, UINT64_C(512) * stat_result.st.st_blocks,
                                stat_result.st.st_blksize);
 #endif /* !Windows */
