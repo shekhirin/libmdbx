@@ -1442,6 +1442,17 @@ typedef struct dxb_queue_op_result {
   bool reset;
 } dxb_queue_op_result_t;
 
+typedef struct dxb_queue_write_result {
+  int err;
+  enum dxb_io_channel channel;
+  unsigned wops;
+  unsigned used_slots;
+  unsigned write_items;
+  size_t payload_bytes;
+  bool submitted;
+  bool completed;
+} dxb_queue_write_result_t;
+
 typedef struct dxb_open_result {
   int err;
   bool data_opened;

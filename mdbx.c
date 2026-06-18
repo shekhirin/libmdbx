@@ -22209,6 +22209,15 @@ static inline dxb_queue_op_result_t dxb_queue_op_result(int err, const osal_iori
   return result;
 }
 
+static inline dxb_queue_write_result_t dxb_queue_write_result(int err, enum dxb_io_channel channel, unsigned wops,
+                                                             unsigned used_slots, unsigned write_items,
+                                                             size_t payload_bytes, bool submitted,
+                                                             bool completed) {
+  const dxb_queue_write_result_t result = {err, channel, wops, used_slots, write_items,
+                                           payload_bytes, submitted, completed};
+  return result;
+}
+
 dxb_queue_op_result_t osal_ioring_prepare(osal_ioring_t *ior, const dxb_dirty_write_queue_io_t *io) {
   if (unlikely(!ior || !io))
     return dxb_queue_op_result(MDBX_EINVAL, ior, false, false, false, false);
@@ -22461,18 +22470,26 @@ static inline int dxb_storage_queued_write_io_validate(const dxb_storage_t *stor
              : MDBX_EINVAL;
 }
 
-static inline osal_ioring_write_result_t dxb_storage_write_queued(dxb_storage_t *storage,
-                                                                  enum dxb_io_channel channel) {
+static inline dxb_queue_write_result_t dxb_storage_write_queued(dxb_storage_t *storage,
+                                                                enum dxb_io_channel channel) {
   dxb_queued_write_io_t io;
-  osal_ioring_write_result_t result = {dxb_storage_make_queued_write_io(storage, channel, &io), 0, 0, 0, 0};
-  if (likely(result.err == MDBX_SUCCESS))
-    result.err = dxb_storage_queued_write_io_validate(storage, channel, &io);
-  if (likely(result.err == MDBX_SUCCESS)) {
-    result = osal_ioring_write(dxb_storage_write_queue(storage), &io);
-    if (likely(result.err == MDBX_SUCCESS) &&
-        unlikely(result.write_items != io.write_items || result.used_slots != io.used_slots ||
-                 result.payload_bytes != io.payload_bytes))
-      result.err = MDBX_EINVAL;
+  int rc = dxb_storage_make_queued_write_io(storage, channel, &io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_queue_write_result(rc, channel, 0, 0, 0, 0, false, false);
+
+  rc = dxb_storage_queued_write_io_validate(storage, channel, &io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_queue_write_result(rc, io.channel, 0, io.used_slots, io.write_items, io.payload_bytes, false, false);
+
+  const osal_ioring_write_result_t write = osal_ioring_write(dxb_storage_write_queue(storage), &io);
+  dxb_queue_write_result_t result =
+      dxb_queue_write_result(write.err, io.channel, write.wops, write.used_slots, write.write_items,
+                             write.payload_bytes, true, write.err == MDBX_SUCCESS);
+  if (likely(result.err == MDBX_SUCCESS) &&
+      unlikely(result.write_items != io.write_items || result.used_slots != io.used_slots ||
+               result.payload_bytes != io.payload_bytes)) {
+    result.err = MDBX_EINVAL;
+    result.completed = false;
   }
   return result;
 }
@@ -36109,8 +36126,9 @@ static void iov_complete(iov_ctx_t *ctx) {
 
 int iov_write(iov_ctx_t *ctx) {
   eASSERT0(ctx->env, !iov_empty(ctx));
-  osal_ioring_write_result_t r = dxb_storage_write_queued(ctx->storage, ctx->channel);
-  if (likely(r.err == MDBX_SUCCESS) && unlikely(!r.wops || !r.write_items || !r.used_slots || !r.payload_bytes))
+  dxb_queue_write_result_t r = dxb_storage_write_queued(ctx->storage, ctx->channel);
+  if (likely(r.err == MDBX_SUCCESS) &&
+      unlikely(!r.submitted || !r.completed || !r.wops || !r.write_items || !r.used_slots || !r.payload_bytes))
     r.err = MDBX_EINVAL;
   if (MDBX_ENABLE_PGOP_STAT)
     ctx->env->lck->pgops.wops.weak += r.wops;

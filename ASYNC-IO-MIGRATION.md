@@ -7341,6 +7341,27 @@ roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.090` batch, `1.162` crud, `1.028` iterate, `1.011`
 get, and `1.066` delete.
 
+A later queued-write storage result cleanup added `dxb_queue_write_result_t`.
+`dxb_storage_write_queued()` now translates `osal_ioring_write_result_t` into a
+storage-owned result containing the dirty-write channel, physical write
+operations, queued slot/item/payload accounting, and explicit submitted and
+completed state. `iov_write()` now consumes that storage result and no longer
+depends on the OSAL result type, while preserving the same error propagation,
+write-operation statistics, and completion cleanup behavior. This keeps queued
+dirty-page submission behind the storage abstraction so a later async backend
+can report completion state without leaking ring-specific result types into
+transaction code. Verification passed `git diff --check`, source scans covering
+`dxb_queue_write_result_t`, storage queued-write result translation,
+`osal_ioring_write_result_t` confinement, and the `iov_write()` caller, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, `cmake --build @cmake-asan-build`, the six focused
+ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The
+paired benchmark gate passed with forced/default ratios of `1.079` batch,
+`1.174` crud, `1.007` iterate, `0.997` get, and `1.083` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
