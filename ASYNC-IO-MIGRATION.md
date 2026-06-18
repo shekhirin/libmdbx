@@ -10380,6 +10380,39 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.093` batch, `1.161` crud, `0.977`
 iterate, `0.954` get, and `1.086` delete.
 
+A later steady-meta wipe cleanup added
+`dxb_meta_unsteady_sign_write_submit_io_t`,
+`meta_unsteady_make_sign_write_submit_io()`,
+`meta_unsteady_sign_write_submit_io_validate()`, and
+`meta_unsteady_submit_sign_write()` for the `meta_unsteady()` sign-field wipe
+used by `meta_wipe_steady()`. The request captures the environment, data
+storage handle, target meta page number, expected txnid, rebuilt sign-field
+meta-write descriptor, generic meta-write submit descriptor, and wipe buffer.
+Validation rechecks environment/storage identity, meta-shadow availability, that
+the target meta is still steady at the expected txnid, the sign-field payload
+offset/length, buffer identity, descriptor shape, and a rebuilt request before
+submitting. Submit still delegates to `dxb_storage_submit_write_meta()`,
+preserving pgop accounting, the meta-shadow write, `MDBX_RESULT_TRUE` when a
+meta page was wiped, the follow-up meta sync in `meta_wipe_steady()`, and the
+no-op behavior when the candidate meta is already weak or newer. This removes
+the inline sign-field write request build/submit sequence from
+`meta_unsteady()` and gives steady-meta weakening an explicit async-capable
+request point. Verification passed `git diff --check`, source scans covering
+`dxb_meta_unsteady_sign_write_submit_io_t`,
+`meta_unsteady_make_sign_write_submit_io()`,
+`meta_unsteady_sign_write_submit_io_validate()`,
+`meta_unsteady_submit_sign_write()`, the updated `meta_unsteady()` path, and the
+absence of the old inline sign-field write submit sequence, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.099` batch, `1.164` crud, `1.073` iterate,
+`1.023` get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
