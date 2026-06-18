@@ -2541,7 +2541,8 @@ MDBX_INTERNAL dxb_deinit_result_t dxb_storage_deinit(dxb_storage_t *storage, boo
 static dxb_stat_result_t dxb_storage_stat(const dxb_storage_t *storage);
 #endif /* !Windows */
 static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *storage);
-static int dxb_storage_check_readonly(const dxb_storage_t *storage, const pathchar_t *pathname, int err);
+static dxb_readonly_result_t dxb_storage_check_readonly(const dxb_storage_t *storage, const pathchar_t *pathname,
+                                                        int err);
 static inline int dxb_storage_set_filesize(dxb_storage_t *storage, uint64_t filesize);
 static inline int dxb_storage_set_current(dxb_storage_t *storage, uint64_t filesize);
 static dxb_filesize_result_t dxb_storage_fetch_filesize(dxb_storage_t *storage);
@@ -22508,8 +22509,14 @@ static dxb_sysinfo_result_t dxb_storage_fetch_sysinfo(const dxb_storage_t *stora
 #endif /* !Windows */
 }
 
-static int dxb_storage_check_readonly(const dxb_storage_t *storage, const pathchar_t *pathname, int err) {
-  return osal_check_fs_rdonly(dxb_storage_data_fd(storage), pathname, err);
+static inline dxb_readonly_result_t dxb_readonly_result(int err, int source_err) {
+  const dxb_readonly_result_t result = {err, source_err, err == MDBX_SUCCESS, err != MDBX_ENOSYS};
+  return result;
+}
+
+static dxb_readonly_result_t dxb_storage_check_readonly(const dxb_storage_t *storage, const pathchar_t *pathname,
+                                                        int err) {
+  return dxb_readonly_result(osal_check_fs_rdonly(dxb_storage_data_fd(storage), pathname, err), err);
 }
 
 static inline dxb_range_result_t dxb_range_result(int err, size_t payload_bytes) {
@@ -30087,13 +30094,13 @@ __cold int lck_setup(MDBX_env *env, mdbx_mode_t mode) {
     case MDBX_EROFS:
       if (env->flags & MDBX_RDONLY) {
         /* ENSURE the file system is read-only */
-        int err_rofs = dxb_storage_check_readonly(storage, env->pathname.lck, err);
-        if (err_rofs == MDBX_SUCCESS ||
+        dxb_readonly_result_t readonly = dxb_storage_check_readonly(storage, env->pathname.lck, err);
+        if (readonly.readonly ||
             /* ignore ERROR_NOT_SUPPORTED for exclusive mode */
-            (err_rofs == MDBX_ENOSYS && (env->flags & MDBX_EXCLUSIVE)))
+            (!readonly.supported && (env->flags & MDBX_EXCLUSIVE)))
           break;
-        if (err_rofs != MDBX_ENOSYS)
-          err = err_rofs;
+        if (readonly.supported)
+          err = readonly.err;
       }
       __fallthrough /* fall through */;
     default:

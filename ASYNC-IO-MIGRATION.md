@@ -7202,6 +7202,24 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.137` batch, `1.159`
 crud, `0.998` iterate, `0.980` get, and `1.077` delete.
 
+A later read-only filesystem probe cleanup added `dxb_readonly_result_t` for
+`dxb_storage_check_readonly()`. The storage helper now returns the original
+open error, the read-only probe error, whether the filesystem was confirmed
+read-only, and whether the probe was supported instead of returning only an
+`int`. `lck_setup()` still preserves the same without-lock fallback behavior
+for read-only/exclusive opens, but the storage-owned probe now exposes its
+completion state for future async-capable backends. Verification passed
+`git diff --check`, source scans covering `dxb_readonly_result_t`, read-only
+result helpers, and every `dxb_storage_check_readonly()` call site, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.122` batch, `1.162`
+crud, `0.968` iterate, `1.019` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

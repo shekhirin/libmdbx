@@ -1388,6 +1388,13 @@ typedef struct dxb_incore_result {
   bool incore;
 } dxb_incore_result_t;
 
+typedef struct dxb_readonly_result {
+  int err;
+  int source_err;
+  bool readonly;
+  bool supported;
+} dxb_readonly_result_t;
+
 typedef struct dxb_queue_result {
   int err;
   unsigned allocated;
