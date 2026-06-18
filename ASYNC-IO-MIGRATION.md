@@ -5900,6 +5900,23 @@ injection, `cmake --build @cmake-asan-build`, the six focused ASAN
 benchmark gate passed with forced/default ratios of `1.126` batch, `1.168`
 crud, `1.231` iterate, `1.028` get, and `1.073` delete.
 
+A later warmup read descriptor cleanup moved forced warmup scans onto the
+data-read path. `mdbx_env_warmup()` now derives the selected warmup window as a
+rounded page-prefix `dxb_page_io_t`, and `warmup_force_read()` validates and
+clamps that page span against the current storage size before submitting
+full-page chunks through checked `dxb_data_read_io_t` descriptors. Startup
+meta/header probes and portable env-copy/probe reads remain byte-oriented.
+Verification passed `git diff --check`, source scans proving the old
+byte-oriented warmup range and scan requests are gone from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` target, direct `mdbx_migration_smoke` default
+and forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite, forced tiny-cache fault injection,
+`cmake --build @cmake-asan-build`, the six focused ASAN `migration_smoke` CTest
+entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
+with forced/default ratios of `1.131` batch, `1.164` crud, `0.830` iterate,
+`0.974` get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

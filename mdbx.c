@@ -5155,9 +5155,8 @@ static size_t estimate_rss(size_t database_bytes) {
   return database_bytes + database_bytes / 64 + (512 + MDBX_WORDBITS * 16) * MEGABYTE;
 }
 
-static int warmup_force_read(const dxb_storage_t *storage, const dxb_byte_io_t *range, uint64_t timeout_monotime) {
-  dxb_byte_io_t scan;
-  int rc = dxb_storage_byte_io_validate(range);
+static int warmup_force_read(const dxb_storage_t *storage, const dxb_page_io_t *range, uint64_t timeout_monotime) {
+  int rc = dxb_storage_page_io_validate(storage, range);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
@@ -5165,33 +5164,43 @@ static int warmup_force_read(const dxb_storage_t *storage, const dxb_byte_io_t *
   if (range->offset >= current_size)
     return MDBX_SUCCESS;
   const size_t current_available = current_size - (size_t)range->offset;
-  const size_t used_range = (range->bytes > current_available) ? current_available : range->bytes;
-  if (used_range == 0)
+  size_t scan_npages = dxb_storage_bytes2pgno(storage, current_available);
+  if (scan_npages > range->npages)
+    scan_npages = range->npages;
+  if (scan_npages == 0)
     return MDBX_SUCCESS;
-  rc = dxb_storage_byte_subrange_io(range, 0, used_range, &scan);
+  dxb_page_io_t scan;
+  rc = dxb_storage_page_io(storage, range->pgno, scan_npages, &scan);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  size_t chunk = used_range < MEGABYTE ? used_range : MEGABYTE;
-  chunk = ceil_powerof2(chunk, globals.sys_pagesize);
-  if (chunk > used_range)
-    chunk = used_range;
+  const size_t pagesize = dxb_storage_pagesize(storage);
+  size_t chunk_npages = (MEGABYTE + pagesize - 1) >> dxb_storage_pagesize_ln(storage);
+  if (chunk_npages == 0)
+    chunk_npages = 1;
+  if (chunk_npages > scan.npages)
+    chunk_npages = scan.npages;
+  const size_t chunk_bytes = dxb_storage_npages2bytes(storage, chunk_npages);
 
   void *buffer = nullptr;
-  rc = osal_memalign_alloc(globals.sys_pagesize, chunk, &buffer);
+  rc = osal_memalign_alloc(globals.sys_pagesize, chunk_bytes, &buffer);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  for (size_t offset = 0; offset < used_range;) {
-    const size_t bytes = (used_range - offset < chunk) ? used_range - offset : chunk;
-    dxb_byte_io_t request;
-    rc = dxb_storage_byte_subrange_io(&scan, offset, bytes, &request);
+  for (size_t offset_npages = 0; offset_npages < scan.npages;) {
+    const size_t npages = (scan.npages - offset_npages < chunk_npages) ? scan.npages - offset_npages : chunk_npages;
+    dxb_page_io_t request_pages;
+    rc = dxb_storage_page_io(storage, scan.pgno + (pgno_t)offset_npages, npages, &request_pages);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
-    rc = dxb_storage_read_bytes(storage, &request, buffer);
+    dxb_data_read_io_t request;
+    rc = dxb_storage_make_data_read_io(storage, &request_pages, &request);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
-    offset += bytes;
+    rc = dxb_storage_read_data(storage, &request, buffer);
+    if (unlikely(rc != MDBX_SUCCESS))
+      break;
+    offset_npages += npages;
     if (timeout_monotime && osal_monotime() > timeout_monotime) {
       rc = MDBX_RESULT_TRUE;
       break;
@@ -5240,15 +5249,14 @@ __cold int mdbx_env_warmup(const MDBX_env *env, const MDBX_txn *txn, MDBX_warmup
       return LOG_IFERR(err);
     used_pgno = meta_recent_shadow(env, &troika).ptr_v->geometry.first_unallocated;
   }
-  const size_t used_range = dxb_storage_pgno_ceil2os_bytes(storage, used_pgno);
-  dxb_byte_io_t warmup_range;
-  int err = dxb_storage_byte_span_io(0, used_range, &warmup_range);
+  dxb_page_io_t warmup_pages;
+  int err = dxb_storage_page_prefix_io(storage, dxb_storage_pgno_ceil2os_pgno(storage, used_pgno), &warmup_pages);
   if (unlikely(err != MDBX_SUCCESS))
     return LOG_IFERR(err);
 
   int rc = MDBX_SUCCESS;
   if (flags & MDBX_warmup_touchlimit) {
-    const size_t estimated_rss = estimate_rss(warmup_range.bytes);
+    const size_t estimated_rss = estimate_rss(warmup_pages.bytes);
 #if defined(_WIN32) || defined(_WIN64)
     SIZE_T current_ws_lower, current_ws_upper;
     if (GetProcessWorkingSetSize(GetCurrentProcess(), &current_ws_lower, &current_ws_upper) &&
@@ -5282,7 +5290,7 @@ __cold int mdbx_env_warmup(const MDBX_env *env, const MDBX_txn *txn, MDBX_warmup
     rc = err;
 
   if ((flags & MDBX_warmup_force) != 0 && (rc == MDBX_SUCCESS || rc == MDBX_ENOSYS))
-    rc = warmup_force_read(storage, &warmup_range, timeout_monotime);
+    rc = warmup_force_read(storage, &warmup_pages, timeout_monotime);
   if ((flags & MDBX_warmup_lock) != 0 && (rc == MDBX_SUCCESS || rc == MDBX_ENOSYS))
     rc = MDBX_ENOSYS;
 
