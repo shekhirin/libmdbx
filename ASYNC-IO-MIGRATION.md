@@ -5917,6 +5917,24 @@ entries, and `mdbx_migration_bench_lazy`. The paired benchmark gate passed
 with forced/default ratios of `1.131` batch, `1.164` crud, `0.830` iterate,
 `0.974` get, and `1.068` delete.
 
+A later environment-copy fallback descriptor cleanup moved the portable
+non-compacting copy read path onto full-page data-read descriptors. `copy_asis()`
+still derives the authoritative remaining source range as a checked byte
+descriptor for `sendfile()` and `copy_file_range()`, but the portable fallback
+now derives page coverage from each output chunk, submits that coverage through
+`dxb_storage_read_data()`, and writes only the requested payload subrange from
+the aligned buffer. Startup meta/header probes remain byte-oriented because
+they run before the stored page size is established. Verification passed
+`git diff --check`, source scans proving the old portable env-copy byte read is
+gone from `mdbx.c`, the GNUmake `mdbx_migration_smoke` target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.146` batch, `1.150`
+crud, `1.251` iterate, `0.972` get, and `1.067` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

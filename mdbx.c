@@ -6169,13 +6169,34 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
 #endif /* MDBX_USE_COPYFILERANGE */
 
     /* fallback to portable */
-    const size_t chunk =
-        ((size_t)MDBX_ENVCOPY_WRITEBUF < remaining.bytes) ? (size_t)MDBX_ENVCOPY_WRITEBUF : remaining.bytes;
+    const size_t copy_buffer_bytes = (size_t)MDBX_ENVCOPY_WRITEBUF;
+    const size_t pagesize = dxb_storage_pagesize(storage);
+    if (unlikely(copy_buffer_bytes < pagesize)) {
+      rc = MDBX_EINVAL;
+      break;
+    }
+    const size_t inpage_offset = (size_t)(remaining.offset & (pagesize - 1));
+    const size_t max_payload = copy_buffer_bytes - inpage_offset;
+    const size_t chunk = (max_payload < remaining.bytes) ? max_payload : remaining.bytes;
     dxb_byte_io_t request;
     rc = dxb_storage_byte_subrange_io(&remaining, 0, chunk, &request);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
-    rc = dxb_storage_read_bytes(storage, &request, data_buffer);
+    dxb_page_coverage_io_t coverage;
+    rc = dxb_storage_make_page_coverage_io(storage, &request, &coverage);
+    if (unlikely(rc != MDBX_SUCCESS))
+      break;
+    dxb_data_read_io_t read_io;
+    rc = dxb_storage_make_data_read_io(storage, &coverage.pages, &read_io);
+    if (unlikely(rc != MDBX_SUCCESS))
+      break;
+    const size_t payload_offset = (size_t)(request.offset - coverage.page_bytes.offset);
+    if (unlikely(read_io.bytes.bytes > copy_buffer_bytes || payload_offset > read_io.bytes.bytes ||
+                 request.bytes > read_io.bytes.bytes - payload_offset)) {
+      rc = MDBX_EINVAL;
+      break;
+    }
+    rc = dxb_storage_read_data(storage, &read_io, data_buffer);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     if (flags & MDBX_CP_THROTTLE_MVCC) {
@@ -6183,7 +6204,7 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
       if (unlikely(rc != MDBX_SUCCESS))
         break;
     }
-    rc = osal_write(fd, data_buffer, chunk);
+    rc = osal_write(fd, data_buffer + payload_offset, chunk);
     offset += chunk;
   }
 
