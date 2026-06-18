@@ -29382,6 +29382,97 @@ static dxb_resize_result_t dxb_storage_submit_resize_size(dxb_storage_t *storage
   return dxb_storage_resize_size(storage, &io->target, io->flags);
 }
 
+typedef struct dxb_resize_tail_discard_submit_io {
+  dxb_storage_t *storage;
+  size_t begin_bytes;
+  size_t end_bytes;
+  dxb_byte_io_t bytes;
+  dxb_discard_io_t discard;
+  dxb_discard_submit_io_t submit;
+} dxb_resize_tail_discard_submit_io_t;
+
+static inline int dxb_resize_make_tail_discard_submit_io(dxb_storage_t *storage, size_t begin_bytes, size_t end_bytes,
+                                                         dxb_resize_tail_discard_submit_io_t *io) {
+  if (unlikely(!storage || !io || begin_bytes >= end_bytes))
+    return MDBX_EINVAL;
+
+  dxb_byte_io_t bytes;
+  int rc = dxb_storage_byte_span_io(begin_bytes, end_bytes, &bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_discard_io_t discard;
+  rc = dxb_storage_make_discard_io(storage, &bytes, dxb_discard_clean, &discard);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  dxb_discard_submit_io_t submit;
+  rc = dxb_storage_make_discard_submit_io(storage, &discard, &submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->storage = storage;
+  io->begin_bytes = begin_bytes;
+  io->end_bytes = end_bytes;
+  io->bytes = bytes;
+  io->discard = discard;
+  io->submit = submit;
+  return MDBX_SUCCESS;
+}
+
+static inline int dxb_resize_tail_discard_submit_io_validate(const dxb_resize_tail_discard_submit_io_t *io) {
+  if (unlikely(!io || !io->storage || io->begin_bytes >= io->end_bytes))
+    return MDBX_EINVAL;
+  if (unlikely(io->bytes.offset != io->begin_bytes ||
+               io->bytes.bytes != (size_t)(io->end_bytes - io->begin_bytes) ||
+               io->discard.mode != dxb_discard_clean ||
+               io->discard.range.request.offset != io->bytes.offset ||
+               io->discard.range.request.bytes != io->bytes.bytes ||
+               io->submit.discard.range.request.offset != io->discard.range.request.offset ||
+               io->submit.discard.range.request.bytes != io->discard.range.request.bytes ||
+               io->submit.discard.mode != io->discard.mode))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_discard_submit_io_validate(io->storage, &io->submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_resize_tail_discard_submit_io_t checked;
+  rc = dxb_resize_make_tail_discard_submit_io(io->storage, io->begin_bytes, io->end_bytes, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.storage != io->storage || checked.begin_bytes != io->begin_bytes ||
+               checked.end_bytes != io->end_bytes || checked.bytes.offset != io->bytes.offset ||
+               checked.bytes.bytes != io->bytes.bytes ||
+               checked.discard.range.request.offset != io->discard.range.request.offset ||
+               checked.discard.range.request.bytes != io->discard.range.request.bytes ||
+               checked.discard.range.pages.pgno != io->discard.range.pages.pgno ||
+               checked.discard.range.pages.end_pgno != io->discard.range.pages.end_pgno ||
+               checked.discard.range.pages.npages != io->discard.range.pages.npages ||
+               checked.discard.range.pages.offset != io->discard.range.pages.offset ||
+               checked.discard.range.pages.bytes != io->discard.range.pages.bytes ||
+               checked.discard.range.page_bytes.offset != io->discard.range.page_bytes.offset ||
+               checked.discard.range.page_bytes.bytes != io->discard.range.page_bytes.bytes ||
+               checked.discard.mode != io->discard.mode ||
+               checked.submit.discard.range.request.offset != io->submit.discard.range.request.offset ||
+               checked.submit.discard.range.request.bytes != io->submit.discard.range.request.bytes ||
+               checked.submit.discard.range.pages.pgno != io->submit.discard.range.pages.pgno ||
+               checked.submit.discard.range.pages.end_pgno != io->submit.discard.range.pages.end_pgno ||
+               checked.submit.discard.range.pages.npages != io->submit.discard.range.pages.npages ||
+               checked.submit.discard.range.pages.offset != io->submit.discard.range.pages.offset ||
+               checked.submit.discard.range.pages.bytes != io->submit.discard.range.pages.bytes ||
+               checked.submit.discard.range.page_bytes.offset != io->submit.discard.range.page_bytes.offset ||
+               checked.submit.discard.range.page_bytes.bytes != io->submit.discard.range.page_bytes.bytes ||
+               checked.submit.discard.mode != io->submit.discard.mode))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
+static dxb_range_result_t dxb_resize_submit_tail_discard(const dxb_resize_tail_discard_submit_io_t *io) {
+  int rc = dxb_resize_tail_discard_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_range_error(rc);
+  return dxb_storage_submit_discard_io(io->storage, &io->submit);
+}
+
 typedef struct dxb_header_meta_read_submit_io {
   const dxb_storage_t *storage;
   dxb_meta_read_io_t request;
@@ -29633,18 +29724,10 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
 
   if (size_bytes < prev_size && mode > implicit_grow) {
     NOTICE("resize-DONTNEED %u..%u", size_pgno, (pgno_t)dxb_storage_bytes2pgno(storage, prev_size));
-    dxb_byte_io_t discard_bytes;
-    rc = dxb_storage_byte_span_io(size_bytes, prev_size, &discard_bytes);
-    if (likely(rc == MDBX_SUCCESS)) {
-      dxb_discard_io_t discard_io;
-      rc = dxb_storage_make_discard_io(storage, &discard_bytes, dxb_discard_clean, &discard_io);
-      if (likely(rc == MDBX_SUCCESS)) {
-        dxb_discard_submit_io_t discard_submit;
-        rc = dxb_storage_make_discard_submit_io(storage, &discard_io, &discard_submit);
-        if (likely(rc == MDBX_SUCCESS))
-          rc = dxb_storage_submit_discard_io(storage, &discard_submit).err;
-      }
-    }
+    dxb_resize_tail_discard_submit_io_t discard_submit;
+    rc = dxb_resize_make_tail_discard_submit_io(storage, size_bytes, prev_size, &discard_submit);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = dxb_resize_submit_tail_discard(&discard_submit).err;
     if (unlikely(MDBX_IS_ERROR(rc))) {
       ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "resize", "DONTNEED", size_bytes, prev_size - size_bytes, rc);
       goto bailout;
