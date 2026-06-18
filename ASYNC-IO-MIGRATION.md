@@ -11668,6 +11668,36 @@ tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.102`
 batch, `1.149` crud, `0.975` iterate, `0.991` get, and `1.074` delete.
 
+A later cached storage-state submission cleanup added
+`dxb_filesize_state_submit_io_t`, `dxb_current_state_submit_io_t`, and
+`dxb_size_state_submit_io_t`, with make/validate/submit helpers for each cached
+state mutation. The submitters wrap the storage-owned state updates for cached
+filesize, current size, and `(current, limit, filesize)` triplets, and mark the
+internal state result as submitted/completed after validation succeeds. This
+routes checker filesize seeding, post-`ftruncate()` cached filesize updates,
+`dxb_storage_set_filesize_as_current()`, fetched-filesize bookkeeping,
+setup-size bookkeeping, resize-size bookkeeping, and limit-from-filesize
+bookkeeping through explicit state-submit descriptors instead of direct helper
+calls. The raw setters remain the synchronous backend implementation behind the
+submit layer. Verification passed `git diff --check`, source scans covering
+`dxb_filesize_state_submit_io_t`, `dxb_current_state_submit_io_t`,
+`dxb_size_state_submit_io_t`, `dxb_storage_make_filesize_state_submit_io()`,
+`dxb_storage_make_current_state_submit_io()`,
+`dxb_storage_make_size_state_submit_io()`,
+`dxb_storage_submit_filesize_state()`, `dxb_storage_submit_current_state()`,
+`dxb_storage_submit_size_state()`, and confirming raw
+`dxb_storage_set_filesize()`, `dxb_storage_set_current()`, and
+`dxb_storage_set_size()` use is limited to those submitters, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including tool roundtrips, forced
+tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.111`
+batch, `1.146` crud, `0.811` iterate, `1.062` get, and `1.059` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
