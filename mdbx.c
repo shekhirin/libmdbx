@@ -36851,23 +36851,80 @@ __cold int lck_destroy(MDBX_env *env, MDBX_env *inprocess_neighbor, const mdbx_p
 
 /*---------------------------------------------------------------------------*/
 
+#if MDBX_LOCKING == MDBX_LOCKING_SYSV
+typedef struct dxb_env_sysv_lock_stat_submit_io {
+  MDBX_env *env;
+  const dxb_storage_t *storage;
+  int global_uniqueness_flag;
+  dxb_stat_submit_io_t stat;
+} dxb_env_sysv_lock_stat_submit_io_t;
+
+static inline int env_make_sysv_lock_stat_submit_io(MDBX_env *env, int global_uniqueness_flag,
+                                                    dxb_env_sysv_lock_stat_submit_io_t *io) {
+  if (unlikely(!env || !io || global_uniqueness_flag != MDBX_RESULT_TRUE))
+    return MDBX_EINVAL;
+
+  dxb_stat_submit_io_t stat;
+  int rc = dxb_storage_make_stat_submit_io(&stat);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  io->env = env;
+  io->storage = &env->dxb_storage;
+  io->global_uniqueness_flag = global_uniqueness_flag;
+  io->stat = stat;
+  return MDBX_SUCCESS;
+}
+
+static inline int env_sysv_lock_stat_submit_io_validate(const dxb_env_sysv_lock_stat_submit_io_t *io) {
+  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage ||
+               io->global_uniqueness_flag != MDBX_RESULT_TRUE))
+    return MDBX_EINVAL;
+
+  int rc = dxb_storage_stat_submit_io_validate(&io->stat);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_env_sysv_lock_stat_submit_io_t checked;
+  rc = env_make_sysv_lock_stat_submit_io(io->env, io->global_uniqueness_flag, &checked);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(checked.env != io->env || checked.storage != io->storage ||
+               checked.global_uniqueness_flag != io->global_uniqueness_flag ||
+               checked.stat.fetch != io->stat.fetch))
+    return MDBX_EINVAL;
+
+  return MDBX_SUCCESS;
+}
+
+static int env_submit_sysv_lock_stat(const dxb_env_sysv_lock_stat_submit_io_t *io, struct stat *st) {
+  if (unlikely(!st))
+    return MDBX_EINVAL;
+  int rc = env_sysv_lock_stat_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  dxb_stat_result_t stat_result = dxb_storage_submit_stat(io->storage, &io->stat);
+  if (unlikely(stat_result.err != MDBX_SUCCESS))
+    return stat_result.err;
+  *st = stat_result.st;
+  return MDBX_SUCCESS;
+}
+#endif /* MDBX_LOCKING == MDBX_LOCKING_SYSV */
+
 __cold int lck_init(MDBX_env *env, MDBX_env *inprocess_neighbor, int global_uniqueness_flag) {
 #if MDBX_LOCKING == MDBX_LOCKING_SYSV
   int semid = -1;
   /* don't initialize semaphores twice */
   (void)inprocess_neighbor;
   if (global_uniqueness_flag == MDBX_RESULT_TRUE) {
-    const dxb_storage_t *const storage = &env->dxb_storage;
-    dxb_stat_submit_io_t stat_submit;
-    int err = dxb_storage_make_stat_submit_io(&stat_submit);
-    dxb_stat_result_t stat_result;
-    if (likely(err == MDBX_SUCCESS)) {
-      stat_result = dxb_storage_submit_stat(storage, &stat_submit);
-      err = stat_result.err;
-    }
+    struct stat st;
+    dxb_env_sysv_lock_stat_submit_io_t stat_submit;
+    int err = env_make_sysv_lock_stat_submit_io(env, global_uniqueness_flag, &stat_submit);
+    if (likely(err == MDBX_SUCCESS))
+      err = env_submit_sysv_lock_stat(&stat_submit, &st);
     if (err)
       return err;
-    struct stat st = stat_result.st;
   sysv_retry_create:
     semid = semget(env->me_sysv_ipc.key, 2, IPC_CREAT | IPC_EXCL | (st.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO)));
     if (unlikely(semid == -1)) {

@@ -11010,6 +11010,40 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.094` batch, `1.165` crud, `1.181` iterate,
 `0.935` get, and `1.074` delete.
 
+A later SysV lock-initialization cleanup added
+`dxb_env_sysv_lock_stat_submit_io_t`,
+`env_make_sysv_lock_stat_submit_io()`,
+`env_sysv_lock_stat_submit_io_validate()`, and
+`env_submit_sysv_lock_stat()` for the `MDBX_LOCKING_SYSV`
+`global_uniqueness_flag == MDBX_RESULT_TRUE` DXB stat used to inherit
+semaphore permissions from the data file. The request captures the environment,
+bound data storage handle, global-uniqueness precondition, and generic
+stat-submit descriptor. Validation rechecks environment/storage identity, the
+global-uniqueness precondition, generic stat-submit descriptor, and a rebuilt
+request before submitting. Submit delegates to `dxb_storage_submit_stat()` and
+returns the DXB `struct stat` to the existing `semget()` permission derivation,
+preserving the semaphore create/remove/retry behavior, the existing-semset path
+when global uniqueness is not being created, and all non-SysV locking branches.
+This removes the last inline `dxb_storage_make_stat_submit_io()` /
+`dxb_storage_submit_stat()` construction from data-file callers; remaining
+source matches are the generic submitter and wrapper internals. Verification
+passed `git diff --check`, source scans covering
+`dxb_env_sysv_lock_stat_submit_io_t`,
+`env_make_sysv_lock_stat_submit_io()`,
+`env_sysv_lock_stat_submit_io_validate()`, `env_submit_sysv_lock_stat()`, the
+updated `lck_init()` SysV branch, and the remaining stat-submit matches, a
+targeted SysV locking configure with `-DMDBX_LOCKING=5` into
+`/tmp/mdbx-sysv-build` followed by building targets `mdbx-static` and `mdbx`,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.097`
+batch, `1.141` crud, `1.022` iterate, `0.976` get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
