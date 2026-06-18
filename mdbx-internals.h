@@ -1414,6 +1414,14 @@ typedef struct dxb_lock_result {
   bool with_retries;
 } dxb_lock_result_t;
 
+typedef struct dxb_state_result {
+  int err;
+  size_t current;
+  size_t limit;
+  uint64_t filesize;
+  bool reset;
+} dxb_state_result_t;
+
 typedef struct dxb_queue_result {
   int err;
   unsigned allocated;

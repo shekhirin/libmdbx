@@ -7258,6 +7258,28 @@ ASAN `migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The
 paired benchmark gate passed with forced/default ratios of `1.115` batch,
 `1.156` crud, `0.828` iterate, `1.037` get, and `1.068` delete.
 
+A later storage-state cleanup added `dxb_state_result_t` for reset and size
+bookkeeping helpers. `dxb_storage_reset()`,
+`dxb_storage_set_filesize()`, `dxb_storage_set_current()`,
+`dxb_storage_set_size()`, `dxb_storage_set_size_with_known_filesize()`,
+`dxb_storage_set_limit_from_filesize()`, and
+`dxb_storage_note_filesize()` now report the error code plus the resulting
+current size, limit, recorded file size, and whether a reset occurred. Resize,
+open, checker, transaction setup, close, deinit, and POSIX lock teardown paths
+still unwrap `.err`, preserving the existing state transitions while making
+storage state mutation completions visible to future async-capable backends.
+Verification passed `git diff --check`, source scans covering
+`dxb_state_result_t`, the state result helper, reset and size helper returns,
+and every converted caller, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, `cmake --build
+@cmake-asan-build`, the six focused ASAN `migration_smoke` CTest entries, and
+`mdbx_migration_bench_lazy`. The paired benchmark gate passed with
+forced/default ratios of `1.104` batch, `1.161` crud, `1.233` iterate, `1.186`
+get, and `1.087` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
