@@ -6942,6 +6942,28 @@ including tool roundtrips, forced tiny-cache fault injection, `cmake --build
 forced/default ratios of `1.138` batch, `1.159` crud, `1.032` iterate,
 `0.998` get, and `1.077` delete.
 
+A later copy/export cleanup added `dxb_copy_result_t` for data-file copy
+operations. `dxb_storage_copy_data()`, `dxb_storage_copy_data_to_fd()`, and
+`dxb_storage_sendfile_data_to_fd()` now return an explicit result containing
+the error code, completed payload byte count, copy-completion state, and the
+existing fallback flags for unavailable kernel helpers and cross-device copies.
+Existing callers still consume the same `.err` value and set the same
+`copy_file_range()`/`sendfile()` fallback booleans, preserving current copy and
+export behavior while removing completion side channels from out parameters.
+This gives future async copy backends a single return object for completion,
+fallback, and byte-count reporting. Verification passed `git diff --check`,
+source scans covering `dxb_copy_result_t`, copy result helpers, and every
+`dxb_storage_copy_data()`, `dxb_storage_copy_data_to_fd()`, and
+`dxb_storage_sendfile_data_to_fd()` call site, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, `cmake --build @cmake-asan-build`, the six focused ASAN
+`migration_smoke` CTest entries, and `mdbx_migration_bench_lazy`. The paired
+benchmark gate passed with forced/default ratios of `1.124` batch, `1.144`
+crud, `1.280` iterate, `0.924` get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

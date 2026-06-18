@@ -2555,15 +2555,13 @@ static dxb_write_result_t dxb_storage_write_meta(dxb_storage_t *storage, const d
                                                  const void *buf);
 static void dxb_storage_invalidate_cached_io(dxb_storage_t *storage, const dxb_cache_invalidate_io_t *io);
 #if MDBX_USE_COPYFILERANGE
-static int dxb_storage_copy_data(dxb_storage_t *storage, const dxb_data_copy_io_t *io);
-static int dxb_storage_copy_data_to_fd(const dxb_storage_t *storage, const dxb_data_export_io_t *io,
-                                       mdbx_filehandle_t dst_fd, size_t *advanced, bool *copied,
-                                       bool *unavailable, bool *not_same_filesystem);
+static dxb_copy_result_t dxb_storage_copy_data(dxb_storage_t *storage, const dxb_data_copy_io_t *io);
+static dxb_copy_result_t dxb_storage_copy_data_to_fd(const dxb_storage_t *storage, const dxb_data_export_io_t *io,
+                                                     mdbx_filehandle_t dst_fd);
 #endif /* MDBX_USE_COPYFILERANGE */
 #if MDBX_USE_SENDFILE
-static int dxb_storage_sendfile_data_to_fd(const dxb_storage_t *storage, const dxb_data_export_io_t *io,
-                                           mdbx_filehandle_t dst_fd, size_t *advanced, bool *copied,
-                                           bool *unavailable);
+static dxb_copy_result_t dxb_storage_sendfile_data_to_fd(const dxb_storage_t *storage,
+                                                         const dxb_data_export_io_t *io, mdbx_filehandle_t dst_fd);
 #endif /* MDBX_USE_SENDFILE */
 MDBX_INTERNAL int __must_check_result dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending,
                                                       troika_t *const troika);
@@ -6615,18 +6613,17 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
       rc = dxb_storage_make_data_export_io(storage, &remaining, 0, &export_io);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
-      size_t advanced = 0;
-      bool copied = false, unavailable = false;
-      rc = dxb_storage_sendfile_data_to_fd(storage, &export_io, fd, &advanced, &copied, &unavailable);
-      if (likely(copied)) {
-        offset += advanced;
+      dxb_copy_result_t sendfile_result = dxb_storage_sendfile_data_to_fd(storage, &export_io, fd);
+      rc = sendfile_result.err;
+      if (likely(sendfile_result.copied)) {
+        offset += sendfile_result.payload_bytes;
         if (flags & MDBX_CP_THROTTLE_MVCC)
           rc = mdbx_txn_park(txn, false);
         continue;
       }
       if (rc != MDBX_RESULT_TRUE)
         break;
-      sendfile_unavailable = unavailable;
+      sendfile_unavailable = sendfile_result.unavailable;
       rc = MDBX_SUCCESS;
     }
 #endif /* MDBX_USE_SENDFILE */
@@ -6637,21 +6634,20 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
       rc = dxb_storage_make_data_export_io(storage, &remaining, offset, &export_io);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
-      size_t advanced = 0;
-      bool copied = false, unavailable = false, cross_device = false;
-      rc = dxb_storage_copy_data_to_fd(storage, &export_io, fd, &advanced, &copied, &unavailable, &cross_device);
-      if (likely(copied)) {
-        offset += advanced;
+      dxb_copy_result_t copy_result = dxb_storage_copy_data_to_fd(storage, &export_io, fd);
+      rc = copy_result.err;
+      if (likely(copy_result.copied)) {
+        offset += copy_result.payload_bytes;
         if (flags & MDBX_CP_THROTTLE_MVCC)
           rc = mdbx_txn_park(txn, false);
         continue;
       }
       if (rc != MDBX_RESULT_TRUE)
         break;
-      if (cross_device)
+      if (copy_result.not_same_filesystem)
         not_the_same_filesystem = true;
       else
-        copyfilerange_unavailable = unavailable;
+        copyfilerange_unavailable = copy_result.unavailable;
       rc = MDBX_SUCCESS;
     }
 #endif /* MDBX_USE_COPYFILERANGE */
@@ -20043,7 +20039,7 @@ static int defrag_move(dfc_t *dfc, da_t *arc) {
       err = dxb_storage_make_data_copy_io(storage, &src_pages, &dst_pages, &copy_io);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
-      err = dxb_storage_copy_data(storage, &copy_io);
+      err = dxb_storage_copy_data(storage, &copy_io).err;
       if (unlikely(err != MDBX_SUCCESS))
         return err;
       break;
@@ -22901,110 +22897,115 @@ static dxb_filesize_result_t dxb_storage_fetch_filesize(dxb_storage_t *storage) 
   return dxb_filesize_completed(filesize);
 }
 
+#if MDBX_USE_COPYFILERANGE || MDBX_USE_SENDFILE
+static inline dxb_copy_result_t dxb_copy_result(int err, size_t payload_bytes, bool copied, bool unavailable,
+                                                bool not_same_filesystem) {
+  const dxb_copy_result_t result = {err, payload_bytes, copied, unavailable, not_same_filesystem};
+  return result;
+}
+
+static inline dxb_copy_result_t dxb_copy_error(int err) {
+  return dxb_copy_result(err, 0, false, false, false);
+}
+
+static inline dxb_copy_result_t dxb_copy_completed(size_t payload_bytes) {
+  return dxb_copy_result(MDBX_SUCCESS, payload_bytes, true, false, false);
+}
+
+static inline dxb_copy_result_t dxb_copy_unavailable(void) {
+  return dxb_copy_result(MDBX_RESULT_TRUE, 0, false, true, false);
+}
+
+static inline dxb_copy_result_t dxb_copy_cross_device(void) {
+  return dxb_copy_result(MDBX_RESULT_TRUE, 0, false, false, true);
+}
+#endif /* MDBX_USE_COPYFILERANGE || MDBX_USE_SENDFILE */
+
 #if MDBX_USE_COPYFILERANGE
-static int dxb_storage_copy_data_to_fd(const dxb_storage_t *storage, const dxb_data_export_io_t *io,
-                                       mdbx_filehandle_t dst_fd, size_t *advanced, bool *copied,
-                                       bool *unavailable, bool *not_same_filesystem) {
+static dxb_copy_result_t dxb_storage_copy_data_to_fd(const dxb_storage_t *storage, const dxb_data_export_io_t *io,
+                                                     mdbx_filehandle_t dst_fd) {
   int rc = dxb_storage_data_export_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+    return dxb_copy_error(rc);
   const dxb_byte_io_t *const src = &io->source.request;
   if (unlikely(src->offset > (uint64_t)OFF_T_MAX || io->dst_offset > (uint64_t)OFF_T_MAX))
-    return MDBX_EINVAL;
+    return dxb_copy_error(MDBX_EINVAL);
 
   off_t src_offset_arg = (off_t)src->offset;
   off_t dst_offset_arg = (off_t)io->dst_offset;
-  *advanced = 0;
-  *copied = false;
-  *unavailable = false;
-  *not_same_filesystem = false;
   const ssize_t bytes_copied =
       copy_file_range(dxb_storage_data_fd(storage), &src_offset_arg, dst_fd, &dst_offset_arg, src->bytes, 0);
   if (likely(bytes_copied > 0)) {
     if (unlikely((size_t)bytes_copied > src->bytes))
-      return MDBX_EIO;
-    *advanced = (size_t)bytes_copied;
-    *copied = true;
-    return MDBX_SUCCESS;
+      return dxb_copy_error(MDBX_EIO);
+    return dxb_copy_completed((size_t)bytes_copied);
   }
   if (bytes_copied == 0)
-    return MDBX_ENODATA;
+    return dxb_copy_error(MDBX_ENODATA);
 
   const int err = errno;
-  if (err == EXDEV || err == /* workaround for ecryptfs bug(s), maybe useful for others FS */ EINVAL) {
-    *not_same_filesystem = true;
-    return MDBX_RESULT_TRUE;
-  }
-  if (ignore_enosys_and_eagain(err) == MDBX_RESULT_TRUE) {
-    *unavailable = true;
-    return MDBX_RESULT_TRUE;
-  }
-  return err;
+  if (err == EXDEV || err == /* workaround for ecryptfs bug(s), maybe useful for others FS */ EINVAL)
+    return dxb_copy_cross_device();
+  if (ignore_enosys_and_eagain(err) == MDBX_RESULT_TRUE)
+    return dxb_copy_unavailable();
+  return dxb_copy_error(err);
 }
 
-static int dxb_storage_copy_data(dxb_storage_t *storage, const dxb_data_copy_io_t *io) {
+static dxb_copy_result_t dxb_storage_copy_data(dxb_storage_t *storage, const dxb_data_copy_io_t *io) {
   int rc = dxb_storage_data_copy_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+    return dxb_copy_error(rc);
 
   rc = dxb_fault_inject("copy");
   if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+    return dxb_copy_error(rc);
   if (unlikely(io->src_bytes.bytes > SSIZE_MAX || io->src_bytes.offset > (uint64_t)OFF_T_MAX ||
                io->dst_bytes.offset > (uint64_t)OFF_T_MAX))
-    return MDBX_EINVAL;
+    return dxb_copy_error(MDBX_EINVAL);
 
   off_t src_offset = (off_t)io->src_bytes.offset;
   off_t dst_offset = (off_t)io->dst_bytes.offset;
   const mdbx_filehandle_t data_fd = dxb_storage_data_fd(storage);
   const ssize_t copied = copy_file_range(data_fd, &src_offset, data_fd, &dst_offset, io->src_bytes.bytes, 0);
   if (unlikely(copied != (ssize_t)io->src_bytes.bytes))
-    return (copied < 0) ? errno : MDBX_EIO;
+    return dxb_copy_error((copied < 0) ? errno : MDBX_EIO);
   rc = dxb_fault_inject("copy-complete");
   if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+    return dxb_copy_error(rc);
   dxb_cache_invalidate_io_t invalidate;
   rc = dxb_storage_make_cache_invalidate_io(storage, &io->dst_pages, false, &invalidate);
   if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+    return dxb_copy_error(rc);
   dxb_storage_invalidate_cached_io(storage, &invalidate);
-  return MDBX_SUCCESS;
+  return dxb_copy_completed(io->src_bytes.bytes);
 }
 
 #endif /* MDBX_USE_COPYFILERANGE */
 
 #if MDBX_USE_SENDFILE
-static int dxb_storage_sendfile_data_to_fd(const dxb_storage_t *storage, const dxb_data_export_io_t *io,
-                                           mdbx_filehandle_t dst_fd, size_t *advanced, bool *copied,
-                                           bool *unavailable) {
+static dxb_copy_result_t dxb_storage_sendfile_data_to_fd(const dxb_storage_t *storage,
+                                                         const dxb_data_export_io_t *io, mdbx_filehandle_t dst_fd) {
   int rc = dxb_storage_data_export_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+    return dxb_copy_error(rc);
   const dxb_byte_io_t *const src = &io->source.request;
   if (unlikely(src->offset > (uint64_t)OFF_T_MAX))
-    return MDBX_EINVAL;
+    return dxb_copy_error(MDBX_EINVAL);
 
   off_t src_offset_arg = (off_t)src->offset;
-  *advanced = 0;
-  *copied = false;
-  *unavailable = false;
   const ssize_t written = sendfile(dst_fd, dxb_storage_data_fd(storage), &src_offset_arg, src->bytes);
   if (likely(written > 0)) {
     if (unlikely((size_t)written > src->bytes))
-      return MDBX_EIO;
-    *advanced = (size_t)written;
-    *copied = true;
-    return MDBX_SUCCESS;
+      return dxb_copy_error(MDBX_EIO);
+    return dxb_copy_completed((size_t)written);
   }
   if (written == 0)
-    return MDBX_ENODATA;
+    return dxb_copy_error(MDBX_ENODATA);
 
   const int err = errno;
-  if (ignore_enosys_and_eagain(err) == MDBX_RESULT_TRUE) {
-    *unavailable = true;
-    return MDBX_RESULT_TRUE;
-  }
-  return err;
+  if (ignore_enosys_and_eagain(err) == MDBX_RESULT_TRUE)
+    return dxb_copy_unavailable();
+  return dxb_copy_error(err);
 }
 #endif /* MDBX_USE_SENDFILE */
 
