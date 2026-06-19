@@ -14785,6 +14785,26 @@ The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
 of `1.118` batch, `1.160` crud, `0.938` iterate, `0.953` get, and `1.044`
 delete.
 
+A later set-filesize-current cleanup removed
+`dxb_filesize_set_current_submit_io_t`,
+`dxb_storage_make_filesize_set_current_submit_io()`, and
+`dxb_storage_filesize_set_current_submit_io_validate()` from `mdbx.c`. Initial
+data-file setup now keeps the validated plain `dxb_filesize_submit_io_t` and
+passes it directly to `dxb_storage_submit_set_filesize_as_current()`. The
+submitter derives its filesize-set and current-size state updates at the
+storage boundary, submits `ftruncate()` through the existing set-bytes path,
+then updates the storage current size after the file-size operation succeeds.
+Verification passed `git diff --check`, a source scan proving the removed
+set-current submit helpers are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.105`
+batch, `1.146` crud, `1.008` iterate, `0.992` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -26360,11 +26360,6 @@ typedef struct dxb_filesize_set_bytes_submit_io {
   dxb_filesize_state_submit_io_t filesize_state;
 } dxb_filesize_set_bytes_submit_io_t;
 
-typedef struct dxb_filesize_set_current_submit_io {
-  dxb_filesize_set_bytes_submit_io_t set_bytes;
-  dxb_current_state_submit_io_t current_state;
-} dxb_filesize_set_current_submit_io_t;
-
 static inline bool dxb_filesize_set_bytes_submit_io_equal(const dxb_filesize_set_bytes_submit_io_t *a,
                                                           const dxb_filesize_set_bytes_submit_io_t *b) {
   return a->setsize.target == b->setsize.target && a->setsize.set == b->setsize.set &&
@@ -26417,50 +26412,6 @@ static inline int dxb_storage_filesize_set_bytes_submit_io_validate(
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   return dxb_filesize_set_bytes_submit_io_equal(&checked, io) ? MDBX_SUCCESS : MDBX_EINVAL;
-}
-
-static inline int dxb_storage_make_filesize_set_current_submit_io(
-    dxb_storage_t *storage, const dxb_filesize_submit_io_t *setsize, dxb_filesize_set_current_submit_io_t *io) {
-  if (unlikely(!storage || !setsize || !io))
-    return MDBX_EINVAL;
-
-  dxb_filesize_set_bytes_submit_io_t set_bytes;
-  int rc = dxb_storage_make_filesize_set_bytes_submit_io(storage, setsize, &set_bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_current_state_submit_io_t current_state;
-  rc = dxb_storage_make_current_state_submit_io(setsize->target, &current_state);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->set_bytes = set_bytes;
-  io->current_state = current_state;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_filesize_set_current_submit_io_validate(
-    dxb_storage_t *storage, const dxb_filesize_set_current_submit_io_t *io) {
-  if (unlikely(!storage || !io))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_filesize_set_bytes_submit_io_validate(storage, &io->set_bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_current_state_submit_io_validate(&io->current_state);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io->current_state.current != io->set_bytes.setsize.target))
-    return MDBX_EINVAL;
-
-  dxb_filesize_set_current_submit_io_t checked;
-  rc = dxb_storage_make_filesize_set_current_submit_io(storage, &io->set_bytes.setsize, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_filesize_set_bytes_submit_io_equal(&checked.set_bytes, &io->set_bytes) &&
-                 checked.current_state.current == io->current_state.current
-             ? MDBX_SUCCESS
-             : MDBX_EINVAL;
 }
 
 static dxb_filesize_result_t dxb_storage_submit_set_filesize_bytes(dxb_storage_t *storage,
@@ -26517,17 +26468,28 @@ static dxb_filesize_result_t dxb_storage_submit_set_filesize_bytes(dxb_storage_t
 }
 
 static dxb_filesize_result_t dxb_storage_submit_set_filesize_as_current(dxb_storage_t *storage,
-                                                                        const dxb_filesize_set_current_submit_io_t *io) {
-  int rc = dxb_storage_filesize_set_current_submit_io_validate(storage, io);
+                                                                        const dxb_filesize_submit_io_t *setsize) {
+  int rc = dxb_storage_filesize_set_submit_io_validate(setsize);
   if (unlikely(rc != MDBX_SUCCESS || !storage))
     return dxb_filesize_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
-  dxb_filesize_result_t setsize = dxb_storage_submit_set_filesize_bytes(storage, &io->set_bytes);
-  if (unlikely(setsize.err != MDBX_SUCCESS))
-    return setsize;
-  rc = dxb_storage_submit_current_state(storage, &io->current_state).err;
+
+  dxb_filesize_set_bytes_submit_io_t set_bytes;
+  rc = dxb_storage_make_filesize_set_bytes_submit_io(storage, setsize, &set_bytes);
   if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_completed_error(rc, setsize.filesize);
-  return setsize;
+    return dxb_filesize_error(rc);
+
+  dxb_current_state_submit_io_t current_state;
+  rc = dxb_storage_make_current_state_submit_io(setsize->target, &current_state);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_filesize_error(rc);
+
+  dxb_filesize_result_t filesize = dxb_storage_submit_set_filesize_bytes(storage, &set_bytes);
+  if (unlikely(filesize.err != MDBX_SUCCESS))
+    return filesize;
+  rc = dxb_storage_submit_current_state(storage, &current_state).err;
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_filesize_completed_error(rc, filesize.filesize);
+  return filesize;
 }
 
 static dxb_filesize_result_t dxb_storage_submit_fetch_filesize(dxb_storage_t *storage,
@@ -27345,14 +27307,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
     err = dxb_storage_filesize_set_submit_io_validate(&setsize);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    dxb_filesize_set_current_submit_io_t setsize_submit;
-    err = dxb_storage_make_filesize_set_current_submit_io(storage, &setsize, &setsize_submit);
-    if (unlikely(err != MDBX_SUCCESS))
-      return err;
-    err = dxb_storage_filesize_set_current_submit_io_validate(storage, &setsize_submit);
-    if (unlikely(err != MDBX_SUCCESS))
-      return err;
-    err = dxb_storage_submit_set_filesize_as_current(storage, &setsize_submit).err;
+    err = dxb_storage_submit_set_filesize_as_current(storage, &setsize).err;
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
