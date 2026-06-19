@@ -37480,6 +37480,74 @@ bailout:
 }
 #endif /* MDBX_USE_FALLOCATE */
 
+#define MDBX_IORING_OP_OPENAT 18u /* Stable Linux io_uring ABI opcode value. */
+
+static int osal_ioring_linux_uring_openat(osal_ioring_t *ior, const pathchar_t *pathname,
+                                          int flags, mdbx_mode_t mode, mdbx_filehandle_t *fd) {
+  if (unlikely(!osal_ioring_linux_uring_ready(ior) || !pathname || !fd))
+    return MDBX_EINVAL;
+  *fd = INVALID_HANDLE_VALUE;
+
+  int rc = osal_ioring_linux_uring_lock(ior);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  const uint32_t sq_entries = *ior->linux_uring_sq_entries;
+  const uint32_t sq_mask = *ior->linux_uring_sq_mask;
+  const uint32_t head = osal_ioring_linux_load(ior->linux_uring_sq_head);
+  uint32_t tail = osal_ioring_linux_load(ior->linux_uring_sq_tail);
+  if (unlikely(tail - head >= sq_entries)) {
+    rc = EBUSY;
+    goto bailout;
+  }
+
+  const uint32_t index = tail & sq_mask;
+  struct io_uring_sqe *const sqe = &ior->linux_uring_sqes[index];
+  memset(sqe, 0, sizeof(*sqe));
+  sqe->opcode = MDBX_IORING_OP_OPENAT;
+  sqe->fd = AT_FDCWD;
+  sqe->addr = (uintptr_t)pathname;
+  sqe->len = (uint32_t)mode;
+  sqe->open_flags = (uint32_t)flags;
+  sqe->user_data = (uintptr_t)fd;
+  ior->linux_uring_sq_array[index] = index;
+  osal_ioring_linux_store(ior->linux_uring_sq_tail, tail + 1);
+
+  unsigned submitted = 0;
+  rc = osal_ioring_linux_uring_submit(ior, 1, &submitted);
+  if (unlikely(rc != MDBX_SUCCESS || submitted != 1)) {
+    rc = (rc != MDBX_SUCCESS) ? rc : MDBX_EIO;
+    goto bailout;
+  }
+
+  uint32_t cq_head = osal_ioring_linux_load(ior->linux_uring_cq_head);
+  uint32_t cq_tail = osal_ioring_linux_load(ior->linux_uring_cq_tail);
+  while (cq_head == cq_tail) {
+    rc = osal_ioring_linux_enter(ior, 0, 1, IORING_ENTER_GETEVENTS);
+    if (unlikely(rc < 0)) {
+      rc = -rc;
+      goto bailout;
+    }
+    cq_head = osal_ioring_linux_load(ior->linux_uring_cq_head);
+    cq_tail = osal_ioring_linux_load(ior->linux_uring_cq_tail);
+  }
+
+  const uint32_t cq_index = cq_head & *ior->linux_uring_cq_mask;
+  const struct io_uring_cqe *const cqe = &ior->linux_uring_cqes[cq_index];
+  if (unlikely(cqe->user_data != (uintptr_t)fd))
+    rc = MDBX_EINVAL;
+  else if (unlikely(cqe->res < 0))
+    rc = -cqe->res;
+  else {
+    *fd = cqe->res;
+    rc = MDBX_SUCCESS;
+  }
+  osal_ioring_linux_store(ior->linux_uring_cq_head, cq_head + 1);
+
+bailout:
+  return osal_ioring_linux_uring_unlock(ior, rc);
+}
+
 #define MDBX_IORING_OP_CLOSE 19u /* Stable Linux io_uring ABI opcode value. */
 
 static int osal_ioring_linux_uring_close(osal_ioring_t *ior, mdbx_filehandle_t fd) {
@@ -38879,7 +38947,60 @@ int osal_openfile(const enum osal_openfile_purpose purpose, const MDBX_env *env,
 int osal_ioring_openfile(osal_ioring_t *ior, const enum osal_openfile_purpose purpose,
                          const MDBX_env *env, const pathchar_t *pathname,
                          mdbx_filehandle_t *fd, mdbx_mode_t unix_mode_bits) {
+#if MDBX_HAVE_LINUX_IO_URING && !defined(_WIN32) && !defined(_WIN64)
+  if (likely(ior && ior->backend == osal_ioring_backend_linux_uring &&
+             osal_ioring_linux_uring_ready(ior) && env && pathname && fd &&
+             (purpose == MDBX_OPEN_COPY_EXCL || purpose == MDBX_OPEN_COPY_OVERWRITE))) {
+    *fd = INVALID_HANDLE_VALUE;
+    if (unlikely(!is_valid_fd(STDIN_FILENO) || !is_valid_fd(STDOUT_FILENO) || !is_valid_fd(STDERR_FILENO)))
+      return osal_openfile(purpose, env, pathname, fd, unix_mode_bits);
+
+    int flags = O_CREAT | O_WRONLY;
+    if (purpose == MDBX_OPEN_COPY_EXCL)
+      flags |= O_EXCL;
+    const bool direct_nocache_for_copy = env->ps >= globals.sys_pagesize;
+    if (direct_nocache_for_copy) {
+#if defined(O_DIRECT)
+      flags |= O_DIRECT;
+#endif /* O_DIRECT */
+#if defined(O_NOCACHE)
+      flags |= O_NOCACHE;
+#endif /* O_NOCACHE */
+    }
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif /* O_CLOEXEC */
+
+    int err = osal_ioring_linux_uring_openat(ior, pathname, flags, unix_mode_bits, fd);
+#if defined(O_DIRECT)
+    if (*fd == INVALID_HANDLE_VALUE && (flags & O_DIRECT) && (err == EINVAL || err == EAFNOSUPPORT)) {
+      flags &= ~(O_DIRECT | O_EXCL);
+      err = osal_ioring_linux_uring_openat(ior, pathname, flags, unix_mode_bits, fd);
+    }
+#endif /* O_DIRECT */
+    if (likely(err == MDBX_SUCCESS)) {
+      if (unlikely(*fd >= STDIN_FILENO && *fd <= STDERR_FILENO)) {
+        (void)close(*fd);
+        *fd = INVALID_HANDLE_VALUE;
+        return EBADF;
+      }
+#if defined(FD_CLOEXEC) && !defined(O_CLOEXEC)
+      const int fd_flags = fcntl(*fd, F_GETFD);
+      if (fd_flags != -1)
+        (void)fcntl(*fd, F_SETFD, fd_flags | FD_CLOEXEC);
+#endif /* FD_CLOEXEC && !O_CLOEXEC */
+#if defined(F_NOCACHE) && !defined(O_NOCACHE)
+      if (direct_nocache_for_copy)
+        (void)fcntl(*fd, F_NOCACHE, 1);
+#endif /* F_NOCACHE */
+      return MDBX_SUCCESS;
+    }
+    if (likely(err != MDBX_EINVAL && err != MDBX_ENOSYS && err != EOPNOTSUPP))
+      return err;
+  }
+#else
   (void)ior;
+#endif /* MDBX_HAVE_LINUX_IO_URING && !Windows */
   return osal_openfile(purpose, env, pathname, fd, unix_mode_bits);
 }
 

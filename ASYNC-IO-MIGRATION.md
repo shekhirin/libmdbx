@@ -15495,6 +15495,25 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.147` batch, `1.160` crud, `1.305` iterate, `0.956`
 get, and `1.082` delete.
 
+A later copy-open checkpoint taught `osal_ioring_openfile()` to submit
+copy-target opens through Linux `IORING_OP_OPENAT` when the environment queue is
+already initialized. Initial DXB opens, delete-probe opens, and other startup
+opens still preserve the existing direct `osal_openfile()` behavior because
+those paths either run before the queue exists or intentionally operate outside
+an active environment. The copy-open path keeps the existing copy flags,
+`O_DIRECT`/no-cache policy, close-on-exec handling, and unsupported-`O_DIRECT`
+fallback before handing the descriptor to the existing copy lock/write/sync
+flow. Verification passed `git diff --check`, the Ninja build
+(`cmake --build @cmake-ninja-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed 9/9, the ASAN
+build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.120` batch, `1.177` crud, `1.244` iterate, `0.917`
+get, and `1.063` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
