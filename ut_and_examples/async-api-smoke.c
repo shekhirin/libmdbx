@@ -29,6 +29,11 @@ struct gc_probe {
   unsigned calls;
 };
 
+struct chk_probe {
+  unsigned stage_begin_calls;
+  unsigned stage_end_calls;
+};
+
 struct preserve_probe {
   unsigned calls;
 };
@@ -147,6 +152,24 @@ static int gc_probe_func(void *ctx, const MDBX_txn *txn, uint64_t span_txnid, si
     return MDBX_EINVAL;
   probe->calls += 1;
   return MDBX_RESULT_FALSE;
+}
+
+static struct chk_probe *active_chk_probe;
+
+static int chk_probe_stage_begin(MDBX_chk_context_t *ctx, MDBX_chk_stage_t stage) {
+  (void)stage;
+  if (!ctx || !ctx->env || !active_chk_probe)
+    return MDBX_EINVAL;
+  active_chk_probe->stage_begin_calls += 1;
+  return MDBX_SUCCESS;
+}
+
+static int chk_probe_stage_end(MDBX_chk_context_t *ctx, MDBX_chk_stage_t stage, int err) {
+  (void)stage;
+  if (!ctx || !ctx->env || !active_chk_probe)
+    return MDBX_EINVAL;
+  active_chk_probe->stage_end_calls += 1;
+  return err;
 }
 
 static int preserve_probe_func(void *context, MDBX_val *target, const void *src, size_t bytes) {
@@ -1350,6 +1373,24 @@ int main(void) {
   REQUIRE(env_operation_result == MDBX_SUCCESS || env_operation_result == MDBX_RESULT_TRUE,
           "unexpected async defrag result");
   REQUIRE((defrag_result.stopping_reasons & MDBX_defrag_error) == 0, "async defrag reported an error stop reason");
+
+  MDBX_chk_callbacks_t chk_callbacks;
+  MDBX_chk_context_t chk_context;
+  struct chk_probe chk_probe = {0};
+  memset(&chk_callbacks, 0, sizeof(chk_callbacks));
+  memset(&chk_context, 0, sizeof(chk_context));
+  chk_callbacks.stage_begin = chk_probe_stage_begin;
+  chk_callbacks.stage_end = chk_probe_stage_end;
+  active_chk_probe = &chk_probe;
+  CHECK(mdbx_async_env_chk(async, &chk_callbacks, &chk_context,
+                           MDBX_CHK_SKIP_BTREE_TRAVERSAL | MDBX_CHK_SKIP_KV_TRAVERSAL, MDBX_chk_result, 0, &op));
+  CHECK(wait_result("mdbx_async_env_chk", &op, &env_operation_result, __FILE__, __LINE__));
+  active_chk_probe = NULL;
+  REQUIRE(env_operation_result == MDBX_SUCCESS, "unexpected async environment check result");
+  REQUIRE(chk_probe.stage_begin_calls > 0 && chk_probe.stage_end_calls > 0,
+          "async environment check did not report stages");
+  REQUIRE(chk_context.internal == NULL && chk_context.txn == NULL, "async environment check left context active");
+  REQUIRE(chk_context.result.total_problems == 0, "async environment check reported problems");
 
   CHECK(mdbx_async_destroy(async, true));
   async = NULL;

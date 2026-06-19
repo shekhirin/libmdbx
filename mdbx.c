@@ -15003,6 +15003,7 @@ enum mdbx_async_opcode {
   async_op_env_get_pairsize4page,
   async_op_env_get_valsize4page,
   async_op_env_defrag,
+  async_op_env_chk,
   async_op_reader_list,
   async_op_reader_check,
   async_op_thread_register,
@@ -15230,6 +15231,13 @@ struct MDBX_async_op {
       void *ctx;
       MDBX_defrag_result_t *result;
     } env_defrag;
+    struct {
+      const MDBX_chk_callbacks_t *callbacks;
+      MDBX_chk_context_t *context;
+      MDBX_chk_flags_t flags;
+      MDBX_chk_severity_t verbosity;
+      unsigned timeout_seconds_16dot16;
+    } env_chk;
     struct {
       MDBX_reader_list_func func;
       void *ctx;
@@ -15802,6 +15810,10 @@ static int async_op_execute(MDBX_async_op *op) {
                            op->args.env_defrag.time_limit_dot16, op->args.env_defrag.acceptable_backlash,
                            op->args.env_defrag.preferred_batch, op->args.env_defrag.progress_callback,
                            op->args.env_defrag.ctx, op->args.env_defrag.result);
+  case async_op_env_chk:
+    return mdbx_env_chk(op->async->env, op->args.env_chk.callbacks, op->args.env_chk.context,
+                        op->args.env_chk.flags, op->args.env_chk.verbosity,
+                        op->args.env_chk.timeout_seconds_16dot16);
   case async_op_reader_list:
     return mdbx_reader_list(op->async->env, op->args.reader.func, op->args.reader.ctx);
   case async_op_reader_check:
@@ -16956,6 +16968,28 @@ int mdbx_async_env_defrag(MDBX_async *async, size_t defrag_atleast, size_t time_
   op->args.env_defrag.progress_callback = progress_callback;
   op->args.env_defrag.ctx = ctx;
   op->args.env_defrag.result = result;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_env_chk(MDBX_async *async, const MDBX_chk_callbacks_t *callbacks, MDBX_chk_context_t *context,
+                       MDBX_chk_flags_t flags, MDBX_chk_severity_t verbosity, unsigned timeout_seconds_16dot16,
+                       MDBX_async_op **out) {
+  if (unlikely(!callbacks || !context))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_env_chk);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.env_chk.callbacks = callbacks;
+  op->args.env_chk.context = context;
+  op->args.env_chk.flags = flags;
+  op->args.env_chk.verbosity = verbosity;
+  op->args.env_chk.timeout_seconds_16dot16 = timeout_seconds_16dot16;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;

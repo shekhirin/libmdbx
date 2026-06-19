@@ -8215,6 +8215,16 @@ LIBMDBX_API int mdbx_env_chk(MDBX_env *env, const MDBX_chk_callbacks_t *cb, MDBX
                              const MDBX_chk_flags_t flags, MDBX_chk_severity_t verbosity,
                              unsigned timeout_seconds_16dot16);
 
+/** \brief Asynchronously check the integrity of a database.
+ * \ingroup c_async
+ * \details The callback table and check context must remain valid until the
+ *          operation completes. Check callbacks run on the async executor
+ *          worker thread.
+ * \see mdbx_env_chk() */
+LIBMDBX_API int mdbx_async_env_chk(MDBX_async *async, const MDBX_chk_callbacks_t *cb, MDBX_chk_context_t *ctx,
+                                   MDBX_chk_flags_t flags, MDBX_chk_severity_t verbosity,
+                                   unsigned timeout_seconds_16dot16, MDBX_async_op **op);
+
 /** \brief An auxiliary function to account issues detected by an application, including those coming to an application
  * through logging.
  * \ingroup c_extra
