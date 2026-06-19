@@ -14658,6 +14658,25 @@ including API checks and tool roundtrips, the ASAN build (`cmake --build
 passed with forced/default ratios of `1.105` batch, `1.149` crud, `0.908`
 iterate, `1.054` get, and `1.071` delete.
 
+A later dirty-write page-enqueue cleanup removed `dxb_iov_page_submit_io_t`,
+`iov_make_page_submit_io()`, and `iov_page_submit_io_validate()` from
+`mdbx.c`. `iov_page()` now validates the transaction/context ownership, builds
+and validates the dirty queued-write descriptor, builds and validates its submit
+descriptor, submits the queued dirty page directly through storage, and
+revalidates the same descriptors before retrying after a full-queue flush.
+Verification passed `git diff --check`, a source scan proving all
+`dxb_iov_*` submit wrappers are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The first paired
+`mdbx_migration_bench_lazy` attempt missed the `get` ratio gate because its
+default sample was an outlier; the immediate rerun passed with forced/default
+ratios of `0.999` batch, `1.000` crud, `1.014` iterate, `0.944` get, and
+`0.993` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
