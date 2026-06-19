@@ -13677,6 +13677,27 @@ migration CTest suite including API checks and tool roundtrips, the ASAN build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.102`
 batch, `1.139` crud, `0.999` iterate, `0.991` get, and `1.065` delete.
 
+A later cursor stack pgr-consume submit-boundary cleanup removed
+`dxb_cursor_stack_set_pgr_consume_submit_io_t`,
+`cursor_make_stack_set_pgr_consume_submit_io()`, and
+`cursor_stack_set_pgr_consume_submit_io_validate()` from `mdbx.c`.
+`cursor_stack_set_pgr_consume()` now uses
+`cursor_stack_set_pgr_consume_checked()` to copy the successful `pgr_t`, install
+the copied page/ref through `cursor_stack_set_pgr_checked()`, and release the
+caller-owned result through `pgr_release_checked()`. This keeps the root reload
+and new-root installation handoffs explicit while removing a one-call submit
+object that no longer represented independent I/O. Verification passed
+`git diff --check`, a source scan proving the removed pgr-consume submit helper
+and descriptor type are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.110`
+batch, `1.139` crud, `1.213` iterate, `0.979` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

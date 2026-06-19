@@ -368,13 +368,6 @@ typedef struct dxb_page_touch_redirect_submit_io {
   bool inner;
 } dxb_page_touch_redirect_submit_io_t;
 
-typedef struct dxb_cursor_stack_set_pgr_consume_submit_io {
-  MDBX_cursor *cursor;
-  pgr_t *pgr;
-  pgr_t captured;
-  intptr_t slot;
-} dxb_cursor_stack_set_pgr_consume_submit_io_t;
-
 typedef struct dxb_cursor_stack_page_get_submit_io {
   MDBX_cursor *cursor;
   pgno_t pgno;
@@ -6624,54 +6617,20 @@ static inline void cursor_stack_set_pgr(MDBX_cursor *mc, intptr_t i, const pgr_t
   cASSERT0(mc, err == MDBX_SUCCESS);
 }
 
-static inline int cursor_make_stack_set_pgr_consume_submit_io(MDBX_cursor *mc, intptr_t i, pgr_t *pgr,
-                                                              dxb_cursor_stack_set_pgr_consume_submit_io_t *io) {
-  if (unlikely(!mc || !pgr || !io || i < 0 || i >= CURSOR_STACK_SIZE || pgr->err != MDBX_SUCCESS))
-    return MDBX_EINVAL;
-  if (unlikely(pgr->ref.page != nullptr && pgr->ref.page != pgr->page))
+static inline int cursor_stack_set_pgr_consume_checked(MDBX_cursor *mc, intptr_t i, pgr_t *pgr) {
+  if (unlikely(!pgr))
     return MDBX_EINVAL;
 
-  io->cursor = mc;
-  io->pgr = pgr;
-  io->captured = *pgr;
-  io->slot = i;
-  return MDBX_SUCCESS;
-}
-
-static inline int
-cursor_stack_set_pgr_consume_submit_io_validate(const dxb_cursor_stack_set_pgr_consume_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->pgr || io->slot < 0 || io->slot >= CURSOR_STACK_SIZE ||
-               io->captured.err != MDBX_SUCCESS))
-    return MDBX_EINVAL;
-  if (unlikely(io->captured.ref.page != nullptr && io->captured.ref.page != io->captured.page))
-    return MDBX_EINVAL;
-  if (unlikely(io->pgr->page != io->captured.page || io->pgr->err != io->captured.err ||
-               !page_ref_equal(&io->pgr->ref, &io->captured.ref)))
-    return MDBX_EINVAL;
-
-  dxb_cursor_stack_set_pgr_consume_submit_io_t checked;
-  int err = cursor_make_stack_set_pgr_consume_submit_io(io->cursor, io->slot, io->pgr, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.pgr != io->pgr || checked.captured.page != io->captured.page ||
-               checked.captured.err != io->captured.err || checked.slot != io->slot ||
-               !page_ref_equal(&checked.captured.ref, &io->captured.ref)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
+  pgr_t captured = *pgr;
+  int err = cursor_stack_set_pgr_checked(mc, i, &captured);
+  if (likely(err == MDBX_SUCCESS))
+    err = pgr_release_checked(mc, pgr);
+  return err;
 }
 
 static inline void cursor_stack_set_pgr_consume(MDBX_cursor *mc, intptr_t i, pgr_t *pgr) {
-  dxb_cursor_stack_set_pgr_consume_submit_io_t submit;
-  int err = cursor_make_stack_set_pgr_consume_submit_io(mc, i, pgr, &submit);
+  int err = cursor_stack_set_pgr_consume_checked(mc, i, pgr);
   cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_stack_set_pgr_consume_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      cursor_stack_set(submit.cursor, submit.slot, submit.captured.page, submit.captured.ref);
-      pgr_release(submit.cursor, submit.pgr);
-    }
-    cASSERT0(mc, err == MDBX_SUCCESS);
-  }
 }
 
 static inline int cursor_make_push_pgr_submit_io(MDBX_cursor *mc, const pgr_t *pgr, indx_t ki,
