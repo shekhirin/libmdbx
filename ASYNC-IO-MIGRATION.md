@@ -13440,6 +13440,24 @@ Ninja build (`cmake --build @cmake-ninja-build`), and the six focused
 passed with forced/default ratios of `1.109` batch, `1.141` crud, `0.966`
 iterate, `1.095` get, and `1.070` delete.
 
+A later overflow value read submit-boundary cleanup removed the one-call
+`node_submit_bigdata_read()`, `cursor_put_submit_bigdata_page_get()`, and
+`cursor_delete_submit_bigdata_page_get()` helpers from `mdbx.c`. Public
+large-value reads and the put/delete paths that fetch existing overflow pages
+now build and validate their page-get descriptors at the local value/cursor
+site, then submit directly through `page_submit_cursor_get()`. This keeps
+large-value cursor/value lifetime handling close to the page-cache fetch that
+will later become an async-capable read request, while preserving the checked
+descriptor shape. Verification passed `git diff --check`, source scans proving
+the removed overflow submit helpers are absent from `mdbx.c` and the
+public/internal headers, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, and the full 15-test public migration CTest suite including API checks
+and tool roundtrips. The paired `mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.124` batch, `1.149` crud, `0.855` iterate, `0.806`
+get, and `1.076` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

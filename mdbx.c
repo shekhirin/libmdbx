@@ -22004,20 +22004,15 @@ static inline int cursor_put_bigdata_page_get_submit_io_validate(const dxb_curso
   return MDBX_SUCCESS;
 }
 
-static inline pgr_t cursor_put_submit_bigdata_page_get(const dxb_cursor_put_bigdata_page_get_submit_io_t *io) {
-  int err = cursor_put_bigdata_page_get_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-
-  return page_submit_cursor_get(&io->get);
-}
-
 static inline pgr_t cursor_put_bigdata_page_get(MDBX_cursor *mc, page_t *source, const node_t *node) {
   dxb_cursor_put_bigdata_page_get_submit_io_t submit;
   int err = cursor_put_make_bigdata_page_get_submit_io(mc, source, node, &submit);
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  return cursor_put_submit_bigdata_page_get(&submit);
+  err = cursor_put_bigdata_page_get_submit_io_validate(&submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return page_submit_cursor_get(&submit.get);
 }
 
 __hot int cursor_put(MDBX_cursor *mc, const MDBX_val *key, MDBX_val *data, unsigned flags) {
@@ -22932,20 +22927,15 @@ cursor_delete_bigdata_page_get_submit_io_validate(const dxb_cursor_delete_bigdat
   return MDBX_SUCCESS;
 }
 
-static inline pgr_t cursor_delete_submit_bigdata_page_get(const dxb_cursor_delete_bigdata_page_get_submit_io_t *io) {
-  int err = cursor_delete_bigdata_page_get_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-
-  return page_submit_cursor_get(&io->get);
-}
-
 static inline pgr_t cursor_delete_bigdata_page_get(MDBX_cursor *mc, page_t *source, const node_t *node) {
   dxb_cursor_delete_bigdata_page_get_submit_io_t submit;
   int err = cursor_delete_make_bigdata_page_get_submit_io(mc, source, node, &submit);
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  return cursor_delete_submit_bigdata_page_get(&submit);
+  err = cursor_delete_bigdata_page_get_submit_io_validate(&submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return page_submit_cursor_get(&submit.get);
 }
 
 __hot int cursor_del(MDBX_cursor *mc, unsigned flags) {
@@ -41508,37 +41498,32 @@ static inline int node_bigdata_read_submit_io_validate(const dxb_bigdata_read_su
   return MDBX_SUCCESS;
 }
 
-static int node_submit_bigdata_read(const dxb_bigdata_read_submit_io_t *io) {
-  int err = node_bigdata_read_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  MDBX_cursor *const mc = io->cursor;
-  pgr_t lp = page_submit_cursor_get(&io->get);
-  if (unlikely((lp.err != MDBX_SUCCESS))) {
-    DEBUG("read large/overflow page %" PRIaPGNO " failed", io->large_pgno);
-    return lp.err;
-  }
-
-  cASSERT0(mc, page_type(lp.page) == P_LARGE);
-  if (!MDBX_DISABLE_VALIDATION && unlikely(lp.page->pages < io->npages)) {
-    err = bad_page(lp.page, "too less n-pages %u for bigdata-node (%zu bytes)", lp.page->pages, io->bytes);
-    pgr_release(mc, &lp);
-    return err;
-  }
-
-  cursor_value_set(mc, &lp);
-  io->data->iov_base = page2payload(lp.page);
-  pgr_release(mc, &lp);
-  return MDBX_SUCCESS;
-}
-
 __noinline int node_read_bigdata(MDBX_cursor *mc, const node_t *node, MDBX_val *data, const page_t *mp) {
   dxb_bigdata_read_submit_io_t submit;
   int err = node_make_bigdata_read_submit_io(mc, node, data, mp, &submit);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  return node_submit_bigdata_read(&submit);
+  err = node_bigdata_read_submit_io_validate(&submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  pgr_t lp = page_submit_cursor_get(&submit.get);
+  if (unlikely((lp.err != MDBX_SUCCESS))) {
+    DEBUG("read large/overflow page %" PRIaPGNO " failed", submit.large_pgno);
+    return lp.err;
+  }
+
+  cASSERT0(mc, page_type(lp.page) == P_LARGE);
+  if (!MDBX_DISABLE_VALIDATION && unlikely(lp.page->pages < submit.npages)) {
+    err = bad_page(lp.page, "too less n-pages %u for bigdata-node (%zu bytes)", lp.page->pages, submit.bytes);
+    pgr_release(mc, &lp);
+    return err;
+  }
+
+  cursor_value_set(mc, &lp);
+  data->iov_base = page2payload(lp.page);
+  pgr_release(mc, &lp);
+  return MDBX_SUCCESS;
 }
 
 node_t *node_shrink(page_t *mp, size_t indx, node_t *node) {
