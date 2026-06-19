@@ -14166,6 +14166,29 @@ checks and tool roundtrips, the ASAN build (`cmake --build
 passed with forced/default ratios of `1.135` batch, `1.139` crud, `1.186`
 iterate, `0.958` get, and `1.071` delete.
 
+A later defrag page read/write descriptor cleanup removed
+`dxb_defrag_page_read_submit_io_t`, `defrag_make_page_read_submit_io()`,
+`defrag_page_read_submit_io_validate()`,
+`dxb_defrag_page_write_submit_io_t`, `defrag_make_page_write_submit_io()`,
+and `defrag_page_write_submit_io_validate()` from `mdbx.c`.
+`defrag_read_page()` and `defrag_write_page()` now validate their defrag
+context, target page range, buffer size, and transaction geometry directly,
+build the existing storage `dxb_read_submit_io_t`/`dxb_write_submit_io_t`
+descriptors, validate those storage requests, and submit through
+`dxb_storage_submit_read_data()`/`dxb_storage_submit_write_data()`. This keeps
+defrag single-page reads and writes on the storage request boundary without
+defrag-local mirror descriptors. Verification passed `git diff --check`, a
+source scan proving the removed defrag page read/write descriptor helpers are
+absent from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.118` batch, `1.133` crud, `1.197`
+iterate, `0.925` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
