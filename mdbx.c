@@ -29014,12 +29014,9 @@ static void page_cache_prune_locked(dxb_storage_t *storage) {
   const size_t limit = storage->page_cache_limit;
   while (cache->bytes > limit) {
     page_cache_entry_t *victim = nullptr;
-    for (page_cache_entry_t *entry = cache->entries; entry; entry = entry->next) {
-      if (entry->pins == 0) {
+    for (page_cache_entry_t *entry = cache->entries; entry; entry = entry->next)
+      if (entry->pins == 0)
         victim = entry;
-        break;
-      }
-    }
     if (!victim)
       break;
     page_cache_release_entry_locked(victim);
@@ -29281,8 +29278,15 @@ static dxb_cache_page_result_t dxb_storage_submit_lookup_cached_page(dxb_storage
     return dxb_cache_page_miss();
 
   page_cache_lock(storage);
-  for (page_cache_entry_t *entry = storage->page_cache.entries; entry; entry = entry->next) {
+  page_cache_entry_t **link = &storage->page_cache.entries;
+  while (*link) {
+    page_cache_entry_t *const entry = *link;
     if (page_cache_entry_can_reuse(entry, read)) {
+      if (link != &storage->page_cache.entries) {
+        *link = entry->next;
+        entry->next = storage->page_cache.entries;
+        storage->page_cache.entries = entry;
+      }
       entry->pins += 1;
       entry->owner->pinned += 1;
       pgr_t ret = dxb_storage_make_cached_pgr(entry);
@@ -29290,6 +29294,7 @@ static dxb_cache_page_result_t dxb_storage_submit_lookup_cached_page(dxb_storage
       page_cache_unlock(storage);
       return dxb_cache_page_result(ret, payload_bytes, true, false, entry->owner != nullptr, false, true);
     }
+    link = &entry->next;
   }
   page_cache_unlock(storage);
   return dxb_cache_page_miss();

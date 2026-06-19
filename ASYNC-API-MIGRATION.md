@@ -2015,3 +2015,48 @@ Additional completion-chunk checkpoint:
   samples, while the larger sample remains near-neutral. This is still an async
   executor throughput cleanup, not a fix for the separate pre-migration
   ioarena storage-throughput gap.
+
+Additional explicit page-cache LRU checkpoint:
+
+- changed the explicit page-cache policy from effectively MRU eviction to a
+  simple most-recent-first list: cache hits move the entry to the head, and
+  pruning now evicts the oldest unpinned entry
+- this targets no-map explicit-I/O read locality without changing the blocking
+  mmap API path or the public async API
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit mdbx_migration_smoke`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|migration_smoke)'`: passed 9/9
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit mdbx_migration_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check reported
+  async/blocking-parallel 1.155, async-many/blocking-parallel 1.181,
+  async-thread/blocking-parallel 1.149,
+  async-thread-many/blocking-parallel 1.127,
+  async-batch/blocking-parallel 1.196, and async-loop/blocking-parallel 1.185
+- `make -f GNUmakefile mdbx_migration_bench_lazy`: passed, with current
+  explicit default:
+
+| phase | earlier mapped avg | current explicit default | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1033.245 ops/s | 966.305 ops/s | 0.935 |
+| crud | 55.675 Kops/s | 49.756 Kops/s | 0.894 |
+| iterate | 26.143 Mops/s | 31.656 Mops/s | 1.211 |
+| get | 279.409 Kops/s | 399.575 Kops/s | 1.430 |
+| delete | 66.398 Kops/s | 58.374 Kops/s | 0.879 |
+
+- current explicit forced no-map against the earlier no-map baseline:
+
+| phase | earlier no-map avg | current explicit forced | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1089.750 ops/s | 944.749 ops/s | 0.867 |
+| crud | 59.787 Kops/s | 49.784 Kops/s | 0.833 |
+| iterate | 25.827 Mops/s | 31.102 Mops/s | 1.204 |
+| get | 274.039 Kops/s | 412.888 Kops/s | 1.507 |
+| delete | 69.067 Kops/s | 57.767 Kops/s | 0.836 |
+
+- conclusion: the explicit page cache now beats the pre-migration read-heavy
+  ioarena baseline for `iterate` and `get`, including forced no-map/tiny-cache.
+  The storage migration is still not complete because batch, CRUD, and delete
+  remain below the earlier mapped/no-map baselines.
