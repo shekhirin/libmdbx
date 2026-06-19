@@ -38302,13 +38302,27 @@ static ssize_t osal_ioring_sendfile(osal_ioring_t *ior, mdbx_filehandle_t out_fd
 }
 #endif /* MDBX_USE_SENDFILE */
 
+#if !defined(_WIN32) && !defined(_WIN64)
+static int osal_ioring_ftruncate_exact(osal_ioring_t *ior, mdbx_filehandle_t fd, const uint64_t length) {
+  (void)ior;
+  if (unlikely(length > (uint64_t)OFF_T_MAX))
+    return MDBX_EINVAL;
+  return unlikely(ftruncate(fd, (off_t)length)) ? errno : MDBX_SUCCESS;
+}
+#endif /* !Windows */
+
 int osal_ioring_fsetsize(osal_ioring_t *ior, mdbx_filehandle_t fd, const uint64_t length) {
 #if MDBX_HAVE_LINUX_IO_URING && MDBX_USE_FALLOCATE
   if (likely(ior && ior->backend == osal_ioring_backend_linux_uring &&
              osal_ioring_linux_uring_ready(ior))) {
     uint64_t current = 0;
     const int size_err = osal_ioring_filesize(ior, fd, &current);
-    if (likely(size_err == MDBX_SUCCESS && length > current)) {
+    if (likely(size_err == MDBX_SUCCESS)) {
+      if (length == current)
+        return MDBX_SUCCESS;
+      if (length < current)
+        return osal_ioring_ftruncate_exact(ior, fd, length);
+
       const int err = osal_ioring_linux_uring_fallocate(ior, fd, 0, length, 0);
       if (likely(err == MDBX_SUCCESS))
         return MDBX_SUCCESS;

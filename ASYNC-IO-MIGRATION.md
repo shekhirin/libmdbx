@@ -15332,6 +15332,25 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.126` batch, `1.178` crud, `0.759` iterate, `1.053`
 get, and `1.084` delete.
 
+A later filesize-truncate checkpoint added `osal_ioring_ftruncate_exact()` and
+uses it from the active `osal_ioring_fsetsize()` path when the queued filesize
+probe shows an exact shrink/truncate. Growth still uses Linux
+`IORING_OP_FALLOCATE` where available, while this platform's local
+`io_uring.h` has no `IORING_OP_FTRUNCATE`, so exact truncates remain direct
+`ftruncate()` fallbacks behind the io-queue filesize boundary. A forced smoke
+trace showed `139726` io_uring setup/enter syscalls, `39` direct data-file
+`ftruncate()` calls excluding lock files, and zero direct fd stat calls on
+migration data files. Verification passed `git diff --check`, the Ninja build
+(`cmake --build @cmake-ninja-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed 9/9, the ASAN
+build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.117` batch, `1.153` crud, `0.870` iterate, `1.062`
+get, and `1.075` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
