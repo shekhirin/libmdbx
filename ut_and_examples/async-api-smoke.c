@@ -1871,6 +1871,36 @@ int main(void) {
   REQUIRE(preserve_probe.calls == 1, "async replace_ex preserver was not called");
   CHECK(expect_payload(&replace_ex_old_value, replace_ex_dirty_value, __FILE__, __LINE__));
 
+  uint64_t replace_ex_batch_dirty_values[] = {expected_value(6) + UINT64_C(6000),
+                                              expected_value(7) + UINT64_C(7000)};
+  uint64_t replace_ex_batch_old_buffers[] = {0, 0};
+  MDBX_val replace_ex_batch_keys[] = {key_values[6], key_values[7]};
+  MDBX_val replace_ex_batch_dirty_data[] = {
+      val(&replace_ex_batch_dirty_values[0], sizeof(replace_ex_batch_dirty_values[0])),
+      val(&replace_ex_batch_dirty_values[1], sizeof(replace_ex_batch_dirty_values[1]))};
+  MDBX_val replace_ex_batch_old_data[] = {
+      val(&replace_ex_batch_old_buffers[0], sizeof(replace_ex_batch_old_buffers[0])),
+      val(&replace_ex_batch_old_buffers[1], sizeof(replace_ex_batch_old_buffers[1]))};
+  for (size_t i = 0; i < 2; ++i) {
+    CHECK(mdbx_async_put(async, txn, dbi, &replace_ex_batch_keys[i], &replace_ex_batch_dirty_data[i],
+                         MDBX_CURRENT, &op));
+    CHECK_OP(op);
+  }
+  memset(op_results, 0, sizeof(op_results));
+  struct preserve_probe preserve_batch_probe = {0};
+  CHECK(mdbx_async_replace_ex_batch(async, txn, dbi, replace_ex_batch_keys, put_values + 6,
+                                    replace_ex_batch_old_data, op_results, 2, 0, preserve_probe_func,
+                                    &preserve_batch_probe, &op));
+  CHECK_OP(op);
+  REQUIRE(preserve_batch_probe.calls == 2, "async replace_ex_batch preserver was not called per item");
+  for (size_t i = 0; i < 2; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_replace_ex_batch", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
+    CHECK(expect_payload(&replace_ex_batch_old_data[i], replace_ex_batch_dirty_values[i], __FILE__, __LINE__));
+  }
+
   uint64_t replace_old_buffer = 0;
   MDBX_val replace_old_value = val(&replace_old_buffer, sizeof(replace_old_buffer));
   CHECK(mdbx_async_replace(async, txn, dbi, &key_values[1], &replacement_put_value, &replace_old_value, 0, &op));

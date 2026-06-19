@@ -2886,3 +2886,36 @@ Additional async API audit accounting checkpoint:
 - conclusion: the public async surface now has an explicit audit signal for
   both blocking counterparts and async-only API growth, which makes future
   coverage work less ambiguous.
+
+Additional async replace-ex batch API checkpoint:
+
+- added `mdbx_async_replace_ex_batch()` as a public async-only batch helper for
+  repeated `mdbx_replace_ex()` operations with a shared preservation callback
+  and callback context. The blocking API is unchanged.
+- reused the replace-batch executor storage and dispatch path, selecting
+  `mdbx_replace()` or `mdbx_replace_ex()` by async opcode. Per-item result
+  slots receive the corresponding replace result, while the async operation
+  result remains `MDBX_SUCCESS` after the batch has run.
+- added smoke coverage that dirties two records, submits
+  `mdbx_async_replace_ex_batch()`, verifies the preservation callback ran once
+  per item, checks the retrieved dirty values, and restores the original values
+  before the later readback/deletion checks.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking replace 2.562 Mops/s,
+  async replace 1.732 Mops/s, async batch replace 2.427 Mops/s,
+  async-replace/blocking 0.676, async-repl-batch/blocking 0.947, and
+  async-repl-batch/async 1.402.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h`: `blocking=171 async-declared=178 async-covered=132 async-only=46 exempt=39 missing=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|migration_smoke)'`: passed 9/9
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the async API now has a batched preservation-callback form for
+  the remaining replace variant, and the existing replace-batch benchmark stays
+  in the same near-parity band after sharing the dispatch path.

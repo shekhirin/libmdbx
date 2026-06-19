@@ -15105,6 +15105,7 @@ enum mdbx_async_opcode {
   async_op_put_batch,
   async_op_replace,
   async_op_replace_batch,
+  async_op_replace_ex_batch,
   async_op_replace_ex,
   async_op_del,
   async_op_del_batch,
@@ -15579,6 +15580,8 @@ struct MDBX_async_op {
       int *results;
       size_t count;
       MDBX_put_flags_t flags;
+      MDBX_preserve_func preserver;
+      void *preserver_context;
       bool has_new_data;
     } replace_batch;
     struct {
@@ -16531,16 +16534,22 @@ static int async_op_execute(MDBX_async_op *op) {
     return rc;
   }
   case async_op_replace_batch:
+  case async_op_replace_ex_batch:
     for (size_t i = 0; i < op->args.replace_batch.count; ++i) {
       MDBX_val new_data;
       MDBX_val old_data = op->args.replace_batch.old_data[i];
       if (op->args.replace_batch.has_new_data)
         new_data = op->args.replace_batch.new_data[i];
-      const int rc =
-          mdbx_replace(op->args.replace_batch.txn, op->args.replace_batch.dbi,
-                       &op->args.replace_batch.keys[i],
-                       op->args.replace_batch.has_new_data ? &new_data : nullptr, &old_data,
-                       op->args.replace_batch.flags);
+      const int rc = (op->opcode == async_op_replace_batch)
+                         ? mdbx_replace(op->args.replace_batch.txn, op->args.replace_batch.dbi,
+                                        &op->args.replace_batch.keys[i],
+                                        op->args.replace_batch.has_new_data ? &new_data : nullptr, &old_data,
+                                        op->args.replace_batch.flags)
+                         : mdbx_replace_ex(op->args.replace_batch.txn, op->args.replace_batch.dbi,
+                                           &op->args.replace_batch.keys[i],
+                                           op->args.replace_batch.has_new_data ? &new_data : nullptr, &old_data,
+                                           op->args.replace_batch.flags, op->args.replace_batch.preserver,
+                                           op->args.replace_batch.preserver_context);
       op->args.replace_batch.old_data[i] = old_data;
       op->args.replace_batch.results[i] = rc;
     }
@@ -19324,9 +19333,11 @@ int mdbx_async_replace(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDB
                               out);
 }
 
-int mdbx_async_replace_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
-                             MDBX_val new_data[], MDBX_val old_data[], int results[], size_t count,
-                             MDBX_put_flags_t flags, MDBX_async_op **out) {
+static int async_replace_batch_submit(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
+                                      MDBX_val new_data[], MDBX_val old_data[], int results[], size_t count,
+                                      MDBX_put_flags_t flags, MDBX_preserve_func preserver,
+                                      void *preserver_context, enum mdbx_async_opcode opcode,
+                                      MDBX_async_op **out) {
   if (unlikely(!txn || !keys || !old_data || !results || !count))
     return LOG_IFERR(MDBX_EINVAL);
   if (unlikely(flags & (MDBX_RESERVE | MDBX_MULTIPLE)))
@@ -19334,7 +19345,7 @@ int mdbx_async_replace_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, con
   if (unlikely(new_data == old_data))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(async, &op, async_op_replace_batch);
+  int rc = async_op_alloc(async, &op, opcode);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   op->args.replace_batch.txn = txn;
@@ -19345,6 +19356,8 @@ int mdbx_async_replace_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, con
   op->args.replace_batch.results = results;
   op->args.replace_batch.count = count;
   op->args.replace_batch.flags = flags;
+  op->args.replace_batch.preserver = preserver;
+  op->args.replace_batch.preserver_context = preserver_context;
   op->args.replace_batch.has_new_data = new_data != nullptr;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
@@ -19354,11 +19367,26 @@ int mdbx_async_replace_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, con
   return LOG_IFERR(rc);
 }
 
+int mdbx_async_replace_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
+                             MDBX_val new_data[], MDBX_val old_data[], int results[], size_t count,
+                             MDBX_put_flags_t flags, MDBX_async_op **out) {
+  return async_replace_batch_submit(async, txn, dbi, keys, new_data, old_data, results, count, flags, nullptr,
+                                    nullptr, async_op_replace_batch, out);
+}
+
 int mdbx_async_replace_ex(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *new_data,
                           MDBX_val *old_data, MDBX_put_flags_t flags, MDBX_preserve_func preserver,
                           void *preserver_context, MDBX_async_op **out) {
   return async_replace_submit(async, txn, dbi, key, new_data, old_data, flags, preserver, preserver_context,
                               async_op_replace_ex, out);
+}
+
+int mdbx_async_replace_ex_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
+                                MDBX_val new_data[], MDBX_val old_data[], int results[], size_t count,
+                                MDBX_put_flags_t flags, MDBX_preserve_func preserver, void *preserver_context,
+                                MDBX_async_op **out) {
+  return async_replace_batch_submit(async, txn, dbi, keys, new_data, old_data, results, count, flags, preserver,
+                                    preserver_context, async_op_replace_ex_batch, out);
 }
 
 int mdbx_async_del(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, const MDBX_val *data,
