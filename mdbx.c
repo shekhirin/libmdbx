@@ -322,28 +322,6 @@ typedef struct dxb_page_get_with_ref_submit_io {
   bool retain_ref;
 } dxb_page_get_with_ref_submit_io_t;
 
-typedef struct dxb_cursor_rebalance_refs_release_submit_io {
-  MDBX_cursor *cursor;
-  MDBX_cursor *neighbor;
-  page_t *left_page;
-  page_t *right_page;
-  page_ref_t *left_ref;
-  page_ref_t *right_ref;
-  page_ref_t left;
-  page_ref_t right;
-  int16_t neighbor_top_and_flags;
-} dxb_cursor_rebalance_refs_release_submit_io_t;
-
-typedef struct dxb_cursor_rebalance_neighbor_set_submit_io {
-  MDBX_cursor *neighbor;
-  page_t *page;
-  page_ref_t ref;
-  intptr_t slot;
-  indx_t parent_ki;
-  indx_t top_ki;
-  int16_t neighbor_top_and_flags;
-} dxb_cursor_rebalance_neighbor_set_submit_io_t;
-
 typedef struct dxb_compacting_branch_child_copy_submit_io {
   MDBX_cursor *cursor;
   page_t **source;
@@ -5884,132 +5862,51 @@ static inline void cursor_stack_release_all(MDBX_cursor *mc) {
   cursor_value_release(mc);
 }
 
-static inline int cursor_make_rebalance_refs_release_submit_io(
-    MDBX_cursor *mc, MDBX_cursor *mn, page_t *left, page_ref_t *left_ref, page_t *right, page_ref_t *right_ref,
-    dxb_cursor_rebalance_refs_release_submit_io_t *io) {
-  if (unlikely(!mc || !mn || !left_ref || !right_ref || !io))
+static inline int cursor_stack_set_checked(MDBX_cursor *mc, intptr_t i, page_t *mp, page_ref_t ref);
+
+static inline int cursor_rebalance_refs_release_checked(MDBX_cursor *mc, MDBX_cursor *mn, page_t *left,
+                                                        page_ref_t *left_ref, page_t *right, page_ref_t *right_ref) {
+  if (unlikely(!mc || !mn || !left_ref || !right_ref))
+    return MDBX_EINVAL;
+  if (unlikely((!left && left_ref->page) || (left_ref->page && left_ref->page != left)))
+    return MDBX_EINVAL;
+  if (unlikely((!right && right_ref->page) || (right_ref->page && right_ref->page != right)))
     return MDBX_EINVAL;
 
-  io->cursor = mc;
-  io->neighbor = mn;
-  io->left_page = left;
-  io->right_page = right;
-  io->left_ref = left_ref;
-  io->right_ref = right_ref;
-  io->left = *left_ref;
-  io->right = *right_ref;
-  io->neighbor_top_and_flags = mn->top_and_flags;
-  if (unlikely((!left && io->left.page) || (io->left.page && io->left.page != left)))
-    return MDBX_EINVAL;
-  if (unlikely((!right && io->right.page) || (io->right.page && io->right.page != right)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline int
-cursor_rebalance_refs_release_submit_io_validate(const dxb_cursor_rebalance_refs_release_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->neighbor || !io->left_ref || !io->right_ref))
-    return MDBX_EINVAL;
-  if (unlikely(!page_ref_equal(io->left_ref, &io->left) || !page_ref_equal(io->right_ref, &io->right)))
-    return MDBX_EINVAL;
-  if (unlikely(io->neighbor->top_and_flags != io->neighbor_top_and_flags))
-    return MDBX_EINVAL;
-  if (unlikely((!io->left_page && io->left.page) || (io->left.page && io->left.page != io->left_page)))
-    return MDBX_EINVAL;
-  if (unlikely((!io->right_page && io->right.page) || (io->right.page && io->right.page != io->right_page)))
-    return MDBX_EINVAL;
-
-  dxb_cursor_rebalance_refs_release_submit_io_t checked;
-  int err = cursor_make_rebalance_refs_release_submit_io(io->cursor, io->neighbor, io->left_page, io->left_ref,
-                                                         io->right_page, io->right_ref, &checked);
+  int err = cursor_ref_release_checked(mc, left_ref);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  if (unlikely(checked.cursor != io->cursor || checked.neighbor != io->neighbor ||
-               checked.left_page != io->left_page || checked.right_page != io->right_page ||
-               checked.left_ref != io->left_ref || checked.right_ref != io->right_ref ||
-               checked.neighbor_top_and_flags != io->neighbor_top_and_flags ||
-               !page_ref_equal(&checked.left, &io->left) || !page_ref_equal(&checked.right, &io->right)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
+  err = cursor_ref_release_checked(mc, right_ref);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  err = cursor_stack_release_from_checked(mn, 0);
+  if (likely(err == MDBX_SUCCESS))
+    cursor_value_release(mn);
+  return err;
 }
 
 static inline void cursor_rebalance_refs_release(MDBX_cursor *mc, MDBX_cursor *mn, page_t *left, page_ref_t *left_ref,
                                                  page_t *right, page_ref_t *right_ref) {
-  dxb_cursor_rebalance_refs_release_submit_io_t submit;
-  int err = cursor_make_rebalance_refs_release_submit_io(mc, mn, left, left_ref, right, right_ref, &submit);
+  int err = cursor_rebalance_refs_release_checked(mc, mn, left, left_ref, right, right_ref);
   cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_rebalance_refs_release_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      cursor_ref_release(submit.cursor, submit.left_ref);
-      cursor_ref_release(submit.cursor, submit.right_ref);
-      cursor_stack_release_all(submit.neighbor);
-    }
-    cASSERT0(mc, err == MDBX_SUCCESS);
-  }
-}
-
-static inline void cursor_stack_set(MDBX_cursor *mc, intptr_t i, page_t *mp, page_ref_t ref);
-
-static inline int cursor_make_rebalance_neighbor_set_submit_io(
-    MDBX_cursor *mn, page_t *page, page_ref_t ref, indx_t parent_ki, indx_t top_ki,
-    dxb_cursor_rebalance_neighbor_set_submit_io_t *io) {
-  if (unlikely(!mn || !page || !io || mn->top <= 0 || mn->top >= CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-  if (unlikely(ref.page != nullptr && ref.page != page))
-    return MDBX_EINVAL;
-  if (unlikely(!mn->pg[mn->top - 1] || !is_branch(mn->pg[mn->top - 1])))
-    return MDBX_EINVAL;
-
-  io->neighbor = mn;
-  io->page = page;
-  io->ref = ref;
-  io->slot = mn->top;
-  io->parent_ki = parent_ki;
-  io->top_ki = top_ki;
-  io->neighbor_top_and_flags = mn->top_and_flags;
-  return MDBX_SUCCESS;
-}
-
-static inline int
-cursor_rebalance_neighbor_set_submit_io_validate(const dxb_cursor_rebalance_neighbor_set_submit_io_t *io) {
-  if (unlikely(!io || !io->neighbor || !io->page || io->slot <= 0 || io->slot >= CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-  MDBX_cursor *const mn = io->neighbor;
-  if (unlikely(mn->top_and_flags != io->neighbor_top_and_flags || mn->top != io->slot))
-    return MDBX_EINVAL;
-  if (unlikely(io->ref.page != nullptr && io->ref.page != io->page))
-    return MDBX_EINVAL;
-  if (unlikely(!mn->pg[io->slot - 1] || !is_branch(mn->pg[io->slot - 1])))
-    return MDBX_EINVAL;
-
-  dxb_cursor_rebalance_neighbor_set_submit_io_t checked;
-  int err = cursor_make_rebalance_neighbor_set_submit_io(mn, io->page, io->ref, io->parent_ki, io->top_ki, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.neighbor != io->neighbor || checked.page != io->page || checked.slot != io->slot ||
-               checked.parent_ki != io->parent_ki || checked.top_ki != io->top_ki ||
-               checked.neighbor_top_and_flags != io->neighbor_top_and_flags ||
-               !page_ref_equal(&checked.ref, &io->ref)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
 }
 
 static inline int cursor_rebalance_neighbor_set(MDBX_cursor *mn, page_t *page, page_ref_t ref, indx_t parent_ki,
                                                 indx_t top_ki) {
-  dxb_cursor_rebalance_neighbor_set_submit_io_t submit;
-  int err = cursor_make_rebalance_neighbor_set_submit_io(mn, page, ref, parent_ki, top_ki, &submit);
-  cASSERT0(mn, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_rebalance_neighbor_set_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      cursor_stack_set(submit.neighbor, submit.slot, submit.page, submit.ref);
-      submit.neighbor->ki[submit.slot - 1] = submit.parent_ki;
-      submit.neighbor->ki[submit.slot] = submit.top_ki;
-    }
-    cASSERT0(mn, err == MDBX_SUCCESS);
-  }
-  return err;
+  if (unlikely(!mn || !page || mn->top <= 0 || mn->top >= CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+  if (unlikely(ref.page != nullptr && ref.page != page))
+    return MDBX_EINVAL;
+  const intptr_t slot = mn->top;
+  if (unlikely(!mn->pg[mn->top - 1] || !is_branch(mn->pg[mn->top - 1])))
+    return MDBX_EINVAL;
+
+  int err = cursor_stack_set_checked(mn, slot, page, ref);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  mn->ki[slot - 1] = parent_ki;
+  mn->ki[slot] = top_ki;
+  return MDBX_SUCCESS;
 }
 
 static inline bool page_ref_requires_txn_pin(const page_ref_t *ref) {
