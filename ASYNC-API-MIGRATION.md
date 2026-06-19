@@ -3524,3 +3524,37 @@ Additional cursor-scan-from benchmark checkpoint:
   reduced run it still beats the blocking pthread-parallel scan-from path, but
   it trails direct async cursor scan, which makes the extra positioned-start
   machinery visible and gives future scan-from optimization a baseline.
+
+Additional direct cursor-get benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` with direct
+  `mdbx_cursor_get()` and `mdbx_async_cursor_get()` iteration measurements
+  beside the existing cursor-batch, cursor-loop, and cursor-scan read paths.
+  This checkpoint adds benchmark coverage only; the public API is unchanged.
+- the benchmark uses one cursor per blocking thread or async executor, repeats
+  table passes with `MDBX_FIRST`/`MDBX_NEXT`, verifies every returned key/value
+  pair, and keeps only one pending cursor movement per async cursor because the
+  cursor state itself is sequential.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking cursor get
+  88.306 Mops/s, parallel cursor get 62.370 Mops/s, async cursor get
+  873.150 Kops/s, blocking cursor batch 218.614 Mops/s, parallel cursor batch
+  59.954 Mops/s, async cursor batch 80.689 Mops/s, and async cursor loop
+  93.779 Mops/s. Ratios were async-cursor-get/par 0.014,
+  async-cursor-get/ser 0.010, and async-cursor-batch/get 92.411.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=187 async-covered=132 async-only=55 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the direct per-call async cursor-get path is dramatically slower
+  than blocking cursor iteration and the existing coarse async cursor batch
+  shape. Cursor-heavy read callers should use `mdbx_async_cursor_get_batch()`
+  or `mdbx_async_cursor_get_batches()` today; any future work on direct
+  `mdbx_async_cursor_get()` needs to attack per-operation executor round trips
+  or add a cursor-specific streaming helper.
