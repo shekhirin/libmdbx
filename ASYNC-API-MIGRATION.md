@@ -1814,3 +1814,45 @@ Additional async GET many-submit checkpoint:
   that still need independent operation handles, improving the default
   per-operation GET benchmark path while preserving the coarser batch/loop APIs
   for callers that can use one async operation per window
+
+Additional extended GET many-submit checkpoint:
+
+- added `mdbx_async_get_ex_many()` so callers can submit many independent
+  `mdbx_get_ex()` operations with one allocation/enqueue window while still
+  receiving one normal async operation handle per item
+- added `mdbx_async_get_equal_or_great_many()` with the same independent-handle
+  many-submit shape; per-operation results preserve `MDBX_SUCCESS` versus
+  `MDBX_RESULT_TRUE`
+- both wrappers copy submitted key bytes before enqueueing; the lower-bound
+  wrapper also copies each input data descriptor before enqueueing, matching the
+  single-operation wrapper semantics
+- smoke coverage now verifies `get_ex` many-submit duplicate counts, returned
+  key/value descriptors, and mixed exact/greater lower-bound many-submit results
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench mdbx_async_api_audit`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench mdbx_async_api_audit`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed with GET-path ratios
+  async/blocking-parallel 1.141, async-thread/blocking-parallel 1.258,
+  async-thread-batch/blocking-parallel 1.117,
+  async-batch/blocking-parallel 1.278,
+  async-batch-callback/blocking-parallel 1.270,
+  async-loop/blocking-parallel 1.136, and
+  async-thread-loop/blocking-parallel 1.305
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- short default and forced no-map/tiny-cache benchmark spot checks were noisy
+  and below parity for several GET paths, despite this slice not changing the
+  benchmarked plain-GET runtime path
+- larger default `MDBX_ASYNC_BENCH_OPS=1000000` sample passed with all reported
+  GET paths above blocking-parallel: async/blocking-parallel 1.010,
+  async-thread/blocking-parallel 1.088,
+  async-thread-batch/blocking-parallel 1.063,
+  async-batch/blocking-parallel 1.013,
+  async-batch-callback/blocking-parallel 1.067,
+  async-loop/blocking-parallel 1.066, and
+  async-thread-loop/blocking-parallel 1.066
+- conclusion: this slice extends the independent-handle many-submit surface
+  across the GET family; it is primarily API symmetry and submission-overhead
+  coverage, not a new storage-backend performance step

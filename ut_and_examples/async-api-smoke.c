@@ -1266,6 +1266,25 @@ int main(void) {
   REQUIRE(get_ex_actual_key == 5, "unexpected get_ex key");
   CHECK(expect_value(&get_ex_data, get_ex_actual_key, __FILE__, __LINE__));
 
+  MDBX_val get_ex_many_keys[ITEM_COUNT];
+  size_t get_ex_many_counts[ITEM_COUNT];
+  for (unsigned i = 0; i < ITEM_COUNT; ++i) {
+    get_ex_many_keys[i] = key_values[i];
+    get_values[i] = val(NULL, 0);
+    get_ex_many_counts[i] = SIZE_MAX;
+  }
+  CHECK(mdbx_async_get_ex_many(async, txn, dbi, get_ex_many_keys, get_values, get_ex_many_counts,
+                               ITEM_COUNT, ops));
+  CHECK(wait_many_success("mdbx_async_get_ex_many", ops, ITEM_COUNT, op_results, __FILE__, __LINE__));
+  for (unsigned i = 0; i < ITEM_COUNT; ++i) {
+    REQUIRE(get_ex_many_counts[i] == 1, "async get_ex many saw wrong value count");
+    REQUIRE(get_ex_many_keys[i].iov_len == sizeof(uint64_t), "unexpected async get_ex many key size");
+    uint64_t actual_key = UINT64_MAX;
+    memcpy(&actual_key, get_ex_many_keys[i].iov_base, sizeof(actual_key));
+    REQUIRE(actual_key == keys[i], "unexpected async get_ex many key");
+    CHECK(expect_value(&get_values[i], keys[i], __FILE__, __LINE__));
+  }
+
   uint64_t lower_key_data = 6;
   MDBX_val lower_key = val(&lower_key_data, sizeof(lower_key_data));
   MDBX_val lower_data = val(NULL, 0);
@@ -1291,6 +1310,34 @@ int main(void) {
   memcpy(&greater_actual_key, greater_probe_key.iov_base, sizeof(greater_actual_key));
   REQUIRE(greater_actual_key == 7, "unexpected greater equal-or-great key");
   CHECK(expect_value(&greater_probe_data, greater_actual_key, __FILE__, __LINE__));
+
+  MDBX_val equal_many_keys[8];
+  MDBX_val equal_many_data[8];
+  uint64_t equal_many_exact_keys[8];
+  uint8_t equal_many_greater_keys[4][sizeof(uint64_t) + 1];
+  for (unsigned i = 0; i < 8; ++i) {
+    equal_many_exact_keys[i] = i;
+    if (i & 1) {
+      memcpy(equal_many_greater_keys[i / 2], &equal_many_exact_keys[i], sizeof(equal_many_exact_keys[i]));
+      equal_many_greater_keys[i / 2][sizeof(equal_many_exact_keys[i])] = 0;
+      equal_many_keys[i] = val(equal_many_greater_keys[i / 2], sizeof(equal_many_greater_keys[i / 2]));
+    } else {
+      equal_many_keys[i] = val(&equal_many_exact_keys[i], sizeof(equal_many_exact_keys[i]));
+    }
+    equal_many_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_get_equal_or_great_many(async, txn, dbi, equal_many_keys, equal_many_data, 8, ops));
+  CHECK(wait_many_result("mdbx_async_get_equal_or_great_many", ops, 8, op_results, __FILE__, __LINE__));
+  for (unsigned i = 0; i < 8; ++i) {
+    const uint64_t expected_key = i + (i & 1);
+    REQUIRE(op_results[i] == ((i & 1) ? MDBX_RESULT_TRUE : MDBX_SUCCESS),
+            "unexpected async equal-or-great many result");
+    REQUIRE(equal_many_keys[i].iov_len == sizeof(uint64_t), "unexpected async equal-or-great many key size");
+    uint64_t actual_key = UINT64_MAX;
+    memcpy(&actual_key, equal_many_keys[i].iov_base, sizeof(actual_key));
+    REQUIRE(actual_key == expected_key, "unexpected async equal-or-great many key");
+    CHECK(expect_value(&equal_many_data[i], expected_key, __FILE__, __LINE__));
+  }
 
   for (unsigned i = 0; i < ITEM_COUNT; ++i)
     get_values[i] = val(NULL, 0);

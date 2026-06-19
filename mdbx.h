@@ -5232,6 +5232,23 @@ LIBMDBX_API int mdbx_async_get_many(MDBX_async *async, const MDBX_txn *txn, MDBX
 LIBMDBX_API int mdbx_async_get_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key,
                                   MDBX_val *data, size_t *values_count, MDBX_async_op **op);
 
+/** \brief Asynchronously submit many independent get_ex operations.
+ * \ingroup c_async
+ * \details This is equivalent to calling \ref mdbx_async_get_ex() once per
+ *          item, but allocates and enqueues the operation window with fewer
+ *          executor lock round trips. Input key bytes are copied during
+ *          submission. The `keys`, `data`, optional `values_counts`, and `ops`
+ *          arrays must remain valid until the submitted operation handles
+ *          complete. On success, each `ops` slot receives an independent
+ *          operation handle that can be waited and released normally, including
+ *          with \ref mdbx_async_wait_release_all().
+ * \see mdbx_get_ex()
+ * \see mdbx_async_get_ex()
+ * \see mdbx_async_wait_release_all() */
+LIBMDBX_API int mdbx_async_get_ex_many(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                       MDBX_val keys[], MDBX_val data[], size_t values_counts[],
+                                       size_t count, MDBX_async_op *ops[]);
+
 /** \brief Asynchronously get an equal-or-greater item from a table.
  * \ingroup c_async
  * \details The input key/data bytes are copied during submission. The `key` and
@@ -5242,6 +5259,24 @@ LIBMDBX_API int mdbx_async_get_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_d
  * \see mdbx_get_equal_or_great() */
 LIBMDBX_API int mdbx_async_get_equal_or_great(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key,
                                               MDBX_val *data, MDBX_async_op **op);
+
+/** \brief Asynchronously submit many independent equal-or-greater get operations.
+ * \ingroup c_async
+ * \details This is equivalent to calling \ref mdbx_async_get_equal_or_great()
+ *          once per item, but allocates and enqueues the operation window with
+ *          fewer executor lock round trips. Input key/data bytes are copied
+ *          during submission. The `keys`, `data`, and `ops` arrays must remain
+ *          valid until the submitted operation handles complete. On success,
+ *          each `ops` slot receives an independent operation handle whose
+ *          operation result preserves \ref MDBX_SUCCESS versus
+ *          \ref MDBX_RESULT_TRUE.
+ * \see mdbx_get_equal_or_great()
+ * \see mdbx_async_get_equal_or_great()
+ * \see mdbx_async_wait_release_all() */
+LIBMDBX_API int mdbx_async_get_equal_or_great_many(MDBX_async *async, const MDBX_txn *txn,
+                                                   MDBX_dbi dbi, MDBX_val keys[],
+                                                   MDBX_val data[], size_t count,
+                                                   MDBX_async_op *ops[]);
 
 /** \brief Callback for \ref mdbx_async_get_batch_cb().
  * \ingroup c_async

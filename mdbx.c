@@ -18814,6 +18814,33 @@ int mdbx_async_get_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX
   return LOG_IFERR(rc);
 }
 
+int mdbx_async_get_ex_many(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val keys[],
+                           MDBX_val data[], size_t values_counts[], size_t count, MDBX_async_op *ops[]) {
+  if (unlikely(!txn || !keys || !data || !ops || !count))
+    return LOG_IFERR(MDBX_EINVAL);
+
+  int rc = async_ops_alloc(async, ops, count, async_op_get_ex);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+
+  for (size_t i = 0; i < count; ++i) {
+    MDBX_async_op *const op = ops[i];
+    rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, &keys[i]);
+    if (unlikely(rc != MDBX_SUCCESS))
+      break;
+    op->args.get_ex.txn = txn;
+    op->args.get_ex.dbi = dbi;
+    op->args.get_ex.key = &keys[i];
+    op->args.get_ex.data = &data[i];
+    op->args.get_ex.values_count = values_counts ? &values_counts[i] : nullptr;
+  }
+  if (likely(rc == MDBX_SUCCESS))
+    rc = async_ops_enqueue(async, ops, count);
+  if (unlikely(rc != MDBX_SUCCESS))
+    async_ops_discard(ops, count);
+  return LOG_IFERR(rc);
+}
+
 int mdbx_async_get_equal_or_great(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key,
                                   MDBX_val *data, MDBX_async_op **out) {
   if (unlikely(!txn || !key || !data))
@@ -18837,6 +18864,36 @@ int mdbx_async_get_equal_or_great(MDBX_async *async, const MDBX_txn *txn, MDBX_d
     op->signature = 0;
     osal_free(op);
   }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_get_equal_or_great_many(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                       MDBX_val keys[], MDBX_val data[], size_t count,
+                                       MDBX_async_op *ops[]) {
+  if (unlikely(!txn || !keys || !data || !ops || !count))
+    return LOG_IFERR(MDBX_EINVAL);
+
+  int rc = async_ops_alloc(async, ops, count, async_op_get_equal_or_great);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+
+  for (size_t i = 0; i < count; ++i) {
+    MDBX_async_op *const op = ops[i];
+    rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, &keys[i]);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = async_copy_val(&op->data, &op->data_copy, op->data_inline, MDBX_ASYNC_INLINE_BYTES,
+                          &data[i]);
+    if (unlikely(rc != MDBX_SUCCESS))
+      break;
+    op->args.get_equal_or_great.txn = txn;
+    op->args.get_equal_or_great.dbi = dbi;
+    op->args.get_equal_or_great.key = &keys[i];
+    op->args.get_equal_or_great.data = &data[i];
+  }
+  if (likely(rc == MDBX_SUCCESS))
+    rc = async_ops_enqueue(async, ops, count);
+  if (unlikely(rc != MDBX_SUCCESS))
+    async_ops_discard(ops, count);
   return LOG_IFERR(rc);
 }
 
