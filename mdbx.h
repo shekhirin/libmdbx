@@ -4792,6 +4792,19 @@ LIBMDBX_API int mdbx_async_put_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi 
                                      MDBX_val data[], int results[], size_t count, MDBX_put_flags_t flags,
                                      MDBX_async_op **op);
 
+/** \brief Asynchronously replace or delete an item while retrieving the previous value.
+ * \ingroup c_async
+ * \details Key and new-data bytes are copied during submission. For the
+ *          `MDBX_CURRENT | MDBX_NOOVERWRITE` duplicate-selection mode,
+ *          `old_data` bytes are also copied during submission. Otherwise the
+ *          `old_data` descriptor and any caller-provided output buffer must
+ *          remain valid until completion. The wrapper rejects \ref MDBX_RESERVE
+ *          because that mode requires caller-managed in-place memory.
+ * \see mdbx_replace() */
+LIBMDBX_API int mdbx_async_replace(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
+                                   MDBX_val *new_data, MDBX_val *old_data, MDBX_put_flags_t flags,
+                                   MDBX_async_op **op);
+
 /** \brief Asynchronously delete an item from a table.
  * \ingroup c_async
  * \details Key and optional data bytes are copied during submission.

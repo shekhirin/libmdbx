@@ -122,14 +122,18 @@ static int wait_many_success(const char *expr, MDBX_async_op **ops, size_t count
   return MDBX_SUCCESS;
 }
 
-static int expect_value(const MDBX_val *data, uint64_t key, const char *file, int line) {
+static int expect_payload(const MDBX_val *data, uint64_t expected, const char *file, int line) {
   if (data->iov_len != sizeof(uint64_t))
     return fail_msg("unexpected value size", file, line);
   uint64_t actual = 0;
   memcpy(&actual, data->iov_base, sizeof(actual));
-  if (actual != expected_value(key))
+  if (actual != expected)
     return fail_msg("unexpected value payload", file, line);
   return MDBX_SUCCESS;
+}
+
+static int expect_value(const MDBX_val *data, uint64_t key, const char *file, int line) {
+  return expect_payload(data, expected_value(key), file, line);
 }
 
 int main(void) {
@@ -146,6 +150,7 @@ int main(void) {
   uint64_t values[ITEM_COUNT];
   uint64_t cursor_extra_key = ITEM_COUNT;
   uint64_t cursor_extra_value = expected_value(ITEM_COUNT);
+  uint64_t replacement_value = expected_value(1) + UINT64_C(1000);
   MDBX_val key_values[ITEM_COUNT];
   MDBX_val delete_keys[ITEM_COUNT];
   MDBX_val put_values[ITEM_COUNT];
@@ -155,6 +160,7 @@ int main(void) {
   MDBX_val rename2_name = val(rename2_name_bytes, sizeof(rename2_name_bytes));
   MDBX_val cursor_extra_key_value = val(&cursor_extra_key, sizeof(cursor_extra_key));
   MDBX_val cursor_extra_put_value = val(&cursor_extra_value, sizeof(cursor_extra_value));
+  MDBX_val replacement_put_value = val(&replacement_value, sizeof(replacement_value));
   MDBX_val get_values[ITEM_COUNT];
   MDBX_async_op *ops[ITEM_COUNT];
   int op_results[ITEM_COUNT];
@@ -487,6 +493,18 @@ int main(void) {
   CHECK(mdbx_async_cursor_close(async, cursor, &op));
   CHECK_OP(op);
   cursor = NULL;
+
+  uint64_t replace_old_buffer = 0;
+  MDBX_val replace_old_value = val(&replace_old_buffer, sizeof(replace_old_buffer));
+  CHECK(mdbx_async_replace(async, txn, dbi, &key_values[1], &replacement_put_value, &replace_old_value, 0, &op));
+  CHECK_OP(op);
+  CHECK(expect_value(&replace_old_value, 1, __FILE__, __LINE__));
+
+  replace_old_buffer = 0;
+  replace_old_value = val(&replace_old_buffer, sizeof(replace_old_buffer));
+  CHECK(mdbx_async_replace(async, txn, dbi, &key_values[1], &put_values[1], &replace_old_value, 0, &op));
+  CHECK_OP(op);
+  CHECK(expect_payload(&replace_old_value, replacement_value, __FILE__, __LINE__));
 
   size_t pending = 0;
   CHECK(mdbx_async_del(async, txn, dbi, &key_values[3], NULL, &op));

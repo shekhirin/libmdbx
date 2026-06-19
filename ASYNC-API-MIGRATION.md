@@ -255,6 +255,18 @@ This checkpoint broadens the async API surface for write-heavy callers. The
 read benchmark is unchanged except for rebuild noise; a one-run default sample
 after this change reported async-batch/blocking-parallel ratio 1.044.
 
+Replace checkpoint:
+
+- added `mdbx_async_replace()` for async replace/delete-with-old-value retrieval
+  using the existing `mdbx_replace()` semantics
+- key and new-data bytes are copied during submission; for duplicate-selection
+  mode (`MDBX_CURRENT | MDBX_NOOVERWRITE`) the old-data selector bytes are also
+  copied, while normal old-value output uses caller-owned descriptor/buffer
+  storage until completion
+- smoke coverage now replaces a committed value, verifies the returned old
+  value, replaces it back, and verifies the temporary replacement value was
+  returned
+
 Cursor mutation checkpoint:
 
 - added `mdbx_async_cursor_put()` and `mdbx_async_cursor_del()` so async cursors
@@ -508,4 +520,15 @@ Additional named DBI checkpoint:
 - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.062, async-cursor/blocking-parallel ratio 1.608
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional replace checkpoint:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.049
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17

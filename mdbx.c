@@ -14993,6 +14993,7 @@ enum mdbx_async_opcode {
   async_op_get_batch,
   async_op_put,
   async_op_put_batch,
+  async_op_replace,
   async_op_del,
   async_op_del_batch,
   async_op_cursor_open,
@@ -15042,11 +15043,14 @@ struct MDBX_async_op {
   int result;
   void *key_copy;
   void *data_copy;
+  void *old_data_copy;
   char *name_copy;
   MDBX_val key;
   MDBX_val data;
+  MDBX_val old_data;
   uint64_t key_inline[MDBX_ASYNC_INLINE_WORDS];
   uint64_t data_inline[MDBX_ASYNC_INLINE_WORDS];
+  uint64_t old_data_inline[MDBX_ASYNC_INLINE_WORDS];
   union {
     struct {
       MDBX_async_func func;
@@ -15143,6 +15147,14 @@ struct MDBX_async_op {
       size_t count;
       MDBX_put_flags_t flags;
     } put_batch;
+    struct {
+      MDBX_txn *txn;
+      MDBX_dbi dbi;
+      MDBX_val *old_data;
+      MDBX_put_flags_t flags;
+      bool has_new_data;
+      bool old_data_copied;
+    } replace;
     struct {
       MDBX_txn *txn;
       MDBX_dbi dbi;
@@ -15297,9 +15309,11 @@ static int async_copy_name(MDBX_async_op *op, const MDBX_val *name) {
 static void async_op_payload_release(MDBX_async_op *op) {
   osal_free(op->key_copy);
   osal_free(op->data_copy);
+  osal_free(op->old_data_copy);
   osal_free(op->name_copy);
   op->key_copy = nullptr;
   op->data_copy = nullptr;
+  op->old_data_copy = nullptr;
   op->name_copy = nullptr;
 }
 
@@ -15396,6 +15410,16 @@ static int async_op_execute(MDBX_async_op *op) {
       op->args.put_batch.results[i] = rc;
     }
     return MDBX_SUCCESS;
+  case async_op_replace: {
+    MDBX_val new_data = op->data;
+    MDBX_val old_data = op->args.replace.old_data_copied ? op->old_data : *op->args.replace.old_data;
+    const int rc = mdbx_replace(op->args.replace.txn, op->args.replace.dbi, &op->key,
+                                op->args.replace.has_new_data ? &new_data : nullptr, &old_data,
+                                op->args.replace.flags);
+    if (!op->args.replace.old_data_copied)
+      *op->args.replace.old_data = old_data;
+    return rc;
+  }
   case async_op_del:
     return mdbx_del(op->args.del.txn, op->args.del.dbi, &op->key, op->args.del.has_data ? &op->data : nullptr);
   case async_op_del_batch:
@@ -16266,6 +16290,42 @@ int mdbx_async_put_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const M
   op->args.put_batch.flags = flags;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_replace(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *new_data,
+                       MDBX_val *old_data, MDBX_put_flags_t flags, MDBX_async_op **out) {
+  if (unlikely(!txn || !old_data || old_data == new_data))
+    return LOG_IFERR(MDBX_EINVAL);
+  if (unlikely(flags & (MDBX_RESERVE | MDBX_MULTIPLE)))
+    return LOG_IFERR(MDBX_EINVAL);
+  const bool old_data_is_selector = F_ISSET(flags, MDBX_CURRENT | MDBX_NOOVERWRITE);
+  if (unlikely(!old_data_is_selector && new_data && old_data->iov_base == new_data->iov_base))
+    return LOG_IFERR(MDBX_EINVAL);
+
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_replace);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, key);
+  if (likely(rc == MDBX_SUCCESS) && new_data)
+    rc = async_copy_val(&op->data, &op->data_copy, op->data_inline, MDBX_ASYNC_INLINE_BYTES, new_data);
+  if (likely(rc == MDBX_SUCCESS) && old_data_is_selector)
+    rc = async_copy_val(&op->old_data, &op->old_data_copy, op->old_data_inline, MDBX_ASYNC_INLINE_BYTES, old_data);
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.replace.txn = txn;
+    op->args.replace.dbi = dbi;
+    op->args.replace.old_data = old_data;
+    op->args.replace.flags = flags;
+    op->args.replace.has_new_data = new_data != nullptr;
+    op->args.replace.old_data_copied = old_data_is_selector;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
     op->signature = 0;
     osal_free(op);
   }
