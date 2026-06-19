@@ -15114,6 +15114,31 @@ The paired `MDBX_EXPLICIT_IO_BACKEND=io_uring make -f GNUmakefile
 mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.108`
 batch, `1.138` crud, `0.985` iterate, `0.986` get, and `0.994` delete.
 
+A later Linux `io_uring` filesize-fetch checkpoint routed
+`dxb_storage_submit_fetch_filesize()` through `osal_ioring_filesize()`.
+Requested/ready Linux rings with visible `statx` support can submit a single
+`IORING_OP_STATX` SQE against the data fd with `AT_EMPTY_PATH`/`STATX_SIZE`,
+then block for completion at the existing storage boundary and update the
+storage filesize/current state exactly as before. Unavailable rings,
+unsupported kernels, and non-Linux builds fall back to the existing
+`fstat()`-based `osal_filesize()` path. A throwaway raw-uring probe on this
+host confirmed the `STATX` SQE layout completes successfully, while the forced
+smoke `strace` still shows direct data-file `fstat()` calls from separate
+boundaries such as set-size/allocation and other probes. Verification passed
+`git diff --check`, the GNUmake `mdbx_migration_smoke` build target, direct
+default, forced no-mmap, `MDBX_EXPLICIT_IO_BACKEND=io_uring`, and compatibility
+`MDBX_EXPLICIT_WRITE_BACKEND=io_uring` forced tiny-cache smokes. The Ninja
+build (`cmake --build @cmake-ninja-build`), the ASAN build
+(`cmake --build @cmake-asan-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` focused `migration_smoke` CTest entries,
+normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused
+`migration_smoke` CTest entries with `LSAN_OPTIONS=detect_leaks=0`, the normal
+15-test public migration CTest suite, and the
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suite all passed.
+The paired `MDBX_EXPLICIT_IO_BACKEND=io_uring make -f GNUmakefile
+mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.220`
+batch, `1.192` crud, `1.082` iterate, `0.996` get, and `1.116` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
