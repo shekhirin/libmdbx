@@ -1148,7 +1148,7 @@ int main(void) {
   REQUIRE(cursor_comparison > 0, "advanced cursor did not compare after copy");
   CHECK(mdbx_async_cursor_unbind(async, copy_cursor, &op));
   CHECK_OP(op);
-  CHECK(mdbx_async_cursor_close(async, copy_cursor, &op));
+  CHECK(mdbx_async_cursor_close2(async, copy_cursor, &op));
   CHECK_OP(op);
   copy_cursor = NULL;
   CHECK(mdbx_async_cursor_unbind(async, utility_cursor, &op));

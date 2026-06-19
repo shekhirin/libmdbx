@@ -19219,6 +19219,10 @@ int mdbx_async_cursor_close(MDBX_async *async, MDBX_cursor *cursor, MDBX_async_o
   return rc;
 }
 
+int mdbx_async_cursor_close2(MDBX_async *async, MDBX_cursor *cursor, MDBX_async_op **out) {
+  return mdbx_async_cursor_close(async, cursor, out);
+}
+
 int mdbx_txn_park(MDBX_txn *txn, bool autounpark) {
   STATIC_ASSERT(MDBX_TXN_BLOCKED > MDBX_TXN_ERROR);
   int rc = check_txn(txn, MDBX_TXN_BLOCKED - MDBX_TXN_ERROR);

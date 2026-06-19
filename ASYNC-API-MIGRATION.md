@@ -996,6 +996,11 @@ Additional custom-comparator DBI open checkpoint:
 - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke`: passed
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.057, async-batch/blocking-parallel ratio 1.081, and async-cursor/blocking-parallel ratio 1.297
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.024, async-batch/blocking-parallel ratio 1.027, and async-cursor/blocking-parallel ratio 1.141
 
 Additional transaction extended-name alias checkpoint:
@@ -1017,3 +1022,15 @@ Additional transaction extended-name alias checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.122, async-batch/blocking-parallel ratio 1.152, and async-cursor/blocking-parallel ratio 0.836
+
+Additional cursor close2 alias checkpoint:
+
+- added `mdbx_async_cursor_close2()` as the naming-compatible async
+  counterpart to `mdbx_cursor_close2()`
+- the alias forwards to the existing `mdbx_async_cursor_close()` implementation,
+  whose worker already calls `mdbx_cursor_close2()`
+- smoke coverage now closes one copied cursor through the close2 alias while
+  retaining existing coverage of `mdbx_async_cursor_close()`
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2

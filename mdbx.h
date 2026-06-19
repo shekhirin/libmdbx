@@ -5494,6 +5494,12 @@ LIBMDBX_API int mdbx_async_cursor_bunch_delete(MDBX_async *async, MDBX_cursor *c
  * \see mdbx_cursor_close2() */
 LIBMDBX_API int mdbx_async_cursor_close(MDBX_async *async, MDBX_cursor *cursor, MDBX_async_op **op);
 
+/** \brief Asynchronously close a cursor with error reporting.
+ * \ingroup c_async
+ * \details Naming-compatible alias for \ref mdbx_async_cursor_close().
+ * \see mdbx_cursor_close2() */
+LIBMDBX_API int mdbx_async_cursor_close2(MDBX_async *async, MDBX_cursor *cursor, MDBX_async_op **op);
+
 /** \brief Asynchronously unbind or close all cursors of a transaction.
  * \ingroup c_async
  * \details The optional `count` output must remain valid until completion.
