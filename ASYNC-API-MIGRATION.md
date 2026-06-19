@@ -1053,3 +1053,26 @@ Additional cursor transaction observer checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.029, async-batch/blocking-parallel ratio 1.063, and async-cursor/blocking-parallel ratio 1.077
+
+Additional cache initialization checkpoint:
+
+- an exact-name audit of exported blocking functions against exported async
+  wrappers shows the remaining uncovered names are pure/global utility helpers
+  (`mdbx_limits_*`, key conversion helpers, `mdbx_strerror*`, comparators,
+  debug setup), platform aliases/macros, or special-case helpers such as
+  `mdbx_env_resurrect_after_fork()` and `mdbx_env_chk_encount_problem()`
+- added `mdbx_async_cache_init()` as the missing async counterpart for the
+  cache-entry initializer in the CRUD/cache family, so cache callers can
+  initialize entries through the same executor before using
+  `mdbx_async_cache_get()` or `mdbx_async_cache_get_SingleThreaded()`
+- smoke coverage now initializes a deliberately nonzero cache entry through
+  `mdbx_async_cache_init()` and verifies that the worker reset all fields before
+  issuing async cache reads
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 0.803, async-batch/blocking-parallel ratio 0.840, and async-cursor/blocking-parallel ratio 1.019

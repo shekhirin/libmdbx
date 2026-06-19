@@ -6253,6 +6253,12 @@ LIBMDBX_INLINE_API(void, mdbx_cache_init, (MDBX_cache_entry_t * entry)) {
   entry->last_confirmed_txnid = 0;
 }
 
+/** \brief Asynchronously initializes a cache entry before first use.
+ * \ingroup c_async
+ * \details The `entry` pointer must remain valid until completion.
+ * \see mdbx_cache_init() */
+LIBMDBX_API int mdbx_async_cache_init(MDBX_async *async, MDBX_cache_entry_t *entry, MDBX_async_op **op);
+
 /** \brief Cache entry status returned by \ref mdbx_cache_get().
  * \ingroup c_crud
  * \see MDBX_cache_entry

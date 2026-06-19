@@ -15066,6 +15066,7 @@ enum mdbx_async_opcode {
   async_op_get,
   async_op_get_ex,
   async_op_get_equal_or_great,
+  async_op_cache_init,
   async_op_cache_get,
   async_op_cache_get_singlethreaded,
   async_op_get_batch,
@@ -15435,6 +15436,9 @@ struct MDBX_async_op {
       MDBX_val *key;
       MDBX_val *data;
     } get_equal_or_great;
+    struct {
+      MDBX_cache_entry_t *entry;
+    } cache_init;
     struct {
       const MDBX_txn *txn;
       MDBX_dbi dbi;
@@ -16116,6 +16120,9 @@ static int async_op_execute(MDBX_async_op *op) {
     }
     return rc;
   }
+  case async_op_cache_init:
+    mdbx_cache_init(op->args.cache_init.entry);
+    return MDBX_SUCCESS;
   case async_op_cache_get:
   case async_op_cache_get_singlethreaded: {
     MDBX_val data = {nullptr, 0};
@@ -18305,6 +18312,22 @@ int mdbx_async_get_equal_or_great(MDBX_async *async, const MDBX_txn *txn, MDBX_d
   }
   if (unlikely(rc != MDBX_SUCCESS)) {
     async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_cache_init(MDBX_async *async, MDBX_cache_entry_t *entry, MDBX_async_op **out) {
+  if (unlikely(!entry))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cache_init);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cache_init.entry = entry;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;
     osal_free(op);
   }

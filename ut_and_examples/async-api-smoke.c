@@ -1079,8 +1079,12 @@ int main(void) {
   CHECK_OP(op);
   REQUIRE(value_comparison < 0, "unexpected async data comparison result");
 
-  MDBX_cache_entry_t cache_entry;
-  mdbx_cache_init(&cache_entry);
+  MDBX_cache_entry_t cache_entry = {1, 2, 3, 4};
+  CHECK(mdbx_async_cache_init(async, &cache_entry, &op));
+  CHECK_OP(op);
+  REQUIRE(cache_entry.trunk_txnid == 0 && cache_entry.last_confirmed_txnid == 0 &&
+              cache_entry.offset == 0 && cache_entry.length == 0,
+          "async cache init did not reset the cache entry");
   MDBX_cache_result_t cache_result = {MDBX_SUCCESS, MDBX_CACHE_ERROR};
   MDBX_val cache_data = val(NULL, 0);
   CHECK(mdbx_async_cache_get(async, txn, dbi, &key_values[4], &cache_data, &cache_entry, &cache_result, &op));
