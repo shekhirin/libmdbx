@@ -14622,6 +14622,26 @@ The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
 of `1.181` batch, `1.156` crud, `1.263` iterate, `0.958` get, and `1.068`
 delete.
 
+A later dirty-write cache-invalidation cleanup removed
+`dxb_iov_dirty_cache_invalidate_submit_io_t`,
+`iov_make_dirty_cache_invalidate_submit_io()`,
+`iov_dirty_cache_invalidate_submit_io_validate()`, `iov_data_write_io_equal()`,
+and `iov_cache_invalidate_io_equal()` from `mdbx.c`. The dirty-page completion
+callback now validates the queued data-write descriptor, builds and validates
+the cache-invalidate descriptor, builds and validates its submit descriptor,
+and submits the cache invalidation directly through storage while preserving
+the same data-channel, storage ownership, page-span, and reusable-entry checks.
+Verification passed `git diff --check`, a source scan proving the removed
+dirty-write cache-invalidation helpers are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.098`
+batch, `1.131` crud, `1.219` iterate, `0.938` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
