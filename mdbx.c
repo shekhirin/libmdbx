@@ -368,19 +368,6 @@ typedef struct dxb_cursor_validate_branch_child_submit_io {
   bool expect_leaf;
 } dxb_cursor_validate_branch_child_submit_io_t;
 
-typedef struct dxb_cursor_branch_child_push_submit_io {
-  MDBX_cursor *cursor;
-  page_t *parent;
-  page_ref_t parent_ref;
-  pgno_t child_pgno;
-  txnid_t front;
-  dxb_cursor_page_get_submit_io_t get;
-  intptr_t parent_top;
-  indx_t parent_ki;
-  indx_t child_ki;
-  bool child_ki_last;
-} dxb_cursor_branch_child_push_submit_io_t;
-
 typedef struct dxb_node_read_submit_io {
   MDBX_cursor *cursor;
   MDBX_val *data;
@@ -50791,16 +50778,17 @@ int tree_propagate_key(MDBX_cursor *mc, const MDBX_val *key) {
   return MDBX_SUCCESS;
 }
 
-static inline int cursor_make_branch_child_push_submit_io_ex(MDBX_cursor *mc, indx_t parent_ki, indx_t child_ki,
-                                                             bool child_ki_last,
-                                                             dxb_cursor_branch_child_push_submit_io_t *io) {
-  if (unlikely(!mc || !io || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE))
+static inline int cursor_branch_child_prepare_get(MDBX_cursor *mc, indx_t parent_ki,
+                                                  dxb_cursor_page_get_submit_io_t *get, intptr_t *parent_top) {
+  if (unlikely(!mc || !get || !parent_top || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE))
     return MDBX_EINVAL;
 
-  page_t *const parent = mc->pg[mc->top];
+  const intptr_t top = mc->top;
+  page_t *const parent = mc->pg[top];
   if (unlikely(!parent || !is_branch(parent)))
     return MDBX_EINVAL;
-  if (unlikely(mc->pgref[mc->top].page != nullptr && mc->pgref[mc->top].page != parent))
+  const page_ref_t parent_ref = mc->pgref[top];
+  if (unlikely(parent_ref.page != nullptr && parent_ref.page != parent))
     return MDBX_EINVAL;
   if (unlikely((size_t)parent_ki >= page_numkeys(parent)))
     return MDBX_EINVAL;
@@ -50809,87 +50797,29 @@ static inline int cursor_make_branch_child_push_submit_io_ex(MDBX_cursor *mc, in
   if (unlikely(node_flags(node) != 0))
     return MDBX_EINVAL;
 
-  dxb_cursor_page_get_submit_io_t get;
-  int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_LARGE, node_pgno(node), parent->txnid, &get);
+  int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_LARGE, node_pgno(node), parent->txnid, get);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-
-  io->cursor = mc;
-  io->parent = parent;
-  io->parent_ref = mc->pgref[mc->top];
-  io->child_pgno = get.get.request.pgno;
-  io->front = get.get.front;
-  io->get = get;
-  io->parent_top = mc->top;
-  io->parent_ki = parent_ki;
-  io->child_ki = child_ki;
-  io->child_ki_last = child_ki_last;
-  return MDBX_SUCCESS;
-}
-
-static inline int cursor_make_branch_child_push_submit_io(MDBX_cursor *mc, indx_t parent_ki, indx_t child_ki,
-                                                          dxb_cursor_branch_child_push_submit_io_t *io) {
-  return cursor_make_branch_child_push_submit_io_ex(mc, parent_ki, child_ki, false, io);
-}
-
-static inline int cursor_make_branch_child_edge_push_submit_io(MDBX_cursor *mc, indx_t parent_ki, bool last_child_ki,
-                                                               dxb_cursor_branch_child_push_submit_io_t *io) {
-  return cursor_make_branch_child_push_submit_io_ex(mc, parent_ki, 0, last_child_ki, io);
-}
-
-static inline int cursor_branch_child_push_submit_io_validate(const dxb_cursor_branch_child_push_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->parent || io->parent_top < 0 || io->parent_top >= CURSOR_STACK_SIZE))
+  if (unlikely(mc->top != top || mc->pg[top] != parent || !page_ref_equal(&mc->pgref[top], &parent_ref)))
     return MDBX_EINVAL;
 
-  MDBX_cursor *const mc = io->cursor;
-  if (unlikely(mc->top != io->parent_top || mc->pg[io->parent_top] != io->parent ||
-               !page_ref_equal(&mc->pgref[io->parent_top], &io->parent_ref)))
-    return MDBX_EINVAL;
-  if (unlikely(io->parent_ref.page != nullptr && io->parent_ref.page != io->parent))
-    return MDBX_EINVAL;
-  if (unlikely(!is_branch(io->parent) || (size_t)io->parent_ki >= page_numkeys(io->parent)))
-    return MDBX_EINVAL;
-
-  const node_t *const node = page_node(io->parent, io->parent_ki);
-  if (unlikely(node_flags(node) != 0 || node_pgno(node) != io->child_pgno || io->front != io->parent->txnid))
-    return MDBX_EINVAL;
-
-  dxb_cursor_branch_child_push_submit_io_t checked;
-  int err = cursor_make_branch_child_push_submit_io_ex(mc, io->parent_ki, io->child_ki, io->child_ki_last, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.parent != io->parent ||
-               checked.child_pgno != io->child_pgno || checked.front != io->front ||
-               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
-               checked.get.get.request.pgno != io->get.get.request.pgno ||
-               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
-               checked.get.get.request.npages != io->get.get.request.npages ||
-               checked.get.get.request.offset != io->get.get.request.offset ||
-               checked.get.get.request.bytes != io->get.get.request.bytes ||
-               checked.get.get.front != io->get.get.front ||
-               checked.get.get.track_private != io->get.get.track_private ||
-               checked.parent_top != io->parent_top || checked.parent_ki != io->parent_ki ||
-               checked.child_ki != io->child_ki || checked.child_ki_last != io->child_ki_last ||
-               !page_ref_equal(&checked.parent_ref, &io->parent_ref)))
-    return MDBX_EINVAL;
+  *parent_top = top;
   return MDBX_SUCCESS;
 }
 
 static inline int cursor_branch_child_push(MDBX_cursor *mc, indx_t parent_ki, indx_t child_ki) {
-  dxb_cursor_branch_child_push_submit_io_t submit;
-  int err = cursor_make_branch_child_push_submit_io(mc, parent_ki, child_ki, &submit);
+  dxb_cursor_page_get_submit_io_t get;
+  intptr_t parent_top;
+  int err = cursor_branch_child_prepare_get(mc, parent_ki, &get, &parent_top);
   cASSERT0(mc, err == MDBX_SUCCESS);
   if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_branch_child_push_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      pgr_t child = page_submit_cursor_get(&submit.get);
-      if (unlikely(child.err != MDBX_SUCCESS)) {
-        err = child.err;
-        pgr_release(submit.cursor, &child);
-      } else {
-        submit.cursor->ki[submit.parent_top] = submit.parent_ki;
-        err = cursor_push_pgr_consume(submit.cursor, &child, submit.child_ki);
-      }
+    pgr_t child = page_submit_cursor_get(&get);
+    if (unlikely(child.err != MDBX_SUCCESS)) {
+      err = child.err;
+      pgr_release(mc, &child);
+    } else {
+      mc->ki[parent_top] = parent_ki;
+      err = cursor_push_pgr_consume(mc, &child, child_ki);
     }
     cASSERT0(mc, err != MDBX_RESULT_TRUE);
   }
@@ -50897,31 +50827,29 @@ static inline int cursor_branch_child_push(MDBX_cursor *mc, indx_t parent_ki, in
 }
 
 static inline int cursor_branch_child_edge_push(MDBX_cursor *mc, indx_t parent_ki, bool last_child_ki) {
-  dxb_cursor_branch_child_push_submit_io_t submit;
-  int err = cursor_make_branch_child_edge_push_submit_io(mc, parent_ki, last_child_ki, &submit);
+  dxb_cursor_page_get_submit_io_t get;
+  intptr_t parent_top;
+  int err = cursor_branch_child_prepare_get(mc, parent_ki, &get, &parent_top);
   cASSERT0(mc, err == MDBX_SUCCESS);
   if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_branch_child_push_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      pgr_t child = page_submit_cursor_get(&submit.get);
-      if (unlikely(child.err != MDBX_SUCCESS)) {
-        err = child.err;
-        pgr_release(submit.cursor, &child);
-      } else {
-        submit.cursor->ki[submit.parent_top] = submit.parent_ki;
-        indx_t push_ki = submit.child_ki;
-        if (submit.child_ki_last) {
-          const size_t nkeys = page_numkeys(child.page);
-          cASSERT0(submit.cursor, nkeys > 0);
-          if (unlikely(nkeys == 0)) {
-            pgr_release(submit.cursor, &child);
-            err = MDBX_CORRUPTED;
-          } else
-            push_ki = (indx_t)(nkeys - 1);
-        }
-        if (likely(err == MDBX_SUCCESS))
-          err = cursor_push_pgr_consume(submit.cursor, &child, push_ki);
+    pgr_t child = page_submit_cursor_get(&get);
+    if (unlikely(child.err != MDBX_SUCCESS)) {
+      err = child.err;
+      pgr_release(mc, &child);
+    } else {
+      mc->ki[parent_top] = parent_ki;
+      indx_t push_ki = 0;
+      if (last_child_ki) {
+        const size_t nkeys = page_numkeys(child.page);
+        cASSERT0(mc, nkeys > 0);
+        if (unlikely(nkeys == 0)) {
+          pgr_release(mc, &child);
+          err = MDBX_CORRUPTED;
+        } else
+          push_ki = (indx_t)(nkeys - 1);
       }
+      if (likely(err == MDBX_SUCCESS))
+        err = cursor_push_pgr_consume(mc, &child, push_ki);
     }
     cASSERT0(mc, err != MDBX_RESULT_TRUE);
   }

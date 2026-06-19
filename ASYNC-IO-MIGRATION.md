@@ -13887,6 +13887,30 @@ the ASAN build (`cmake --build @cmake-asan-build`), and the six focused ASAN
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.143`
 batch, `1.161` crud, `0.800` iterate, `1.098` get, and `1.085` delete.
 
+A later branch-child descent descriptor cleanup removed
+`dxb_cursor_branch_child_push_submit_io_t`,
+`cursor_make_branch_child_push_submit_io_ex()`,
+`cursor_make_branch_child_push_submit_io()`,
+`cursor_make_branch_child_edge_push_submit_io()`, and
+`cursor_branch_child_push_submit_io_validate()` from `mdbx.c`.
+`cursor_branch_child_push()` and `cursor_branch_child_edge_push()` now use
+`cursor_branch_child_prepare_get()` to validate the current branch parent,
+snapshot the parent stack slot, build the existing checked cursor page-get
+request directly, and then hand the fetched child ref to
+`cursor_push_pgr_consume()`. This keeps B-tree descent pin ownership at the
+cursor stack mutation site while avoiding a descriptor layer around immediate
+local page-get submission. Verification passed `git diff --check`, a source
+scan proving the removed branch-child descriptor helpers are absent from
+`mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.129` batch, `1.143` crud, `1.016`
+iterate, `1.014` get, and `1.075` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
