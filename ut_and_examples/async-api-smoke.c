@@ -2233,6 +2233,23 @@ int main(void) {
     CHECK_OP(op);
     CHECK(expect_payload(&batch_data, cursor_batch_values[i], __FILE__, __LINE__));
   }
+  struct put_loop_probe cursor_put_loop_probe;
+  memset(&cursor_put_loop_probe, 0, sizeof(cursor_put_loop_probe));
+  const size_t cursor_put_loop_count = sizeof(cursor_put_loop_probe.keys) / sizeof(cursor_put_loop_probe.keys[0]);
+  for (size_t i = 0; i < cursor_put_loop_count; ++i)
+    cursor_put_loop_probe.keys[i] = ITEM_COUNT + 3 + i;
+  size_t cursor_put_loop_completed = 0;
+  CHECK(mdbx_async_cursor_put_loop(async, cursor, cursor_put_loop_count, put_loop_item_func, put_loop_result_func,
+                                   &cursor_put_loop_probe, &cursor_put_loop_completed, 0, &op));
+  CHECK_OP(op);
+  REQUIRE(cursor_put_loop_completed == cursor_put_loop_count, "unexpected async cursor put loop completion count");
+  REQUIRE(cursor_put_loop_probe.items == cursor_put_loop_count && cursor_put_loop_probe.results == cursor_put_loop_count,
+          "async cursor put loop callbacks did not cover all items");
+  MDBX_val cursor_put_loop_key = val(&cursor_put_loop_probe.keys[2], sizeof(cursor_put_loop_probe.keys[2]));
+  MDBX_val cursor_put_loop_data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, cursor, &cursor_put_loop_key, &cursor_put_loop_data, MDBX_SET_KEY, &op));
+  CHECK_OP(op);
+  CHECK(expect_payload(&cursor_put_loop_data, cursor_put_loop_probe.values[2], __FILE__, __LINE__));
   MDBX_val delete_key = key_values[0];
   MDBX_val delete_data = val(NULL, 0);
   CHECK(mdbx_async_cursor_get(async, cursor, &delete_key, &delete_data, MDBX_SET_KEY, &op));

@@ -15146,6 +15146,7 @@ enum mdbx_async_opcode {
   async_op_dcmp,
   async_op_cursor_put,
   async_op_cursor_put_batch,
+  async_op_cursor_put_loop,
   async_op_cursor_del,
   async_op_cursor_del_loop,
   async_op_cursor_delete_range,
@@ -15807,6 +15808,15 @@ struct MDBX_async_op {
       size_t count;
       MDBX_put_flags_t flags;
     } cursor_put_batch;
+    struct {
+      MDBX_cursor *cursor;
+      size_t count;
+      MDBX_put_loop_item_func item_func;
+      MDBX_put_loop_result_func result_func;
+      void *context;
+      size_t *completed;
+      MDBX_put_flags_t flags;
+    } cursor_put_loop;
     struct {
       MDBX_cursor *cursor;
       MDBX_put_flags_t flags;
@@ -16872,6 +16882,26 @@ static int async_op_execute(MDBX_async_op *op) {
       if (rc == MDBX_KEYEXIST)
         op->args.cursor_put_batch.data[i] = data;
       op->args.cursor_put_batch.results[i] = rc;
+    }
+    return MDBX_SUCCESS;
+  case async_op_cursor_put_loop:
+    if (op->args.cursor_put_loop.completed)
+      *op->args.cursor_put_loop.completed = 0;
+    for (size_t i = 0; i < op->args.cursor_put_loop.count; ++i) {
+      MDBX_val key = {nullptr, 0};
+      MDBX_val data = {nullptr, 0};
+      int rc = op->args.cursor_put_loop.item_func(op->args.cursor_put_loop.context, i, &key, &data);
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+      const int put_rc = mdbx_cursor_put(op->args.cursor_put_loop.cursor, &key, &data,
+                                         op->args.cursor_put_loop.flags);
+      rc = op->args.cursor_put_loop.result_func
+               ? op->args.cursor_put_loop.result_func(op->args.cursor_put_loop.context, i, &key, &data, put_rc)
+               : put_rc;
+      if (op->args.cursor_put_loop.completed)
+        *op->args.cursor_put_loop.completed = i + 1;
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
     }
     return MDBX_SUCCESS;
   case async_op_cursor_del:
@@ -20480,6 +20510,34 @@ int mdbx_async_cursor_put_batch(MDBX_async *async, MDBX_cursor *cursor, const MD
   op->args.cursor_put_batch.results = results;
   op->args.cursor_put_batch.count = count;
   op->args.cursor_put_batch.flags = flags;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_cursor_put_loop(MDBX_async *async, MDBX_cursor *cursor, size_t count,
+                               MDBX_put_loop_item_func item_func, MDBX_put_loop_result_func result_func,
+                               void *context, size_t *completed, MDBX_put_flags_t flags, MDBX_async_op **out) {
+  if (unlikely(!cursor || !count || !item_func))
+    return LOG_IFERR(MDBX_EINVAL);
+  if (unlikely(flags & (MDBX_RESERVE | MDBX_MULTIPLE)))
+    return LOG_IFERR(MDBX_EINVAL);
+  if (completed)
+    *completed = 0;
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_put_loop);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cursor_put_loop.cursor = cursor;
+  op->args.cursor_put_loop.count = count;
+  op->args.cursor_put_loop.item_func = item_func;
+  op->args.cursor_put_loop.result_func = result_func;
+  op->args.cursor_put_loop.context = context;
+  op->args.cursor_put_loop.completed = completed;
+  op->args.cursor_put_loop.flags = flags;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;

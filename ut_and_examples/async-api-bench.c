@@ -995,6 +995,61 @@ bailout:
   return (rc == MDBX_SUCCESS) ? rate : -1.0;
 }
 
+static double async_cursor_loop_put(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops) {
+  MDBX_async *async = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_cursor *cursor = NULL;
+  MDBX_async_op *op = NULL;
+  struct async_put_loop_check check;
+  int rc = MDBX_SUCCESS;
+  double rate = -1.0;
+
+  if (!ops)
+    return -1.0;
+  memset(&check, 0, sizeof(check));
+  check.items = items;
+  CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+
+  size_t completed = 0;
+  int operation_rc = MDBX_SUCCESS;
+  const uint64_t start = monotime_ns();
+  CHECK(mdbx_async_cursor_put_loop(async, cursor, ops, async_put_loop_item_func, async_put_loop_result_func,
+                                   &check, &completed, 0, &op));
+  CHECK(wait_success(&op, &operation_rc, __FILE__, __LINE__));
+  if (operation_rc != MDBX_SUCCESS) {
+    rc = fail_rc("mdbx_async_cursor_put_loop", operation_rc, __FILE__, __LINE__);
+    goto bailout;
+  }
+  if (completed != ops || check.checked != ops) {
+    rc = fail_msg("unexpected async cursor put loop completion count", __FILE__, __LINE__);
+    goto bailout;
+  }
+  CHECK(mdbx_async_cursor_close(async, cursor, &op));
+  cursor = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  txn = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  const uint64_t finish = monotime_ns();
+  if (finish > start)
+    rate = (double)ops * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  if (cursor)
+    mdbx_cursor_close(cursor);
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  if (async)
+    (void)mdbx_async_destroy(async, true);
+  return (rc == MDBX_SUCCESS) ? rate : -1.0;
+}
+
 static double blocking_delete(MDBX_env *env, MDBX_dbi dbi, size_t ops) {
   MDBX_txn *txn = NULL;
   int rc = mdbx_txn_begin(env, NULL, 0, &txn);
@@ -3775,6 +3830,8 @@ int main(void) {
   CHECK(seed_database(env, &dbi, items));
   const double async_cursor_put_batch = async_cursor_batch_put(env, dbi, items, write_ops, write_batch);
   CHECK(seed_database(env, &dbi, items));
+  const double async_cursor_put_loop = async_cursor_loop_put(env, dbi, items, write_ops);
+  CHECK(seed_database(env, &dbi, items));
   const double blocking_replace_rate = blocking_replace(env, dbi, replace_ops);
   CHECK(seed_database(env, &dbi, items));
   const double async_replace_rate = async_window_replace(env, dbi, replace_ops, window);
@@ -3848,6 +3905,7 @@ int main(void) {
   print_rate("blocking cursor put", blocking_cursor_put);
   print_rate("async cursor put", async_cursor_put);
   print_rate("async cursor batch put", async_cursor_put_batch);
+  print_rate("async cursor loop put", async_cursor_put_loop);
   print_rate("blocking replace", blocking_replace_rate);
   print_rate("async replace", async_replace_rate);
   print_rate("async batch replace", async_replace_batch_rate);
@@ -3970,8 +4028,14 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-put-loop/batch", async_put_loop / async_put_batch);
   if (blocking_cursor_put > 0.0 && async_cursor_put_batch > 0.0)
     printf("%-28s %8.3f\n", "async-cursor-put-batch/block", async_cursor_put_batch / blocking_cursor_put);
+  if (blocking_cursor_put > 0.0 && async_cursor_put_loop > 0.0)
+    printf("%-28s %8.3f\n", "async-cursor-put-loop/block", async_cursor_put_loop / blocking_cursor_put);
   if (async_cursor_put > 0.0 && async_cursor_put_batch > 0.0)
     printf("%-28s %8.3f\n", "async-cursor-put-batch/async", async_cursor_put_batch / async_cursor_put);
+  if (async_cursor_put > 0.0 && async_cursor_put_loop > 0.0)
+    printf("%-28s %8.3f\n", "async-cursor-put-loop/async", async_cursor_put_loop / async_cursor_put);
+  if (async_cursor_put_batch > 0.0 && async_cursor_put_loop > 0.0)
+    printf("%-28s %8.3f\n", "async-cursor-put-loop/batch", async_cursor_put_loop / async_cursor_put_batch);
   if (blocking_replace_rate > 0.0 && async_replace_rate > 0.0)
     printf("%-28s %8.3f\n", "async-replace/blocking", async_replace_rate / blocking_replace_rate);
   if (blocking_replace_rate > 0.0 && async_replace_batch_rate > 0.0)

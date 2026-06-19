@@ -5941,6 +5941,26 @@ LIBMDBX_API int mdbx_async_cursor_put_batch(MDBX_async *async, MDBX_cursor *curs
                                             int results[], size_t count, MDBX_put_flags_t flags,
                                             MDBX_async_op **op);
 
+/** \brief Asynchronously run a worker-side loop of cursor put operations.
+ * \ingroup c_async
+ * \details This submits one async operation that invokes `item_func` for each
+ *          index, calls \ref mdbx_cursor_put(), and then invokes `result_func`
+ *          when it is non-NULL. If no result callback is supplied, the first
+ *          non-success \ref mdbx_cursor_put() result stops the loop and
+ *          becomes the async operation result. If `completed` is non-NULL, it
+ *          receives the number of put attempts completed before the operation
+ *          returned. The wrapper rejects \ref MDBX_RESERVE and
+ *          \ref MDBX_MULTIPLE because those modes require caller-managed
+ *          in-place memory.
+ * \see mdbx_cursor_put()
+ * \see MDBX_put_loop_item_func
+ * \see MDBX_put_loop_result_func */
+LIBMDBX_API int mdbx_async_cursor_put_loop(MDBX_async *async, MDBX_cursor *cursor, size_t count,
+                                           MDBX_put_loop_item_func item_func,
+                                           MDBX_put_loop_result_func result_func, void *context,
+                                           size_t *completed, MDBX_put_flags_t flags,
+                                           MDBX_async_op **op);
+
 /** \brief Asynchronously delete the current item through a cursor.
  * \ingroup c_async
  * \see mdbx_cursor_del() */

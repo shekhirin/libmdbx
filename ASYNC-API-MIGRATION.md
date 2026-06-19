@@ -3418,3 +3418,42 @@ Additional async replace-delete-loop API checkpoint:
   delete-with-old-value extraction. In this reduced run the delete-with-old loop
   beats the blocking sample and materially improves on per-item async
   submission, while staying roughly tied with the batch form.
+
+Additional async cursor-put-loop API checkpoint:
+
+- added `mdbx_async_cursor_put_loop()` as an async-only worker-side loop helper
+  for repeated `mdbx_cursor_put()` calls through one cursor. The blocking API is
+  unchanged.
+- reused the existing put-loop callback signatures so callers can generate each
+  key/data pair on the executor worker thread, observe each result, and receive
+  an optional completed count.
+- the API rejects `MDBX_RESERVE` and `MDBX_MULTIPLE`, matching the existing
+  async cursor-put wrappers' in-place memory constraints.
+- extended `ut_and_examples/async-api-smoke.c` to write four entries through a
+  write cursor with `mdbx_async_cursor_put_loop()`, verify callback counts, and
+  read one inserted value back through the same cursor.
+- extended `ut_and_examples/async-api-bench.c` with async cursor-put-loop timing
+  beside blocking cursor put, per-item async cursor put, and async cursor-put
+  batch.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking cursor put 4.127 Mops/s,
+  async cursor put 2.367 Mops/s, async cursor batch put 3.930 Mops/s, and async
+  cursor loop put 3.812 Mops/s. Ratios were async-cursor-put-batch/block
+  0.952, async-cursor-put-loop/block 0.924, async-cursor-put-batch/async
+  1.660, async-cursor-put-loop/async 1.611, and
+  async-cursor-put-loop/batch 0.970.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=187 async-covered=132 async-only=55 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: cursor put now has per-item, batch, and worker-loop async shapes.
+  In this reduced run the loop removes most per-item async overhead but remains
+  slightly behind the existing batch form and below the blocking cursor-put
+  sample, so the remaining cursor-put gap appears to be path/backend efficiency
+  rather than API submission granularity alone.
