@@ -15546,6 +15546,22 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.118` batch, `1.160` crud, `0.859` iterate, `0.847`
 get, and `1.062` delete.
 
+A later env-delete lock checkpoint added `osal_ioring_lockfile()` and routed the
+DXB/LCK delete-probe whole-file locks through that wrapper. POSIX still executes
+the byte-range lock with `fcntl()` because there is no `io_uring` lock opcode,
+and Windows falls back to the existing `osal_lockfile()` implementation, but
+env-delete locking now crosses the same OSAL I/O boundary as the adjacent
+delete-probe open, remove, directory-remove, and close operations. Verification
+passed `git diff --check`, the Ninja build (`cmake --build @cmake-ninja-build`),
+normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed
+9/9, the ASAN build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.100` batch, `1.159` crud, `0.832` iterate, `0.991`
+get, and `1.081` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

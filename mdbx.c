@@ -10814,9 +10814,9 @@ __cold int mdbx_env_deleteW(const wchar_t *pathname, MDBX_env_delete_mode_t mode
         err = (err == MDBX_ENOFILE) ? MDBX_SUCCESS : err;
       }
       if (err == MDBX_SUCCESS && clk_handle != INVALID_HANDLE_VALUE)
-        err = osal_lockfile(clk_handle, mode == MDBX_ENV_WAIT_FOR_UNUSED);
+        err = osal_ioring_lockfile(&dummy_env->dxb_storage.ioring, clk_handle, mode == MDBX_ENV_WAIT_FOR_UNUSED);
       if (err == MDBX_SUCCESS && dxb_handle != INVALID_HANDLE_VALUE)
-        err = osal_lockfile(dxb_handle, mode == MDBX_ENV_WAIT_FOR_UNUSED);
+        err = osal_ioring_lockfile(&dummy_env->dxb_storage.ioring, dxb_handle, mode == MDBX_ENV_WAIT_FOR_UNUSED);
     }
 
     if (err == MDBX_SUCCESS) {
@@ -32348,12 +32348,20 @@ static inline dxb_lock_result_t dxb_storage_submit_setlk_with3retries_request(co
   return dxb_storage_submit_setlk_with3retries(storage, &submit);
 }
 
-int osal_lockfile(mdbx_filehandle_t fd, bool wait) {
+MDBX_MAYBE_UNUSED int osal_lockfile(mdbx_filehandle_t fd, bool wait) {
 #if MDBX_USE_OFDLOCKS
   if (unlikely(op_setlk == 0))
     choice_fcntl();
 #endif /* MDBX_USE_OFDLOCKS */
   return lck_op(fd, wait ? op_setlkw : op_setlk, F_WRLCK, 0, OFF_T_MAX);
+}
+
+int osal_ioring_lockfile(osal_ioring_t *ior, mdbx_filehandle_t fd, bool wait) {
+#if MDBX_USE_OFDLOCKS
+  if (unlikely(op_setlk == 0))
+    choice_fcntl();
+#endif /* MDBX_USE_OFDLOCKS */
+  return osal_ioring_lock_op(ior, fd, wait ? op_setlkw : op_setlk, F_WRLCK, 0, OFF_T_MAX);
 }
 
 int lck_rpid_set(MDBX_env *env) {
@@ -33298,8 +33306,13 @@ void lck_rdt_unlock(MDBX_env *env) {
   imports.srwl_ReleaseShared(&env->remap_lock);
 }
 
-int osal_lockfile(mdbx_filehandle_t fd, bool wait) {
+MDBX_MAYBE_UNUSED int osal_lockfile(mdbx_filehandle_t fd, bool wait) {
   return flock_ex(fd, 0, wait ? LCK_EXCLUSIVE | LCK_WAITFOR : LCK_EXCLUSIVE | LCK_DONTWAIT, 0, DXB_MAXLEN, 0);
+}
+
+int osal_ioring_lockfile(osal_ioring_t *ior, mdbx_filehandle_t fd, bool wait) {
+  (void)ior;
+  return osal_lockfile(fd, wait);
 }
 
 static int suspend_and_append(mdbx_handle_array_t **array, const DWORD ThreadId) {
