@@ -14144,6 +14144,28 @@ the ASAN build (`cmake --build @cmake-asan-build`), and the six focused ASAN
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.119`
 batch, `1.132` crud, `0.970` iterate, `0.981` get, and `1.068` delete.
 
+A later page-kill write descriptor cleanup removed
+`dxb_page_kill_write_submit_io_t`, `dxb_page_kill_writev_submit_io_t`,
+`page_kill_make_write_submit_io()`, `page_kill_make_writev_submit_io()`,
+`page_kill_write_submit_io_validate()`, and
+`page_kill_writev_submit_io_validate()` from `mdbx.c`. The debug page-kill
+paths now build `dxb_data_write_io_t` plus the existing storage
+`dxb_write_submit_io_t`/`dxb_writev_submit_io_t` directly at the scalar and
+vector kill write sites, validate those storage descriptors, and submit through
+`dxb_storage_submit_write_data()`/`dxb_storage_submit_writev_data()`. This
+keeps the async-facing request boundary at storage write/writev descriptors
+without a page-kill-local mirror descriptor. Verification passed `git diff
+--check`, a source scan proving the removed page-kill write descriptor helpers
+are absent from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite including API
+checks and tool roundtrips, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.135` batch, `1.139` crud, `1.186`
+iterate, `0.958` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -44657,212 +44657,19 @@ void page_shadow_release(MDBX_env *env, page_t *dp, size_t npages) {
   }
 }
 
-typedef struct dxb_page_kill_write_submit_io {
-  dxb_storage_t *storage;
-  dxb_page_io_t pages;
-  dxb_data_write_io_t write_pages;
-  dxb_write_submit_io_t write;
-  const void *buffer;
-} dxb_page_kill_write_submit_io_t;
-
-typedef struct dxb_page_kill_writev_submit_io {
-  dxb_storage_t *storage;
-  dxb_page_io_t pages;
-  dxb_data_write_io_t write_pages;
-  dxb_writev_submit_io_t writev;
-  struct iovec *iov;
-  size_t sgvcnt;
-} dxb_page_kill_writev_submit_io_t;
-
-static inline int page_kill_make_write_submit_io(dxb_storage_t *storage, const dxb_page_io_t *pages,
-                                                 const void *buffer, dxb_page_kill_write_submit_io_t *io) {
-  if (unlikely(!storage || !pages || !buffer || !io))
-    return MDBX_EINVAL;
-  if (unlikely(pages->pgno < NUM_METAS || pages->npages == 0))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_page_io_validate(storage, pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_data_write_io_t write_pages;
-  rc = dxb_storage_make_data_write_io_from_page(storage, pages, &write_pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_write_submit_io_t write;
-  rc = dxb_storage_make_write_submit_io(storage, &write_pages, buffer, &write);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->storage = storage;
-  io->pages = *pages;
-  io->write_pages = write_pages;
-  io->write = write;
-  io->buffer = buffer;
-  return MDBX_SUCCESS;
-}
-
-static inline int page_kill_write_submit_io_validate(const dxb_page_kill_write_submit_io_t *io) {
-  if (unlikely(!io || !io->storage || !io->buffer || !io->write.buffer))
-    return MDBX_EINVAL;
-  if (unlikely(io->pages.pgno < NUM_METAS || io->pages.npages == 0 || io->write.buffer != io->buffer))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_page_io_validate(io->storage, &io->pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_data_write_io_validate(io->storage, &io->write_pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_write_submit_io_validate(io->storage, &io->write);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io->write_pages.pages.pgno != io->pages.pgno ||
-               io->write_pages.pages.end_pgno != io->pages.end_pgno ||
-               io->write_pages.pages.npages != io->pages.npages ||
-               io->write_pages.pages.offset != io->pages.offset ||
-               io->write_pages.pages.bytes != io->pages.bytes ||
-               io->write_pages.bytes.offset != io->pages.offset ||
-               io->write_pages.bytes.bytes != io->pages.bytes ||
-               io->write.data.pages.pgno != io->write_pages.pages.pgno ||
-               io->write.data.pages.end_pgno != io->write_pages.pages.end_pgno ||
-               io->write.data.pages.npages != io->write_pages.pages.npages ||
-               io->write.data.pages.offset != io->write_pages.pages.offset ||
-               io->write.data.pages.bytes != io->write_pages.pages.bytes ||
-               io->write.data.bytes.offset != io->write_pages.bytes.offset ||
-               io->write.data.bytes.bytes != io->write_pages.bytes.bytes))
-    return MDBX_EINVAL;
-
-  dxb_page_kill_write_submit_io_t checked;
-  rc = page_kill_make_write_submit_io(io->storage, &io->pages, io->buffer, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.storage != io->storage || checked.buffer != io->buffer ||
-               checked.pages.pgno != io->pages.pgno ||
-               checked.pages.end_pgno != io->pages.end_pgno ||
-               checked.pages.npages != io->pages.npages ||
-               checked.pages.offset != io->pages.offset ||
-               checked.pages.bytes != io->pages.bytes ||
-               checked.write_pages.pages.pgno != io->write_pages.pages.pgno ||
-               checked.write_pages.pages.end_pgno != io->write_pages.pages.end_pgno ||
-               checked.write_pages.pages.npages != io->write_pages.pages.npages ||
-               checked.write_pages.pages.offset != io->write_pages.pages.offset ||
-               checked.write_pages.pages.bytes != io->write_pages.pages.bytes ||
-               checked.write_pages.bytes.offset != io->write_pages.bytes.offset ||
-               checked.write_pages.bytes.bytes != io->write_pages.bytes.bytes ||
-               checked.write.data.pages.pgno != io->write.data.pages.pgno ||
-               checked.write.data.pages.end_pgno != io->write.data.pages.end_pgno ||
-               checked.write.data.pages.npages != io->write.data.pages.npages ||
-               checked.write.data.pages.offset != io->write.data.pages.offset ||
-               checked.write.data.pages.bytes != io->write.data.pages.bytes ||
-               checked.write.data.bytes.offset != io->write.data.bytes.offset ||
-               checked.write.data.bytes.bytes != io->write.data.bytes.bytes ||
-               checked.write.buffer != io->write.buffer))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline int page_kill_make_writev_submit_io(dxb_storage_t *storage, const dxb_page_io_t *pages,
-                                                  struct iovec *iov, size_t sgvcnt,
-                                                  dxb_page_kill_writev_submit_io_t *io) {
-  if (unlikely(!storage || !pages || !iov || !sgvcnt || !io))
-    return MDBX_EINVAL;
-  if (unlikely(pages->pgno < NUM_METAS || pages->npages == 0 || pages->npages != sgvcnt))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_page_io_validate(storage, pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_data_write_io_t write_pages;
-  rc = dxb_storage_make_data_write_io_from_page(storage, pages, &write_pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_writev_submit_io_t writev;
-  rc = dxb_storage_make_writev_submit_io(storage, &write_pages, iov, sgvcnt, &writev);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->storage = storage;
-  io->pages = *pages;
-  io->write_pages = write_pages;
-  io->writev = writev;
-  io->iov = iov;
-  io->sgvcnt = sgvcnt;
-  return MDBX_SUCCESS;
-}
-
-static inline int page_kill_writev_submit_io_validate(const dxb_page_kill_writev_submit_io_t *io) {
-  if (unlikely(!io || !io->storage || !io->iov || !io->writev.iov || io->sgvcnt == 0))
-    return MDBX_EINVAL;
-  if (unlikely(io->pages.pgno < NUM_METAS || io->pages.npages == 0 ||
-               io->pages.npages != io->sgvcnt || io->writev.iov != io->iov ||
-               io->writev.sgvcnt != io->sgvcnt))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_page_io_validate(io->storage, &io->pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_data_write_io_validate(io->storage, &io->write_pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_writev_submit_io_validate(io->storage, &io->writev);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io->write_pages.pages.pgno != io->pages.pgno ||
-               io->write_pages.pages.end_pgno != io->pages.end_pgno ||
-               io->write_pages.pages.npages != io->pages.npages ||
-               io->write_pages.pages.offset != io->pages.offset ||
-               io->write_pages.pages.bytes != io->pages.bytes ||
-               io->write_pages.bytes.offset != io->pages.offset ||
-               io->write_pages.bytes.bytes != io->pages.bytes ||
-               io->writev.data.pages.pgno != io->write_pages.pages.pgno ||
-               io->writev.data.pages.end_pgno != io->write_pages.pages.end_pgno ||
-               io->writev.data.pages.npages != io->write_pages.pages.npages ||
-               io->writev.data.pages.offset != io->write_pages.pages.offset ||
-               io->writev.data.pages.bytes != io->write_pages.pages.bytes ||
-               io->writev.data.bytes.offset != io->write_pages.bytes.offset ||
-               io->writev.data.bytes.bytes != io->write_pages.bytes.bytes))
-    return MDBX_EINVAL;
-
-  dxb_page_kill_writev_submit_io_t checked;
-  rc = page_kill_make_writev_submit_io(io->storage, &io->pages, io->iov, io->sgvcnt, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.storage != io->storage || checked.iov != io->iov ||
-               checked.sgvcnt != io->sgvcnt ||
-               checked.pages.pgno != io->pages.pgno ||
-               checked.pages.end_pgno != io->pages.end_pgno ||
-               checked.pages.npages != io->pages.npages ||
-               checked.pages.offset != io->pages.offset ||
-               checked.pages.bytes != io->pages.bytes ||
-               checked.write_pages.pages.pgno != io->write_pages.pages.pgno ||
-               checked.write_pages.pages.end_pgno != io->write_pages.pages.end_pgno ||
-               checked.write_pages.pages.npages != io->write_pages.pages.npages ||
-               checked.write_pages.pages.offset != io->write_pages.pages.offset ||
-               checked.write_pages.pages.bytes != io->write_pages.pages.bytes ||
-               checked.write_pages.bytes.offset != io->write_pages.bytes.offset ||
-               checked.write_pages.bytes.bytes != io->write_pages.bytes.bytes ||
-               checked.writev.data.pages.pgno != io->writev.data.pages.pgno ||
-               checked.writev.data.pages.end_pgno != io->writev.data.pages.end_pgno ||
-               checked.writev.data.pages.npages != io->writev.data.pages.npages ||
-               checked.writev.data.pages.offset != io->writev.data.pages.offset ||
-               checked.writev.data.pages.bytes != io->writev.data.pages.bytes ||
-               checked.writev.data.bytes.offset != io->writev.data.bytes.offset ||
-               checked.writev.data.bytes.bytes != io->writev.data.bytes.bytes ||
-               checked.writev.iov != io->writev.iov || checked.writev.sgvcnt != io->writev.sgvcnt))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 static void page_kill_writev(dxb_storage_t *storage, pgno_t *pgno, struct iovec *iov, size_t n) {
   if (unlikely(n == 0))
     return;
 
   dxb_page_io_t killed_pages;
   if (likely(dxb_storage_page_io(storage, *pgno, n, &killed_pages) == MDBX_SUCCESS)) {
-    dxb_page_kill_writev_submit_io_t killed_submit;
-    if (likely(page_kill_make_writev_submit_io(storage, &killed_pages, iov, n, &killed_submit) == MDBX_SUCCESS &&
-               page_kill_writev_submit_io_validate(&killed_submit) == MDBX_SUCCESS))
-      (void)dxb_storage_submit_writev_data(killed_submit.storage, &killed_submit.writev);
+    dxb_data_write_io_t write_pages;
+    dxb_writev_submit_io_t writev;
+    if (likely(killed_pages.pgno >= NUM_METAS && killed_pages.npages == n &&
+               dxb_storage_make_data_write_io_from_page(storage, &killed_pages, &write_pages) == MDBX_SUCCESS &&
+               dxb_storage_make_writev_submit_io(storage, &write_pages, iov, n, &writev) == MDBX_SUCCESS &&
+               dxb_storage_writev_submit_io_validate(storage, &writev) == MDBX_SUCCESS))
+      (void)dxb_storage_submit_writev_data(storage, &writev);
     *pgno = killed_pages.end_pgno;
   }
 }
@@ -44877,10 +44684,13 @@ __cold static void page_kill(MDBX_txn *txn, page_t *mp, pgno_t pgno, size_t npag
     if (likely(dxb_storage_page_io(storage, pgno, npages, &killed_pages) == MDBX_SUCCESS)) {
       memset(mp, -1, killed_pages.bytes);
       mp->pgno = pgno;
-      dxb_page_kill_write_submit_io_t killed_submit;
-      if (likely(page_kill_make_write_submit_io(storage, &killed_pages, mp, &killed_submit) == MDBX_SUCCESS &&
-                 page_kill_write_submit_io_validate(&killed_submit) == MDBX_SUCCESS))
-        (void)dxb_storage_submit_write_data(killed_submit.storage, &killed_submit.write);
+      dxb_data_write_io_t write_pages;
+      dxb_write_submit_io_t write;
+      if (likely(killed_pages.pgno >= NUM_METAS && killed_pages.npages != 0 &&
+                 dxb_storage_make_data_write_io_from_page(storage, &killed_pages, &write_pages) == MDBX_SUCCESS &&
+                 dxb_storage_make_write_submit_io(storage, &write_pages, mp, &write) == MDBX_SUCCESS &&
+                 dxb_storage_write_submit_io_validate(storage, &write) == MDBX_SUCCESS))
+        (void)dxb_storage_submit_write_data(storage, &write);
     }
   } else {
     dxb_page_io_t aux_page;
