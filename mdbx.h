@@ -4648,6 +4648,15 @@ typedef int (*MDBX_async_func)(MDBX_env *env, void *context);
  *          batch loop and becomes the async operation result. */
 typedef int (*MDBX_cursor_batch_func)(void *context, const MDBX_val *pairs, size_t count) MDBX_CXX17_NOEXCEPT;
 
+/** \brief Callback for items fetched by \ref mdbx_async_cursor_get_loop().
+ * \ingroup c_async
+ * \details The callback runs on the executor worker thread. The key/value
+ *          descriptors remain valid only until the callback returns or the
+ *          cursor moves again. Returning a non-zero error stops the loop and
+ *          becomes the async operation result. */
+typedef int (*MDBX_cursor_get_loop_func)(void *context, size_t index, const MDBX_val *key,
+                                         const MDBX_val *data) MDBX_CXX17_NOEXCEPT;
+
 /** \brief Create an asynchronous executor bound to an open environment.
  * \ingroup c_async
  *
@@ -5751,6 +5760,26 @@ LIBMDBX_API int mdbx_async_cursor_renew(MDBX_async *async, MDBX_txn *txn, MDBX_c
  * \see mdbx_cursor_get() */
 LIBMDBX_API int mdbx_async_cursor_get(MDBX_async *async, MDBX_cursor *cursor, MDBX_val *key, MDBX_val *data,
                                       MDBX_cursor_op cursor_op, MDBX_async_op **op);
+
+/** \brief Asynchronously get several items through a cursor in one worker-side loop.
+ * \ingroup c_async
+ * \details The operation runs on the async executor worker thread and calls
+ *          \ref mdbx_cursor_get() up to `count` times, using `start_op` for the
+ *          first fetch and `turn_op` for subsequent fetches. If end-of-data is
+ *          reached before `count` items, the operation result is
+ *          \ref MDBX_RESULT_TRUE and `completed`, when non-NULL, contains the
+ *          number of successfully consumed items.
+ *
+ *          `func`, when non-NULL, is called for each successfully fetched item.
+ *          Returned key/value descriptors are database-owned cursor results and
+ *          must not be retained after the callback returns unless the caller
+ *          preserves them.
+ *
+ * \see mdbx_cursor_get() */
+LIBMDBX_API int mdbx_async_cursor_get_loop(MDBX_async *async, MDBX_cursor *cursor, size_t count,
+                                           MDBX_cursor_op start_op, MDBX_cursor_op turn_op,
+                                           MDBX_cursor_get_loop_func func, void *context, size_t *completed,
+                                           MDBX_async_op **op);
 
 /** \brief Asynchronously get multiple key/value pairs through a cursor.
  * \ingroup c_async

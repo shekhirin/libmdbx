@@ -3558,3 +3558,57 @@ Additional direct cursor-get benchmark checkpoint:
   or `mdbx_async_cursor_get_batches()` today; any future work on direct
   `mdbx_async_cursor_get()` needs to attack per-operation executor round trips
   or add a cursor-specific streaming helper.
+
+Additional async cursor-get-loop API checkpoint:
+
+- added `mdbx_async_cursor_get_loop()` plus `MDBX_cursor_get_loop_func` as an
+  async-only cursor iteration helper. It submits one operation that runs
+  repeated `mdbx_cursor_get()` calls on the executor worker thread, using a
+  caller-provided `start_op` for the first fetch and `turn_op` for subsequent
+  fetches.
+- the helper reports the number of completed cursor movements through an
+  optional `completed` output and invokes an optional worker-thread callback for
+  each fetched key/value pair. Returned descriptors keep the usual cursor-owned
+  lifetime and must be consumed or copied before the callback returns or the
+  cursor advances.
+- smoke coverage verifies full-table cursor get-loop traversal and callback
+  counts. Benchmark coverage adds `async cursor get loop`,
+  `async-cursor-get-loop/par`, `async-cursor-get-loop/ser`,
+  `async-cursor-get-loop/get`, and `async-get-loop/batch`.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking cursor get
+  88.319 Mops/s, parallel cursor get 65.590 Mops/s, async cursor get
+  1.328 Mops/s, async cursor get loop 62.610 Mops/s, blocking cursor batch
+  218.360 Mops/s, parallel cursor batch 60.267 Mops/s, async cursor batch
+  79.771 Mops/s, and async cursor loop 90.443 Mops/s. Ratios were
+  async-cursor-get/par 0.020, async-cursor-get-loop/par 0.955,
+  async-cursor-get-loop/ser 0.709, async-cursor-get-loop/get 47.143,
+  async-cursor-batch/get 60.064, and async-get-loop/batch 0.785.
+- direct before/after against the prior cursor-get checkpoint: blocking cursor
+  get stayed effectively flat at 88.306 -> 88.319 Mops/s, parallel cursor get
+  moved 62.370 -> 65.590 Mops/s, direct async cursor get moved 873.150 Kops/s
+  -> 1.328 Mops/s, async cursor batch moved 80.689 -> 79.771 Mops/s, and async
+  cursor loop moved 93.779 -> 90.443 Mops/s. The new cursor get-loop path was
+  62.610 Mops/s, roughly matching the prior blocking parallel cursor-get run
+  and 71.7x the prior direct async cursor-get number.
+- compared with the pre-async ioarena baseline at the top of this log, this
+  checkpoint is not an apples-to-apples storage-backend comparison: the original
+  baseline measures ioarena phases, while `mdbx_async_api_bench` measures public
+  async API overhead on a seeded in-process workload. The result does show that
+  the poor direct async cursor-get number was primarily submission granularity,
+  not cursor traversal throughput.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=188 async-covered=132 async-only=56 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the new cursor get-loop helper gives cursor-heavy async callers a
+  public worker-side streaming shape that reaches blocking-parallel cursor-get
+  territory in the reduced benchmark without changing the existing blocking API.
+  Direct one-operation-per-cursor-move async cursor get remains useful for API
+  completeness but is the wrong performance shape for dense iteration.

@@ -15124,6 +15124,7 @@ enum mdbx_async_opcode {
   async_op_cursor_reset,
   async_op_cursor_renew,
   async_op_cursor_get,
+  async_op_cursor_get_loop,
   async_op_cursor_scan,
   async_op_cursor_scan_from,
   async_op_cursor_get_batch,
@@ -15685,6 +15686,15 @@ struct MDBX_async_op {
     } cursor_get;
     struct {
       MDBX_cursor *cursor;
+      size_t count;
+      MDBX_cursor_op start_op;
+      MDBX_cursor_op turn_op;
+      MDBX_cursor_get_loop_func func;
+      void *context;
+      size_t *completed;
+    } cursor_get_loop;
+    struct {
+      MDBX_cursor *cursor;
       MDBX_predicate_func predicate;
       void *context;
       MDBX_cursor_op start_op;
@@ -16097,6 +16107,33 @@ static int async_cursor_get_batches_execute(MDBX_async_op *op) {
 
   osal_free(pairs);
   return rc;
+}
+
+static int async_cursor_get_loop_execute(MDBX_async_op *op) {
+  const size_t count = op->args.cursor_get_loop.count;
+  size_t *const completed = op->args.cursor_get_loop.completed;
+  if (completed)
+    *completed = 0;
+
+  for (size_t i = 0; i < count; ++i) {
+    MDBX_val key = {nullptr, 0};
+    MDBX_val data = {nullptr, 0};
+    const MDBX_cursor_op cursor_op = i ? op->args.cursor_get_loop.turn_op : op->args.cursor_get_loop.start_op;
+    int rc = mdbx_cursor_get(op->args.cursor_get_loop.cursor, &key, &data, cursor_op);
+    if (unlikely(rc == MDBX_NOTFOUND))
+      return MDBX_RESULT_TRUE;
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+    if (op->args.cursor_get_loop.func) {
+      rc = op->args.cursor_get_loop.func(op->args.cursor_get_loop.context, i, &key, &data);
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+    }
+    if (completed)
+      *completed = i + 1;
+  }
+
+  return MDBX_SUCCESS;
 }
 
 static int async_op_execute(MDBX_async_op *op) {
@@ -16766,6 +16803,8 @@ static int async_op_execute(MDBX_async_op *op) {
     *op->args.cursor_get.data = data;
     return rc;
   }
+  case async_op_cursor_get_loop:
+    return async_cursor_get_loop_execute(op);
   case async_op_cursor_scan:
     return mdbx_cursor_scan(op->args.cursor_scan.cursor, op->args.cursor_scan.predicate,
                             op->args.cursor_scan.context, op->args.cursor_scan.start_op,
@@ -19980,6 +20019,33 @@ int mdbx_async_cursor_get(MDBX_async *async, MDBX_cursor *cursor, MDBX_val *key,
     osal_free(op);
   }
   return rc;
+}
+
+int mdbx_async_cursor_get_loop(MDBX_async *async, MDBX_cursor *cursor, size_t count,
+                               MDBX_cursor_op start_op, MDBX_cursor_op turn_op,
+                               MDBX_cursor_get_loop_func func, void *context, size_t *completed,
+                               MDBX_async_op **out) {
+  if (unlikely(!cursor || !count))
+    return LOG_IFERR(MDBX_EINVAL);
+  if (completed)
+    *completed = 0;
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_get_loop);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cursor_get_loop.cursor = cursor;
+  op->args.cursor_get_loop.count = count;
+  op->args.cursor_get_loop.start_op = start_op;
+  op->args.cursor_get_loop.turn_op = turn_op;
+  op->args.cursor_get_loop.func = func;
+  op->args.cursor_get_loop.context = context;
+  op->args.cursor_get_loop.completed = completed;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
 }
 
 int mdbx_async_cursor_scan(MDBX_async *async, MDBX_cursor *cursor, MDBX_predicate_func predicate, void *context,

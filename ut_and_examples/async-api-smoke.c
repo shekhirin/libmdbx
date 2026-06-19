@@ -48,6 +48,10 @@ struct batch_probe {
   size_t pairs;
 };
 
+struct cursor_get_loop_probe {
+  unsigned calls;
+};
+
 struct get_batch_probe {
   unsigned calls;
   size_t successes;
@@ -302,6 +306,22 @@ static int batch_probe_func(void *context, const MDBX_val *pairs, size_t count) 
   }
   probe->calls += 1;
   probe->pairs += count / 2;
+  return MDBX_SUCCESS;
+}
+
+static int cursor_get_loop_probe_func(void *context, size_t index, const MDBX_val *key,
+                                      const MDBX_val *data) {
+  (void)index;
+  struct cursor_get_loop_probe *const probe = (struct cursor_get_loop_probe *)context;
+  if (!probe || !key || !data || key->iov_len != sizeof(uint64_t) || data->iov_len != sizeof(uint64_t))
+    return MDBX_PROBLEM;
+  uint64_t actual_key = 0;
+  uint64_t actual_value = 0;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  memcpy(&actual_value, data->iov_base, sizeof(actual_value));
+  if (actual_key >= ITEM_COUNT || actual_value != expected_value(actual_key))
+    return MDBX_PROBLEM;
+  probe->calls += 1;
   return MDBX_SUCCESS;
 }
 
@@ -2129,6 +2149,15 @@ int main(void) {
   REQUIRE(loop_pairs >= ITEM_COUNT + 5, "async cursor batch loop consumed too few pairs");
   REQUIRE(batch_probe.pairs == loop_pairs, "async cursor batch loop probe mismatch");
   REQUIRE(batch_probe.calls >= 2, "async cursor batch loop did not restart");
+
+  struct cursor_get_loop_probe cursor_get_loop_probe = {0};
+  size_t cursor_get_loop_completed = 0;
+  CHECK(mdbx_async_cursor_get_loop(async, cursor, ITEM_COUNT, MDBX_FIRST, MDBX_NEXT,
+                                   cursor_get_loop_probe_func, &cursor_get_loop_probe,
+                                   &cursor_get_loop_completed, &op));
+  CHECK_OP(op);
+  REQUIRE(cursor_get_loop_completed == ITEM_COUNT, "unexpected async cursor get loop count");
+  REQUIRE(cursor_get_loop_probe.calls == ITEM_COUNT, "async cursor get loop probe mismatch");
 
   struct scan_probe scan_probe = {12, 0};
   int scan_result = MDBX_SUCCESS;
