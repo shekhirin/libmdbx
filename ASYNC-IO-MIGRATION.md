@@ -15087,6 +15087,33 @@ The paired `MDBX_EXPLICIT_IO_BACKEND=io_uring make -f GNUmakefile
 mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.106`
 batch, `0.996` crud, `1.124` iterate, `0.963` get, and `1.144` delete.
 
+A later Linux `io_uring` advisory-backend checkpoint moved data-file
+`posix_fadvise()` advice/discard submissions behind `osal_ioring_fadvise()`.
+Requested/ready Linux rings can submit bounded advisory ranges as single
+`IORING_OP_FADVISE` SQEs using the stable Linux opcode value, then block for
+completion at the existing storage boundary. Oversized ranges, unavailable
+rings, unsupported kernels, and non-Linux builds fall back to the prior
+`posix_fadvise()` path, so advisory behavior remains best-effort and
+`ignore_enosys()` handling stays at the storage submitter. Open-time readahead
+advice can still occur before a ring exists, and copy-destination advice remains
+outside this data-file storage backend checkpoint. Verification passed
+`git diff --check`, the GNUmake `mdbx_migration_smoke` build target, direct
+default, forced no-mmap, `MDBX_EXPLICIT_IO_BACKEND=io_uring`, and compatibility
+`MDBX_EXPLICIT_WRITE_BACKEND=io_uring` forced tiny-cache smokes. An fd-decoded
+`strace` check of the forced io_uring smoke showed successful
+`io_uring_setup()`/`io_uring_enter()` activity and confirmed that remaining
+direct `fadvise64()` calls are still present for open-time data-file advice and
+copy destinations. The Ninja build (`cmake --build @cmake-ninja-build`), the
+ASAN build (`cmake --build @cmake-asan-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` focused `migration_smoke` CTest entries,
+normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused
+`migration_smoke` CTest entries with `LSAN_OPTIONS=detect_leaks=0`, the normal
+15-test public migration CTest suite, and the
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suite all passed.
+The paired `MDBX_EXPLICIT_IO_BACKEND=io_uring make -f GNUmakefile
+mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.108`
+batch, `1.138` crud, `0.985` iterate, `0.986` get, and `0.994` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

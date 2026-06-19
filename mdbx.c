@@ -25626,7 +25626,9 @@ static dxb_range_result_t dxb_storage_submit_advise_io(const dxb_storage_t *stor
   }
   if (unlikely(range->offset > (uint64_t)OFF_T_MAX || range->bytes > (uint64_t)OFF_T_MAX))
     return dxb_range_error(MDBX_EINVAL);
-  rc = ignore_enosys(posix_fadvise(dxb_storage_data_fd(storage), (off_t)range->offset, (off_t)range->bytes, hint));
+  rc = ignore_enosys(
+      osal_ioring_fadvise((osal_ioring_t *)&storage->ioring, dxb_storage_data_fd(storage), range->offset,
+                          range->bytes, hint));
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_range_submitted_error(rc);
   return dxb_range_completed(range->bytes);
@@ -25696,8 +25698,8 @@ static dxb_range_result_t dxb_storage_submit_discard_io(dxb_storage_t *storage, 
 #if defined(POSIX_FADV_DONTNEED)
   if (unlikely(range->offset > (uint64_t)OFF_T_MAX || range->bytes > (uint64_t)OFF_T_MAX))
     return dxb_range_error(MDBX_EINVAL);
-  rc = ignore_enosys(
-      posix_fadvise(dxb_storage_data_fd(storage), (off_t)range->offset, (off_t)range->bytes, POSIX_FADV_DONTNEED));
+  rc = ignore_enosys(osal_ioring_fadvise((osal_ioring_t *)&storage->ioring, dxb_storage_data_fd(storage),
+                                         range->offset, range->bytes, POSIX_FADV_DONTNEED));
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_range_submitted_error(rc);
   return dxb_range_completed(range->bytes);
@@ -37174,6 +37176,75 @@ bailout:
   return osal_ioring_linux_uring_unlock(ior, rc);
 }
 
+#define MDBX_IORING_OP_FADVISE 24u /* Stable Linux io_uring ABI opcode value. */
+
+static int osal_ioring_linux_uring_fadvise(osal_ioring_t *ior, mdbx_filehandle_t fd, uint64_t offset,
+                                           uint64_t bytes, int advice) {
+  if (unlikely(!osal_ioring_linux_uring_ready(ior)))
+    return MDBX_EINVAL;
+  if (unlikely(bytes > UINT32_MAX || advice < 0))
+    return MDBX_EINVAL;
+
+  int rc = osal_ioring_linux_uring_lock(ior);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  const uint32_t sq_entries = *ior->linux_uring_sq_entries;
+  const uint32_t sq_mask = *ior->linux_uring_sq_mask;
+  const uint32_t head = osal_ioring_linux_load(ior->linux_uring_sq_head);
+  uint32_t tail = osal_ioring_linux_load(ior->linux_uring_sq_tail);
+  if (unlikely(tail - head >= sq_entries)) {
+    rc = EBUSY;
+    goto bailout;
+  }
+
+  const uint32_t index = tail & sq_mask;
+  struct io_uring_sqe *const sqe = &ior->linux_uring_sqes[index];
+  memset(sqe, 0, sizeof(*sqe));
+  sqe->opcode = MDBX_IORING_OP_FADVISE;
+  sqe->fd = fd;
+  sqe->off = offset;
+  sqe->len = (uint32_t)bytes;
+  sqe->rw_flags = (uint32_t)advice;
+  sqe->user_data = (uintptr_t)ior;
+  ior->linux_uring_sq_array[index] = index;
+  osal_ioring_linux_store(ior->linux_uring_sq_tail, tail + 1);
+
+  unsigned submitted = 0;
+  rc = osal_ioring_linux_uring_submit(ior, 1, &submitted);
+  if (unlikely(rc != MDBX_SUCCESS || submitted != 1)) {
+    rc = (rc != MDBX_SUCCESS) ? rc : MDBX_EIO;
+    goto bailout;
+  }
+
+  uint32_t cq_head = osal_ioring_linux_load(ior->linux_uring_cq_head);
+  uint32_t cq_tail = osal_ioring_linux_load(ior->linux_uring_cq_tail);
+  while (cq_head == cq_tail) {
+    rc = osal_ioring_linux_enter(ior, 0, 1, IORING_ENTER_GETEVENTS);
+    if (unlikely(rc < 0)) {
+      rc = -rc;
+      goto bailout;
+    }
+    cq_head = osal_ioring_linux_load(ior->linux_uring_cq_head);
+    cq_tail = osal_ioring_linux_load(ior->linux_uring_cq_tail);
+  }
+
+  const uint32_t cq_index = cq_head & *ior->linux_uring_cq_mask;
+  const struct io_uring_cqe *const cqe = &ior->linux_uring_cqes[cq_index];
+  if (unlikely(cqe->user_data != (uintptr_t)ior))
+    rc = MDBX_EINVAL;
+  else if (unlikely(cqe->res < 0))
+    rc = -cqe->res;
+  else if (unlikely(cqe->res != 0))
+    rc = MDBX_EIO;
+  else
+    rc = MDBX_SUCCESS;
+  osal_ioring_linux_store(ior->linux_uring_cq_head, cq_head + 1);
+
+bailout:
+  return osal_ioring_linux_uring_unlock(ior, rc);
+}
+
 static void osal_ioring_write_linux_uring(osal_ioring_t *ior, const dxb_queued_write_io_t *io,
                                           osal_ioring_write_result_t *r) {
   if (unlikely(!osal_ioring_linux_uring_ready(ior))) {
@@ -37529,6 +37600,32 @@ int osal_ioring_fsync(osal_ioring_t *ior, mdbx_filehandle_t fd, enum osal_syncmo
   (void)ior;
 #endif /* MDBX_HAVE_LINUX_IO_URING */
   return osal_fsync(fd, mode_bits);
+}
+
+int osal_ioring_fadvise(osal_ioring_t *ior, mdbx_filehandle_t fd, uint64_t offset, uint64_t bytes, int advice) {
+#if defined(POSIX_FADV_NORMAL) || defined(POSIX_FADV_WILLNEED) || defined(POSIX_FADV_RANDOM) ||                  \
+    defined(POSIX_FADV_DONTNEED)
+  if (unlikely(offset > (uint64_t)OFF_T_MAX || bytes > (uint64_t)OFF_T_MAX))
+    return MDBX_EINVAL;
+#if MDBX_HAVE_LINUX_IO_URING
+  if (likely(ior && ior->backend == osal_ioring_backend_linux_uring &&
+             osal_ioring_linux_uring_ready(ior) && bytes <= UINT32_MAX)) {
+    const int err = osal_ioring_linux_uring_fadvise(ior, fd, offset, bytes, advice);
+    if (likely(err == MDBX_SUCCESS || (err != MDBX_EINVAL && err != MDBX_ENOSYS && err != EOPNOTSUPP)))
+      return err;
+  }
+#else
+  (void)ior;
+#endif /* MDBX_HAVE_LINUX_IO_URING */
+  return posix_fadvise(fd, (off_t)offset, (off_t)bytes, advice);
+#else
+  (void)ior;
+  (void)fd;
+  (void)offset;
+  (void)bytes;
+  (void)advice;
+  return MDBX_ENOSYS;
+#endif /* POSIX_FADV_* */
 }
 
 dxb_queue_op_result_t osal_ioring_reset(osal_ioring_t *ior) {
