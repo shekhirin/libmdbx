@@ -224,10 +224,6 @@ typedef struct dxb_dirty_write_walk_submit_io {
   dxb_dirty_write_walk_io_t walk;
 } dxb_dirty_write_walk_submit_io_t;
 
-typedef struct dxb_queued_write_submit_io {
-  enum dxb_io_channel channel;
-} dxb_queued_write_submit_io_t;
-
 typedef struct dxb_cache_read_io {
   dxb_data_read_io_t data;
   txnid_t snapshot;
@@ -25362,30 +25358,6 @@ static inline int dxb_storage_queued_write_io_validate(const dxb_storage_t *stor
              : MDBX_EINVAL;
 }
 
-static inline int dxb_storage_make_queued_write_submit_io(const dxb_storage_t *storage,
-                                                          enum dxb_io_channel channel,
-                                                          dxb_queued_write_submit_io_t *io) {
-  if (unlikely(!storage || !io))
-    return MDBX_EINVAL;
-  dxb_queued_write_io_t checked;
-  int rc = dxb_storage_make_queued_write_io(storage, channel, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  io->channel = channel;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_queued_write_submit_io_validate(const dxb_storage_t *storage,
-                                                              const dxb_queued_write_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-  dxb_queued_write_submit_io_t checked;
-  int rc = dxb_storage_make_queued_write_submit_io(storage, io->channel, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return likely(checked.channel == io->channel) ? MDBX_SUCCESS : MDBX_EINVAL;
-}
-
 static inline dxb_queue_write_result_t dxb_storage_write_queued(dxb_storage_t *storage,
                                                                 enum dxb_io_channel channel) {
   dxb_queued_write_io_t io;
@@ -25410,16 +25382,6 @@ static inline dxb_queue_write_result_t dxb_storage_write_queued(dxb_storage_t *s
     result.completed = false;
   }
   return result;
-}
-
-static inline dxb_queue_write_result_t dxb_storage_submit_write_queued(
-    dxb_storage_t *storage, const dxb_queued_write_submit_io_t *io) {
-  if (unlikely(!storage))
-    return dxb_queue_write_result(MDBX_EINVAL, io ? io->channel : dxb_io_data, 0, 0, 0, 0, false, false);
-  int rc = dxb_storage_queued_write_submit_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_queue_write_result(rc, io ? io->channel : dxb_io_data, 0, 0, 0, 0, false, false);
-  return dxb_storage_write_queued(storage, io->channel);
 }
 
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -40154,15 +40116,8 @@ int iov_write(iov_ctx_t *ctx) {
     submit_err = dxb_storage_make_queued_write_io(ctx->storage, ctx->channel, &queued);
   if (likely(submit_err == MDBX_SUCCESS))
     submit_err = dxb_storage_queued_write_io_validate(ctx->storage, ctx->channel, &queued);
-  dxb_queued_write_submit_io_t write_submit;
-  if (likely(submit_err == MDBX_SUCCESS))
-    submit_err = dxb_storage_make_queued_write_submit_io(ctx->storage, ctx->channel, &write_submit);
-  if (likely(submit_err == MDBX_SUCCESS))
-    submit_err = dxb_storage_queued_write_submit_io_validate(ctx->storage, &write_submit);
-  if (unlikely(submit_err == MDBX_SUCCESS && write_submit.channel != ctx->channel))
-    submit_err = MDBX_EINVAL;
   dxb_queue_write_result_t r =
-      likely(submit_err == MDBX_SUCCESS) ? dxb_storage_submit_write_queued(ctx->storage, &write_submit)
+      likely(submit_err == MDBX_SUCCESS) ? dxb_storage_write_queued(ctx->storage, ctx->channel)
                                          : dxb_queue_write_result(submit_err, ctx->channel, 0, 0, 0, 0, false, false);
   if (likely(r.err == MDBX_SUCCESS) &&
       unlikely(!r.submitted || !r.completed || !r.wops || !r.write_items || !r.used_slots || !r.payload_bytes))

@@ -14969,6 +14969,25 @@ the six focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.109` batch, `1.142` crud, `0.849`
 iterate, `1.066` get, and `1.076` delete.
 
+A later queued-write submission cleanup removed
+`dxb_queued_write_submit_io_t`, `dxb_storage_make_queued_write_submit_io()`,
+`dxb_storage_queued_write_submit_io_validate()`, and
+`dxb_storage_submit_write_queued()` from `mdbx.c`. The dirty-page write path
+now validates the queued write state and submits the queue directly by storage
+and channel through `dxb_storage_write_queued()`. This keeps the explicit write
+queue backend boundary focused on the actual queued I/O state instead of a
+single-channel submit descriptor. Verification passed `git diff --check`, a
+source scan proving the removed queued-write submit helpers and old
+descriptor-based submit call are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.123`
+batch, `1.166` crud, `0.984` iterate, `1.011` get, and `1.077` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
