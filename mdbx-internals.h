@@ -1657,6 +1657,23 @@ typedef struct osal_ioring {
   struct io_uring_params linux_uring_params;
   unsigned linux_uring_entries;
   bool linux_uring_requested;
+  void *linux_uring_sq_ring;
+  void *linux_uring_cq_ring;
+  struct io_uring_sqe *linux_uring_sqes;
+  size_t linux_uring_sq_ring_bytes;
+  size_t linux_uring_cq_ring_bytes;
+  size_t linux_uring_sqes_bytes;
+  volatile uint32_t *linux_uring_sq_head;
+  volatile uint32_t *linux_uring_sq_tail;
+  volatile uint32_t *linux_uring_sq_flags;
+  uint32_t *linux_uring_sq_mask;
+  uint32_t *linux_uring_sq_entries;
+  uint32_t *linux_uring_sq_array;
+  volatile uint32_t *linux_uring_cq_head;
+  volatile uint32_t *linux_uring_cq_tail;
+  uint32_t *linux_uring_cq_mask;
+  uint32_t *linux_uring_cq_entries;
+  struct io_uring_cqe *linux_uring_cqes;
 #endif /* MDBX_HAVE_LINUX_IO_URING */
 #define ior_last_bytes(ior, item) (item)->io.bytes.bytes
   ior_item_t *last;

@@ -36200,6 +36200,100 @@ static bool osal_ioring_linux_uring_requested(void) {
                    strcmp(value, "uring") == 0 || strcmp(value, "auto") == 0);
 }
 
+static void osal_ioring_linux_uring_destroy(osal_ioring_t *ior);
+
+static int osal_ioring_linux_enter(const osal_ioring_t *ior, unsigned to_submit, unsigned min_complete,
+                                   unsigned flags) {
+  while (true) {
+    const long rc = syscall(__NR_io_uring_enter, ior->linux_uring_fd, to_submit, min_complete, flags, nullptr, 0);
+    if (likely(rc >= 0))
+      return (int)rc;
+    if (errno != EINTR)
+      return -errno;
+  }
+}
+
+static uint32_t osal_ioring_linux_load(const volatile uint32_t *ptr) {
+  const uint32_t value = *ptr;
+  osal_memory_fence(mo_AcquireRelease, false);
+  return value;
+}
+
+static void osal_ioring_linux_store(volatile uint32_t *ptr, uint32_t value) {
+  osal_memory_fence(mo_AcquireRelease, true);
+  *ptr = value;
+}
+
+static int osal_ioring_linux_uring_map(osal_ioring_t *ior) {
+  struct io_uring_params *const params = &ior->linux_uring_params;
+  const size_t sq_ring_bytes = params->sq_off.array + params->sq_entries * sizeof(uint32_t);
+  const size_t cq_ring_bytes = params->cq_off.cqes + params->cq_entries * sizeof(struct io_uring_cqe);
+  const size_t sqes_bytes = params->sq_entries * sizeof(struct io_uring_sqe);
+  if (unlikely(!params->sq_entries || !params->cq_entries || !sq_ring_bytes || !cq_ring_bytes || !sqes_bytes))
+    return MDBX_EINVAL;
+
+  size_t mapped_sq_ring_bytes = sq_ring_bytes;
+  size_t mapped_cq_ring_bytes = cq_ring_bytes;
+#if defined(IORING_FEAT_SINGLE_MMAP)
+  if (params->features & IORING_FEAT_SINGLE_MMAP) {
+    mapped_sq_ring_bytes = (sq_ring_bytes > cq_ring_bytes) ? sq_ring_bytes : cq_ring_bytes;
+    mapped_cq_ring_bytes = mapped_sq_ring_bytes;
+  }
+#endif /* IORING_FEAT_SINGLE_MMAP */
+
+  void *sq_ring = mmap(nullptr, mapped_sq_ring_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, ior->linux_uring_fd,
+                       IORING_OFF_SQ_RING);
+  if (unlikely(sq_ring == MAP_FAILED))
+    return errno;
+
+  void *cq_ring = sq_ring;
+#if defined(IORING_FEAT_SINGLE_MMAP)
+  if ((params->features & IORING_FEAT_SINGLE_MMAP) == 0)
+#endif /* IORING_FEAT_SINGLE_MMAP */
+  {
+    cq_ring = mmap(nullptr, mapped_cq_ring_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, ior->linux_uring_fd,
+                   IORING_OFF_CQ_RING);
+    if (unlikely(cq_ring == MAP_FAILED)) {
+      const int err = errno;
+      (void)munmap(sq_ring, mapped_sq_ring_bytes);
+      return err;
+    }
+  }
+
+  struct io_uring_sqe *sqes =
+      mmap(nullptr, sqes_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, ior->linux_uring_fd, IORING_OFF_SQES);
+  if (unlikely(sqes == MAP_FAILED)) {
+    const int err = errno;
+    if (cq_ring != sq_ring)
+      (void)munmap(cq_ring, mapped_cq_ring_bytes);
+    (void)munmap(sq_ring, mapped_sq_ring_bytes);
+    return err;
+  }
+
+  ior->linux_uring_sq_ring = sq_ring;
+  ior->linux_uring_cq_ring = cq_ring;
+  ior->linux_uring_sqes = sqes;
+  ior->linux_uring_sq_ring_bytes = mapped_sq_ring_bytes;
+  ior->linux_uring_cq_ring_bytes = mapped_cq_ring_bytes;
+  ior->linux_uring_sqes_bytes = sqes_bytes;
+  ior->linux_uring_sq_head = (volatile uint32_t *)ptr_disp(sq_ring, params->sq_off.head);
+  ior->linux_uring_sq_tail = (volatile uint32_t *)ptr_disp(sq_ring, params->sq_off.tail);
+  ior->linux_uring_sq_flags = (volatile uint32_t *)ptr_disp(sq_ring, params->sq_off.flags);
+  ior->linux_uring_sq_mask = (uint32_t *)ptr_disp(sq_ring, params->sq_off.ring_mask);
+  ior->linux_uring_sq_entries = (uint32_t *)ptr_disp(sq_ring, params->sq_off.ring_entries);
+  ior->linux_uring_sq_array = (uint32_t *)ptr_disp(sq_ring, params->sq_off.array);
+  ior->linux_uring_cq_head = (volatile uint32_t *)ptr_disp(cq_ring, params->cq_off.head);
+  ior->linux_uring_cq_tail = (volatile uint32_t *)ptr_disp(cq_ring, params->cq_off.tail);
+  ior->linux_uring_cq_mask = (uint32_t *)ptr_disp(cq_ring, params->cq_off.ring_mask);
+  ior->linux_uring_cq_entries = (uint32_t *)ptr_disp(cq_ring, params->cq_off.ring_entries);
+  ior->linux_uring_cqes = (struct io_uring_cqe *)ptr_disp(cq_ring, params->cq_off.cqes);
+
+  if (unlikely(*ior->linux_uring_sq_entries != params->sq_entries ||
+               *ior->linux_uring_cq_entries != params->cq_entries))
+    return MDBX_EINVAL;
+  return MDBX_SUCCESS;
+}
+
 static int osal_ioring_linux_uring_setup(osal_ioring_t *ior, unsigned entries) {
   struct io_uring_params params;
   memset(&params, 0, sizeof(params));
@@ -36213,16 +36307,49 @@ static int osal_ioring_linux_uring_setup(osal_ioring_t *ior, unsigned entries) {
   ior->linux_uring_fd = (int)fd;
   ior->linux_uring_params = params;
   ior->linux_uring_entries = params.sq_entries ? params.sq_entries : entries;
-  return MDBX_SUCCESS;
+  int rc = osal_ioring_linux_uring_map(ior);
+  if (unlikely(rc != MDBX_SUCCESS))
+    osal_ioring_linux_uring_destroy(ior);
+  return rc;
 }
 
 static void osal_ioring_linux_uring_destroy(osal_ioring_t *ior) {
+  if (ior->linux_uring_sqes) {
+    (void)munmap(ior->linux_uring_sqes, ior->linux_uring_sqes_bytes);
+    ior->linux_uring_sqes = nullptr;
+  }
+  if (ior->linux_uring_cq_ring && ior->linux_uring_cq_ring != ior->linux_uring_sq_ring) {
+    (void)munmap(ior->linux_uring_cq_ring, ior->linux_uring_cq_ring_bytes);
+    ior->linux_uring_cq_ring = nullptr;
+  }
+  if (ior->linux_uring_sq_ring) {
+    (void)munmap(ior->linux_uring_sq_ring, ior->linux_uring_sq_ring_bytes);
+    if (ior->linux_uring_cq_ring == ior->linux_uring_sq_ring)
+      ior->linux_uring_cq_ring = nullptr;
+    ior->linux_uring_sq_ring = nullptr;
+  }
   if (ior->linux_uring_fd >= 0) {
     (void)close(ior->linux_uring_fd);
     ior->linux_uring_fd = -1;
   }
   ior->linux_uring_entries = 0;
   memset(&ior->linux_uring_params, 0, sizeof(ior->linux_uring_params));
+  ior->linux_uring_sq_ring_bytes = 0;
+  ior->linux_uring_cq_ring_bytes = 0;
+  ior->linux_uring_sqes_bytes = 0;
+  ior->linux_uring_sq_ring = nullptr;
+  ior->linux_uring_cq_ring = nullptr;
+  ior->linux_uring_sq_head = nullptr;
+  ior->linux_uring_sq_tail = nullptr;
+  ior->linux_uring_sq_flags = nullptr;
+  ior->linux_uring_sq_mask = nullptr;
+  ior->linux_uring_sq_entries = nullptr;
+  ior->linux_uring_sq_array = nullptr;
+  ior->linux_uring_cq_head = nullptr;
+  ior->linux_uring_cq_tail = nullptr;
+  ior->linux_uring_cq_mask = nullptr;
+  ior->linux_uring_cq_entries = nullptr;
+  ior->linux_uring_cqes = nullptr;
 }
 #endif /* MDBX_HAVE_LINUX_IO_URING */
 
@@ -36258,11 +36385,8 @@ int osal_ioring_create(osal_ioring_t *ior
   ior->linux_uring_requested = osal_ioring_linux_uring_requested();
   if (ior->linux_uring_requested) {
     const int rc = osal_ioring_linux_uring_setup(ior, 32);
-    if (rc == MDBX_SUCCESS) {
-      /* Keep using the synchronous backend until Linux io_uring submission and
-       * completion are wired behind the same queue contract. */
-      ior->backend = osal_ioring_backend_sync;
-    }
+    if (rc == MDBX_SUCCESS)
+      ior->backend = osal_ioring_backend_linux_uring;
   }
 #endif /* MDBX_HAVE_LINUX_IO_URING */
 
@@ -36755,6 +36879,198 @@ static void osal_ioring_write_sync(osal_ioring_t *ior, const dxb_queued_write_io
     }
   }
 }
+
+#if MDBX_HAVE_LINUX_IO_URING
+static bool osal_ioring_linux_uring_ready(const osal_ioring_t *ior) {
+  return ior->linux_uring_fd >= 0 && ior->linux_uring_sq_ring && ior->linux_uring_cq_ring &&
+         ior->linux_uring_sqes && ior->linux_uring_sq_head && ior->linux_uring_sq_tail &&
+         ior->linux_uring_sq_mask && ior->linux_uring_sq_entries && ior->linux_uring_sq_array &&
+         ior->linux_uring_cq_head && ior->linux_uring_cq_tail && ior->linux_uring_cq_mask &&
+         ior->linux_uring_cq_entries && ior->linux_uring_cqes;
+}
+
+static bool osal_ioring_linux_uring_should_fallback_to_sync(void) {
+  if (unlikely(dxb_fault_write_order() != dxb_fault_write_order_forward))
+    return true;
+#if MDBX_ENABLE_DXB_FAULT_INJECTION
+  const char *const fault = osal_getenv("MDBX_TEST_DXB_FAULT", false);
+  return fault && *fault;
+#else
+  return false;
+#endif /* MDBX_ENABLE_DXB_FAULT_INJECTION */
+}
+
+static size_t osal_ioring_linux_uring_prep_item(osal_ioring_t *ior, const dxb_queued_write_io_t *io,
+                                                osal_ioring_write_result_t *r, ior_item_t *item,
+                                                struct io_uring_sqe *sqe) {
+  size_t sgvcnt = osal_ioring_item_sgvcnt(ior, item);
+#if MDBX_HAVE_PWRITEV
+  ASSERT(item->sgvcnt > 0);
+  if (unlikely(!item->sgvcnt)) {
+    r->err = MDBX_EINVAL;
+    return 1;
+  }
+  size_t bytes;
+  r->err = osal_ioring_item_iov_bytes(item, &bytes);
+  if (unlikely(r->err != MDBX_SUCCESS))
+    return sgvcnt;
+  r->err = osal_ioring_item_io_validate(item, bytes);
+  if (unlikely(r->err != MDBX_SUCCESS))
+    return sgvcnt;
+  if (unlikely(item->sgvcnt > UINT32_MAX)) {
+    r->err = MDBX_EINVAL;
+    return sgvcnt;
+  }
+
+  memset(sqe, 0, sizeof(*sqe));
+  sqe->opcode = IORING_OP_WRITEV;
+  sqe->fd = io->fd;
+  sqe->off = item->io.bytes.offset;
+  sqe->addr = (uintptr_t)item->sgv;
+  sqe->len = (uint32_t)item->sgvcnt;
+#else
+  r->err = osal_ioring_item_io_validate(item, item->single.iov_len);
+  if (unlikely(r->err != MDBX_SUCCESS))
+    return 1;
+  if (unlikely(item->single.iov_len > UINT32_MAX)) {
+    r->err = MDBX_EINVAL;
+    return 1;
+  }
+
+  memset(sqe, 0, sizeof(*sqe));
+  sqe->opcode = IORING_OP_WRITE;
+  sqe->fd = io->fd;
+  sqe->off = item->io.bytes.offset;
+  sqe->addr = (uintptr_t)item->single.iov_base;
+  sqe->len = (uint32_t)item->single.iov_len;
+#endif /* MDBX_HAVE_PWRITEV */
+  sqe->user_data = (uintptr_t)item;
+  r->wops += 1;
+  return sgvcnt;
+}
+
+static int osal_ioring_linux_uring_submit(osal_ioring_t *ior, unsigned count) {
+  unsigned submitted = 0;
+  while (submitted < count) {
+    const int rc = osal_ioring_linux_enter(ior, count - submitted, 0, 0);
+    if (unlikely(rc < 0))
+      return -rc;
+    if (unlikely(rc == 0))
+      return MDBX_EIO;
+    submitted += (unsigned)rc;
+  }
+  return MDBX_SUCCESS;
+}
+
+static int osal_ioring_linux_uring_drain(osal_ioring_t *ior, unsigned count) {
+  int first_err = MDBX_SUCCESS;
+  unsigned completed = 0;
+  while (completed < count) {
+    uint32_t head = osal_ioring_linux_load(ior->linux_uring_cq_head);
+    uint32_t tail = osal_ioring_linux_load(ior->linux_uring_cq_tail);
+    if (head == tail) {
+      const int rc = osal_ioring_linux_enter(ior, 0, 1, IORING_ENTER_GETEVENTS);
+      if (unlikely(rc < 0)) {
+        if (first_err == MDBX_SUCCESS)
+          first_err = -rc;
+        continue;
+      }
+      continue;
+    }
+
+    while (head != tail && completed < count) {
+      const uint32_t index = head & *ior->linux_uring_cq_mask;
+      const struct io_uring_cqe *const cqe = &ior->linux_uring_cqes[index];
+      ior_item_t *const item = (ior_item_t *)(uintptr_t)cqe->user_data;
+      int err = MDBX_SUCCESS;
+      if (unlikely(!item))
+        err = MDBX_EINVAL;
+      else if (unlikely(cqe->res < 0))
+        err = -cqe->res;
+      else if (unlikely((size_t)cqe->res != item->io.bytes.bytes))
+        err = MDBX_EIO;
+      if (unlikely(err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
+        first_err = err;
+      ++head;
+      ++completed;
+    }
+    osal_ioring_linux_store(ior->linux_uring_cq_head, head);
+  }
+  return first_err;
+}
+
+static void osal_ioring_write_linux_uring(osal_ioring_t *ior, const dxb_queued_write_io_t *io,
+                                          osal_ioring_write_result_t *r) {
+  if (unlikely(!osal_ioring_linux_uring_ready(ior))) {
+    r->err = MDBX_EINVAL;
+    return;
+  }
+  if (unlikely(osal_ioring_linux_uring_should_fallback_to_sync())) {
+    osal_ioring_write_sync(ior, io, r);
+    return;
+  }
+
+  ior_item_t *item = ior->pool;
+  while (item <= ior->last) {
+    const uint32_t sq_entries = *ior->linux_uring_sq_entries;
+    const uint32_t sq_mask = *ior->linux_uring_sq_mask;
+    uint32_t head = osal_ioring_linux_load(ior->linux_uring_sq_head);
+    uint32_t tail = osal_ioring_linux_load(ior->linux_uring_sq_tail);
+    if (unlikely(tail - head > sq_entries)) {
+      r->err = MDBX_PROBLEM;
+      return;
+    }
+    unsigned space = sq_entries - (tail - head);
+    if (unlikely(!space)) {
+      const int rc = osal_ioring_linux_enter(ior, 0, 0, 0);
+      if (unlikely(rc < 0)) {
+        r->err = -rc;
+        return;
+      }
+      head = osal_ioring_linux_load(ior->linux_uring_sq_head);
+      tail = osal_ioring_linux_load(ior->linux_uring_sq_tail);
+      space = likely(tail - head <= sq_entries) ? sq_entries - (tail - head) : 0;
+      if (unlikely(!space)) {
+        r->err = EBUSY;
+        return;
+      }
+    }
+
+    unsigned prepared = 0;
+    while (prepared < space && item <= ior->last) {
+      const uint32_t index = tail & sq_mask;
+      struct io_uring_sqe *const sqe = &ior->linux_uring_sqes[index];
+      const size_t sgvcnt = osal_ioring_linux_uring_prep_item(ior, io, r, item, sqe);
+      if (unlikely(r->err != MDBX_SUCCESS))
+        break;
+      ior->linux_uring_sq_array[index] = index;
+      ++tail;
+      ++prepared;
+      item = ior_next(item, sgvcnt);
+    }
+
+    if (prepared) {
+      osal_ioring_linux_store(ior->linux_uring_sq_tail, tail);
+      const int submit_err = osal_ioring_linux_uring_submit(ior, prepared);
+      const int drain_err = osal_ioring_linux_uring_drain(ior, prepared);
+      if (unlikely(submit_err != MDBX_SUCCESS)) {
+        r->err = submit_err;
+        return;
+      }
+      if (unlikely(drain_err != MDBX_SUCCESS)) {
+        r->err = drain_err;
+        return;
+      }
+    }
+    if (unlikely(r->err != MDBX_SUCCESS))
+      return;
+    if (unlikely(!prepared)) {
+      r->err = MDBX_PROBLEM;
+      return;
+    }
+  }
+}
+#endif /* MDBX_HAVE_LINUX_IO_URING */
 #endif /* !Windows */
 
 osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, const dxb_queued_write_io_t *io) {
@@ -36985,9 +37301,11 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, const dxb_queue
     osal_ioring_write_sync(ior, io, &r);
     break;
   case osal_ioring_backend_linux_uring:
-    /* Reserved for the Linux async backend. Keep the synchronous backend as the
-     * only POSIX backend until io_uring submission/completion is verified. */
+#if MDBX_HAVE_LINUX_IO_URING
+    osal_ioring_write_linux_uring(ior, io, &r);
+#else
     r.err = MDBX_ENOSYS;
+#endif /* MDBX_HAVE_LINUX_IO_URING */
     break;
   case osal_ioring_backend_unset:
   case osal_ioring_backend_windows_overlapped:

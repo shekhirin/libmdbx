@@ -15010,6 +15010,30 @@ including API checks and tool roundtrips, the ASAN build (`cmake --build
 passed with forced/default ratios of `1.111` batch, `1.165` crud, `1.136`
 iterate, `0.938` get, and `1.077` delete.
 
+A later Linux `io_uring` write-backend checkpoint replaced the reserved
+`MDBX_ENOSYS` branch with a real raw-syscall backend for the explicit write
+queue. When `MDBX_EXPLICIT_WRITE_BACKEND=io_uring`/`linux_uring`/`uring`/`auto`
+is requested and setup succeeds, the OSAL queue now mmaps the SQ ring, CQ
+ring, and SQE array, publishes queued write items as `IORING_OP_WRITEV` SQEs
+when `pwritev` support is available, waits for matching CQEs, validates byte
+counts/errors, and closes/unmaps all ring resources on queue destroy. Public
+MDBX APIs remain synchronous because the backend blocks at the existing queue
+drain boundary. Fault-injection write-order and fault-code modes continue to
+use the synchronous drain so crash/fault tests keep their deterministic
+corruption model. Verification passed `git diff --check`, the GNUmake
+`mdbx_migration_smoke` build target, direct forced
+`MDBX_EXPLICIT_WRITE_BACKEND=io_uring` tiny-cache smoke, a `strace` check
+showing successful `io_uring_setup()` and `io_uring_enter()` write submissions,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, the ASAN build (`cmake --build
+@cmake-asan-build`), the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`, and a direct ASAN forced-backend smoke with
+`MDBX_EXPLICIT_WRITE_BACKEND=io_uring`. The paired
+`MDBX_EXPLICIT_WRITE_BACKEND=io_uring make -f GNUmakefile
+mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.049`
+batch, `0.909` crud, `1.214` iterate, `1.006` get, and `1.000` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
