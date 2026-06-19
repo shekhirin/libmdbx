@@ -11097,11 +11097,6 @@ typedef struct dxb_copy_asis_export_submit_io {
   dxb_data_export_submit_io_t export_submit;
 } dxb_copy_asis_export_submit_io_t;
 
-static inline dxb_copy_result_t copy_asis_copy_error(int err) {
-  const dxb_copy_result_t result = {err, 0, false, false, false, false, false};
-  return result;
-}
-
 static inline int copy_asis_make_export_submit_io(const dxb_storage_t *storage, const dxb_byte_io_t *source,
                                                   uint64_t dst_offset, mdbx_filehandle_t dst_fd,
                                                   dxb_copy_asis_export_submit_io_t *io) {
@@ -11182,24 +11177,6 @@ static inline int copy_asis_export_submit_io_validate(const dxb_copy_asis_export
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
-
-#if MDBX_USE_SENDFILE
-static dxb_copy_result_t copy_asis_submit_sendfile(const dxb_copy_asis_export_submit_io_t *io) {
-  int rc = copy_asis_export_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return copy_asis_copy_error(rc);
-  return dxb_storage_submit_sendfile_data_to_fd(io->storage, &io->export_submit);
-}
-#endif /* MDBX_USE_SENDFILE */
-
-#if MDBX_USE_COPYFILERANGE
-static dxb_copy_result_t copy_asis_submit_copyrange(const dxb_copy_asis_export_submit_io_t *io) {
-  int rc = copy_asis_export_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return copy_asis_copy_error(rc);
-  return dxb_storage_submit_copy_data_to_fd(io->storage, &io->export_submit);
-}
-#endif /* MDBX_USE_COPYFILERANGE */
 #endif /* MDBX_USE_SENDFILE || MDBX_USE_COPYFILERANGE */
 
 __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, uint8_t *buffer,
@@ -11291,7 +11268,11 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
       rc = copy_asis_make_export_submit_io(storage, &remaining, 0, fd, &export_submit);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
-      dxb_copy_result_t sendfile_result = copy_asis_submit_sendfile(&export_submit);
+      rc = copy_asis_export_submit_io_validate(&export_submit);
+      if (unlikely(rc != MDBX_SUCCESS))
+        break;
+      dxb_copy_result_t sendfile_result =
+          dxb_storage_submit_sendfile_data_to_fd(export_submit.storage, &export_submit.export_submit);
       rc = sendfile_result.err;
       if (likely(sendfile_result.copied)) {
         offset += sendfile_result.payload_bytes;
@@ -11312,7 +11293,11 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
       rc = copy_asis_make_export_submit_io(storage, &remaining, offset, fd, &export_submit);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
-      dxb_copy_result_t copy_result = copy_asis_submit_copyrange(&export_submit);
+      rc = copy_asis_export_submit_io_validate(&export_submit);
+      if (unlikely(rc != MDBX_SUCCESS))
+        break;
+      dxb_copy_result_t copy_result =
+          dxb_storage_submit_copy_data_to_fd(export_submit.storage, &export_submit.export_submit);
       rc = copy_result.err;
       if (likely(copy_result.copied)) {
         offset += copy_result.payload_bytes;
