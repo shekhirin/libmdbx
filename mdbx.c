@@ -15095,6 +15095,8 @@ enum mdbx_async_opcode {
   async_op_cache_init,
   async_op_cache_get,
   async_op_cache_get_singlethreaded,
+  async_op_cache_get_batch,
+  async_op_cache_get_singlethreaded_batch,
   async_op_cache_get_loop,
   async_op_cache_get_singlethreaded_loop,
   async_op_get_batch,
@@ -15501,6 +15503,15 @@ struct MDBX_async_op {
       volatile MDBX_cache_entry_t *entry;
       MDBX_cache_result_t *result;
     } cache_get;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_dbi dbi;
+      const MDBX_val *keys;
+      MDBX_val *data;
+      volatile MDBX_cache_entry_t *entries;
+      MDBX_cache_result_t *results;
+      size_t count;
+    } cache_get_batch;
     struct {
       const MDBX_txn *txn;
       MDBX_dbi dbi;
@@ -16534,6 +16545,28 @@ static int async_op_execute(MDBX_async_op *op) {
     }
     return result.errcode;
   }
+  case async_op_cache_get_batch:
+  case async_op_cache_get_singlethreaded_batch:
+    for (size_t i = 0; i < op->args.cache_get_batch.count; ++i) {
+      MDBX_val data = {nullptr, 0};
+      MDBX_cache_result_t result =
+          (op->opcode == async_op_cache_get_batch)
+              ? mdbx_cache_get(op->args.cache_get_batch.txn, op->args.cache_get_batch.dbi,
+                               &op->args.cache_get_batch.keys[i], &data,
+                               &op->args.cache_get_batch.entries[i])
+              : mdbx_cache_get_SingleThreaded(op->args.cache_get_batch.txn,
+                                              op->args.cache_get_batch.dbi,
+                                              &op->args.cache_get_batch.keys[i], &data,
+                                              (MDBX_cache_entry_t *)&op->args.cache_get_batch.entries[i]);
+      op->args.cache_get_batch.results[i] = result;
+      if (result.errcode == MDBX_SUCCESS) {
+        op->args.cache_get_batch.data[i] = data;
+      } else {
+        op->args.cache_get_batch.data[i].iov_base = nullptr;
+        op->args.cache_get_batch.data[i].iov_len = 0;
+      }
+    }
+    return MDBX_SUCCESS;
   case async_op_cache_get_loop:
   case async_op_cache_get_singlethreaded_loop:
     if (op->args.cache_get_loop.completed)
@@ -19429,6 +19462,50 @@ int mdbx_async_cache_get_SingleThreaded_many(MDBX_async *async, const MDBX_txn *
                                              MDBX_async_op *ops[]) {
   return async_cache_get_many_submit(async, txn, dbi, keys, data, entries, results, count,
                                      async_op_cache_get_singlethreaded, ops);
+}
+
+static int async_cache_get_batch_submit(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                        const MDBX_val keys[], MDBX_val data[],
+                                        volatile MDBX_cache_entry_t entries[],
+                                        MDBX_cache_result_t results[], size_t count,
+                                        enum mdbx_async_opcode opcode, MDBX_async_op **out) {
+  if (unlikely(!txn || !keys || !data || !entries || !results || !count))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, opcode);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cache_get_batch.txn = txn;
+  op->args.cache_get_batch.dbi = dbi;
+  op->args.cache_get_batch.keys = keys;
+  op->args.cache_get_batch.data = data;
+  op->args.cache_get_batch.entries = entries;
+  op->args.cache_get_batch.results = results;
+  op->args.cache_get_batch.count = count;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_cache_get_batch(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                               const MDBX_val keys[], MDBX_val data[],
+                               volatile MDBX_cache_entry_t entries[],
+                               MDBX_cache_result_t results[], size_t count,
+                               MDBX_async_op **out) {
+  return async_cache_get_batch_submit(async, txn, dbi, keys, data, entries, results, count,
+                                      async_op_cache_get_batch, out);
+}
+
+int mdbx_async_cache_get_SingleThreaded_batch(MDBX_async *async, const MDBX_txn *txn,
+                                              MDBX_dbi dbi, const MDBX_val keys[],
+                                              MDBX_val data[], MDBX_cache_entry_t entries[],
+                                              MDBX_cache_result_t results[], size_t count,
+                                              MDBX_async_op **out) {
+  return async_cache_get_batch_submit(async, txn, dbi, keys, data, entries, results, count,
+                                      async_op_cache_get_singlethreaded_batch, out);
 }
 
 static int async_cache_get_loop_submit(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, size_t count,

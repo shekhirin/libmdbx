@@ -6980,6 +6980,22 @@ LIBMDBX_API int mdbx_async_cache_get_many(MDBX_async *async, const MDBX_txn *txn
                                           MDBX_cache_result_t results[], size_t count,
                                           MDBX_async_op *ops[]);
 
+/** \brief Asynchronously get a batch of items using cache entries.
+ * \ingroup c_async
+ * \details This submits one async operation that calls \ref mdbx_cache_get()
+ *          once per item. The `keys`, `data`, `entries`, and `results` arrays
+ *          must contain at least `count` items and remain valid until
+ *          operation completion. The async operation result is
+ *          \ref MDBX_SUCCESS when the batch itself ran; each per-item result is
+ *          stored in `results[index]`.
+ * \see mdbx_cache_get()
+ * \see mdbx_async_cache_get_many() */
+LIBMDBX_API int mdbx_async_cache_get_batch(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                           const MDBX_val keys[], MDBX_val data[],
+                                           volatile MDBX_cache_entry_t entries[],
+                                           MDBX_cache_result_t results[], size_t count,
+                                           MDBX_async_op **op);
+
 /** \brief Callback that consumes one cache-get loop result.
  * \ingroup c_async
  * \details The callback runs on the executor worker thread after one
@@ -7065,6 +7081,23 @@ LIBMDBX_API int mdbx_async_cache_get_SingleThreaded_many(MDBX_async *async, cons
                                                          MDBX_val data[], MDBX_cache_entry_t entries[],
                                                          MDBX_cache_result_t results[], size_t count,
                                                          MDBX_async_op *ops[]);
+
+/** \brief Asynchronously get a batch using single-threaded cache entries.
+ * \ingroup c_async
+ * \details This submits one async operation that calls
+ *          \ref mdbx_cache_get_SingleThreaded() once per item. The `keys`,
+ *          `data`, `entries`, and `results` arrays must contain at least
+ *          `count` items and remain valid until operation completion. Each
+ *          cache entry must be used only by the executor worker while the
+ *          operation is pending.
+ * \see mdbx_cache_get_SingleThreaded()
+ * \see mdbx_async_cache_get_SingleThreaded_many() */
+LIBMDBX_API int mdbx_async_cache_get_SingleThreaded_batch(MDBX_async *async, const MDBX_txn *txn,
+                                                          MDBX_dbi dbi, const MDBX_val keys[],
+                                                          MDBX_val data[],
+                                                          MDBX_cache_entry_t entries[],
+                                                          MDBX_cache_result_t results[], size_t count,
+                                                          MDBX_async_op **op);
 
 /** \brief Asynchronously run a worker-side loop of single-threaded cache-get operations.
  * \ingroup c_async

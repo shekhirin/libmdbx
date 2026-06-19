@@ -4059,3 +4059,67 @@ Additional async cache-get-loop checkpoint:
   reduced sample, both cache-loop variants beat blocking pthread-parallel and
   hot blocking serial GET; the multithread-safe cache loop is the strongest
   public async point-read result recorded so far.
+
+Additional async cache-get-batch checkpoint:
+
+- added `mdbx_async_cache_get_batch()` and
+  `mdbx_async_cache_get_SingleThreaded_batch()` as async-only single-operation
+  batch helpers for the cache GET API. Unlike cache-many, each helper submits
+  one operation handle for the full array. Unlike cache-loop, callers provide
+  arrays for keys, data, cache entries, and per-item cache results without
+  per-item key/result callbacks.
+- smoke coverage now initializes cache entries through the multithread-safe
+  batch helper, validates per-item values and cache results, then reuses the
+  same entries through the single-threaded batch helper and verifies cache-hit
+  results.
+- extended `ut_and_examples/async-api-bench.c` with cache-batch and
+  single-threaded-cache-batch GET rows. The benchmark uses the same stable
+  key-per-worker-slot pattern as cache-many, so cache entries are reused across
+  repeated windows.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking serial get
+  1.887 Mops/s, blocking parallel get 762.059 Kops/s, async many parallel get
+  1.077 Mops/s, async cache many 1.595 Mops/s, async cache st many
+  2.057 Mops/s, async cache batch 1.755 Mops/s, async cache st batch
+  2.085 Mops/s, async cache loop 1.180 Mops/s, and async cache st loop
+  2.515 Mops/s.
+- current ratios were async-cache-many/blocking-parallel 2.092,
+  async-cache-st-many/blocking-parallel 2.699,
+  async-cache-batch/blocking-parallel 2.303,
+  async-cache-st-batch/blocking-parallel 2.736,
+  async-cache-loop/blocking-parallel 1.549,
+  async-cache-st-loop/blocking-parallel 3.300,
+  async-cache-batch/cache-many 1.101,
+  async-cache-st-batch/cache-st-many 1.014,
+  async-cache-st-batch/cache-batch 1.188,
+  async-cache-loop/cache-batch 0.673,
+  async-cache-st-loop/cache-st-batch 1.206,
+  async-cache-batch/blocking-serial 0.930,
+  async-cache-st-batch/blocking-serial 1.105, and
+  async-cache-st-loop/blocking-serial 1.333.
+- comparison with the previous cache-loop checkpoint: run-to-run variance moved
+  the multithread-safe cache loop down in this sample, while the new cache
+  batch still improved over cache-many and stayed far above blocking
+  pthread-parallel GET. The single-threaded cache loop remained the public
+  async point-read high-water mark in this run, beating both blocking parallel
+  and hot blocking serial GET.
+- comparison with the pre-async ioarena baseline at the top of this log remains
+  separate: cache-batch measures public async API/cache lookup overhead on
+  stable in-process keys, not storage-level lazy-mode phases. It improves the
+  public async read surface but does not remeasure or close the storage/ioarena
+  migration gap.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=196 async-covered=132 async-only=64 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: cache-backed point reads now have one-handle array-batch helpers
+  in addition to many-submit and worker-side loop forms. In this reduced
+  sample, cache-batch is a modest improvement over cache-many and the
+  single-threaded batch beats hot blocking serial GET; the single-threaded loop
+  remains the strongest public async point-read result.

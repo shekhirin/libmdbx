@@ -1973,6 +1973,37 @@ int main(void) {
     CHECK(expect_value(&cache_many_data[i], keys[i + 2], __FILE__, __LINE__));
   }
 
+  for (unsigned i = 0; i < 4; ++i) {
+    mdbx_cache_init(&cache_many_entries[i]);
+    cache_many_results[i].errcode = MDBX_PROBLEM;
+    cache_many_results[i].status = MDBX_CACHE_ERROR;
+    cache_many_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_cache_get_batch(async, txn, dbi, cache_many_keys, cache_many_data,
+                                   cache_many_entries, cache_many_results, 4, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < 4; ++i) {
+    REQUIRE(cache_many_results[i].errcode == MDBX_SUCCESS &&
+                cache_many_results[i].status != MDBX_CACHE_ERROR,
+            "unexpected async cache get batch result");
+    CHECK(expect_value(&cache_many_data[i], keys[i + 2], __FILE__, __LINE__));
+  }
+
+  for (unsigned i = 0; i < 4; ++i) {
+    cache_many_results[i].errcode = MDBX_PROBLEM;
+    cache_many_results[i].status = MDBX_CACHE_ERROR;
+    cache_many_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_cache_get_SingleThreaded_batch(async, txn, dbi, cache_many_keys, cache_many_data,
+                                                  cache_many_entries, cache_many_results, 4, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < 4; ++i) {
+    REQUIRE(cache_many_results[i].errcode == MDBX_SUCCESS &&
+                cache_many_results[i].status == MDBX_CACHE_HIT,
+            "unexpected async single-thread cache get batch result");
+    CHECK(expect_value(&cache_many_data[i], keys[i + 2], __FILE__, __LINE__));
+  }
+
   for (unsigned i = 0; i < 4; ++i)
     mdbx_cache_init(&cache_many_entries[i]);
   struct cache_loop_probe cache_loop_probe = {0, 2, 0, 0, 0};
