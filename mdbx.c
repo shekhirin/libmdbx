@@ -135,19 +135,6 @@ typedef struct dxb_resize_size_submit_io {
   dxb_size_state_submit_io_t target_size_state;
 } dxb_resize_size_submit_io_t;
 
-#if !defined(_WIN32) && !defined(_WIN64)
-typedef struct dxb_stat_submit_io {
-  bool fetch;
-} dxb_stat_submit_io_t;
-#endif /* !Windows */
-
-typedef struct dxb_sysinfo_submit_io {
-  bool fetch;
-#if !defined(_WIN32) && !defined(_WIN64)
-  dxb_stat_submit_io_t stat;
-#endif /* !Windows */
-} dxb_sysinfo_submit_io_t;
-
 typedef struct dxb_incore_submit_io {
   bool probe;
 } dxb_incore_submit_io_t;
@@ -2028,51 +2015,6 @@ static inline int dxb_storage_resize_size_submit_io_validate(const dxb_resize_si
                 checked.target_size_state.filesize == io->target_size_state.filesize)
              ? MDBX_SUCCESS
              : MDBX_EINVAL;
-}
-
-#if !defined(_WIN32) && !defined(_WIN64)
-static inline int dxb_storage_make_stat_submit_io(dxb_stat_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-  io->fetch = true;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_stat_submit_io_validate(const dxb_stat_submit_io_t *io) {
-  if (unlikely(!io || !io->fetch))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-#endif /* !Windows */
-
-static inline int dxb_storage_make_sysinfo_submit_io(dxb_sysinfo_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-  io->fetch = true;
-#if !defined(_WIN32) && !defined(_WIN64)
-  int rc = dxb_storage_make_stat_submit_io(&io->stat);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-#endif /* !Windows */
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_sysinfo_submit_io_validate(const dxb_sysinfo_submit_io_t *io) {
-  if (unlikely(!io || !io->fetch))
-    return MDBX_EINVAL;
-#if !defined(_WIN32) && !defined(_WIN64)
-  int rc = dxb_storage_stat_submit_io_validate(&io->stat);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_sysinfo_submit_io_t checked;
-  rc = dxb_storage_make_sysinfo_submit_io(&checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.fetch != io->fetch || checked.stat.fetch != io->stat.fetch))
-    return MDBX_EINVAL;
-#endif /* !Windows */
-  return MDBX_SUCCESS;
 }
 
 static inline int dxb_storage_make_incore_submit_io(dxb_incore_submit_io_t *io) {
@@ -4023,10 +3965,9 @@ MDBX_INTERNAL dxb_close_result_t dxb_storage_submit_close(dxb_storage_t *storage
 MDBX_INTERNAL dxb_deinit_result_t dxb_storage_submit_deinit(dxb_storage_t *storage,
                                                             const dxb_deinit_submit_io_t *io);
 #if !defined(_WIN32) && !defined(_WIN64)
-static dxb_stat_result_t dxb_storage_submit_stat(const dxb_storage_t *storage, const dxb_stat_submit_io_t *io);
+static dxb_stat_result_t dxb_storage_submit_stat(const dxb_storage_t *storage);
 #endif /* !Windows */
-static dxb_sysinfo_result_t dxb_storage_submit_fetch_sysinfo(const dxb_storage_t *storage,
-                                                             const dxb_sysinfo_submit_io_t *io);
+static dxb_sysinfo_result_t dxb_storage_submit_fetch_sysinfo(const dxb_storage_t *storage);
 static dxb_readonly_result_t dxb_storage_submit_check_readonly(const dxb_storage_t *storage,
                                                                const dxb_readonly_submit_io_t *io);
 static inline int dxb_storage_make_filesize_state_submit_io(uint64_t filesize, dxb_filesize_state_submit_io_t *io);
@@ -11169,17 +11110,11 @@ __cold int mdbx_env_close_ex(MDBX_env *env, bool dont_sync) {
     rc = env_sync(env, true, false);
     rc = (rc == MDBX_RESULT_TRUE) ? MDBX_SUCCESS : rc;
 #else
-    dxb_stat_submit_io_t close_sync_stat_submit;
     bool linked = false;
-    rc = dxb_storage_make_stat_submit_io(&close_sync_stat_submit);
+    dxb_stat_result_t stat_result = dxb_storage_submit_stat(storage);
+    rc = stat_result.err;
     if (likely(rc == MDBX_SUCCESS))
-      rc = dxb_storage_stat_submit_io_validate(&close_sync_stat_submit);
-    if (likely(rc == MDBX_SUCCESS)) {
-      dxb_stat_result_t stat_result = dxb_storage_submit_stat(storage, &close_sync_stat_submit);
-      rc = stat_result.err;
-      if (likely(rc == MDBX_SUCCESS))
-        linked = stat_result.st.st_nlink > 0;
-    }
+      linked = stat_result.st.st_nlink > 0;
     if (likely(rc == MDBX_SUCCESS) && linked /* don't sync deleted files */) {
       rc = env_sync(env, true, true);
       rc = (rc == MDBX_BUSY || rc == EAGAIN || rc == EACCES || rc == EBUSY || rc == EWOULDBLOCK ||
@@ -11248,14 +11183,7 @@ __must_check_result static int env_info_sys(const MDBX_env *env, MDBX_envinfo *o
   out->mi_dxb_fallocated = 0;
   out->mi_sys_ioblk = 0;
   const dxb_storage_t *const storage = &env->dxb_storage;
-  dxb_sysinfo_submit_io_t sysinfo_submit;
-  int err = dxb_storage_make_sysinfo_submit_io(&sysinfo_submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  err = dxb_storage_sysinfo_submit_io_validate(&sysinfo_submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  dxb_sysinfo_result_t sysinfo = dxb_storage_submit_fetch_sysinfo(storage, &sysinfo_submit);
+  dxb_sysinfo_result_t sysinfo = dxb_storage_submit_fetch_sysinfo(storage);
   if (unlikely(sysinfo.err != MDBX_SUCCESS))
     return sysinfo.err;
   out->mi_dxb_fsize = sysinfo.filesize;
@@ -25628,10 +25556,9 @@ static inline dxb_stat_result_t dxb_stat_zero_error(int err) {
   return dxb_stat_result(err, &st, false, false);
 }
 
-static dxb_stat_result_t dxb_storage_submit_stat(const dxb_storage_t *storage, const dxb_stat_submit_io_t *io) {
-  int rc = dxb_storage_stat_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_stat_zero_error(rc);
+static dxb_stat_result_t dxb_storage_submit_stat(const dxb_storage_t *storage) {
+  if (unlikely(!storage))
+    return dxb_stat_zero_error(MDBX_EINVAL);
   struct stat st;
   return unlikely(fstat(dxb_storage_data_fd(storage), &st)) ? dxb_stat_zero_submitted_error(errno)
                                                             : dxb_stat_completed(&st);
@@ -25692,12 +25619,9 @@ static inline dxb_sysinfo_result_t dxb_sysinfo_completed(uint64_t filesize, uint
   return dxb_sysinfo_result(MDBX_SUCCESS, filesize, allocated, io_block, true, true);
 }
 
-static dxb_sysinfo_result_t dxb_storage_submit_fetch_sysinfo(const dxb_storage_t *storage,
-                                                             const dxb_sysinfo_submit_io_t *io) {
-  int rc = dxb_storage_sysinfo_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_sysinfo_error(rc, false);
-
+static dxb_sysinfo_result_t dxb_storage_submit_fetch_sysinfo(const dxb_storage_t *storage) {
+  if (unlikely(!storage))
+    return dxb_sysinfo_error(MDBX_EINVAL, false);
   const mdbx_filehandle_t dxb_fd = dxb_storage_data_fd(storage);
   if (dxb_fd == INVALID_HANDLE_VALUE)
     return dxb_sysinfo_noop_completed();
@@ -25734,7 +25658,7 @@ static dxb_sysinfo_result_t dxb_storage_submit_fetch_sysinfo(const dxb_storage_t
   }
   return dxb_sysinfo_error(GetLastError(), true);
 #else
-  dxb_stat_result_t stat_result = dxb_storage_submit_stat(storage, &io->stat);
+  dxb_stat_result_t stat_result = dxb_storage_submit_stat(storage);
   if (unlikely(stat_result.err != MDBX_SUCCESS))
     return dxb_sysinfo_from_stat_error(stat_result);
   return dxb_sysinfo_completed(stat_result.st.st_size, UINT64_C(512) * stat_result.st.st_blocks,
@@ -28507,17 +28431,10 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
 #else
   if (mode == 0) {
     /* pickup mode for lck-file */
-    dxb_stat_submit_io_t mode_stat_submit;
-    rc = dxb_storage_make_stat_submit_io(&mode_stat_submit);
-    if (likely(rc == MDBX_SUCCESS)) {
-      rc = dxb_storage_stat_submit_io_validate(&mode_stat_submit);
-      if (likely(rc == MDBX_SUCCESS)) {
-        dxb_stat_result_t stat_result = dxb_storage_submit_stat(storage, &mode_stat_submit);
-        rc = stat_result.err;
-        if (likely(rc == MDBX_SUCCESS))
-          mode = stat_result.st.st_mode;
-      }
-    }
+    dxb_stat_result_t stat_result = dxb_storage_submit_stat(storage);
+    rc = stat_result.err;
+    if (likely(rc == MDBX_SUCCESS))
+      mode = stat_result.st.st_mode;
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
   }
@@ -32575,14 +32492,8 @@ static int check_fstat(MDBX_env *env) {
     return MDBX_EINVAL;
   const dxb_storage_t *const storage = &env->dxb_storage;
   struct stat st;
-  dxb_stat_submit_io_t stat_submit;
-  int rc = dxb_storage_make_stat_submit_io(&stat_submit);
-  if (likely(rc == MDBX_SUCCESS))
-    rc = dxb_storage_stat_submit_io_validate(&stat_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_stat_result_t dxb_stat = dxb_storage_submit_stat(storage, &stat_submit);
-  rc = dxb_stat.err;
+  dxb_stat_result_t dxb_stat = dxb_storage_submit_stat(storage);
+  int rc = dxb_stat.err;
   if (unlikely(rc != MDBX_SUCCESS)) {
     ERROR("fstat(%s), err %d", "DXB", rc);
     return rc;
@@ -32949,12 +32860,9 @@ __cold int lck_init(MDBX_env *env, MDBX_env *inprocess_neighbor, int global_uniq
   (void)inprocess_neighbor;
   if (global_uniqueness_flag == MDBX_RESULT_TRUE) {
     struct stat st;
-    dxb_stat_submit_io_t stat_submit;
-    int err = unlikely(!env) ? MDBX_EINVAL : dxb_storage_make_stat_submit_io(&stat_submit);
-    if (likely(err == MDBX_SUCCESS))
-      err = dxb_storage_stat_submit_io_validate(&stat_submit);
+    int err = unlikely(!env) ? MDBX_EINVAL : MDBX_SUCCESS;
     if (likely(err == MDBX_SUCCESS)) {
-      dxb_stat_result_t stat_result = dxb_storage_submit_stat(&env->dxb_storage, &stat_submit);
+      dxb_stat_result_t stat_result = dxb_storage_submit_stat(&env->dxb_storage);
       err = stat_result.err;
       if (likely(err == MDBX_SUCCESS))
         st = stat_result.st;

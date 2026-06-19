@@ -14846,6 +14846,29 @@ the six focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.104` batch, `1.173` crud, `0.987`
 iterate, `1.050` get, and `1.072` delete.
 
+A later stat/sysinfo cleanup removed `dxb_stat_submit_io_t`,
+`dxb_sysinfo_submit_io_t`, `dxb_storage_make_stat_submit_io()`,
+`dxb_storage_stat_submit_io_validate()`,
+`dxb_storage_make_sysinfo_submit_io()`, and
+`dxb_storage_sysinfo_submit_io_validate()` from `mdbx.c`. Stat and sysinfo
+fetches are now direct storage operations: close-time link checks, env-info
+queries, open-mode inheritance, DXB `fstat()` checks, SysV lock setup, and the
+POSIX branch of sysinfo fetching call `dxb_storage_submit_stat()` or
+`dxb_storage_submit_fetch_sysinfo()` without a one-bit fetch descriptor. The
+submitters validate the storage pointer themselves and preserve the existing
+submitted/completed result semantics around `fstat()` and platform sysinfo
+calls. Verification passed `git diff --check`, a source scan proving the
+removed stat/sysinfo submit helpers and old two-argument submit calls are
+absent from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks
+and tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and
+the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.129` batch, `1.163` crud, `0.827`
+iterate, `1.058` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
