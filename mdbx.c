@@ -8117,72 +8117,6 @@ static size_t estimate_rss(size_t database_bytes) {
   return database_bytes + database_bytes / 64 + (512 + MDBX_WORDBITS * 16) * MEGABYTE;
 }
 
-typedef struct dxb_warmup_force_read_submit_io {
-  const dxb_storage_t *storage;
-  dxb_page_io_t pages;
-  dxb_read_submit_io_t read;
-  void *buffer;
-  size_t buffer_bytes;
-} dxb_warmup_force_read_submit_io_t;
-
-static inline int warmup_make_force_read_submit_io(const dxb_storage_t *storage, const dxb_page_io_t *pages,
-                                                   void *buffer, size_t buffer_bytes,
-                                                   dxb_warmup_force_read_submit_io_t *io) {
-  if (unlikely(!storage || !pages || !buffer || !io || buffer_bytes == 0))
-    return MDBX_EINVAL;
-  int rc = dxb_storage_page_io_validate(storage, pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_data_read_io_t request;
-  rc = dxb_storage_make_data_read_io(storage, pages, &request);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(request.bytes.bytes > buffer_bytes))
-    return MDBX_EINVAL;
-
-  dxb_read_submit_io_t read;
-  rc = dxb_storage_make_read_submit_io(storage, &request, buffer, &read);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->storage = storage;
-  io->pages = *pages;
-  io->read = read;
-  io->buffer = buffer;
-  io->buffer_bytes = buffer_bytes;
-  return MDBX_SUCCESS;
-}
-
-static inline int warmup_force_read_submit_io_validate(const dxb_warmup_force_read_submit_io_t *io) {
-  if (unlikely(!io || !io->storage || !io->buffer || !io->read.buffer || io->buffer_bytes == 0))
-    return MDBX_EINVAL;
-  if (unlikely(io->read.buffer != io->buffer || io->read.data.bytes.bytes > io->buffer_bytes))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_read_submit_io_validate(io->storage, &io->read);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_warmup_force_read_submit_io_t checked;
-  rc = warmup_make_force_read_submit_io(io->storage, &io->pages, io->buffer, io->buffer_bytes, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.storage != io->storage || checked.buffer != io->buffer ||
-               checked.buffer_bytes != io->buffer_bytes || checked.pages.pgno != io->pages.pgno ||
-               checked.pages.end_pgno != io->pages.end_pgno || checked.pages.npages != io->pages.npages ||
-               checked.pages.offset != io->pages.offset || checked.pages.bytes != io->pages.bytes ||
-               checked.read.data.pages.pgno != io->read.data.pages.pgno ||
-               checked.read.data.pages.end_pgno != io->read.data.pages.end_pgno ||
-               checked.read.data.pages.npages != io->read.data.pages.npages ||
-               checked.read.data.pages.offset != io->read.data.pages.offset ||
-               checked.read.data.pages.bytes != io->read.data.pages.bytes ||
-               checked.read.data.bytes.offset != io->read.data.bytes.offset ||
-               checked.read.data.bytes.bytes != io->read.data.bytes.bytes || checked.read.buffer != io->read.buffer))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 static int warmup_force_read(const dxb_storage_t *storage, const dxb_page_io_t *range, uint64_t timeout_monotime) {
   int rc = dxb_storage_page_io_validate(storage, range);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -8221,12 +8155,17 @@ static int warmup_force_read(const dxb_storage_t *storage, const dxb_page_io_t *
     rc = dxb_storage_page_io(storage, scan.pgno + (pgno_t)offset_npages, npages, &request_pages);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
-    dxb_warmup_force_read_submit_io_t submit;
-    rc = warmup_make_force_read_submit_io(storage, &request_pages, buffer, chunk_bytes, &submit);
+    dxb_data_read_io_t request;
+    rc = dxb_storage_make_data_read_io(storage, &request_pages, &request);
+    if (likely(rc == MDBX_SUCCESS) && unlikely(request.bytes.bytes > chunk_bytes))
+      rc = MDBX_EINVAL;
+    dxb_read_submit_io_t read;
     if (likely(rc == MDBX_SUCCESS))
-      rc = warmup_force_read_submit_io_validate(&submit);
+      rc = dxb_storage_make_read_submit_io(storage, &request, buffer, &read);
     if (likely(rc == MDBX_SUCCESS))
-      rc = dxb_storage_submit_read_data(submit.storage, &submit.read).err;
+      rc = dxb_storage_read_submit_io_validate(storage, &read);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = dxb_storage_submit_read_data(storage, &read).err;
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     offset_npages += npages;

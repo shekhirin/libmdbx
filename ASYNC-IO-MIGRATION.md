@@ -14233,6 +14233,26 @@ six focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.104` batch, `1.131` crud, `1.013`
 iterate, `0.990` get, and `1.072` delete.
 
+A later warmup force-read descriptor cleanup removed
+`dxb_warmup_force_read_submit_io_t`,
+`warmup_make_force_read_submit_io()`, and
+`warmup_force_read_submit_io_validate()` from `mdbx.c`.
+`warmup_force_read()` now derives each scan chunk's `dxb_data_read_io_t`,
+builds the existing storage `dxb_read_submit_io_t`, validates that storage
+request, and submits through `dxb_storage_submit_read_data()` directly in the
+loop. This keeps forced warmup on explicit data-file storage reads without a
+warmup-local mirror descriptor. Verification passed `git diff --check`, a
+source scan proving the removed warmup force-read descriptor helpers are absent
+from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.108` batch, `1.131` crud, `1.013`
+iterate, `1.011` get, and `1.067` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
