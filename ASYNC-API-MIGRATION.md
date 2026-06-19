@@ -32,10 +32,10 @@ Implemented generic operation flow:
 
 Implemented benchmark-relevant typed wrappers:
 
-- transaction begin, commit, abort
+- transaction begin, commit, abort, read reset, read renew
 - DBI open
 - get, put, delete
-- cursor open, cursor get, cursor close
+- cursor open, cursor reset, cursor renew, cursor get, cursor close
 
 The typed `put`, `get`, and `del` wrappers copy key/data bytes needed by the
 worker before enqueueing. The first `put` wrapper rejects `MDBX_RESERVE` and
@@ -52,6 +52,9 @@ worker before enqueueing. The first `put` wrapper rejects `MDBX_RESERVE` and
 - The ioarena benchmarks still use the blocking API. They have not yet been
   ported to the async API, so current benchmark numbers measure the explicit
   I/O backend work, not async API throughput.
+- `ut_and_examples/async-api-bench.c` is an in-tree public-API benchmark for
+  parallel read operations. It is intentionally not a deterministic pass/fail
+  CTest gate.
 
 ## Benchmark Baseline
 
@@ -77,6 +80,44 @@ The current forced/default ratios inside the explicit `io_uring` run are:
 - get: 1.067
 - delete: 1.056
 
+## Async Read Benchmark
+
+Added `mdbx_async_api_bench`, which seeds a small database and compares three
+public C API read paths:
+
+- one blocking thread with one read transaction
+- multiple blocking pthread readers, each with its own read transaction
+- multiple async executors, each with its own read transaction, with a window of
+  in-flight `mdbx_async_get()` calls
+
+First local result using the default benchmark size:
+
+```text
+async-api-bench items=20000 ops=200000 workers=4 window=64
+blocking serial get           768.977 Kops/s
+blocking parallel get         367.762 Kops/s
+async parallel get            418.734 Kops/s
+async/blocking parallel         1.139
+async/blocking serial           0.545
+```
+
+Shorter forced no-map/tiny-cache run for smoke:
+
+```text
+async-api-bench items=20000 ops=30000 workers=4 window=64
+blocking serial get           762.418 Kops/s
+blocking parallel get         400.639 Kops/s
+async parallel get            429.438 Kops/s
+async/blocking parallel         1.072
+async/blocking serial           0.563
+```
+
+The normal run shows the async executor path can beat this benchmark's blocking
+pthread-parallel path for many submitted reads, but the result is not stable
+enough to make it a gate. The next optimization target is lowering per-operation
+allocation, key-copy, and condpair signaling overhead so async can also compete
+with hot serial reads and no-map runs.
+
 ## Validation
 
 Completed for this checkpoint:
@@ -91,3 +132,17 @@ Completed for this checkpoint:
 - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke`: passed
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional read-reuse and benchmark checkpoint:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `LD_LIBRARY_PATH=@cmake-ninja-build MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K @cmake-ninja-build/mdbx_async_api_smoke`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.139
+- `make -f GNUmakefile mdbx_async_api_bench_run MDBX_ASYNC_BENCH_OPS=30000`: passed, async/blocking-parallel ratio 1.114
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- `MDBX_ASYNC_BENCH_OPS=30000 LD_LIBRARY_PATH=@cmake-ninja-build MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.072
+- `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.067

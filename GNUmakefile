@@ -152,7 +152,7 @@ TIP        := // TIP:
 
 .PHONY: all help options lib libs tools clean install uninstall check_buildflags_tag tools-static run-ut
 .PHONY: mdbx_migration_smoke_nommap mdbx_migration_smoke_nommap_tinycache \
-	mdbx_async_api_smoke_nommap mdbx_async_api_smoke_nommap_tinycache \
+	mdbx_async_api_smoke_nommap mdbx_async_api_smoke_nommap_tinycache mdbx_async_api_bench_run \
 	mdbx_migration_smoke_stress_nommap_tinycache mdbx_migration_smoke_randomized_stress_nommap_tinycache \
 	mdbx_migration_smoke_crash_stress_nommap_tinycache \
 	mdbx_migration_extended_stress_nommap_tinycache \
@@ -220,6 +220,7 @@ help:
 	@echo "  make mdbx_migration_smoke_crash_stress_nommap_tinycache - run no-map crash/restart stress"
 	@echo "  make mdbx_migration_extended_stress_nommap_tinycache - repeat randomized and crash no-map stress"
 	@echo "  make mdbx_async_api_smoke_nommap_tinycache - run async C API no-map smoke"
+	@echo "  make mdbx_async_api_bench_run - run async C API read benchmark"
 	@echo "  make mdbx_migration_fault_injection_nommap - run no-map explicit I/O fault checks"
 	@echo "  make mdbx_migration_fault_injection_nommap_tinycache - run no-map fault checks with 64K cache"
 	@echo "  make mdbx_migration_public_ctest - run public CTest migration/API gates"
@@ -436,6 +437,14 @@ mdbx_async_api_smoke_nommap: mdbx_async_api_smoke
 mdbx_async_api_smoke_nommap_tinycache: mdbx_async_api_smoke
 	@echo '  RUN $@'
 	$(QUIET)MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=. ./mdbx_async_api_smoke
+
+mdbx_async_api_bench: mdbx.h ut_and_examples/async-api-bench.c libmdbx.$(SO_SUFFIX)
+	@echo '  CC+LD $@'
+	$(QUIET)$(CC) $(CFLAGS) -I. ut_and_examples/async-api-bench.c ./libmdbx.$(SO_SUFFIX) -o $@
+
+mdbx_async_api_bench_run: mdbx_async_api_bench
+	@echo '  RUN $@'
+	$(QUIET)LD_LIBRARY_PATH=. ./mdbx_async_api_bench
 
 mdbx_migration_smoke_nommap: mdbx_migration_smoke
 	@echo '  RUN $@'

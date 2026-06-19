@@ -181,6 +181,18 @@ int main(void) {
   unsigned seen = 0;
   MDBX_val cursor_key = val(NULL, 0);
   MDBX_val cursor_data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, cursor, &cursor_key, &cursor_data, MDBX_FIRST, &op));
+  CHECK_OP(op);
+  REQUIRE(cursor_key.iov_len == sizeof(uint64_t), "unexpected cursor key size before reset");
+  uint64_t first_key = 0;
+  memcpy(&first_key, cursor_key.iov_base, sizeof(first_key));
+  REQUIRE(first_key == 0, "unexpected cursor key before reset");
+  CHECK(expect_value(&cursor_data, first_key, __FILE__, __LINE__));
+
+  CHECK(mdbx_async_cursor_reset(async, cursor, &op));
+  CHECK_OP(op);
+  cursor_key = val(NULL, 0);
+  cursor_data = val(NULL, 0);
   for (;;) {
     int operation_rc = MDBX_SUCCESS;
     CHECK(mdbx_async_cursor_get(async, cursor, &cursor_key, &cursor_data, seen ? MDBX_NEXT : MDBX_FIRST, &op));
@@ -199,6 +211,23 @@ int main(void) {
     seen += 1;
   }
   REQUIRE(seen == ITEM_COUNT, "unexpected cursor item count");
+
+  CHECK(mdbx_async_txn_reset(async, txn, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_txn_renew(async, txn, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_cursor_renew(async, txn, cursor, &op));
+  CHECK_OP(op);
+
+  cursor_key = val(NULL, 0);
+  cursor_data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, cursor, &cursor_key, &cursor_data, MDBX_FIRST, &op));
+  CHECK_OP(op);
+  REQUIRE(cursor_key.iov_len == sizeof(uint64_t), "unexpected renewed cursor key size");
+  first_key = 0;
+  memcpy(&first_key, cursor_key.iov_base, sizeof(first_key));
+  REQUIRE(first_key == 0, "unexpected renewed cursor key");
+  CHECK(expect_value(&cursor_data, first_key, __FILE__, __LINE__));
 
   CHECK(mdbx_async_cursor_close(async, cursor, &op));
   CHECK_OP(op);

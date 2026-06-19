@@ -32,6 +32,11 @@ target_link_libraries(mdbx_migration_smoke ${MDBX_LIBRARY})
 add_executable(mdbx_async_api_smoke async-api-smoke.c)
 target_link_libraries(mdbx_async_api_smoke ${MDBX_LIBRARY})
 
+if(UNIX)
+  add_executable(mdbx_async_api_bench async-api-bench.c)
+  target_link_libraries(mdbx_async_api_bench ${MDBX_LIBRARY} Threads::Threads)
+endif()
+
 add_executable(mdbx_migration_smoke_stress migration-smoke.c)
 target_compile_definitions(mdbx_migration_smoke_stress
                            PRIVATE MULTIPROCESS_STRESS_READERS=4 MULTIPROCESS_STRESS_WRITERS=4

@@ -4634,6 +4634,16 @@ LIBMDBX_API int mdbx_async_txn_commit(MDBX_async *async, MDBX_txn *txn, MDBX_com
 LIBMDBX_API int mdbx_async_txn_abort(MDBX_async *async, MDBX_txn *txn, MDBX_commit_latency *latency,
                                      MDBX_async_op **op);
 
+/** \brief Asynchronously reset a read-only transaction for later reuse.
+ * \ingroup c_async
+ * \see mdbx_txn_reset() */
+LIBMDBX_API int mdbx_async_txn_reset(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **op);
+
+/** \brief Asynchronously renew a reset read-only transaction.
+ * \ingroup c_async
+ * \see mdbx_txn_renew() */
+LIBMDBX_API int mdbx_async_txn_renew(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **op);
+
 /** \brief Asynchronously open a DBI handle.
  * \ingroup c_async
  * \see mdbx_dbi_open() */
@@ -4669,6 +4679,17 @@ LIBMDBX_API int mdbx_async_del(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, c
  * \see mdbx_cursor_open() */
 LIBMDBX_API int mdbx_async_cursor_open(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, MDBX_cursor **cursor,
                                        MDBX_async_op **op);
+
+/** \brief Asynchronously reset a cursor.
+ * \ingroup c_async
+ * \see mdbx_cursor_reset() */
+LIBMDBX_API int mdbx_async_cursor_reset(MDBX_async *async, MDBX_cursor *cursor, MDBX_async_op **op);
+
+/** \brief Asynchronously renew a cursor for a read-only transaction.
+ * \ingroup c_async
+ * \see mdbx_cursor_renew() */
+LIBMDBX_API int mdbx_async_cursor_renew(MDBX_async *async, MDBX_txn *txn, MDBX_cursor *cursor,
+                                        MDBX_async_op **op);
 
 /** \brief Asynchronously get an item through a cursor.
  * \ingroup c_async
