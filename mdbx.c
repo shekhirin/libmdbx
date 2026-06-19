@@ -6274,25 +6274,18 @@ static inline int cursor_stack_release_submit_io_validate(const dxb_cursor_stack
   return MDBX_SUCCESS;
 }
 
-static inline int cursor_submit_stack_release(const dxb_cursor_stack_release_submit_io_t *io) {
-  int err = cursor_stack_release_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  MDBX_cursor *const mc = io->cursor;
-  page_ref_t old = io->ref;
-  mc->pg[io->slot] = nullptr;
-  mc->pgref[io->slot] = page_ref_empty();
-  cursor_ref_release(mc, &old);
-  return MDBX_SUCCESS;
-}
-
 static inline void cursor_stack_release_slot(MDBX_cursor *mc, intptr_t i) {
   dxb_cursor_stack_release_submit_io_t submit;
   int err = cursor_make_stack_release_submit_io(mc, i, &submit);
   cASSERT0(mc, err == MDBX_SUCCESS);
   if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_submit_stack_release(&submit);
+    err = cursor_stack_release_submit_io_validate(&submit);
+    if (likely(err == MDBX_SUCCESS)) {
+      page_ref_t old = submit.ref;
+      submit.cursor->pg[submit.slot] = nullptr;
+      submit.cursor->pgref[submit.slot] = page_ref_empty();
+      cursor_ref_release(submit.cursor, &old);
+    }
     cASSERT0(mc, err == MDBX_SUCCESS);
   }
 }
@@ -6324,22 +6317,15 @@ static inline int cursor_stack_release_from_submit_io_validate(const dxb_cursor_
   return MDBX_SUCCESS;
 }
 
-static inline int cursor_submit_stack_release_from(const dxb_cursor_stack_release_from_submit_io_t *io) {
-  int err = cursor_stack_release_from_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  for (intptr_t i = io->first; i < CURSOR_STACK_SIZE; ++i)
-    cursor_stack_release_slot(io->cursor, i);
-  return MDBX_SUCCESS;
-}
-
 static inline void cursor_stack_release_from(MDBX_cursor *mc, intptr_t first) {
   dxb_cursor_stack_release_from_submit_io_t submit;
   int err = cursor_make_stack_release_from_submit_io(mc, first, &submit);
   cASSERT0(mc, err == MDBX_SUCCESS);
   if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_submit_stack_release_from(&submit);
+    err = cursor_stack_release_from_submit_io_validate(&submit);
+    if (likely(err == MDBX_SUCCESS))
+      for (intptr_t i = submit.first; i < CURSOR_STACK_SIZE; ++i)
+        cursor_stack_release_slot(submit.cursor, i);
     cASSERT0(mc, err == MDBX_SUCCESS);
   }
 }
@@ -6398,24 +6384,18 @@ cursor_rebalance_refs_release_submit_io_validate(const dxb_cursor_rebalance_refs
   return MDBX_SUCCESS;
 }
 
-static inline int cursor_submit_rebalance_refs_release(const dxb_cursor_rebalance_refs_release_submit_io_t *io) {
-  int err = cursor_rebalance_refs_release_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  cursor_ref_release(io->cursor, io->left_ref);
-  cursor_ref_release(io->cursor, io->right_ref);
-  cursor_stack_release_all(io->neighbor);
-  return MDBX_SUCCESS;
-}
-
 static inline void cursor_rebalance_refs_release(MDBX_cursor *mc, MDBX_cursor *mn, page_t *left, page_ref_t *left_ref,
                                                  page_t *right, page_ref_t *right_ref) {
   dxb_cursor_rebalance_refs_release_submit_io_t submit;
   int err = cursor_make_rebalance_refs_release_submit_io(mc, mn, left, left_ref, right, right_ref, &submit);
   cASSERT0(mc, err == MDBX_SUCCESS);
   if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_submit_rebalance_refs_release(&submit);
+    err = cursor_rebalance_refs_release_submit_io_validate(&submit);
+    if (likely(err == MDBX_SUCCESS)) {
+      cursor_ref_release(submit.cursor, submit.left_ref);
+      cursor_ref_release(submit.cursor, submit.right_ref);
+      cursor_stack_release_all(submit.neighbor);
+    }
     cASSERT0(mc, err == MDBX_SUCCESS);
   }
 }
@@ -6466,25 +6446,18 @@ cursor_rebalance_neighbor_set_submit_io_validate(const dxb_cursor_rebalance_neig
   return MDBX_SUCCESS;
 }
 
-static inline int cursor_submit_rebalance_neighbor_set(const dxb_cursor_rebalance_neighbor_set_submit_io_t *io) {
-  int err = cursor_rebalance_neighbor_set_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  MDBX_cursor *const mn = io->neighbor;
-  cursor_stack_set(mn, io->slot, io->page, io->ref);
-  mn->ki[io->slot - 1] = io->parent_ki;
-  mn->ki[io->slot] = io->top_ki;
-  return MDBX_SUCCESS;
-}
-
 static inline int cursor_rebalance_neighbor_set(MDBX_cursor *mn, page_t *page, page_ref_t ref, indx_t parent_ki,
                                                 indx_t top_ki) {
   dxb_cursor_rebalance_neighbor_set_submit_io_t submit;
   int err = cursor_make_rebalance_neighbor_set_submit_io(mn, page, ref, parent_ki, top_ki, &submit);
   cASSERT0(mn, err == MDBX_SUCCESS);
   if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_submit_rebalance_neighbor_set(&submit);
+    err = cursor_rebalance_neighbor_set_submit_io_validate(&submit);
+    if (likely(err == MDBX_SUCCESS)) {
+      cursor_stack_set(submit.neighbor, submit.slot, submit.page, submit.ref);
+      submit.neighbor->ki[submit.slot - 1] = submit.parent_ki;
+      submit.neighbor->ki[submit.slot] = submit.top_ki;
+    }
     cASSERT0(mn, err == MDBX_SUCCESS);
   }
   return err;

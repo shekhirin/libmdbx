@@ -13526,6 +13526,27 @@ for this ptrace-limited environment. The paired `mdbx_migration_bench_lazy`
 gate passed with forced/default ratios of `1.099` batch, `1.146` crud, `1.015`
 iterate, `0.962` get, and `1.068` delete.
 
+A later cursor stack/rebalance submit-boundary cleanup removed the one-call
+`cursor_submit_stack_release()`, `cursor_submit_stack_release_from()`,
+`cursor_submit_rebalance_refs_release()`, and
+`cursor_submit_rebalance_neighbor_set()` helpers from `mdbx.c`. Cursor stack
+slot release, stack-tail release, rebalance temporary-ref cleanup, and
+rebalance neighbor stack installation now validate their prepared descriptors
+at the local cursor ownership site, then release refs, clear stack slots, or
+install the neighbor page directly. This keeps cursor stack pin lifetime and
+rebalance ref transfer decisions adjacent to the page-cache refs they mutate.
+Verification passed `git diff --check`, source scans proving the removed cursor
+stack/rebalance submit helpers are absent from `mdbx.c` and the public/internal
+headers, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`
+for this ptrace-limited environment. The paired `mdbx_migration_bench_lazy`
+gate passed with forced/default ratios of `1.097` batch, `1.141` crud, `1.156`
+iterate, `0.936` get, and `1.062` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
