@@ -48,6 +48,21 @@ struct cursor_batch_worker {
   int rc;
 };
 
+struct cursor_scan_worker {
+  MDBX_env *env;
+  MDBX_dbi dbi;
+  size_t items;
+  size_t target_pairs;
+  size_t completed_pairs;
+  int rc;
+};
+
+struct cursor_scan_check {
+  size_t items;
+  size_t target_pairs;
+  size_t checked_pairs;
+};
+
 struct async_cursor_batch_check {
   size_t items;
 };
@@ -414,6 +429,26 @@ static int expect_cursor_batch(const MDBX_val *pairs, size_t count, size_t items
       return rc;
   }
   return MDBX_SUCCESS;
+}
+
+static int cursor_scan_check_func(void *context, MDBX_val *key, MDBX_val *value, void *arg) {
+  (void)arg;
+  struct cursor_scan_check *const check = (struct cursor_scan_check *)context;
+  if (!check || !key || !value)
+    return fail_msg("missing cursor scan predicate state", __FILE__, __LINE__);
+  if (check->checked_pairs >= check->target_pairs)
+    return MDBX_RESULT_TRUE;
+  if (key->iov_len != sizeof(uint64_t))
+    return fail_msg("unexpected cursor scan key size", __FILE__, __LINE__);
+  uint64_t actual_key = 0;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  if (actual_key >= check->items)
+    return fail_msg("unexpected cursor scan key", __FILE__, __LINE__);
+  int rc = expect_value(value, actual_key, __FILE__, __LINE__);
+  if (rc != MDBX_SUCCESS)
+    return rc;
+  check->checked_pairs += 1;
+  return check->checked_pairs >= check->target_pairs ? MDBX_RESULT_TRUE : MDBX_RESULT_FALSE;
 }
 
 static int async_cursor_batch_check_func(void *context, const MDBX_val *pairs, size_t count) {
@@ -2513,6 +2548,124 @@ static double blocking_parallel_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t
   return (double)completed_pairs * 1000000000.0 / (double)(finish - start);
 }
 
+static int blocking_cursor_scan_loop(MDBX_cursor *cursor, size_t items, size_t target_pairs,
+                                     size_t *completed_pairs) {
+  if (!items)
+    return fail_msg("cursor scan requires a non-empty table", __FILE__, __LINE__);
+
+  int rc = MDBX_SUCCESS;
+  *completed_pairs = 0;
+  while (*completed_pairs < target_pairs) {
+    const size_t remaining = target_pairs - *completed_pairs;
+    const size_t chunk = remaining < items ? remaining : items;
+    struct cursor_scan_check check = {items, chunk, 0};
+    rc = mdbx_cursor_scan(cursor, cursor_scan_check_func, &check, MDBX_FIRST, MDBX_NEXT, NULL);
+    if (rc != MDBX_RESULT_TRUE) {
+      rc = fail_rc("mdbx_cursor_scan", rc, __FILE__, __LINE__);
+      goto bailout;
+    }
+    if (check.checked_pairs != chunk) {
+      rc = fail_msg("unexpected cursor scan count", __FILE__, __LINE__);
+      goto bailout;
+    }
+    *completed_pairs += check.checked_pairs;
+  }
+  rc = MDBX_SUCCESS;
+
+bailout:
+  return rc;
+}
+
+static double blocking_serial_cursor_scan(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs) {
+  MDBX_txn *txn = NULL;
+  MDBX_cursor *cursor = NULL;
+  int rc = mdbx_txn_begin(env, NULL, MDBX_TXN_RDONLY, &txn);
+  if (rc != MDBX_SUCCESS)
+    return -1.0;
+  rc = mdbx_cursor_open(txn, dbi, &cursor);
+  if (rc != MDBX_SUCCESS) {
+    (void)mdbx_txn_abort(txn);
+    return -1.0;
+  }
+
+  size_t completed_pairs = 0;
+  const uint64_t start = monotime_ns();
+  rc = blocking_cursor_scan_loop(cursor, items, target_pairs, &completed_pairs);
+  const uint64_t finish = monotime_ns();
+  const int close_rc = mdbx_cursor_close2(cursor);
+  const int abort_rc = mdbx_txn_abort(txn);
+  if (rc != MDBX_SUCCESS || close_rc != MDBX_SUCCESS || abort_rc != MDBX_SUCCESS || finish <= start)
+    return -1.0;
+  return (double)completed_pairs * 1000000000.0 / (double)(finish - start);
+}
+
+static void *cursor_scan_worker_main(void *arg) {
+  struct cursor_scan_worker *const worker = (struct cursor_scan_worker *)arg;
+  MDBX_txn *txn = NULL;
+  MDBX_cursor *cursor = NULL;
+  worker->completed_pairs = 0;
+  worker->rc = mdbx_txn_begin(worker->env, NULL, MDBX_TXN_RDONLY, &txn);
+  if (worker->rc == MDBX_SUCCESS)
+    worker->rc = mdbx_cursor_open(txn, worker->dbi, &cursor);
+  if (worker->rc == MDBX_SUCCESS)
+    worker->rc = blocking_cursor_scan_loop(cursor, worker->items, worker->target_pairs,
+                                           &worker->completed_pairs);
+  if (cursor) {
+    const int rc = mdbx_cursor_close2(cursor);
+    if (worker->rc == MDBX_SUCCESS)
+      worker->rc = rc;
+  }
+  if (txn) {
+    const int rc = mdbx_txn_abort(txn);
+    if (worker->rc == MDBX_SUCCESS)
+      worker->rc = rc;
+  }
+  return NULL;
+}
+
+static double blocking_parallel_cursor_scan(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs,
+                                            size_t workers_count) {
+  pthread_t *threads = calloc(workers_count, sizeof(*threads));
+  struct cursor_scan_worker *workers = calloc(workers_count, sizeof(*workers));
+  if (!threads || !workers) {
+    free(threads);
+    free(workers);
+    return -1.0;
+  }
+
+  const size_t base_pairs = target_pairs / workers_count;
+  const size_t extra_pairs = target_pairs % workers_count;
+  int failed = 0;
+  const uint64_t start = monotime_ns();
+  for (size_t i = 0; i < workers_count; ++i) {
+    workers[i].env = env;
+    workers[i].dbi = dbi;
+    workers[i].items = items;
+    workers[i].target_pairs = base_pairs + (i < extra_pairs);
+    const int rc = pthread_create(&threads[i], NULL, cursor_scan_worker_main, &workers[i]);
+    if (rc != 0) {
+      workers[i].rc = rc;
+      failed = 1;
+      workers_count = i;
+      break;
+    }
+  }
+
+  size_t completed_pairs = 0;
+  for (size_t i = 0; i < workers_count; ++i) {
+    const int rc = pthread_join(threads[i], NULL);
+    completed_pairs += workers[i].completed_pairs;
+    if (rc != 0 || workers[i].rc != MDBX_SUCCESS)
+      failed = 1;
+  }
+  const uint64_t finish = monotime_ns();
+  free(threads);
+  free(workers);
+  if (failed || completed_pairs == 0 || finish <= start)
+    return -1.0;
+  return (double)completed_pairs * 1000000000.0 / (double)(finish - start);
+}
+
 static int async_worker_init(MDBX_env *env, struct async_worker *worker, MDBX_dbi dbi, size_t window) {
   int rc;
   MDBX_async_op *op = NULL;
@@ -3746,6 +3899,109 @@ bailout:
   return -1.0;
 }
 
+static int async_cursor_scan_worker_init(MDBX_env *env, struct async_worker *worker, MDBX_dbi dbi) {
+  int rc;
+  MDBX_async_op *op = NULL;
+  CHECK(async_worker_init(env, worker, dbi, 1));
+  CHECK(mdbx_async_cursor_open(worker->async, worker->txn, dbi, &worker->cursor, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  return MDBX_SUCCESS;
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  return rc ? rc : MDBX_PROBLEM;
+}
+
+static double async_parallel_cursor_scan(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs,
+                                         size_t workers_count) {
+  struct async_worker *workers = calloc(workers_count, sizeof(*workers));
+  struct cursor_scan_check *checks = calloc(workers_count, sizeof(*checks));
+  size_t *targets = calloc(workers_count, sizeof(*targets));
+  size_t *completed = calloc(workers_count, sizeof(*completed));
+  if (!workers || !checks || !targets || !completed) {
+    free(completed);
+    free(targets);
+    free(checks);
+    free(workers);
+    return -1.0;
+  }
+  for (size_t i = 0; i < workers_count; ++i) {
+    if (async_cursor_scan_worker_init(env, &workers[i], dbi) != MDBX_SUCCESS) {
+      workers_count = i + 1;
+      goto bailout;
+    }
+  }
+
+  const size_t base_pairs = target_pairs / workers_count;
+  const size_t extra_pairs = target_pairs % workers_count;
+  for (size_t i = 0; i < workers_count; ++i)
+    targets[i] = base_pairs + (i < extra_pairs);
+
+  int rc = MDBX_SUCCESS;
+  size_t completed_pairs = 0;
+  const uint64_t start = monotime_ns();
+  while (completed_pairs < target_pairs) {
+    for (size_t i = 0; i < workers_count; ++i) {
+      if (completed[i] >= targets[i])
+        continue;
+      const size_t remaining = targets[i] - completed[i];
+      const size_t chunk = remaining < items ? remaining : items;
+      checks[i].items = items;
+      checks[i].target_pairs = chunk;
+      checks[i].checked_pairs = 0;
+      rc = mdbx_async_cursor_scan(workers[i].async, workers[i].cursor, cursor_scan_check_func, &checks[i],
+                                  MDBX_FIRST, MDBX_NEXT, NULL, &workers[i].ops[0]);
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
+      workers[i].pending = 1;
+    }
+
+    for (size_t i = 0; i < workers_count; ++i) {
+      if (!workers[i].pending)
+        continue;
+      int operation_rc = MDBX_SUCCESS;
+      rc = wait_success(&workers[i].ops[0], &operation_rc, __FILE__, __LINE__);
+      workers[i].pending = 0;
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
+      if (operation_rc != MDBX_RESULT_TRUE) {
+        rc = fail_rc("mdbx_async_cursor_scan", operation_rc, __FILE__, __LINE__);
+        goto bailout;
+      }
+      if (checks[i].checked_pairs != checks[i].target_pairs) {
+        rc = fail_msg("unexpected async cursor scan count", __FILE__, __LINE__);
+        goto bailout;
+      }
+      completed[i] += checks[i].checked_pairs;
+      completed_pairs += checks[i].checked_pairs;
+    }
+  }
+  const uint64_t finish = monotime_ns();
+  for (size_t i = 0; i < workers_count; ++i)
+    async_worker_destroy(&workers[i]);
+  free(completed);
+  free(targets);
+  free(checks);
+  free(workers);
+  if (completed_pairs == 0 || finish <= start)
+    return -1.0;
+  return (double)completed_pairs * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  for (size_t i = 0; i < workers_count; ++i) {
+    if (workers[i].ops && workers[i].ops[0])
+      (void)wait_success(&workers[i].ops[0], NULL, __FILE__, __LINE__);
+    async_worker_destroy(&workers[i]);
+  }
+  free(completed);
+  free(targets);
+  free(checks);
+  free(workers);
+  (void)rc;
+  return -1.0;
+}
+
 static void print_rate(const char *label, double rate) {
   if (rate <= 0.0)
     printf("%-28s failed\n", label);
@@ -3819,6 +4075,9 @@ int main(void) {
       async_parallel_cursor_batch(env, dbi, items, cursor_pairs, workers, cursor_batch_pairs);
   const double async_loop_cursor_parallel =
       async_loop_cursor_batch(env, dbi, items, cursor_pairs, workers, cursor_batch_pairs);
+  const double blocking_cursor_scan_serial = blocking_serial_cursor_scan(env, dbi, items, cursor_pairs);
+  const double blocking_cursor_scan_parallel = blocking_parallel_cursor_scan(env, dbi, items, cursor_pairs, workers);
+  const double async_cursor_scan_parallel = async_parallel_cursor_scan(env, dbi, items, cursor_pairs, workers);
   const double blocking_put = blocking_write_put(env, dbi, items, write_ops);
   const double async_put = async_window_put(env, dbi, items, write_ops, window);
   const double async_put_batch = async_batch_put(env, dbi, items, write_ops, write_batch);
@@ -3898,6 +4157,9 @@ int main(void) {
   print_rate("parallel cursor batch", blocking_cursor_parallel);
   print_rate("async cursor batch", async_cursor_parallel);
   print_rate("async cursor loop", async_loop_cursor_parallel);
+  print_rate("blocking cursor scan", blocking_cursor_scan_serial);
+  print_rate("parallel cursor scan", blocking_cursor_scan_parallel);
+  print_rate("async cursor scan", async_cursor_scan_parallel);
   print_rate("blocking write put", blocking_put);
   print_rate("async write put", async_put);
   print_rate("async batch write put", async_put_batch);
@@ -4014,6 +4276,12 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-loop-cursor/par", async_loop_cursor_parallel / blocking_cursor_parallel);
   if (blocking_cursor_serial > 0.0 && async_loop_cursor_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-loop-cursor/ser", async_loop_cursor_parallel / blocking_cursor_serial);
+  if (blocking_cursor_scan_parallel > 0.0 && async_cursor_scan_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-cursor-scan/par", async_cursor_scan_parallel / blocking_cursor_scan_parallel);
+  if (blocking_cursor_scan_serial > 0.0 && async_cursor_scan_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-cursor-scan/ser", async_cursor_scan_parallel / blocking_cursor_scan_serial);
+  if (async_loop_cursor_parallel > 0.0 && async_cursor_scan_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-scan/cursor-loop", async_cursor_scan_parallel / async_loop_cursor_parallel);
   if (blocking_put > 0.0 && async_put > 0.0)
     printf("%-28s %8.3f\n", "async-put/blocking put", async_put / blocking_put);
   if (blocking_put > 0.0 && async_put_batch > 0.0)
