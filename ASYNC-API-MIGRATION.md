@@ -3122,3 +3122,37 @@ Additional extended GET many-submit benchmark checkpoint:
   remain faster than the many-submit APIs for the extended GET variants, which
   gives a concrete direction for callers that can keep arrays live until batch
   completion.
+
+Additional extended GET worker-loop benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` with parallel worker-side loop
+  measurements for `mdbx_async_get_ex_loop()` and
+  `mdbx_async_get_equal_or_great_loop()`, using the same key generation and
+  worker split as the existing `mdbx_async_get_loop()` benchmark.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking parallel get
+  624.083 Kops/s, async get loop 927.023 Kops/s, async get_ex loop
+  919.046 Kops/s, and async lowerbound loop 735.121 Kops/s. Ratios were
+  async-loop/blocking-parallel 1.485, async-get-ex-loop/par 1.473, and
+  async-lower-loop/par 1.178.
+- in this sample, the worker-side extended loops were the strongest extended
+  GET shape: async-get-ex-batch/loop 0.491 and async-lower-batch/loop 0.840.
+  That keeps the benchmark evidence aligned with the original parallel-heavy
+  GET goal while documenting the expected caller tradeoff: callback-driven loop
+  APIs avoid per-item handle traffic but require worker-thread callbacks.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=179 async-covered=132 async-only=47 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the benchmark now covers all public async GET submission shapes
+  for plain, extended, and lower-bound reads: per-item, many-submit, batch,
+  callback batch, and worker-side loop. The extended loop paths are above the
+  blocking-parallel GET sample here, but full goal completion remains open
+  because write-heavy end-to-end migration benchmarks still trail the old
+  baseline in prior logged runs.
