@@ -616,18 +616,15 @@ int main(void) {
   CHECK_OP(op);
   REQUIRE(env_info.mi_dxb_pagesize != 0, "async environment info returned empty page size");
 
-  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
-  CHECK_OP(op);
-  REQUIRE(txn != NULL, "write transaction was not returned");
-
   int txn_userctx_a = 51;
   int txn_userctx_b = 52;
   void *txn_context = NULL;
-  CHECK(mdbx_async_txn_set_userctx(async, txn, &txn_userctx_a, &op));
+  CHECK(mdbx_async_txn_begin_ex(async, NULL, 0, &txn, &txn_userctx_a, &op));
   CHECK_OP(op);
+  REQUIRE(txn != NULL, "write transaction was not returned");
   CHECK(mdbx_async_txn_get_userctx(async, txn, &txn_context, &op));
   CHECK_OP(op);
-  REQUIRE(txn_context == &txn_userctx_a, "unexpected async transaction context");
+  REQUIRE(txn_context == &txn_userctx_a, "unexpected initial async transaction context");
   CHECK(mdbx_async_txn_set_userctx(async, txn, &txn_userctx_b, &op));
   CHECK_OP(op);
   txn_context = NULL;
@@ -1400,14 +1397,14 @@ int main(void) {
   CHECK(expect_value(&cursor_data, first_key, __FILE__, __LINE__));
 
   size_t released_cursor_count = 0;
-  CHECK(mdbx_async_txn_release_all_cursors(async, txn, true, &released_cursor_count, &op));
+  CHECK(mdbx_async_txn_release_all_cursors_ex(async, txn, true, &released_cursor_count, &op));
   CHECK_OP(op);
   REQUIRE(released_cursor_count == 1, "unexpected async release-all cursor count");
   CHECK(mdbx_async_cursor_close(async, cursor, &op));
   CHECK_OP(op);
   cursor = NULL;
 
-  CHECK(mdbx_async_txn_abort(async, txn, NULL, &op));
+  CHECK(mdbx_async_txn_abort_ex(async, txn, NULL, &op));
   CHECK_OP(op);
   txn = NULL;
 
@@ -1503,11 +1500,13 @@ int main(void) {
   REQUIRE(txn_context == &txn_userctx_b, "unexpected amended transaction context");
   CHECK(mdbx_async_put(async, txn, dbi, &amend_key_value, &amend_put_value, 0, &op));
   CHECK_OP(op);
-  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  MDBX_commit_latency commit_latency;
+  memset(&commit_latency, 0, sizeof(commit_latency));
+  CHECK(mdbx_async_txn_commit_ex(async, txn, &commit_latency, &op));
   CHECK_OP(op);
   txn = NULL;
 
-  CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
+  CHECK(mdbx_async_txn_begin_ex(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
   CHECK_OP(op);
   MDBX_val amend_data = val(NULL, 0);
   CHECK(mdbx_async_get(async, txn, dbi, &amend_key_value, &amend_data, &op));
@@ -1515,7 +1514,7 @@ int main(void) {
   CHECK(expect_payload(&amend_data, amend_value, __FILE__, __LINE__));
   CHECK(mdbx_async_txn_break(async, txn, &op));
   CHECK_OP(op);
-  CHECK(mdbx_async_txn_abort(async, txn, NULL, &op));
+  CHECK(mdbx_async_txn_abort_ex(async, txn, NULL, &op));
   CHECK_OP(op);
   txn = NULL;
 

@@ -4927,6 +4927,13 @@ LIBMDBX_API int mdbx_async_env_get_valsize4page_max(MDBX_async *async, MDBX_db_f
 LIBMDBX_API int mdbx_async_txn_begin(MDBX_async *async, MDBX_txn *parent, MDBX_txn_flags_t flags, MDBX_txn **txn,
                                      void *context, MDBX_async_op **op);
 
+/** \brief Asynchronously create a transaction with user context.
+ * \ingroup c_async
+ * \details Naming-compatible alias for \ref mdbx_async_txn_begin().
+ * \see mdbx_txn_begin_ex() */
+LIBMDBX_API int mdbx_async_txn_begin_ex(MDBX_async *async, MDBX_txn *parent, MDBX_txn_flags_t flags,
+                                        MDBX_txn **txn, void *context, MDBX_async_op **op);
+
 /** \brief Asynchronously clone a transaction.
  * \ingroup c_async
  * \see mdbx_txn_clone() */
@@ -4972,6 +4979,13 @@ LIBMDBX_API int mdbx_async_txn_straggler(MDBX_async *async, const MDBX_txn *txn,
 LIBMDBX_API int mdbx_async_txn_commit(MDBX_async *async, MDBX_txn *txn, MDBX_commit_latency *latency,
                                       MDBX_async_op **op);
 
+/** \brief Asynchronously commit a transaction with latency output.
+ * \ingroup c_async
+ * \details Naming-compatible alias for \ref mdbx_async_txn_commit().
+ * \see mdbx_txn_commit_ex() */
+LIBMDBX_API int mdbx_async_txn_commit_ex(MDBX_async *async, MDBX_txn *txn,
+                                         MDBX_commit_latency *latency, MDBX_async_op **op);
+
 /** \brief Asynchronously commit and continue the transaction.
  * \ingroup c_async
  * \see mdbx_txn_checkpoint() */
@@ -5001,6 +5015,13 @@ LIBMDBX_API int mdbx_async_txn_rollback(MDBX_async *async, MDBX_txn *txn, MDBX_a
  * \see mdbx_txn_abort_ex() */
 LIBMDBX_API int mdbx_async_txn_abort(MDBX_async *async, MDBX_txn *txn, MDBX_commit_latency *latency,
                                      MDBX_async_op **op);
+
+/** \brief Asynchronously abort a transaction with latency output.
+ * \ingroup c_async
+ * \details Naming-compatible alias for \ref mdbx_async_txn_abort().
+ * \see mdbx_txn_abort_ex() */
+LIBMDBX_API int mdbx_async_txn_abort_ex(MDBX_async *async, MDBX_txn *txn,
+                                        MDBX_commit_latency *latency, MDBX_async_op **op);
 
 /** \brief Asynchronously mark a transaction as broken.
  * \ingroup c_async
@@ -5479,6 +5500,13 @@ LIBMDBX_API int mdbx_async_cursor_close(MDBX_async *async, MDBX_cursor *cursor, 
  * \see mdbx_txn_release_all_cursors_ex() */
 LIBMDBX_API int mdbx_async_txn_release_all_cursors(MDBX_async *async, const MDBX_txn *txn, bool unbind,
                                                    size_t *count, MDBX_async_op **op);
+
+/** \brief Asynchronously unbind or close all cursors of a transaction.
+ * \ingroup c_async
+ * \details Naming-compatible alias for \ref mdbx_async_txn_release_all_cursors().
+ * \see mdbx_txn_release_all_cursors_ex() */
+LIBMDBX_API int mdbx_async_txn_release_all_cursors_ex(MDBX_async *async, const MDBX_txn *txn, bool unbind,
+                                                      size_t *count, MDBX_async_op **op);
 
 /** \brief Asynchronously copy a transaction snapshot to a path.
  * \ingroup c_async

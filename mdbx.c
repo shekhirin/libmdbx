@@ -17523,6 +17523,11 @@ int mdbx_async_txn_begin(MDBX_async *async, MDBX_txn *parent, MDBX_txn_flags_t f
   return rc;
 }
 
+int mdbx_async_txn_begin_ex(MDBX_async *async, MDBX_txn *parent, MDBX_txn_flags_t flags, MDBX_txn **txn,
+                            void *context, MDBX_async_op **out) {
+  return mdbx_async_txn_begin(async, parent, flags, txn, context, out);
+}
+
 int mdbx_async_txn_clone(MDBX_async *async, const MDBX_txn *origin, MDBX_txn **clone, void *context,
                          MDBX_async_op **out) {
   if (unlikely(!origin || !clone))
@@ -17650,6 +17655,11 @@ int mdbx_async_txn_commit(MDBX_async *async, MDBX_txn *txn, MDBX_commit_latency 
   return rc;
 }
 
+int mdbx_async_txn_commit_ex(MDBX_async *async, MDBX_txn *txn, MDBX_commit_latency *latency,
+                             MDBX_async_op **out) {
+  return mdbx_async_txn_commit(async, txn, latency, out);
+}
+
 int mdbx_async_txn_checkpoint(MDBX_async *async, MDBX_txn *txn, MDBX_txn_flags_t weakening_durability,
                               MDBX_commit_latency *latency, MDBX_async_op **out) {
   if (unlikely(!txn))
@@ -17738,6 +17748,11 @@ int mdbx_async_txn_abort(MDBX_async *async, MDBX_txn *txn, MDBX_commit_latency *
     osal_free(op);
   }
   return rc;
+}
+
+int mdbx_async_txn_abort_ex(MDBX_async *async, MDBX_txn *txn, MDBX_commit_latency *latency,
+                            MDBX_async_op **out) {
+  return mdbx_async_txn_abort(async, txn, latency, out);
 }
 
 int mdbx_async_txn_break(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **out) {
@@ -17866,6 +17881,11 @@ int mdbx_async_txn_release_all_cursors(MDBX_async *async, const MDBX_txn *txn, b
     osal_free(op);
   }
   return rc;
+}
+
+int mdbx_async_txn_release_all_cursors_ex(MDBX_async *async, const MDBX_txn *txn, bool unbind, size_t *count,
+                                          MDBX_async_op **out) {
+  return mdbx_async_txn_release_all_cursors(async, txn, unbind, count, out);
 }
 
 static int async_txn_copy_path_submit(MDBX_async *async, MDBX_txn *txn, const void *dest, MDBX_copy_flags_t flags,

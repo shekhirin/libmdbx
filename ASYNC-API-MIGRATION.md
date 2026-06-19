@@ -997,3 +997,23 @@ Additional custom-comparator DBI open checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.024, async-batch/blocking-parallel ratio 1.027, and async-cursor/blocking-parallel ratio 1.141
+
+Additional transaction extended-name alias checkpoint:
+
+- added async naming-compatible aliases for extended transaction helpers:
+  `mdbx_async_txn_begin_ex()`, `mdbx_async_txn_commit_ex()`,
+  `mdbx_async_txn_abort_ex()`, and
+  `mdbx_async_txn_release_all_cursors_ex()`
+- the aliases forward to the existing async transaction implementations, whose
+  signatures already carried context, latency, or cursor-count outputs
+- smoke coverage now starts a transaction through the begin-ex alias with an
+  initial user context, releases all cursors through the release-all-cursors-ex
+  alias, and uses commit-ex/abort-ex aliases on later transaction transitions
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.122, async-batch/blocking-parallel ratio 1.152, and async-cursor/blocking-parallel ratio 0.836
