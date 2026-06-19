@@ -7552,167 +7552,58 @@ typedef struct walk_ctx {
   MDBX_cursor *cursor;
 } walk_ctx_t;
 
-typedef struct dxb_walk_page_get_submit_io {
-  walk_ctx_t *ctx;
-  MDBX_txn *txn;
-  MDBX_cursor *cursor;
-  pgno_t pgno;
-  txnid_t front;
-  dxb_cursor_page_get_submit_io_t get;
-  unsigned deep;
-} dxb_walk_page_get_submit_io_t;
-
-static inline int walk_make_page_get_submit_io(walk_ctx_t *ctx, pgno_t pgno, txnid_t front,
-                                               dxb_walk_page_get_submit_io_t *io) {
-  if (unlikely(!ctx || !ctx->txn || !ctx->cursor || !io || ctx->cursor->txn != ctx->txn || pgno < NUM_METAS ||
-               pgno >= ctx->txn->geo.first_unallocated))
-    return MDBX_EINVAL;
-
-  dxb_cursor_page_get_submit_io_t get;
-  int err = page_make_cursor_get_submit_io(ctx->cursor, P_ILL_BITS | P_LARGE, pgno, front, &get);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  io->ctx = ctx;
-  io->txn = ctx->txn;
-  io->cursor = ctx->cursor;
-  io->pgno = get.get.request.pgno;
-  io->front = get.get.front;
-  io->get = get;
-  io->deep = ctx->deep;
-  return MDBX_SUCCESS;
-}
-
-static inline int walk_page_get_submit_io_validate(const dxb_walk_page_get_submit_io_t *io) {
-  if (unlikely(!io || !io->ctx || !io->txn || !io->cursor || io->cursor->txn != io->txn || io->pgno < NUM_METAS ||
-               io->pgno >= io->txn->geo.first_unallocated))
-    return MDBX_EINVAL;
-  if (unlikely(io->ctx->txn != io->txn || io->ctx->cursor != io->cursor || io->ctx->deep != io->deep))
-    return MDBX_EINVAL;
-
-  dxb_walk_page_get_submit_io_t checked;
-  int err = walk_make_page_get_submit_io(io->ctx, io->pgno, io->front, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.ctx != io->ctx || checked.txn != io->txn || checked.cursor != io->cursor ||
-               checked.pgno != io->pgno || checked.front != io->front ||
-               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
-               checked.get.get.request.pgno != io->get.get.request.pgno ||
-               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
-               checked.get.get.request.npages != io->get.get.request.npages ||
-               checked.get.get.request.offset != io->get.get.request.offset ||
-               checked.get.get.request.bytes != io->get.get.request.bytes ||
-               checked.get.get.front != io->get.get.front ||
-               checked.get.get.track_private != io->get.get.track_private ||
-               checked.deep != io->deep))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 static inline pgr_t walk_page_get(walk_ctx_t *ctx, pgno_t pgno, txnid_t front) {
-  dxb_walk_page_get_submit_io_t submit;
-  int err = walk_make_page_get_submit_io(ctx, pgno, front, &submit);
+  if (unlikely(!ctx || !ctx->txn || !ctx->cursor || ctx->cursor->txn != ctx->txn || pgno < NUM_METAS ||
+               pgno >= ctx->txn->geo.first_unallocated))
+    return pgr_error(MDBX_EINVAL);
+
+  MDBX_txn *const txn = ctx->txn;
+  MDBX_cursor *const cursor = ctx->cursor;
+  const unsigned deep = ctx->deep;
+  dxb_cursor_page_get_submit_io_t get;
+  int err = page_make_cursor_get_submit_io(cursor, P_ILL_BITS | P_LARGE, pgno, front, &get);
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  err = walk_page_get_submit_io_validate(&submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-  return page_submit_cursor_get(&submit.get);
-}
-
-typedef struct dxb_walk_large_page_get_submit_io {
-  walk_ctx_t *ctx;
-  MDBX_txn *txn;
-  MDBX_cursor *cursor;
-  const page_t *source;
-  const node_t *node;
-  size_t node_index;
-  pgno_t source_pgno;
-  pgno_t large_pgno;
-  txnid_t front;
-  dxb_cursor_page_get_submit_io_t get;
-  size_t data_bytes;
-  unsigned deep;
-} dxb_walk_large_page_get_submit_io_t;
-
-static inline int walk_make_large_page_get_submit_io(walk_ctx_t *ctx, const page_t *source, size_t node_index,
-                                                     const node_t *node, dxb_walk_large_page_get_submit_io_t *io) {
-  if (unlikely(!ctx || !ctx->txn || !ctx->cursor || !source || !node || !io || ctx->cursor->txn != ctx->txn ||
-               !is_leaf(source) || node_index >= page_numkeys(source)))
-    return MDBX_EINVAL;
-  if (unlikely(node != page_node(source, node_index) || node_flags(node) != N_BIG))
-    return MDBX_EINVAL;
-
-  const pgno_t large_pgno = node_largedata_pgno(node);
-  if (unlikely(large_pgno < NUM_METAS || large_pgno >= ctx->txn->geo.first_unallocated))
-    return MDBX_EINVAL;
-  const txnid_t front = source->txnid;
-  dxb_cursor_page_get_submit_io_t get;
-  int err = page_make_cursor_get_submit_io(ctx->cursor, P_ILL_BITS | P_BRANCH | P_LEAF | P_DUPFIX, large_pgno, front,
-                                           &get);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  io->ctx = ctx;
-  io->txn = ctx->txn;
-  io->cursor = ctx->cursor;
-  io->source = source;
-  io->node = node;
-  io->node_index = node_index;
-  io->source_pgno = source->pgno;
-  io->large_pgno = get.get.request.pgno;
-  io->front = get.get.front;
-  io->get = get;
-  io->data_bytes = node_ds(node);
-  io->deep = ctx->deep;
-  return MDBX_SUCCESS;
-}
-
-static inline int walk_large_page_get_submit_io_validate(const dxb_walk_large_page_get_submit_io_t *io) {
-  if (unlikely(!io || !io->ctx || !io->txn || !io->cursor || !io->source || !io->node ||
-               io->cursor->txn != io->txn || !is_leaf(io->source) || io->node_index >= page_numkeys(io->source)))
-    return MDBX_EINVAL;
-  if (unlikely(io->ctx->txn != io->txn || io->ctx->cursor != io->cursor || io->ctx->deep != io->deep ||
-               io->source->pgno != io->source_pgno || io->source->txnid != io->front))
-    return MDBX_EINVAL;
-
-  const node_t *const node = page_node(io->source, io->node_index);
-  if (unlikely(node != io->node || node_flags(node) != N_BIG || node_largedata_pgno(node) != io->large_pgno ||
-               node_ds(node) != io->data_bytes || io->large_pgno < NUM_METAS ||
-               io->large_pgno >= io->txn->geo.first_unallocated))
-    return MDBX_EINVAL;
-
-  dxb_walk_large_page_get_submit_io_t checked;
-  int err = walk_make_large_page_get_submit_io(io->ctx, io->source, io->node_index, io->node, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.ctx != io->ctx || checked.txn != io->txn || checked.cursor != io->cursor ||
-               checked.source != io->source || checked.node != io->node || checked.node_index != io->node_index ||
-               checked.source_pgno != io->source_pgno || checked.large_pgno != io->large_pgno ||
-               checked.front != io->front ||
-               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
-               checked.get.get.request.pgno != io->get.get.request.pgno ||
-               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
-               checked.get.get.request.npages != io->get.get.request.npages ||
-               checked.get.get.request.offset != io->get.get.request.offset ||
-               checked.get.get.request.bytes != io->get.get.request.bytes ||
-               checked.get.get.front != io->get.get.front ||
-               checked.get.get.track_private != io->get.get.track_private ||
-               checked.data_bytes != io->data_bytes || checked.deep != io->deep))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
+  if (unlikely(ctx->txn != txn || ctx->cursor != cursor || ctx->deep != deep))
+    return pgr_error(MDBX_EINVAL);
+  return page_submit_cursor_get(&get);
 }
 
 static inline pgr_t walk_large_page_get(walk_ctx_t *ctx, const page_t *source, size_t node_index,
                                         const node_t *node) {
-  dxb_walk_large_page_get_submit_io_t submit;
-  int err = walk_make_large_page_get_submit_io(ctx, source, node_index, node, &submit);
+  if (unlikely(!ctx || !ctx->txn || !ctx->cursor || !source || !node || ctx->cursor->txn != ctx->txn ||
+               !is_leaf(source) || node_index >= page_numkeys(source)))
+    return pgr_error(MDBX_EINVAL);
+  if (unlikely(node != page_node(source, node_index) || node_flags(node) != N_BIG))
+    return pgr_error(MDBX_EINVAL);
+
+  MDBX_txn *const txn = ctx->txn;
+  MDBX_cursor *const cursor = ctx->cursor;
+  const pgno_t source_pgno = source->pgno;
+  const txnid_t front = source->txnid;
+  const pgno_t large_pgno = node_largedata_pgno(node);
+  const size_t data_bytes = node_ds(node);
+  const unsigned deep = ctx->deep;
+  if (unlikely(large_pgno < NUM_METAS || large_pgno >= txn->geo.first_unallocated))
+    return pgr_error(MDBX_EINVAL);
+
+  dxb_cursor_page_get_submit_io_t get;
+  int err = page_make_cursor_get_submit_io(cursor, P_ILL_BITS | P_BRANCH | P_LEAF | P_DUPFIX, large_pgno, front, &get);
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  err = walk_large_page_get_submit_io_validate(&submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-  return page_submit_cursor_get(&submit.get);
+
+  if (unlikely(ctx->txn != txn || ctx->cursor != cursor || ctx->deep != deep || source->pgno != source_pgno ||
+               source->txnid != front))
+    return pgr_error(MDBX_EINVAL);
+  if (unlikely(!is_leaf(source) || node_index >= page_numkeys(source)))
+    return pgr_error(MDBX_EINVAL);
+  const node_t *const checked_node = page_node(source, node_index);
+  if (unlikely(checked_node != node || node_flags(checked_node) != N_BIG ||
+               node_largedata_pgno(checked_node) != large_pgno || node_ds(checked_node) != data_bytes ||
+               large_pgno < NUM_METAS || large_pgno >= txn->geo.first_unallocated))
+    return pgr_error(MDBX_EINVAL);
+
+  return page_submit_cursor_get(&get);
 }
 
 MDBX_INTERNAL int walk_tbl(walk_ctx_t *ctx, walk_tbl_t *tbl, pgno_t parent_page);
