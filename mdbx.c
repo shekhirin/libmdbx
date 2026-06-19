@@ -33191,11 +33191,6 @@ static inline int env_primary_open_submit_io_validate(const dxb_env_primary_open
   return MDBX_SUCCESS;
 }
 
-static inline dxb_open_result_t env_open_unsubmitted_error(int err) {
-  const dxb_open_result_t result = {err, false, false, false, false, false, false, false};
-  return result;
-}
-
 static inline MDBX_env_flags_t env_dsync_open_flags(const MDBX_env *env) {
   MDBX_env_flags_t mask = MDBX_RDONLY | MDBX_SAFE_NOSYNC | MDBX_NOMETASYNC;
 #if defined(_WIN32) || defined(_WIN64)
@@ -33343,15 +33338,6 @@ static inline int env_overlapped_open_submit_io_validate(const dxb_env_overlappe
   return MDBX_SUCCESS;
 }
 
-static dxb_open_result_t env_submit_overlapped_open(const dxb_env_overlapped_open_submit_io_t *io) {
-  if (unlikely(!io || !io->storage))
-    return env_open_unsubmitted_error(MDBX_EINVAL);
-  int rc = env_overlapped_open_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_open_result(io->storage, rc, false, false);
-  return dxb_storage_submit_open_overlapped(io->storage, &io->open);
-}
-
 typedef struct dxb_env_overlapped_park_submit_io {
   MDBX_env *env;
   const dxb_storage_t *storage;
@@ -33403,13 +33389,6 @@ static inline int env_overlapped_park_submit_io_validate(const dxb_env_overlappe
   return MDBX_SUCCESS;
 }
 
-static dxb_park_result_t env_submit_overlapped_park(const dxb_env_overlapped_park_submit_io_t *io) {
-  uint64_t offset = io ? io->position.offset : 0;
-  int rc = env_overlapped_park_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_park_error(rc, dxb_io_data, offset, false);
-  return dxb_storage_submit_park_overlapped(io->storage, &io->park);
-}
 #endif /* Windows */
 
 typedef struct dxb_env_data_park_submit_io {
@@ -33810,15 +33789,17 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
     rc = env_make_overlapped_open_submit_io(env, &overlapped_open_submit);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    dxb_open_result_t overlapped_result = env_submit_overlapped_open(&overlapped_open_submit);
-    rc = overlapped_result.err;
+    rc = env_overlapped_open_submit_io_validate(&overlapped_open_submit);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = dxb_storage_submit_open_overlapped(overlapped_open_submit.storage, &overlapped_open_submit.open).err;
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
     dxb_env_overlapped_park_submit_io_t overlapped_park_submit;
     rc = env_make_overlapped_park_submit_io(env, &safe_parking_lot, &overlapped_park_submit);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    (void)env_submit_overlapped_park(&overlapped_park_submit);
+    if (likely(env_overlapped_park_submit_io_validate(&overlapped_park_submit) == MDBX_SUCCESS))
+      (void)dxb_storage_submit_park_overlapped(overlapped_park_submit.storage, &overlapped_park_submit.park);
   }
 #else
   if (mode == 0) {

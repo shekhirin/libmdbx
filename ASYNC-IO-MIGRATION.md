@@ -13423,6 +13423,23 @@ The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
 of `1.095` batch, `1.131` crud, `1.102` iterate, `0.930` get, and `1.068`
 delete.
 
+A later Windows overlapped lifecycle submit-boundary cleanup removed the
+one-call `env_submit_overlapped_open()` and `env_submit_overlapped_park()`
+helpers from `mdbx.c`, plus the now-unused `env_open_unsubmitted_error()`.
+The Windows overlapped data descriptor open and safe-parking path now validate
+their prepared descriptors at the local `env_open()` policy site, then submit
+directly through `dxb_storage_submit_open_overlapped()` and
+`dxb_storage_submit_park_overlapped()`. This keeps the Windows-only
+write-through/overlapped policy outside storage while removing another
+helper-local submission layer. Verification passed `git diff --check`, source
+scans proving the removed overlapped submit helpers are absent from `mdbx.c`
+and the public/internal headers, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), and the six focused
+`migration_smoke` CTest entries. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.109` batch, `1.141` crud, `0.966`
+iterate, `1.095` get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
