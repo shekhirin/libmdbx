@@ -14909,6 +14909,27 @@ including API checks and tool roundtrips, the ASAN build (`cmake --build
 passed with forced/default ratios of `1.131` batch, `1.167` crud, `1.190`
 iterate, `1.030` get, and `1.064` delete.
 
+A later storage-lifecycle cleanup removed `dxb_init_submit_io_t`,
+`dxb_deinit_submit_io_t`, `dxb_storage_make_init_submit_io()`,
+`dxb_storage_init_submit_io_validate()`,
+`dxb_storage_make_deinit_submit_io()`, and
+`dxb_storage_deinit_submit_io_validate()` from `mdbx.c`. Storage
+initialization now submits directly with only the storage pointer, while
+storage deinitialization submits directly with the storage pointer and
+`env_active` state. The reset and close descriptors remain in place because
+they still coordinate cache release and close-time reset state. Verification
+passed `git diff --check`, a source scan proving the removed lifecycle submit
+helpers and old descriptor-based submit calls are absent from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including API checks and tool
+roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.105` batch, `1.159` crud, `0.783`
+iterate, `0.981` get, and `1.083` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
