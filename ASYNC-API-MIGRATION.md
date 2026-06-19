@@ -3092,3 +3092,33 @@ Additional GET-family batch benchmark checkpoint:
   under the same parallel-heavy shape as plain GET. In this reduced sample,
   both extended batch paths beat the benchmark's blocking-parallel GET baseline
   and the plain async batch GET line.
+
+Additional extended GET many-submit benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` with parallel many-submit
+  measurements for `mdbx_async_get_ex_many()` and
+  `mdbx_async_get_equal_or_great_many()`. The benchmark now distinguishes the
+  independent-operation many-submit shape from the single-operation batch shape
+  for both extended GET variants.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking parallel get
+  992.247 Kops/s, async get_ex batch 743.130 Kops/s, async get_ex many
+  613.682 Kops/s, async lowerbound batch 953.348 Kops/s, and async lowerbound
+  many 725.086 Kops/s. This sample was noisy against blocking-parallel GET,
+  but the within-shape comparisons were clear: async-get-ex-batch/many 1.211
+  and async-lower-batch/many 1.315.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=179 async-covered=132 async-only=47 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: extended GET benchmark coverage now includes both public async
+  submission styles. In this reduced sample the single-operation batch APIs
+  remain faster than the many-submit APIs for the extended GET variants, which
+  gives a concrete direction for callers that can keep arrays live until batch
+  completion.
