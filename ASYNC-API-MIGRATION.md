@@ -4242,3 +4242,55 @@ Additional threaded async cache-get-batch benchmark checkpoint:
   application-threaded submission. The latest reduced sample puts threaded
   cache-batch at about 3.3x blocking pthread-parallel GET and about 1.3x hot
   blocking serial GET.
+
+Additional threaded async cache-get-loop benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` with application-threaded
+  benchmark rows for `mdbx_async_cache_get_loop()` and
+  `mdbx_async_cache_get_SingleThreaded_loop()`. Each worker warms its cache
+  entries before timing, then an application pthread submits one worker-side
+  cache loop and waits for completion.
+- this does not add new public API. It fills the benchmark gap between
+  main-thread-submitted cache loops and application-threaded cache batches,
+  using the same stable-key/cache-entry pattern as the existing cache-loop
+  benchmark.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking serial get
+  1.889 Mops/s, blocking parallel get 867.520 Kops/s, async cache many
+  2.321 Mops/s, async cache batch 2.281 Mops/s, async cache batch callback
+  2.377 Mops/s, async threaded cache batch 1.703 Mops/s, async cache loop
+  1.913 Mops/s, async cache st loop 1.820 Mops/s, async threaded cache loop
+  2.039 Mops/s, and async threaded cache st loop 1.652 Mops/s.
+- current ratios were async-threaded-cache-loop/blocking-parallel 2.351,
+  async-threaded-cache-st-loop/blocking-parallel 1.904,
+  async-threaded-cache-loop/blocking-serial 1.080,
+  async-threaded-cache-st-loop/blocking-serial 0.874,
+  async-threaded-cache-loop/cache-loop 1.066,
+  async-threaded-cache-st-loop/cache-st-loop 0.907, and
+  async-threaded-cache-st-loop/threaded-cache-loop 0.810.
+- comparison with the previous threaded cache-batch checkpoint: threaded
+  cache-loop gives a small improvement over main-thread-submitted cache-loop in
+  this sample, and remains above both blocking pthread-parallel GET and hot
+  blocking serial GET. The single-threaded cache-loop variant is weaker under
+  application-threaded submission here, falling below the hot blocking serial
+  GET baseline and below the multithread-safe threaded cache-loop row.
+- comparison with the pre-async ioarena baseline at the top of this log remains
+  separate: threaded cache-loop measures public async API submission and cache
+  lookup behavior under application-threaded fan-out, not storage-level
+  lazy-mode phases. It improves benchmark evidence for public async parallel
+  reads but does not remeasure or close the storage/ioarena migration gap.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=198 async-covered=132 async-only=66 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: cache-loop now has benchmark coverage for both main-thread
+  executor fan-out and application-threaded submission. The multithread-safe
+  threaded cache-loop row remains above blocking parallel and serial GET in the
+  reduced sample, while the single-threaded threaded cache-loop row is not a
+  current high-water mark.
