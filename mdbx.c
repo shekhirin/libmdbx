@@ -30447,13 +30447,13 @@ static inline int dxb_storage_dirty_queued_write_submit_io_validate(
   return MDBX_SUCCESS;
 }
 
-static inline dxb_queue_op_result_t dxb_storage_submit_add_queued_write(
+static inline dxb_queue_op_result_t dxb_storage_submit_add_validated_queued_write(
     dxb_storage_t *storage, const dxb_dirty_queued_write_submit_io_t *io) {
   if (unlikely(!storage))
     return dxb_queue_op_result(MDBX_EINVAL, nullptr, false, false, false, false, false);
-  int rc = dxb_storage_dirty_queued_write_submit_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false, false);
+  if (unlikely(!io))
+    return dxb_queue_op_result(MDBX_EINVAL, dxb_storage_write_queue_const(storage), false, false, false, false,
+                               false);
   return osal_ioring_add(dxb_storage_write_queue(storage), &io->queued);
 }
 
@@ -47131,16 +47131,12 @@ int iov_page(MDBX_txn *txn, iov_ctx_t *ctx, page_t *dp, size_t npages) {
     err = dxb_storage_make_dirty_queued_write_io(ctx->storage, dp->pgno, npages, dp, &queued);
   if (unlikely(err != MDBX_SUCCESS))
     return ctx->err = err;
-  if (likely(err == MDBX_SUCCESS))
-    err = dxb_storage_dirty_queued_write_io_validate(ctx->storage, &queued);
   if (unlikely(err == MDBX_SUCCESS &&
                (queued.buffer != dp || queued.data.pages.pgno != dp->pgno || queued.data.pages.npages != npages)))
     err = MDBX_EINVAL;
   dxb_dirty_queued_write_submit_io_t page_submit;
   if (likely(err == MDBX_SUCCESS))
     err = dxb_storage_make_dirty_queued_write_submit_io(ctx->storage, &queued, &page_submit);
-  if (likely(err == MDBX_SUCCESS))
-    err = dxb_storage_dirty_queued_write_submit_io_validate(ctx->storage, &page_submit);
   if (unlikely(err == MDBX_SUCCESS &&
                (page_submit.queued.data.pages.pgno != queued.data.pages.pgno ||
                 page_submit.queued.data.pages.end_pgno != queued.data.pages.end_pgno ||
@@ -47152,7 +47148,7 @@ int iov_page(MDBX_txn *txn, iov_ctx_t *ctx, page_t *dp, size_t npages) {
                 page_submit.queued.buffer != queued.buffer)))
     err = MDBX_EINVAL;
   if (likely(err == MDBX_SUCCESS))
-    err = dxb_storage_submit_add_queued_write(ctx->storage, &page_submit).err;
+    err = dxb_storage_submit_add_validated_queued_write(ctx->storage, &page_submit).err;
   if (unlikely(err != MDBX_SUCCESS)) {
     ctx->err = err;
     if (unlikely(err != MDBX_RESULT_TRUE)) {
@@ -47162,11 +47158,7 @@ int iov_page(MDBX_txn *txn, iov_ctx_t *ctx, page_t *dp, size_t npages) {
     err = iov_write(ctx);
     cASSERT0(txn, iov_empty(ctx));
     if (likely(err == MDBX_SUCCESS)) {
-      err = dxb_storage_dirty_queued_write_io_validate(ctx->storage, &queued);
-      if (likely(err == MDBX_SUCCESS))
-        err = dxb_storage_dirty_queued_write_submit_io_validate(ctx->storage, &page_submit);
-      if (likely(err == MDBX_SUCCESS))
-        err = dxb_storage_submit_add_queued_write(ctx->storage, &page_submit).err;
+      err = dxb_storage_submit_add_validated_queued_write(ctx->storage, &page_submit).err;
       if (unlikely(err != MDBX_SUCCESS)) {
         iov_complete(ctx);
         return ctx->err = err;

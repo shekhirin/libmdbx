@@ -2154,3 +2154,53 @@ Additional ordinary-invalidation scan checkpoint:
 - conclusion: the scan cleanup is correct under the validation gates and keeps
   read-heavy phases above baseline, but it does not close the batch, CRUD, or
   delete gaps. The remaining work is still in the write-heavy explicit-I/O path.
+
+Additional dirty-write enqueue validation checkpoint:
+
+- collapsed redundant validation in the dirty-page enqueue hot path: `iov_page()`
+  now builds and validates the queued write submit object once, then passes it
+  to an explicitly validated enqueue helper
+- queue-full retry reuses that already-validated submit object after flushing
+  the existing queue; the low-level queue add path still validates the concrete
+  data write range it receives before merging/enqueuing it
+- this targets per-dirty-page CPU overhead in batch/CRUD/delete workloads
+  without changing the blocking public API or the async public API surface
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_migration_smoke mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|migration_smoke)'`: passed 9/9
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench mdbx_migration_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check reported
+  async/blocking-parallel 1.167, async-many/blocking-parallel 1.150,
+  async-thread/blocking-parallel 1.051,
+  async-thread-many/blocking-parallel 1.095,
+  async-batch/blocking-parallel 1.154,
+  async-batch-callback/blocking-parallel 1.179, and
+  async-loop/blocking-parallel 1.124
+- `make -f GNUmakefile mdbx_migration_bench_lazy`: passed, with current
+  explicit default:
+
+| phase | earlier mapped avg | current explicit default | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1033.245 ops/s | 944.644 ops/s | 0.914 |
+| crud | 55.675 Kops/s | 50.191 Kops/s | 0.901 |
+| iterate | 26.143 Mops/s | 31.544 Mops/s | 1.207 |
+| get | 279.409 Kops/s | 438.219 Kops/s | 1.568 |
+| delete | 66.398 Kops/s | 58.715 Kops/s | 0.884 |
+
+- current explicit forced no-map against the earlier no-map baseline:
+
+| phase | earlier no-map avg | current explicit forced | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1089.750 ops/s | 961.688 ops/s | 0.882 |
+| crud | 59.787 Kops/s | 50.896 Kops/s | 0.851 |
+| iterate | 25.827 Mops/s | 30.715 Mops/s | 1.189 |
+| get | 274.039 Kops/s | 433.664 Kops/s | 1.582 |
+| delete | 69.067 Kops/s | 59.105 Kops/s | 0.856 |
+
+- conclusion: reducing redundant dirty-write enqueue validation preserves the
+  read-heavy wins and slightly improves several write-heavy samples, especially
+  forced no-map batch/delete versus the previous checkpoint. It still does not
+  close the pre-migration write-heavy baseline gap.
