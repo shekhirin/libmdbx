@@ -14097,6 +14097,30 @@ migration CTest suite including API checks and tool roundtrips, the ASAN build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.108`
 batch, `1.151` crud, `1.132` iterate, `0.951` get, and `1.066` delete.
 
+A later cursor bigdata page-get descriptor cleanup removed
+`dxb_cursor_put_bigdata_page_get_submit_io_t`,
+`cursor_put_make_bigdata_page_get_submit_io()`,
+`cursor_put_bigdata_page_get_submit_io_validate()`,
+`dxb_cursor_delete_bigdata_page_get_submit_io_t`,
+`cursor_delete_make_bigdata_page_get_submit_io()`, and
+`cursor_delete_bigdata_page_get_submit_io_validate()` from `mdbx.c`. The put
+and delete N_BIG paths now share `cursor_bigdata_page_get()`, which validates
+the cursor stack slot, source leaf, node identity, large-page pgno, and source
+txnid, builds the checked cursor page-get request directly, rechecks the cursor
+snapshot, and submits through `page_submit_cursor_get()`. This keeps overwrite
+and retirement overflow fetches on the shared cursor page-get boundary without
+duplicated descriptor wrappers for immediate reads. Verification passed `git
+diff --check`, a source scan proving the removed put/delete bigdata page-get
+descriptor helpers are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.132`
+batch, `1.140` crud, `1.173` iterate, `0.902` get, and `1.080` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
