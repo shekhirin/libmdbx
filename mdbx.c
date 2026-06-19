@@ -33252,54 +33252,18 @@ int lck_ipclock_destroy(osal_ipclock_t *ipc) {
 }
 #endif /* MDBX_LOCKING > MDBX_LOCKING_SYSV */
 
-typedef struct dxb_env_check_fstat_submit_io {
-  MDBX_env *env;
-  const dxb_storage_t *storage;
-  dxb_stat_submit_io_t stat;
-} dxb_env_check_fstat_submit_io_t;
-
-static inline int env_make_check_fstat_submit_io(MDBX_env *env, dxb_env_check_fstat_submit_io_t *io) {
-  if (unlikely(!env || !io))
-    return MDBX_EINVAL;
-
-  dxb_stat_submit_io_t stat;
-  int rc = dxb_storage_make_stat_submit_io(&stat);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->env = env;
-  io->storage = &env->dxb_storage;
-  io->stat = stat;
-  return MDBX_SUCCESS;
-}
-
-static inline int env_check_fstat_submit_io_validate(const dxb_env_check_fstat_submit_io_t *io) {
-  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_stat_submit_io_validate(&io->stat);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_env_check_fstat_submit_io_t checked;
-  rc = env_make_check_fstat_submit_io(io->env, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.env != io->env || checked.storage != io->storage || checked.stat.fetch != io->stat.fetch))
-    return MDBX_EINVAL;
-
-  return MDBX_SUCCESS;
-}
-
 static int check_fstat(MDBX_env *env) {
+  if (unlikely(!env))
+    return MDBX_EINVAL;
+  const dxb_storage_t *const storage = &env->dxb_storage;
   struct stat st;
-  dxb_env_check_fstat_submit_io_t stat_submit;
-  int rc = env_make_check_fstat_submit_io(env, &stat_submit);
+  dxb_stat_submit_io_t stat_submit;
+  int rc = dxb_storage_make_stat_submit_io(&stat_submit);
   if (likely(rc == MDBX_SUCCESS))
-    rc = env_check_fstat_submit_io_validate(&stat_submit);
+    rc = dxb_storage_stat_submit_io_validate(&stat_submit);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  dxb_stat_result_t dxb_stat = dxb_storage_submit_stat(stat_submit.storage, &stat_submit.stat);
+  dxb_stat_result_t dxb_stat = dxb_storage_submit_stat(storage, &stat_submit);
   rc = dxb_stat.err;
   if (unlikely(rc != MDBX_SUCCESS)) {
     ERROR("fstat(%s), err %d", "DXB", rc);
@@ -33660,54 +33624,6 @@ __cold int lck_destroy(MDBX_env *env, MDBX_env *inprocess_neighbor, const mdbx_p
 
 /*---------------------------------------------------------------------------*/
 
-#if MDBX_LOCKING == MDBX_LOCKING_SYSV
-typedef struct dxb_env_sysv_lock_stat_submit_io {
-  MDBX_env *env;
-  const dxb_storage_t *storage;
-  int global_uniqueness_flag;
-  dxb_stat_submit_io_t stat;
-} dxb_env_sysv_lock_stat_submit_io_t;
-
-static inline int env_make_sysv_lock_stat_submit_io(MDBX_env *env, int global_uniqueness_flag,
-                                                    dxb_env_sysv_lock_stat_submit_io_t *io) {
-  if (unlikely(!env || !io || global_uniqueness_flag != MDBX_RESULT_TRUE))
-    return MDBX_EINVAL;
-
-  dxb_stat_submit_io_t stat;
-  int rc = dxb_storage_make_stat_submit_io(&stat);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->env = env;
-  io->storage = &env->dxb_storage;
-  io->global_uniqueness_flag = global_uniqueness_flag;
-  io->stat = stat;
-  return MDBX_SUCCESS;
-}
-
-static inline int env_sysv_lock_stat_submit_io_validate(const dxb_env_sysv_lock_stat_submit_io_t *io) {
-  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage ||
-               io->global_uniqueness_flag != MDBX_RESULT_TRUE))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_stat_submit_io_validate(&io->stat);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_env_sysv_lock_stat_submit_io_t checked;
-  rc = env_make_sysv_lock_stat_submit_io(io->env, io->global_uniqueness_flag, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.env != io->env || checked.storage != io->storage ||
-               checked.global_uniqueness_flag != io->global_uniqueness_flag ||
-               checked.stat.fetch != io->stat.fetch))
-    return MDBX_EINVAL;
-
-  return MDBX_SUCCESS;
-}
-
-#endif /* MDBX_LOCKING == MDBX_LOCKING_SYSV */
-
 __cold int lck_init(MDBX_env *env, MDBX_env *inprocess_neighbor, int global_uniqueness_flag) {
 #if MDBX_LOCKING == MDBX_LOCKING_SYSV
   int semid = -1;
@@ -33715,12 +33631,12 @@ __cold int lck_init(MDBX_env *env, MDBX_env *inprocess_neighbor, int global_uniq
   (void)inprocess_neighbor;
   if (global_uniqueness_flag == MDBX_RESULT_TRUE) {
     struct stat st;
-    dxb_env_sysv_lock_stat_submit_io_t stat_submit;
-    int err = env_make_sysv_lock_stat_submit_io(env, global_uniqueness_flag, &stat_submit);
+    dxb_stat_submit_io_t stat_submit;
+    int err = unlikely(!env) ? MDBX_EINVAL : dxb_storage_make_stat_submit_io(&stat_submit);
     if (likely(err == MDBX_SUCCESS))
-      err = env_sysv_lock_stat_submit_io_validate(&stat_submit);
+      err = dxb_storage_stat_submit_io_validate(&stat_submit);
     if (likely(err == MDBX_SUCCESS)) {
-      dxb_stat_result_t stat_result = dxb_storage_submit_stat(stat_submit.storage, &stat_submit.stat);
+      dxb_stat_result_t stat_result = dxb_storage_submit_stat(&env->dxb_storage, &stat_submit);
       err = stat_result.err;
       if (likely(err == MDBX_SUCCESS))
         st = stat_result.st;
@@ -34802,64 +34718,6 @@ __cold static int lck_setup_locked(MDBX_env *env) {
   return lck_seize_rc;
 }
 
-typedef struct dxb_env_lck_readonly_probe_submit_io {
-  MDBX_env *env;
-  const dxb_storage_t *storage;
-  const pathchar_t *pathname;
-  MDBX_env_flags_t env_flags;
-  int source_err;
-  dxb_readonly_submit_io_t readonly;
-} dxb_env_lck_readonly_probe_submit_io_t;
-
-static inline int env_make_lck_readonly_probe_submit_io(MDBX_env *env, int source_err,
-                                                        dxb_env_lck_readonly_probe_submit_io_t *io) {
-  if (unlikely(!env || !io || !env->pathname.lck || (env->flags & MDBX_RDONLY) == 0))
-    return MDBX_EINVAL;
-
-  const pathchar_t *const pathname = env->pathname.lck;
-  dxb_readonly_submit_io_t readonly;
-  int rc = dxb_storage_make_readonly_submit_io(pathname, source_err, &readonly);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->env = env;
-  io->storage = &env->dxb_storage;
-  io->pathname = pathname;
-  io->env_flags = env->flags & (MDBX_RDONLY | MDBX_EXCLUSIVE);
-  io->source_err = source_err;
-  io->readonly = readonly;
-  return MDBX_SUCCESS;
-}
-
-static inline int env_lck_readonly_probe_submit_io_validate(
-    const dxb_env_lck_readonly_probe_submit_io_t *io) {
-  if (unlikely(!io || !io->env || !io->storage || !io->pathname ||
-               io->storage != &io->env->dxb_storage ||
-               io->pathname != io->env->pathname.lck ||
-               io->env_flags != (io->env->flags & (MDBX_RDONLY | MDBX_EXCLUSIVE)) ||
-               (io->env_flags & MDBX_RDONLY) == 0))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_readonly_submit_io_validate(&io->readonly);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io->readonly.pathname != io->pathname || io->readonly.source_err != io->source_err))
-    return MDBX_EINVAL;
-
-  dxb_env_lck_readonly_probe_submit_io_t checked;
-  rc = env_make_lck_readonly_probe_submit_io(io->env, io->source_err, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.env != io->env || checked.storage != io->storage ||
-               checked.pathname != io->pathname || checked.env_flags != io->env_flags ||
-               checked.source_err != io->source_err ||
-               checked.readonly.pathname != io->readonly.pathname ||
-               checked.readonly.source_err != io->readonly.source_err))
-    return MDBX_EINVAL;
-
-  return MDBX_SUCCESS;
-}
-
 __cold int lck_setup(MDBX_env *env, mdbx_mode_t mode) {
   eASSERT0(env, dxb_storage_is_opened(&env->dxb_storage));
   eASSERT0(env, env->lck_mmap.fd == INVALID_HANDLE_VALUE);
@@ -34876,13 +34734,20 @@ __cold int lck_setup(MDBX_env *env, mdbx_mode_t mode) {
     case MDBX_EROFS:
       if (env->flags & MDBX_RDONLY) {
         /* ENSURE the file system is read-only */
-        dxb_env_lck_readonly_probe_submit_io_t readonly_submit;
-        int probe_err = env_make_lck_readonly_probe_submit_io(env, err, &readonly_submit);
+        const pathchar_t *const pathname = env->pathname.lck;
+        const MDBX_env_flags_t probe_flags = env->flags & (MDBX_RDONLY | MDBX_EXCLUSIVE);
+        dxb_readonly_submit_io_t readonly_submit;
+        int probe_err = unlikely(!pathname || (probe_flags & MDBX_RDONLY) == 0)
+                            ? MDBX_EINVAL
+                            : dxb_storage_make_readonly_submit_io(pathname, err, &readonly_submit);
         if (likely(probe_err == MDBX_SUCCESS))
-          probe_err = env_lck_readonly_probe_submit_io_validate(&readonly_submit);
+          probe_err = dxb_storage_readonly_submit_io_validate(&readonly_submit);
+        if (unlikely(probe_err == MDBX_SUCCESS &&
+                     (readonly_submit.pathname != pathname || readonly_submit.source_err != err)))
+          probe_err = MDBX_EINVAL;
         dxb_readonly_result_t readonly =
-            likely(probe_err == MDBX_SUCCESS) ? dxb_storage_submit_check_readonly(readonly_submit.storage,
-                                                                                  &readonly_submit.readonly)
+            likely(probe_err == MDBX_SUCCESS) ? dxb_storage_submit_check_readonly(&env->dxb_storage,
+                                                                                  &readonly_submit)
                                               : dxb_readonly_result(probe_err, err, false, false);
         if (readonly.readonly ||
             /* ignore ERROR_NOT_SUPPORTED for exclusive mode */
