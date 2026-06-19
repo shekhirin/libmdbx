@@ -1434,3 +1434,41 @@ Additional worker-side GET-loop checkpoint:
   parallel-read shape above blocking-parallel parity in these samples; the
   small-window per-operation API path still needs further work before it can be
   considered consistently faster
+
+Additional threaded GET-loop benchmark checkpoint:
+
+- added `async threaded get loop` to `mdbx_async_api_bench`; it starts multiple
+  application pthreads and each thread submits one `mdbx_async_get_loop()`
+  operation through its own async executor and read transaction
+- this measures the worker-side GET-loop API under the same multi-application
+  thread shape as `async threaded get` and `async threaded batch get`, without
+  changing the public async API
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- three clean default `mdbx_async_api_bench` samples passed; GET-path average
+  ratios were async/blocking-parallel 1.106, async-thread/blocking-parallel
+  1.049, async-thread-batch/blocking-parallel 1.092,
+  async-batch/blocking-parallel 1.121,
+  async-batch-callback/blocking-parallel 1.077,
+  async-loop/blocking-parallel 1.079, and
+  async-thread-loop/blocking-parallel 1.098
+- three forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` samples passed;
+  GET-path average ratios were async/blocking-parallel 1.067,
+  async-thread/blocking-parallel 1.028,
+  async-thread-batch/blocking-parallel 1.029,
+  async-batch/blocking-parallel 1.001,
+  async-batch-callback/blocking-parallel 0.989,
+  async-loop/blocking-parallel 1.052, and
+  async-thread-loop/blocking-parallel 1.050
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed; small ASAN ratios included
+  async-thread-loop/blocking-parallel 1.042 and
+  async-thread-loop/blocking-serial 2.205
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- conclusion: the new benchmark confirms that `mdbx_async_get_loop()` stays
+  above blocking-parallel parity when submitted concurrently by multiple
+  application threads; the result remains scheduler-noisy, but it is aligned
+  with the target workload shape
