@@ -13300,6 +13300,28 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.110` batch, `1.147` crud, `0.920` iterate,
 `0.977` get, and `1.072` delete.
 
+A later sync submit-boundary cleanup removed the one-call
+`dxb_meta_submit_sync()` and `dxb_data_submit_prefix_sync()` helpers from
+`mdbx.c`. Commit-time data-prefix sync, pre-writer `env_sync()` data-prefix
+sync, post-meta-write metadata sync, steady-meta wipe sync, standalone
+`meta_sync()`, and redirected meta-override sync now validate their prepared
+sync descriptors at the local policy site, then submit directly through
+`dxb_storage_submit_sync_io()`. This keeps durability decisions, fsync pgop
+accounting, no-metasync branching, disk-error undo handling, and
+`meta_sync_txnid` updates at the callers while making the storage-owned sync
+request boundary explicit. Verification passed `git diff --check`, source
+scans proving the removed sync submit helpers are absent from `mdbx.c` and the
+public/internal headers, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.157` batch, `1.156` crud, `1.235` iterate,
+`0.999` get, and `1.077` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
