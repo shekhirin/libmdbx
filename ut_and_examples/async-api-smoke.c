@@ -87,6 +87,13 @@ struct get_equal_or_great_loop_probe {
   size_t greater_results;
 };
 
+struct put_loop_probe {
+  uint64_t keys[4];
+  uint64_t values[4];
+  size_t items;
+  size_t results;
+};
+
 static int fail_rc(const char *expr, int rc, const char *file, int line) {
   fprintf(stderr, "%s:%d: %s failed: (%d) %s\n", file, line, expr, rc, mdbx_strerror(rc));
   return rc ? rc : MDBX_PROBLEM;
@@ -371,6 +378,31 @@ static int get_loop_result_func(void *context, size_t index, const MDBX_val *key
   return MDBX_SUCCESS;
 }
 
+static int put_loop_item_func(void *context, size_t index, MDBX_val *key, MDBX_val *data) {
+  struct put_loop_probe *const probe = (struct put_loop_probe *)context;
+  if (!probe || !key || !data || index >= sizeof(probe->keys) / sizeof(probe->keys[0]))
+    return MDBX_PROBLEM;
+  probe->keys[index] = UINT64_C(1000) + (uint64_t)index;
+  probe->values[index] = expected_value(probe->keys[index]);
+  *key = val(&probe->keys[index], sizeof(probe->keys[index]));
+  *data = val(&probe->values[index], sizeof(probe->values[index]));
+  probe->items += 1;
+  return MDBX_SUCCESS;
+}
+
+static int put_loop_result_func(void *context, size_t index, const MDBX_val *key, MDBX_val *data, int result) {
+  struct put_loop_probe *const probe = (struct put_loop_probe *)context;
+  if (!probe || !key || !data || result != MDBX_SUCCESS ||
+      index >= sizeof(probe->keys) / sizeof(probe->keys[0]))
+    return MDBX_PROBLEM;
+  if (key->iov_base != &probe->keys[index] || key->iov_len != sizeof(probe->keys[index]))
+    return MDBX_PROBLEM;
+  if (data->iov_base != &probe->values[index] || data->iov_len != sizeof(probe->values[index]))
+    return MDBX_PROBLEM;
+  probe->results += 1;
+  return MDBX_SUCCESS;
+}
+
 static int get_ex_loop_key_func(void *context, size_t index, MDBX_val *key) {
   struct get_ex_loop_probe *const probe = (struct get_ex_loop_probe *)context;
   if (!probe || !key || index >= ITEM_COUNT)
@@ -619,6 +651,7 @@ int main(void) {
   MDBX_dbi range_dbi = 0;
   MDBX_dbi bunch_dbi = 0;
   MDBX_dbi del_loop_dbi = 0;
+  MDBX_dbi put_loop_dbi = 0;
   MDBX_dbi custom_cstr_dbi = 0;
   MDBX_dbi custom_val_dbi = 0;
   uint64_t keys[ITEM_COUNT];
@@ -1130,6 +1163,27 @@ int main(void) {
   CHECK(mdbx_async_drop(async, txn, bunch_dbi, true, &op));
   CHECK_OP(op);
   bunch_dbi = 0;
+
+  CHECK(mdbx_async_dbi_open(async, txn, "async-put-loop-target", MDBX_CREATE, &put_loop_dbi, &op));
+  CHECK_OP(op);
+  struct put_loop_probe put_loop_probe;
+  memset(&put_loop_probe, 0, sizeof(put_loop_probe));
+  const size_t put_loop_count = sizeof(put_loop_probe.keys) / sizeof(put_loop_probe.keys[0]);
+  size_t put_loop_completed = 0;
+  CHECK(mdbx_async_put_loop(async, txn, put_loop_dbi, put_loop_count, put_loop_item_func, put_loop_result_func,
+                            &put_loop_probe, &put_loop_completed, 0, &op));
+  CHECK_OP(op);
+  REQUIRE(put_loop_completed == put_loop_count, "unexpected async put loop completion count");
+  REQUIRE(put_loop_probe.items == put_loop_count && put_loop_probe.results == put_loop_count,
+          "async put loop callbacks did not cover all items");
+  MDBX_val put_loop_key = val(&put_loop_probe.keys[2], sizeof(put_loop_probe.keys[2]));
+  MDBX_val put_loop_data = val(NULL, 0);
+  CHECK(mdbx_async_get(async, txn, put_loop_dbi, &put_loop_key, &put_loop_data, &op));
+  CHECK_OP(op);
+  CHECK(expect_payload(&put_loop_data, put_loop_probe.values[2], __FILE__, __LINE__));
+  CHECK(mdbx_async_drop(async, txn, put_loop_dbi, true, &op));
+  CHECK_OP(op);
+  put_loop_dbi = 0;
 
   CHECK(mdbx_async_put(async, txn, dbi, &key_values[0], &put_values[0], 0, &op));
   CHECK_OP(op);

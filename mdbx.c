@@ -15103,6 +15103,7 @@ enum mdbx_async_opcode {
   async_op_get_equal_or_great_loop,
   async_op_put,
   async_op_put_batch,
+  async_op_put_loop,
   async_op_replace,
   async_op_replace_batch,
   async_op_replace_ex_batch,
@@ -15563,6 +15564,16 @@ struct MDBX_async_op {
       size_t count;
       MDBX_put_flags_t flags;
     } put_batch;
+    struct {
+      MDBX_txn *txn;
+      MDBX_dbi dbi;
+      size_t count;
+      MDBX_put_loop_item_func item_func;
+      MDBX_put_loop_result_func result_func;
+      void *context;
+      size_t *completed;
+      MDBX_put_flags_t flags;
+    } put_loop;
     struct {
       MDBX_txn *txn;
       MDBX_dbi dbi;
@@ -16530,6 +16541,26 @@ static int async_op_execute(MDBX_async_op *op) {
       if (rc == MDBX_KEYEXIST)
         op->args.put_batch.data[i] = data;
       op->args.put_batch.results[i] = rc;
+    }
+    return MDBX_SUCCESS;
+  case async_op_put_loop:
+    if (op->args.put_loop.completed)
+      *op->args.put_loop.completed = 0;
+    for (size_t i = 0; i < op->args.put_loop.count; ++i) {
+      MDBX_val key = {nullptr, 0};
+      MDBX_val data = {nullptr, 0};
+      int rc = op->args.put_loop.item_func(op->args.put_loop.context, i, &key, &data);
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+      const int put_rc = mdbx_put(op->args.put_loop.txn, op->args.put_loop.dbi, &key, &data,
+                                  op->args.put_loop.flags);
+      rc = op->args.put_loop.result_func
+               ? op->args.put_loop.result_func(op->args.put_loop.context, i, &key, &data, put_rc)
+               : put_rc;
+      if (op->args.put_loop.completed)
+        *op->args.put_loop.completed = i + 1;
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
     }
     return MDBX_SUCCESS;
   case async_op_replace:
@@ -19325,6 +19356,35 @@ int mdbx_async_put_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const M
   op->args.put_batch.results = results;
   op->args.put_batch.count = count;
   op->args.put_batch.flags = flags;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_put_loop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, size_t count,
+                        MDBX_put_loop_item_func item_func, MDBX_put_loop_result_func result_func,
+                        void *context, size_t *completed, MDBX_put_flags_t flags, MDBX_async_op **out) {
+  if (unlikely(!txn || !count || !item_func))
+    return LOG_IFERR(MDBX_EINVAL);
+  if (unlikely(flags & (MDBX_RESERVE | MDBX_MULTIPLE)))
+    return LOG_IFERR(MDBX_EINVAL);
+  if (completed)
+    *completed = 0;
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_put_loop);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.put_loop.txn = txn;
+  op->args.put_loop.dbi = dbi;
+  op->args.put_loop.count = count;
+  op->args.put_loop.item_func = item_func;
+  op->args.put_loop.result_func = result_func;
+  op->args.put_loop.context = context;
+  op->args.put_loop.completed = completed;
+  op->args.put_loop.flags = flags;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;

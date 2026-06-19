@@ -3222,3 +3222,39 @@ Additional async cursor-delete loop API checkpoint:
   granularity. Moving the delete/get-current loop into one async worker
   operation brings this reduced cursor-delete workload to parity with the
   blocking cursor path while preserving the existing blocking API.
+
+Additional async put-loop API checkpoint:
+
+- added `mdbx_async_put_loop()` as an async-only worker-side loop helper for
+  repeated `mdbx_put()` calls. The blocking API is unchanged.
+- the API mirrors the existing GET loop style: an item callback prepares each
+  key/data pair on the executor worker thread, an optional result callback
+  observes each `mdbx_put()` result, and an optional `completed` output reports
+  the number of put attempts completed before return.
+- the first implementation rejects `MDBX_RESERVE` and `MDBX_MULTIPLE`, matching
+  the existing async put and put-batch wrappers' in-place memory constraints.
+- extended `ut_and_examples/async-api-smoke.c` with a dedicated temporary table
+  that writes four entries through `mdbx_async_put_loop()`, verifies callback
+  counts, reads one payload back, and drops the table.
+- extended `ut_and_examples/async-api-bench.c` with async put-loop timing beside
+  per-item async put and async put-batch.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking write put
+  2.575 Mops/s, async write put 1.741 Mops/s, async batch write put
+  2.505 Mops/s, and async loop write put 2.653 Mops/s. Ratios were
+  async-put/blocking 0.676, async-put-batch/blocking 0.973,
+  async-put-loop/blocking 1.031, async-put-loop/async-put 1.524, and
+  async-put-loop/batch 1.059.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=181 async-covered=132 async-only=49 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: worker-side write loops now give callers a streaming put shape
+  that avoids prebuilding batch arrays and, in this reduced run, slightly beats
+  both the blocking put sample and the existing async put-batch sample.

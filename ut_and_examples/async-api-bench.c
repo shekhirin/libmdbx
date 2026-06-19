@@ -63,6 +63,13 @@ struct async_get_loop_check {
   uint64_t key;
 };
 
+struct async_put_loop_check {
+  size_t items;
+  size_t checked;
+  uint64_t key;
+  uint64_t value;
+};
+
 struct async_worker {
   MDBX_async *async;
   MDBX_txn *txn;
@@ -246,6 +253,37 @@ static int async_lowerbound_loop_result_func(void *context, size_t index, const 
   if (result != MDBX_SUCCESS && result != MDBX_RESULT_TRUE)
     return fail_rc("mdbx_async_get_equal_or_great_loop item", result, __FILE__, __LINE__);
   return async_get_loop_result_func(context, index, key, data, MDBX_SUCCESS);
+}
+
+static int async_put_loop_item_func(void *context, size_t index, MDBX_val *key, MDBX_val *data) {
+  struct async_put_loop_check *const check = (struct async_put_loop_check *)context;
+  if (!check || !key || !data)
+    return fail_msg("missing async put loop item state", __FILE__, __LINE__);
+  check->key = key_for(index, check->items);
+  check->value = write_value(check->key, index, UINT64_C(1001));
+  *key = val(&check->key, sizeof(check->key));
+  *data = val(&check->value, sizeof(check->value));
+  return MDBX_SUCCESS;
+}
+
+static int async_put_loop_result_func(void *context, size_t index, const MDBX_val *key, MDBX_val *data,
+                                      int result) {
+  struct async_put_loop_check *const check = (struct async_put_loop_check *)context;
+  if (!check || !key || !data)
+    return fail_msg("missing async put loop result state", __FILE__, __LINE__);
+  if (result != MDBX_SUCCESS)
+    return fail_rc("mdbx_async_put_loop item", result, __FILE__, __LINE__);
+  if (key->iov_len != sizeof(uint64_t) || data->iov_len != sizeof(uint64_t))
+    return fail_msg("unexpected async put loop value size", __FILE__, __LINE__);
+  uint64_t actual_key = 0;
+  uint64_t actual_value = 0;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  memcpy(&actual_value, data->iov_base, sizeof(actual_value));
+  const uint64_t expected_key = key_for(index, check->items);
+  if (actual_key != expected_key || actual_value != write_value(expected_key, index, UINT64_C(1001)))
+    return fail_msg("unexpected async put loop payload", __FILE__, __LINE__);
+  check->checked += 1;
+  return MDBX_SUCCESS;
 }
 
 static int expect_cursor_batch(const MDBX_val *pairs, size_t count, size_t items, const char *file, int line) {
@@ -582,6 +620,53 @@ bailout:
   free(key_data);
   free(values);
   free(keys);
+  return (rc == MDBX_SUCCESS) ? rate : -1.0;
+}
+
+static double async_loop_put(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops) {
+  MDBX_async *async = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_async_op *op = NULL;
+  struct async_put_loop_check check;
+  int rc = MDBX_SUCCESS;
+  double rate = -1.0;
+
+  if (!ops)
+    return -1.0;
+  memset(&check, 0, sizeof(check));
+  check.items = items;
+  CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+
+  size_t completed = 0;
+  int operation_rc = MDBX_SUCCESS;
+  const uint64_t start = monotime_ns();
+  CHECK(mdbx_async_put_loop(async, txn, dbi, ops, async_put_loop_item_func, async_put_loop_result_func,
+                            &check, &completed, 0, &op));
+  CHECK(wait_success(&op, &operation_rc, __FILE__, __LINE__));
+  if (operation_rc != MDBX_SUCCESS) {
+    rc = fail_rc("mdbx_async_put_loop", operation_rc, __FILE__, __LINE__);
+    goto bailout;
+  }
+  if (completed != ops || check.checked != ops) {
+    rc = fail_msg("unexpected async put loop completion count", __FILE__, __LINE__);
+    goto bailout;
+  }
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  txn = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  const uint64_t finish = monotime_ns();
+  if (finish > start)
+    rate = (double)ops * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  if (async)
+    (void)mdbx_async_destroy(async, true);
   return (rc == MDBX_SUCCESS) ? rate : -1.0;
 }
 
@@ -3186,6 +3271,7 @@ int main(void) {
   const double blocking_put = blocking_write_put(env, dbi, items, write_ops);
   const double async_put = async_window_put(env, dbi, items, write_ops, window);
   const double async_put_batch = async_batch_put(env, dbi, items, write_ops, write_batch);
+  const double async_put_loop = async_loop_put(env, dbi, items, write_ops);
   CHECK(seed_database(env, &dbi, items));
   const double blocking_cursor_put = blocking_cursor_write_put(env, dbi, items, write_ops);
   CHECK(seed_database(env, &dbi, items));
@@ -3248,6 +3334,7 @@ int main(void) {
   print_rate("blocking write put", blocking_put);
   print_rate("async write put", async_put);
   print_rate("async batch write put", async_put_batch);
+  print_rate("async loop write put", async_put_loop);
   print_rate("blocking cursor put", blocking_cursor_put);
   print_rate("async cursor put", async_cursor_put);
   print_rate("async cursor batch put", async_cursor_put_batch);
@@ -3356,8 +3443,14 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-put/blocking put", async_put / blocking_put);
   if (blocking_put > 0.0 && async_put_batch > 0.0)
     printf("%-28s %8.3f\n", "async-put-batch/blocking", async_put_batch / blocking_put);
+  if (blocking_put > 0.0 && async_put_loop > 0.0)
+    printf("%-28s %8.3f\n", "async-put-loop/blocking", async_put_loop / blocking_put);
   if (async_put > 0.0 && async_put_batch > 0.0)
     printf("%-28s %8.3f\n", "async-put-batch/async-put", async_put_batch / async_put);
+  if (async_put > 0.0 && async_put_loop > 0.0)
+    printf("%-28s %8.3f\n", "async-put-loop/async-put", async_put_loop / async_put);
+  if (async_put_batch > 0.0 && async_put_loop > 0.0)
+    printf("%-28s %8.3f\n", "async-put-loop/batch", async_put_loop / async_put_batch);
   if (blocking_cursor_put > 0.0 && async_cursor_put_batch > 0.0)
     printf("%-28s %8.3f\n", "async-cursor-put-batch/block", async_cursor_put_batch / blocking_cursor_put);
   if (async_cursor_put > 0.0 && async_cursor_put_batch > 0.0)

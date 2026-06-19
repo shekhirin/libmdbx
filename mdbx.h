@@ -5358,6 +5358,23 @@ typedef int (*MDBX_get_loop_data_func)(void *context, size_t index, const MDBX_v
 typedef int (*MDBX_get_equal_or_great_loop_result_func)(void *context, size_t index, const MDBX_val *key,
                                                         const MDBX_val *data, int result) MDBX_CXX17_NOEXCEPT;
 
+/** \brief Callback that prepares one key/data pair for \ref mdbx_async_put_loop().
+ * \ingroup c_async
+ * \details The callback runs on the executor worker thread. The key/data
+ *          descriptors and pointed-to bytes only need to remain valid until the
+ *          matching result callback returns, or until the next item callback
+ *          when no result callback is supplied. */
+typedef int (*MDBX_put_loop_item_func)(void *context, size_t index, MDBX_val *key,
+                                       MDBX_val *data) MDBX_CXX17_NOEXCEPT;
+
+/** \brief Callback that consumes one \ref mdbx_async_put_loop() result.
+ * \ingroup c_async
+ * \details The callback runs on the executor worker thread after one
+ *          \ref mdbx_put() call. Returning a non-success result stops the loop
+ *          and becomes the async operation result. */
+typedef int (*MDBX_put_loop_result_func)(void *context, size_t index, const MDBX_val *key,
+                                         MDBX_val *data, int result) MDBX_CXX17_NOEXCEPT;
+
 /** \brief Asynchronously get a batch of items from a table.
  * \ingroup c_async
  * \details The `keys`, key bytes, `data`, and `results` arrays must remain
@@ -5504,6 +5521,24 @@ LIBMDBX_API int mdbx_async_put(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, c
 LIBMDBX_API int mdbx_async_put_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
                                      MDBX_val data[], int results[], size_t count, MDBX_put_flags_t flags,
                                      MDBX_async_op **op);
+
+/** \brief Asynchronously run a worker-side loop of put operations.
+ * \ingroup c_async
+ * \details This submits one async operation that invokes `item_func` for each
+ *          index, calls \ref mdbx_put(), and then invokes `result_func` when it
+ *          is non-NULL. If no result callback is supplied, the first
+ *          non-success \ref mdbx_put() result stops the loop and becomes the
+ *          async operation result. If `completed` is non-NULL, it receives the
+ *          number of put attempts completed before the operation returned. The
+ *          wrapper rejects \ref MDBX_RESERVE and \ref MDBX_MULTIPLE because
+ *          those modes require caller-managed in-place memory.
+ * \see mdbx_put()
+ * \see MDBX_put_loop_item_func
+ * \see MDBX_put_loop_result_func */
+LIBMDBX_API int mdbx_async_put_loop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, size_t count,
+                                    MDBX_put_loop_item_func item_func, MDBX_put_loop_result_func result_func,
+                                    void *context, size_t *completed, MDBX_put_flags_t flags,
+                                    MDBX_async_op **op);
 
 /** \brief Asynchronously replace or delete an item while retrieving the previous value.
  * \ingroup c_async
