@@ -6872,66 +6872,6 @@ __cold static int meta_shadow_alloc(MDBX_env *env) {
   return err;
 }
 
-typedef struct dxb_meta_shadow_refresh_read_submit_io {
-  MDBX_env *env;
-  const dxb_storage_t *storage;
-  dxb_read_submit_io_t read;
-  void *buffer;
-  size_t expected_bytes;
-} dxb_meta_shadow_refresh_read_submit_io_t;
-
-static inline int meta_shadow_make_refresh_read_submit_io(MDBX_env *env, const dxb_data_read_io_t *meta_pages,
-                                                          dxb_meta_shadow_refresh_read_submit_io_t *io) {
-  if (unlikely(!env || !env->meta_shadow || !meta_pages || !io))
-    return MDBX_EINVAL;
-  if (unlikely(meta_pages->pages.pgno != 0 || meta_pages->pages.npages != NUM_METAS || meta_pages->bytes.offset != 0 ||
-               meta_pages->bytes.bytes != env->meta_shadow_bytes))
-    return MDBX_EINVAL;
-
-  const dxb_storage_t *const storage = &env->dxb_storage;
-  dxb_read_submit_io_t read;
-  int err = dxb_storage_make_read_submit_io(storage, meta_pages, env->meta_shadow, &read);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  io->env = env;
-  io->storage = storage;
-  io->read = read;
-  io->buffer = env->meta_shadow;
-  io->expected_bytes = env->meta_shadow_bytes;
-  return MDBX_SUCCESS;
-}
-
-static inline int
-meta_shadow_refresh_read_submit_io_validate(const dxb_meta_shadow_refresh_read_submit_io_t *io) {
-  if (unlikely(!io || !io->env || !io->storage || !io->buffer || !io->read.buffer))
-    return MDBX_EINVAL;
-  MDBX_env *const env = io->env;
-  if (unlikely(io->storage != &env->dxb_storage || io->buffer != env->meta_shadow || io->read.buffer != io->buffer ||
-               io->expected_bytes != env->meta_shadow_bytes || io->read.data.bytes.bytes != io->expected_bytes))
-    return MDBX_EINVAL;
-
-  int err = dxb_storage_read_submit_io_validate(io->storage, &io->read);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  dxb_meta_shadow_refresh_read_submit_io_t checked;
-  err = meta_shadow_make_refresh_read_submit_io(env, &io->read.data, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.env != io->env || checked.storage != io->storage || checked.buffer != io->buffer ||
-               checked.expected_bytes != io->expected_bytes ||
-               checked.read.data.pages.pgno != io->read.data.pages.pgno ||
-               checked.read.data.pages.end_pgno != io->read.data.pages.end_pgno ||
-               checked.read.data.pages.npages != io->read.data.pages.npages ||
-               checked.read.data.pages.offset != io->read.data.pages.offset ||
-               checked.read.data.pages.bytes != io->read.data.pages.bytes ||
-               checked.read.data.bytes.offset != io->read.data.bytes.offset ||
-               checked.read.data.bytes.bytes != io->read.data.bytes.bytes || checked.read.buffer != io->read.buffer))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 int meta_shadow_refresh(MDBX_env *env) {
   const dxb_storage_t *const storage = &env->dxb_storage;
   int err = meta_shadow_alloc(env);
@@ -6946,14 +6886,20 @@ int meta_shadow_refresh(MDBX_env *env) {
   err = dxb_storage_make_data_read_io(storage, &meta_page_span, &meta_pages);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  dxb_meta_shadow_refresh_read_submit_io_t submit;
-  err = meta_shadow_make_refresh_read_submit_io(env, &meta_pages, &submit);
+  if (unlikely(!env->meta_shadow || meta_pages.pages.pgno != 0 || meta_pages.pages.npages != NUM_METAS ||
+               meta_pages.bytes.offset != 0 || meta_pages.bytes.bytes != env->meta_shadow_bytes))
+    return MDBX_EINVAL;
+
+  dxb_read_submit_io_t read;
+  err = dxb_storage_make_read_submit_io(storage, &meta_pages, env->meta_shadow, &read);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  err = meta_shadow_refresh_read_submit_io_validate(&submit);
+  err = dxb_storage_read_submit_io_validate(storage, &read);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  return dxb_storage_submit_read_data(submit.storage, &submit.read).err;
+  if (unlikely(read.buffer != env->meta_shadow || read.data.bytes.bytes != env->meta_shadow_bytes))
+    return MDBX_EINVAL;
+  return dxb_storage_submit_read_data(storage, &read).err;
 }
 
 void meta_shadow_copy_write(const MDBX_env *env, const dxb_meta_write_io_t *io, const void *src) {
