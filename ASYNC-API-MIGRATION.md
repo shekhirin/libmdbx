@@ -3649,3 +3649,45 @@ Additional threaded cursor-get-loop benchmark checkpoint:
   shapes. The threaded shape is the one that best matches the goal of parallel
   read-heavy async callers and, in this reduced run, beats blocking
   pthread-parallel cursor get by 22.2%.
+
+Additional threaded cursor-scan benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` with threaded
+  `mdbx_async_cursor_scan()` and `mdbx_async_cursor_scan_from()` benchmarks.
+  Each application pthread owns an async executor, read transaction, and cursor,
+  then submits bounded scan chunks until its assigned pair target is consumed.
+- this is benchmark coverage only. It measures predicate cursor scanning under
+  the same multi-application-thread shape now covered for point GET loops and
+  cursor GET loops.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking cursor scan
+  150.554 Mops/s, parallel cursor scan 71.108 Mops/s, async cursor scan
+  93.390 Mops/s, async threaded cursor scan 123.033 Mops/s, blocking cursor
+  scan_from 149.263 Mops/s, parallel cursor scan_from 71.240 Mops/s, async
+  cursor scan_from 87.953 Mops/s, and async threaded cursor scan_from
+  68.752 Mops/s.
+- ratios were async-cursor-scan/par 1.313, async-thread-scan/par 1.730,
+  async-thread-scan/ser 0.817, async-thread-scan/scan 1.317,
+  async-scan-from/par 1.235, async-thread-scan-from/par 0.965,
+  async-thread-scan-from/ser 0.461, and async-thread-scan-from/scan 0.782.
+- comparison with the prior scan benchmark checkpoints: the new threaded
+  cursor-scan shape improves plain async cursor scan from the previous
+  single-submitter samples and beats blocking pthread-parallel scan by 73.0% in
+  this run. The threaded scan-from shape did not help; it was slower than both
+  the single-submitter async scan-from path and blocking pthread-parallel
+  scan_from in this run, so positioned-start scan work still needs separate
+  optimization if it matters for read-heavy callers.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=188 async-covered=132 async-only=56 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: threaded predicate cursor scan is another parallel-heavy read
+  shape where async beats the blocking pthread-parallel benchmark. Threaded
+  scan_from is now measured too, but the result is a useful negative signal
+  rather than a throughput win.
