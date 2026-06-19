@@ -31081,14 +31081,6 @@ dxb_readahead_toggle_submit_io_validate(const dxb_readahead_toggle_submit_io_t *
   return MDBX_SUCCESS;
 }
 
-static dxb_readahead_result_t
-dxb_readahead_submit_toggle(const dxb_readahead_toggle_submit_io_t *io) {
-  int rc = dxb_readahead_toggle_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_readahead_result(rc, false, false, false, false);
-  return dxb_storage_submit_readahead(io->storage, &io->submit);
-}
-
 typedef struct dxb_readahead_advice_submit_io {
   const MDBX_env *env;
   const dxb_storage_t *storage;
@@ -31200,14 +31192,6 @@ dxb_readahead_advice_submit_io_validate(const dxb_readahead_advice_submit_io_t *
                checked.submit.advice.advice != io->submit.advice.advice))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
-}
-
-static dxb_range_result_t
-dxb_readahead_submit_advice(const dxb_readahead_advice_submit_io_t *io) {
-  int rc = dxb_readahead_advice_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_range_error(rc);
-  return dxb_storage_submit_advise_io(io->storage, &io->submit);
 }
 
 typedef struct dxb_resize_storage_size_submit_io {
@@ -31484,7 +31468,11 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
     int err = dxb_readahead_make_toggle_submit_io(env, enable, &readahead_submit);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    dxb_readahead_result_t readahead_result = dxb_readahead_submit_toggle(&readahead_submit);
+    err = dxb_readahead_toggle_submit_io_validate(&readahead_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    dxb_readahead_result_t readahead_result =
+        dxb_storage_submit_readahead(readahead_submit.storage, &readahead_submit.submit);
     err = readahead_result.err;
     if (unlikely(err != MDBX_SUCCESS))
       return err;
@@ -31495,7 +31483,10 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
     err = dxb_readahead_make_advice_submit_io(env, &window, dxb_advice_normal, &advice_submit);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_readahead_submit_advice(&advice_submit).err;
+    err = dxb_readahead_advice_submit_io_validate(&advice_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = dxb_storage_submit_advise_io(advice_submit.storage, &advice_submit.submit).err;
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
     if (toggle) {
@@ -31508,7 +31499,10 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
           env, &window_coverage.page_bytes, dxb_advice_willneed, &advice_submit);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
-      err = dxb_readahead_submit_advice(&advice_submit).err;
+      err = dxb_readahead_advice_submit_io_validate(&advice_submit);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+      err = dxb_storage_submit_advise_io(advice_submit.storage, &advice_submit.submit).err;
       if (unlikely(MDBX_IS_ERROR(err)))
         return err;
     }
@@ -31518,7 +31512,10 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
     err = dxb_readahead_make_advice_submit_io(env, &window, dxb_advice_random, &advice_submit);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_readahead_submit_advice(&advice_submit).err;
+    err = dxb_readahead_advice_submit_io_validate(&advice_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = dxb_storage_submit_advise_io(advice_submit.storage, &advice_submit.submit).err;
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
   }

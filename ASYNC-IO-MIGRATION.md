@@ -13214,6 +13214,27 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.098`
 batch, `1.154` crud, `0.880` iterate, `1.053` get, and `1.071` delete.
 
+A later readahead submit-boundary cleanup removed the one-call
+`dxb_readahead_submit_toggle()` and `dxb_readahead_submit_advice()` helpers from
+`mdbx.c`. `dxb_set_readahead()` now validates its prepared readahead toggle and
+normal/willneed/random advice descriptors at the policy call site, then submits
+directly through `dxb_storage_submit_readahead()` or
+`dxb_storage_submit_advise_io()`. This keeps data-file readahead and advisory
+ranges on the storage-owned explicit request boundary without changing the
+existing enable/disable policy, whole-file toggle behavior, or error handling.
+Verification passed `git diff --check`, source scans proving
+`dxb_readahead_submit_toggle()` and `dxb_readahead_submit_advice()` are absent
+from `mdbx.c` and the public/internal headers, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.103` batch, `1.143` crud, `0.987`
+iterate, `1.041` get, and `1.067` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
