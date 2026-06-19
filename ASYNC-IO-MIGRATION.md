@@ -14350,6 +14350,25 @@ six focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.114` batch, `1.141` crud, `1.182`
 iterate, `0.927` get, and `1.067` delete.
 
+A later preopen data-file open cleanup removed
+`dxb_preopen_readonly_open_submit_io_t`,
+`preopen_make_readonly_open_submit_io()`, and
+`preopen_readonly_open_submit_io_validate()` from `mdbx.c`.
+`mdbx_preopen_snapinfo()` now keeps the preopen-specific pathname and
+read-only checks at the call site, builds the storage `dxb_open_submit_io_t`
+directly, validates it through `dxb_storage_open_submit_io_validate()`, and
+submits it through `dxb_storage_submit_open_data()`. Verification passed
+`git diff --check`, a source scan proving the removed preopen open descriptor
+helpers are absent from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.090` batch, `1.128` crud, `1.274`
+iterate, `0.941` get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
