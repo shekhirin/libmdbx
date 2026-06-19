@@ -12774,6 +12774,27 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.107`
 batch, `1.135` crud, `1.001` iterate, `0.979` get, and `1.067` delete.
 
+A later POSIX DXB lock submit-boundary cleanup folded the raw
+`dxb_storage_lock_op()` and `dxb_storage_setlk_with3retries()` helpers into
+`dxb_storage_submit_lock_op()` and
+`dxb_storage_submit_setlk_with3retries()`. The submitters now validate the full
+`dxb_lock_submit_io_t` payload, enforce the normal-versus-retry lock path,
+issue `lck_op()` or `lck_setlk_with3retries()` directly against the
+storage-owned data descriptor, and return the same attempted/completed retry
+metadata from the submit boundary. This leaves POSIX DXB locks with
+descriptor-shaped storage entry points and no parallel raw lock helper paths in
+the C source. Verification passed `git diff --check`, source scans confirming
+no raw POSIX DXB lock helpers remain in `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.121` batch, `1.135` crud, `0.870`
+iterate, `1.029` get, and `1.090` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

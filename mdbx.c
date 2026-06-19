@@ -38167,15 +38167,6 @@ static inline dxb_lock_result_t dxb_lock_result(int err, int cmd, int lck, const
   return result;
 }
 
-static dxb_lock_result_t dxb_storage_lock_op(const dxb_storage_t *storage, const int cmd, const int lck,
-                                             const dxb_lock_io_t *range) {
-  int rc = dxb_storage_lock_io_validate(range);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_lock_result(rc, cmd, lck, range, false, false);
-  rc = lck_op(dxb_storage_data_fd(storage), cmd, lck, (off_t)range->offset, (off_t)range->bytes);
-  return dxb_lock_result(rc, cmd, lck, range, true, false);
-}
-
 static dxb_lock_result_t dxb_storage_submit_lock_op(const dxb_storage_t *storage,
                                                     const dxb_lock_submit_io_t *io) {
   int rc = dxb_storage_lock_submit_io_validate(io);
@@ -38184,16 +38175,8 @@ static dxb_lock_result_t dxb_storage_submit_lock_op(const dxb_storage_t *storage
                            io ? &io->range : nullptr, false, io ? io->with_retries : false);
   if (unlikely(io->with_retries))
     return dxb_lock_result(MDBX_EINVAL, io->cmd, io->lck, &io->range, false, true);
-  return dxb_storage_lock_op(storage, io->cmd, io->lck, &io->range);
-}
-
-static dxb_lock_result_t dxb_storage_setlk_with3retries(const dxb_storage_t *storage, const int lck,
-                                                        const dxb_lock_io_t *range) {
-  int rc = dxb_storage_lock_io_validate(range);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_lock_result(rc, op_setlk, lck, range, false, true);
-  rc = lck_setlk_with3retries(dxb_storage_data_fd(storage), lck, (off_t)range->offset, (off_t)range->bytes);
-  return dxb_lock_result(rc, op_setlk, lck, range, true, true);
+  rc = lck_op(dxb_storage_data_fd(storage), io->cmd, io->lck, (off_t)io->range.offset, (off_t)io->range.bytes);
+  return dxb_lock_result(rc, io->cmd, io->lck, &io->range, true, false);
 }
 
 static dxb_lock_result_t dxb_storage_submit_setlk_with3retries(const dxb_storage_t *storage,
@@ -38204,7 +38187,9 @@ static dxb_lock_result_t dxb_storage_submit_setlk_with3retries(const dxb_storage
                            io ? &io->range : nullptr, false, io ? io->with_retries : true);
   if (unlikely(!io->with_retries || io->cmd != op_setlk))
     return dxb_lock_result(MDBX_EINVAL, io->cmd, io->lck, &io->range, false, io->with_retries);
-  return dxb_storage_setlk_with3retries(storage, io->lck, &io->range);
+  rc = lck_setlk_with3retries(dxb_storage_data_fd(storage), io->lck, (off_t)io->range.offset,
+                              (off_t)io->range.bytes);
+  return dxb_lock_result(rc, op_setlk, io->lck, &io->range, true, true);
 }
 
 static inline dxb_lock_result_t dxb_storage_submit_lock_request(const dxb_storage_t *storage, int cmd, int lck,
