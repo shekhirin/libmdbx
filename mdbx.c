@@ -5433,6 +5433,15 @@ static int cursor_couple_capture_txn_pins(cursor_couple_t *couple) {
   return MDBX_SUCCESS;
 }
 
+static int cursor_capture_txn_pin(MDBX_cursor *mc, page_ref_t ref) {
+  if (!page_ref_requires_txn_pin(&ref))
+    return MDBX_SUCCESS;
+  int err = txn_retained_refs_reserve(mc->txn, 1);
+  if (likely(err == MDBX_SUCCESS))
+    err = txn_retained_ref_append(mc->txn, mc, ref);
+  return err;
+}
+
 static inline int cursor_stack_retain_all_checked(MDBX_cursor *mc) {
   if (unlikely(!mc))
     return MDBX_EINVAL;
@@ -9632,10 +9641,16 @@ int mdbx_cursor_get_batch(MDBX_cursor *mc, size_t *count, MDBX_val *pairs, size_
     rc = node_read(mc, leaf, &pairs[n + 1], mp);
     if (unlikely(rc != MDBX_SUCCESS))
       goto bailout;
+    rc = cursor_capture_txn_pin(mc, mc->value_ref);
+    if (unlikely(rc != MDBX_SUCCESS))
+      goto bailout;
 
     n += 2;
     if (++ki == nkeys) {
     sibling:
+      rc = cursor_capture_txn_pin(mc, mc->pgref[mc->top]);
+      if (unlikely(rc != MDBX_SUCCESS))
+        goto bailout;
       rc = cursor_sibling_right(mc);
       if (rc != MDBX_SUCCESS) {
         if (rc == MDBX_NOTFOUND)

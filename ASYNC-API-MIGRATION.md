@@ -291,6 +291,19 @@ Cursor batch read checkpoint:
   `MDBX_SUCCESS` and a full-table cursor batch that reports end-of-data with
   `MDBX_RESULT_TRUE`
 
+Cursor batch benchmark checkpoint:
+
+- `mdbx_async_api_bench` now also measures cursor-batch iteration using
+  `mdbx_cursor_get_batch()` and `mdbx_async_cursor_get_batch()`
+- the benchmark reports blocking serial cursor-batch, blocking pthread-parallel
+  cursor-batch, async cursor-batch, and async-cursor/blocking ratios
+- added `MDBX_ASYNC_BENCH_CURSOR_BATCH_PAIRS`, defaulting to 2048 pairs per
+  cursor batch, so cursor iteration chunk size can be tuned independently from
+  the point-get submission window
+- `mdbx_cursor_get_batch()` now retains explicit-cache page references for
+  returned batch descriptors before moving to another leaf page, preserving the
+  public descriptor lifetime under tiny no-map caches
+
 ## Validation
 
 Completed for this checkpoint:
@@ -399,4 +412,15 @@ Additional cursor batch read checkpoint:
 - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.115
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional cursor batch benchmark checkpoint:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.090, async-cursor/blocking-parallel ratio 1.015
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.050, async-cursor/blocking-parallel ratio 1.149
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17

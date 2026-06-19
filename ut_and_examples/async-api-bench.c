@@ -4,7 +4,8 @@
  *
  * This is intentionally not a pass/fail CTest. It gives a repeatable local
  * comparison between blocking serial reads, blocking pthread-parallel reads,
- * and reads submitted through multiple async executors.
+ * and reads submitted through multiple async executors. It covers both random
+ * point gets and cursor-batch iteration.
  */
 
 #include "mdbx.h"
@@ -12,6 +13,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +25,7 @@
 #define DEFAULT_OPS 200000u
 #define DEFAULT_WORKERS 4u
 #define DEFAULT_WINDOW 64u
+#define DEFAULT_CURSOR_BATCH_PAIRS 2048u
 
 struct blocking_worker {
   MDBX_env *env;
@@ -33,15 +36,30 @@ struct blocking_worker {
   int rc;
 };
 
+struct cursor_batch_worker {
+  MDBX_env *env;
+  MDBX_dbi dbi;
+  size_t items;
+  size_t target_pairs;
+  size_t completed_pairs;
+  size_t batch_pairs;
+  int rc;
+};
+
 struct async_worker {
   MDBX_async *async;
   MDBX_txn *txn;
+  MDBX_cursor *cursor;
   MDBX_async_op **ops;
   MDBX_val *data;
   MDBX_val *key_vals;
+  MDBX_val *pairs;
   uint64_t *keys;
+  size_t count;
   int *results;
   size_t pending;
+  bool cursor_started;
+  bool needs_reset;
 };
 
 static int fail_rc(const char *expr, int rc, const char *file, int line) {
@@ -102,6 +120,23 @@ static int expect_value(const MDBX_val *data, uint64_t key, const char *file, in
   memcpy(&actual, data->iov_base, sizeof(actual));
   if (actual != expected_value(key))
     return fail_msg("unexpected value payload", file, line);
+  return MDBX_SUCCESS;
+}
+
+static int expect_cursor_batch(const MDBX_val *pairs, size_t count, size_t items, const char *file, int line) {
+  if (count == 0 || (count & 1))
+    return fail_msg("unexpected cursor batch count", file, line);
+  for (size_t i = 0; i < count; i += 2) {
+    if (pairs[i].iov_len != sizeof(uint64_t))
+      return fail_msg("unexpected cursor batch key size", file, line);
+    uint64_t actual_key = 0;
+    memcpy(&actual_key, pairs[i].iov_base, sizeof(actual_key));
+    if (actual_key >= items)
+      return fail_msg("unexpected cursor batch key", file, line);
+    int rc = expect_value(&pairs[i + 1], actual_key, file, line);
+    if (rc != MDBX_SUCCESS)
+      return rc;
+  }
   return MDBX_SUCCESS;
 }
 
@@ -231,6 +266,136 @@ static double blocking_parallel_get(MDBX_env *env, MDBX_dbi dbi, size_t items, s
   return (double)ops * 1000000000.0 / (double)(finish - start);
 }
 
+static int blocking_cursor_batch_loop(MDBX_cursor *cursor, size_t items, size_t target_pairs, size_t batch_pairs,
+                                      size_t *completed_pairs) {
+  MDBX_val *pairs = calloc(batch_pairs * 2, sizeof(*pairs));
+  if (!pairs)
+    return MDBX_ENOMEM;
+
+  int rc = MDBX_SUCCESS;
+  MDBX_cursor_op op = MDBX_FIRST;
+  *completed_pairs = 0;
+  while (*completed_pairs < target_pairs) {
+    size_t count = 0;
+    rc = mdbx_cursor_get_batch(cursor, &count, pairs, batch_pairs * 2, op);
+    if (rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE) {
+      rc = fail_rc("mdbx_cursor_get_batch", rc, __FILE__, __LINE__);
+      goto bailout;
+    }
+    const int operation_rc = rc;
+    rc = expect_cursor_batch(pairs, count, items, __FILE__, __LINE__);
+    if (rc != MDBX_SUCCESS)
+      goto bailout;
+    *completed_pairs += count / 2;
+    if (operation_rc == MDBX_SUCCESS)
+      op = MDBX_NEXT;
+    if (operation_rc == MDBX_RESULT_TRUE) {
+      rc = mdbx_cursor_reset(cursor);
+      if (rc != MDBX_SUCCESS) {
+        rc = fail_rc("mdbx_cursor_reset", rc, __FILE__, __LINE__);
+        goto bailout;
+      }
+      op = MDBX_FIRST;
+    }
+  }
+
+bailout:
+  free(pairs);
+  return rc;
+}
+
+static double blocking_serial_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs,
+                                           size_t batch_pairs) {
+  MDBX_txn *txn = NULL;
+  MDBX_cursor *cursor = NULL;
+  int rc = mdbx_txn_begin(env, NULL, MDBX_TXN_RDONLY, &txn);
+  if (rc != MDBX_SUCCESS)
+    return -1.0;
+  rc = mdbx_cursor_open(txn, dbi, &cursor);
+  if (rc != MDBX_SUCCESS) {
+    (void)mdbx_txn_abort(txn);
+    return -1.0;
+  }
+
+  size_t completed_pairs = 0;
+  const uint64_t start = monotime_ns();
+  rc = blocking_cursor_batch_loop(cursor, items, target_pairs, batch_pairs, &completed_pairs);
+  const uint64_t finish = monotime_ns();
+  const int close_rc = mdbx_cursor_close2(cursor);
+  const int abort_rc = mdbx_txn_abort(txn);
+  if (rc != MDBX_SUCCESS || close_rc != MDBX_SUCCESS || abort_rc != MDBX_SUCCESS || finish <= start)
+    return -1.0;
+  return (double)completed_pairs * 1000000000.0 / (double)(finish - start);
+}
+
+static void *cursor_batch_worker_main(void *arg) {
+  struct cursor_batch_worker *const worker = (struct cursor_batch_worker *)arg;
+  MDBX_txn *txn = NULL;
+  MDBX_cursor *cursor = NULL;
+  worker->completed_pairs = 0;
+  worker->rc = mdbx_txn_begin(worker->env, NULL, MDBX_TXN_RDONLY, &txn);
+  if (worker->rc == MDBX_SUCCESS)
+    worker->rc = mdbx_cursor_open(txn, worker->dbi, &cursor);
+  if (worker->rc == MDBX_SUCCESS)
+    worker->rc = blocking_cursor_batch_loop(cursor, worker->items, worker->target_pairs, worker->batch_pairs,
+                                            &worker->completed_pairs);
+  if (cursor) {
+    const int rc = mdbx_cursor_close2(cursor);
+    if (worker->rc == MDBX_SUCCESS)
+      worker->rc = rc;
+  }
+  if (txn) {
+    const int rc = mdbx_txn_abort(txn);
+    if (worker->rc == MDBX_SUCCESS)
+      worker->rc = rc;
+  }
+  return NULL;
+}
+
+static double blocking_parallel_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs,
+                                             size_t workers_count, size_t batch_pairs) {
+  pthread_t *threads = calloc(workers_count, sizeof(*threads));
+  struct cursor_batch_worker *workers = calloc(workers_count, sizeof(*workers));
+  if (!threads || !workers) {
+    free(threads);
+    free(workers);
+    return -1.0;
+  }
+
+  const size_t base_pairs = target_pairs / workers_count;
+  const size_t extra_pairs = target_pairs % workers_count;
+  int failed = 0;
+  const uint64_t start = monotime_ns();
+  for (size_t i = 0; i < workers_count; ++i) {
+    workers[i].env = env;
+    workers[i].dbi = dbi;
+    workers[i].items = items;
+    workers[i].target_pairs = base_pairs + (i < extra_pairs);
+    workers[i].batch_pairs = batch_pairs;
+    const int rc = pthread_create(&threads[i], NULL, cursor_batch_worker_main, &workers[i]);
+    if (rc != 0) {
+      workers[i].rc = rc;
+      failed = 1;
+      workers_count = i;
+      break;
+    }
+  }
+
+  size_t completed_pairs = 0;
+  for (size_t i = 0; i < workers_count; ++i) {
+    const int rc = pthread_join(threads[i], NULL);
+    completed_pairs += workers[i].completed_pairs;
+    if (rc != 0 || workers[i].rc != MDBX_SUCCESS)
+      failed = 1;
+  }
+  const uint64_t finish = monotime_ns();
+  free(threads);
+  free(workers);
+  if (failed || completed_pairs == 0 || finish <= start)
+    return -1.0;
+  return (double)completed_pairs * 1000000000.0 / (double)(finish - start);
+}
+
 static int async_worker_init(MDBX_env *env, struct async_worker *worker, MDBX_dbi dbi, size_t window) {
   int rc;
   MDBX_async_op *op = NULL;
@@ -260,6 +425,11 @@ bailout:
 
 static void async_worker_destroy(struct async_worker *worker) {
   MDBX_async_op *op = NULL;
+  if (worker->async && worker->cursor) {
+    if (mdbx_async_cursor_close(worker->async, worker->cursor, &op) == MDBX_SUCCESS)
+      (void)wait_success(&op, NULL, __FILE__, __LINE__);
+    worker->cursor = NULL;
+  }
   if (worker->async && worker->txn) {
     if (mdbx_async_txn_abort(worker->async, worker->txn, NULL, &op) == MDBX_SUCCESS)
       (void)wait_success(&op, NULL, __FILE__, __LINE__);
@@ -272,6 +442,7 @@ static void async_worker_destroy(struct async_worker *worker) {
   free(worker->ops);
   free(worker->data);
   free(worker->key_vals);
+  free(worker->pairs);
   free(worker->keys);
   free(worker->results);
 }
@@ -427,6 +598,107 @@ bailout:
   return -1.0;
 }
 
+static int async_cursor_batch_worker_init(MDBX_env *env, struct async_worker *worker, MDBX_dbi dbi,
+                                          size_t batch_pairs) {
+  int rc;
+  MDBX_async_op *op = NULL;
+  CHECK(async_worker_init(env, worker, dbi, 1));
+  worker->pairs = calloc(batch_pairs * 2, sizeof(*worker->pairs));
+  if (!worker->pairs) {
+    rc = MDBX_ENOMEM;
+    goto bailout;
+  }
+  CHECK(mdbx_async_cursor_open(worker->async, worker->txn, dbi, &worker->cursor, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  worker->cursor_started = false;
+  worker->needs_reset = false;
+  return MDBX_SUCCESS;
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  return rc ? rc : MDBX_PROBLEM;
+}
+
+static double async_parallel_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs,
+                                          size_t workers_count, size_t batch_pairs) {
+  struct async_worker *workers = calloc(workers_count, sizeof(*workers));
+  if (!workers)
+    return -1.0;
+  for (size_t i = 0; i < workers_count; ++i) {
+    if (async_cursor_batch_worker_init(env, &workers[i], dbi, batch_pairs) != MDBX_SUCCESS) {
+      workers_count = i + 1;
+      goto bailout;
+    }
+  }
+
+  size_t completed_pairs = 0;
+  int rc = MDBX_SUCCESS;
+  const uint64_t start = monotime_ns();
+  while (completed_pairs < target_pairs) {
+    for (size_t i = 0; i < workers_count && completed_pairs < target_pairs; ++i) {
+      struct async_worker *const worker = &workers[i];
+      if (worker->needs_reset) {
+        rc = mdbx_async_cursor_reset(worker->async, worker->cursor, &worker->ops[0]);
+        if (rc != MDBX_SUCCESS)
+          goto bailout;
+        rc = wait_success(&worker->ops[0], NULL, __FILE__, __LINE__);
+        if (rc != MDBX_SUCCESS)
+          goto bailout;
+        worker->needs_reset = false;
+        worker->cursor_started = false;
+      }
+      worker->count = 0;
+      rc = mdbx_async_cursor_get_batch(worker->async, worker->cursor, &worker->count, worker->pairs, batch_pairs * 2,
+                                       worker->cursor_started ? MDBX_NEXT : MDBX_FIRST, &worker->ops[0]);
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
+      worker->pending = 1;
+    }
+
+    for (size_t i = 0; i < workers_count; ++i) {
+      struct async_worker *const worker = &workers[i];
+      if (!worker->pending)
+        continue;
+      int operation_rc = MDBX_SUCCESS;
+      rc = wait_success(&worker->ops[0], &operation_rc, __FILE__, __LINE__);
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
+      if (operation_rc != MDBX_SUCCESS && operation_rc != MDBX_RESULT_TRUE) {
+        rc = fail_rc("mdbx_async_cursor_get_batch", operation_rc, __FILE__, __LINE__);
+        goto bailout;
+      }
+      rc = expect_cursor_batch(worker->pairs, worker->count, items, __FILE__, __LINE__);
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
+      completed_pairs += worker->count / 2;
+      if (operation_rc == MDBX_RESULT_TRUE) {
+        worker->needs_reset = true;
+        worker->cursor_started = false;
+      } else
+        worker->cursor_started = true;
+      worker->pending = 0;
+    }
+  }
+  const uint64_t finish = monotime_ns();
+  for (size_t i = 0; i < workers_count; ++i)
+    async_worker_destroy(&workers[i]);
+  free(workers);
+  if (completed_pairs == 0 || finish <= start)
+    return -1.0;
+  return (double)completed_pairs * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  for (size_t i = 0; i < workers_count; ++i) {
+    if (workers[i].ops && workers[i].ops[0])
+      (void)wait_success(&workers[i].ops[0], NULL, __FILE__, __LINE__);
+    async_worker_destroy(&workers[i]);
+  }
+  free(workers);
+  (void)rc;
+  return -1.0;
+}
+
 static void print_rate(const char *label, double rate) {
   if (rate <= 0.0)
     printf("%-28s failed\n", label);
@@ -447,6 +719,10 @@ int main(void) {
   const size_t ops = env_size("MDBX_ASYNC_BENCH_OPS", DEFAULT_OPS);
   const size_t workers = env_size("MDBX_ASYNC_BENCH_WORKERS", DEFAULT_WORKERS);
   const size_t window = env_size("MDBX_ASYNC_BENCH_WINDOW", DEFAULT_WINDOW);
+  size_t cursor_batch_pairs = env_size("MDBX_ASYNC_BENCH_CURSOR_BATCH_PAIRS", DEFAULT_CURSOR_BATCH_PAIRS);
+  if (cursor_batch_pairs < 2)
+    cursor_batch_pairs = 2;
+  const size_t cursor_pairs = ops < cursor_batch_pairs ? cursor_batch_pairs : ops;
 
   snprintf(path, sizeof(path), "./async-api-bench-%ld", (long)getpid());
   rc = mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
@@ -460,15 +736,24 @@ int main(void) {
   CHECK(mdbx_env_open(env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM | MDBX_SAFE_NOSYNC | MDBX_NOMETASYNC, 0664));
   CHECK(seed_database(env, &dbi, items));
 
-  printf("async-api-bench items=%zu ops=%zu workers=%zu window=%zu\n", items, ops, workers, window);
+  printf("async-api-bench items=%zu ops=%zu workers=%zu window=%zu cursor-batch-pairs=%zu\n", items, ops, workers,
+         window, cursor_batch_pairs);
   const double blocking_serial = blocking_serial_get(env, dbi, items, ops);
   const double blocking_parallel = blocking_parallel_get(env, dbi, items, ops, workers);
   const double async_parallel = async_parallel_get(env, dbi, items, ops, workers, window);
   const double async_batch_parallel = async_batch_parallel_get(env, dbi, items, ops, workers, window);
+  const double blocking_cursor_serial = blocking_serial_cursor_batch(env, dbi, items, cursor_pairs, cursor_batch_pairs);
+  const double blocking_cursor_parallel =
+      blocking_parallel_cursor_batch(env, dbi, items, cursor_pairs, workers, cursor_batch_pairs);
+  const double async_cursor_parallel =
+      async_parallel_cursor_batch(env, dbi, items, cursor_pairs, workers, cursor_batch_pairs);
   print_rate("blocking serial get", blocking_serial);
   print_rate("blocking parallel get", blocking_parallel);
   print_rate("async parallel get", async_parallel);
   print_rate("async batch parallel get", async_batch_parallel);
+  print_rate("blocking cursor batch", blocking_cursor_serial);
+  print_rate("parallel cursor batch", blocking_cursor_parallel);
+  print_rate("async cursor batch", async_cursor_parallel);
   if (blocking_parallel > 0.0 && async_parallel > 0.0)
     printf("%-28s %8.3f\n", "async/blocking parallel", async_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_batch_parallel > 0.0)
@@ -477,6 +762,10 @@ int main(void) {
     printf("%-28s %8.3f\n", "async/blocking serial", async_parallel / blocking_serial);
   if (blocking_serial > 0.0 && async_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-batch/blocking serial", async_batch_parallel / blocking_serial);
+  if (blocking_cursor_parallel > 0.0 && async_cursor_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-cursor/blocking par", async_cursor_parallel / blocking_cursor_parallel);
+  if (blocking_cursor_serial > 0.0 && async_cursor_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-cursor/blocking ser", async_cursor_parallel / blocking_cursor_serial);
 
   CHECK(mdbx_env_close(env));
   env = NULL;
