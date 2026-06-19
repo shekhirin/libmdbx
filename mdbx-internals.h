@@ -1839,6 +1839,10 @@ MDBX_INTERNAL int osal_fastmutex_destroy(osal_fastmutex_t *fastmutex);
 
 MDBX_INTERNAL int osal_pwritev(mdbx_filehandle_t fd, struct iovec *iov, size_t sgvcnt, uint64_t offset);
 MDBX_INTERNAL int osal_pread(mdbx_filehandle_t fd, void *buf, size_t count, uint64_t offset);
+MDBX_INTERNAL int osal_ioring_pwrite(osal_ioring_t *ior, mdbx_filehandle_t fd, const void *buf, size_t count,
+                                     uint64_t offset);
+MDBX_INTERNAL int osal_ioring_pwritev(osal_ioring_t *ior, mdbx_filehandle_t fd, struct iovec *iov, size_t sgvcnt,
+                                      uint64_t offset);
 MDBX_INTERNAL int osal_pwrite(mdbx_filehandle_t fd, const void *buf, size_t count, uint64_t offset);
 MDBX_INTERNAL int osal_write(mdbx_filehandle_t fd, const void *buf, size_t count);
 

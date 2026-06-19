@@ -15165,6 +15165,33 @@ The paired `MDBX_EXPLICIT_IO_BACKEND=io_uring make -f GNUmakefile
 mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.152`
 batch, `1.115` crud, `0.976` iterate, `0.942` get, and `1.057` delete.
 
+A later Linux `io_uring` one-shot write checkpoint added
+`osal_ioring_pwrite()` and `osal_ioring_pwritev()` wrappers and routed
+`dxb_storage_submit_write_data()`, `dxb_storage_submit_write_meta()`, and
+`dxb_storage_submit_writev_data()` through them. Requested/ready Linux rings
+can now submit direct storage writes with `IORING_OP_WRITE` or
+`IORING_OP_WRITEV` when the request fits a single signed-result SQE; larger
+requests, non-Linux builds, unavailable rings, unsupported operations, and
+early startup paths fall back to the existing `osal_pwrite()`/`osal_pwritev()`
+implementations. The writev wrapper validates the expected iovec payload size
+before submission and treats short completions as `MDBX_EIO`, preserving the
+old exact-write contract. A forced smoke `strace` with the write-related
+syscalls filtered showed `io_uring_setup=59`, `io_uring_enter=153573`, and
+only `36` direct `pwrite64` calls left in startup/fallback boundaries, with no
+`pwritev` calls reported. Verification passed `git diff --check`, the Ninja
+build (`cmake --build @cmake-ninja-build`), the GNUmake
+`mdbx_migration_smoke` build target, direct default, forced no-mmap,
+`MDBX_EXPLICIT_IO_BACKEND=io_uring`, and compatibility
+`MDBX_EXPLICIT_WRITE_BACKEND=io_uring` forced tiny-cache smokes. Normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` focused `migration_smoke` CTest entries
+passed 6/6, the ASAN build (`cmake --build @cmake-asan-build`) passed, normal
+and `MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest
+entries passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `MDBX_EXPLICIT_IO_BACKEND=io_uring make -f GNUmakefile
+mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.042`
+batch, `0.996` crud, `0.899` iterate, `1.039` get, and `0.995` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
