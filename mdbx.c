@@ -38303,11 +38303,28 @@ static ssize_t osal_ioring_sendfile(osal_ioring_t *ior, mdbx_filehandle_t out_fd
 #endif /* MDBX_USE_SENDFILE */
 
 #if !defined(_WIN32) && !defined(_WIN64)
-static int osal_ioring_ftruncate_exact(osal_ioring_t *ior, mdbx_filehandle_t fd, const uint64_t length) {
-  (void)ior;
+static int osal_ftruncate_exact(mdbx_filehandle_t fd, const uint64_t length) {
   if (unlikely(length > (uint64_t)OFF_T_MAX))
     return MDBX_EINVAL;
+#if defined(__linux__) || defined(__gnu_linux__)
+  if (globals.linux_kernel_version < 0x05110000 &&
+      globals.linux_kernel_version >= 0x050a0000) {
+    struct statfs statfs_info;
+    if (fstatfs(fd, &statfs_info))
+      return errno;
+    if (statfs_info.f_type == 0xEF53 /* EXT4_SUPER_MAGIC */ &&
+        unlikely(fdatasync(fd)))
+      return errno;
+  }
+#endif /* Linux */
   return unlikely(ftruncate(fd, (off_t)length)) ? errno : MDBX_SUCCESS;
+}
+
+static int osal_ioring_ftruncate_exact(osal_ioring_t *ior,
+                                       mdbx_filehandle_t fd,
+                                       const uint64_t length) {
+  (void)ior;
+  return osal_ftruncate_exact(fd, length);
 }
 #endif /* !Windows */
 
@@ -38995,17 +39012,7 @@ int osal_fsetsize(mdbx_filehandle_t fd, const uint64_t length) {
     return MDBX_SUCCESS;
 #endif
 
-#if defined(__linux__) || defined(__gnu_linux__)
-  if (globals.linux_kernel_version < 0x05110000 && globals.linux_kernel_version >= 0x050a0000) {
-    struct statfs statfs_info;
-    if (fstatfs(fd, &statfs_info))
-      return errno;
-    if (statfs_info.f_type == 0xEF53 /* EXT4_SUPER_MAGIC */ && unlikely(fdatasync(fd)))
-      return errno;
-  }
-#endif /* Linux */
-
-  return unlikely(ftruncate(fd, length)) ? errno : MDBX_SUCCESS;
+  return osal_ftruncate_exact(fd, length);
 
 #endif /* !Windows */
 }

@@ -15351,6 +15351,23 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.117` batch, `1.153` crud, `0.870` iterate, `1.062`
 get, and `1.075` delete.
 
+A later ftruncate-workaround checkpoint factored the POSIX exact-truncate path
+into `osal_ftruncate_exact()`. Both the normal `osal_fsetsize()` fallback and
+the io-queue `osal_ioring_ftruncate_exact()` fallback now share the same length
+range check and the Linux 5.10/ext4 pre-truncate `fdatasync()` workaround before
+calling `ftruncate()`. This keeps exact shrinks behind the async-capable
+filesize boundary without losing the older durability workaround while local
+headers still lack `IORING_OP_FTRUNCATE`. Verification passed `git diff
+--check`, the Ninja build (`cmake --build @cmake-ninja-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed 9/9, the ASAN
+build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.110` batch, `1.166` crud, `1.027` iterate, `0.992`
+get, and `1.080` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
