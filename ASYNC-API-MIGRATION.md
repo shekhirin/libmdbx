@@ -1094,3 +1094,29 @@ Additional async enqueue wakeup checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - three clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench` samples passed; average ratios were async/blocking-parallel 1.098, async-batch/blocking-parallel 1.116, and async-cursor/blocking-parallel 1.485
+
+Additional async wait-all sequence checkpoint:
+
+- added FIFO sequence counters to async executors and operation handles
+- `mdbx_async_wait_all()` now finds the newest operation in the submitted
+  handle set and waits for the executor's completed sequence to reach it,
+  rather than rescanning every handle after every completion wakeup
+- because each executor runs its queue FIFO, completion of the newest handle in
+  a same-executor batch proves completion of all earlier handles in that batch;
+  result collection still reads each operation's stored result after the wait
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- three clean default `mdbx_async_api_bench` samples passed; average ratios
+  were async/blocking-parallel 1.057, async-batch/blocking-parallel 1.081, and
+  async-cursor/blocking-parallel 1.313
+- larger `MDBX_ASYNC_BENCH_OPS=1000000` default sample passed with ratios
+  async/blocking-parallel 1.100, async-batch/blocking-parallel 1.078, and
+  async-cursor/blocking-parallel 1.531
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` sample passed with
+  ratios async/blocking-parallel 1.010, async-batch/blocking-parallel 1.078,
+  and async-cursor/blocking-parallel 1.016

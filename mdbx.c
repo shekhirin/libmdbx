@@ -15139,6 +15139,8 @@ struct MDBX_async {
   MDBX_async_op *spare;
   size_t refs;
   size_t spare_count;
+  uint64_t next_seq;
+  uint64_t completed_seq;
   bool active;
   bool stop;
 };
@@ -15148,6 +15150,7 @@ struct MDBX_async_op {
   MDBX_async *async;
   MDBX_async_op *next;
   enum mdbx_async_opcode opcode;
+  uint64_t seq;
   bool done;
   int result;
   void *key_copy;
@@ -16377,6 +16380,7 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
 
     op->result = result;
     op->done = true;
+    async->completed_seq = op->seq;
     async->active = false;
     osal_condpair_signal(&async->condpair, false);
   }
@@ -16445,6 +16449,7 @@ static int async_op_enqueue(MDBX_async *async, MDBX_async_op *op, MDBX_async_op 
     else
       async->head = op;
     async->tail = op;
+    op->seq = ++async->next_seq;
     async->refs += 1;
     queued = true;
     rc = wake_worker ? osal_condpair_signal(&async->condpair, true) : MDBX_SUCCESS;
@@ -16621,19 +16626,16 @@ int mdbx_async_wait_all(MDBX_async_op *const ops[], size_t count, int results[])
   if (!count)
     return MDBX_SUCCESS;
 
+  uint64_t max_seq = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (ops[i]->seq > max_seq)
+      max_seq = ops[i]->seq;
+  }
+
   rc = osal_condpair_lock(&async->condpair);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
-  for (;;) {
-    bool pending = false;
-    for (size_t i = 0; i < count; ++i) {
-      if (!ops[i]->done) {
-        pending = true;
-        break;
-      }
-    }
-    if (!pending)
-      break;
+  while (async->completed_seq < max_seq) {
     rc = osal_condpair_wait(&async->condpair, false);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
