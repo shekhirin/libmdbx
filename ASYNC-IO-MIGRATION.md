@@ -14554,6 +14554,29 @@ six focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.106` batch, `1.121` crud, `1.240`
 iterate, `0.950` get, and `1.079` delete.
 
+A later metadata-write descriptor cleanup removed
+`dxb_meta_unsteady_sign_write_submit_io_t`,
+`meta_unsteady_make_sign_write_submit_io()`,
+`meta_unsteady_sign_write_submit_io_validate()`,
+`dxb_meta_override_page_write_submit_io_t`,
+`meta_override_make_page_write_submit_io()`, and
+`meta_override_page_write_submit_io_validate()` from `mdbx.c`. `meta_unsteady()`
+and `meta_override()` now build, validate, and submit
+`dxb_meta_write_io_t`/`dxb_meta_write_submit_io_t` storage descriptors directly
+for steady-meta sign wiping and full-page metadata override writes, while
+retaining the same meta-state checks, pgop accounting, shadow-copy updates, and
+redirected metadata sync behavior. Verification passed `git diff --check`, a
+source scan proving the removed metadata-write descriptor helpers are absent
+from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`.
+The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
+of `1.108` batch, `1.147` crud, `0.754` iterate, `1.064` get, and `1.063`
+delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
