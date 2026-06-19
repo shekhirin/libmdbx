@@ -13133,6 +13133,25 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.120` batch, `1.159` crud, `0.985` iterate,
 `0.978` get, and `1.078` delete.
 
+A later header meta-read submit-boundary cleanup removed the one-call
+`dxb_header_submit_meta_read()` helper from `mdbx.c`. The `dxb_read_header()`
+retry loop now revalidates each prepared header meta-read descriptor and submits
+directly through `dxb_storage_submit_read_meta()`, including the Windows
+lock-violation retry branches. This keeps initial metadata probing on an
+explicit async-capable storage request boundary without changing empty-file,
+retry, or duplicate-read comparison behavior. Verification passed `git diff
+--check`, source scans proving `dxb_header_submit_meta_read()` is absent from
+`mdbx.c` and the public/internal headers, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.142` batch, `1.140` crud, `0.964` iterate,
+`0.969` get, and `1.080` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

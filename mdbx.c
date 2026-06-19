@@ -30820,13 +30820,6 @@ static inline int dxb_header_meta_read_submit_io_validate(const dxb_header_meta_
   return MDBX_SUCCESS;
 }
 
-static dxb_read_result_t dxb_header_submit_meta_read(const dxb_header_meta_read_submit_io_t *io) {
-  int rc = dxb_header_meta_read_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_read_error(rc);
-  return dxb_storage_submit_read_meta(io->storage, &io->submit);
-}
-
 typedef struct dxb_setup_storage_size_submit_io {
   MDBX_env *env;
   dxb_storage_t *storage;
@@ -30965,7 +30958,9 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
     while (1) {
       TRACE("reading meta[%d]: offset %" PRIu64 ", bytes %zu, retry-left %u", meta_number, request.bytes.offset,
             request.bytes.bytes, retryleft);
-      err = dxb_header_submit_meta_read(&submit).err;
+      err = dxb_header_meta_read_submit_io_validate(&submit);
+      if (likely(err == MDBX_SUCCESS))
+        err = dxb_storage_submit_read_meta(submit.storage, &submit.submit).err;
       if (err == MDBX_ENODATA && request.bytes.offset == 0 && loop_count == 0 &&
           dxb_storage_filesize(storage) == 0 &&
           mode_bits /* non-zero for DB creation */ != 0) {
@@ -30975,7 +30970,9 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
 #if defined(_WIN32) || defined(_WIN64)
       if (err == ERROR_LOCK_VIOLATION) {
         SleepEx(0, true);
-        err = dxb_header_submit_meta_read(&submit).err;
+        err = dxb_header_meta_read_submit_io_validate(&submit);
+        if (likely(err == MDBX_SUCCESS))
+          err = dxb_storage_submit_read_meta(submit.storage, &submit.submit).err;
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
           WARNING("read meta[%" PRIu64 ",%zu]: %i, %s", request.bytes.offset, request.bytes.bytes, err,
                   mdbx_strerror(err));
@@ -30994,11 +30991,15 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
       err = dxb_header_make_meta_read_submit_io(storage, &request, again, sizeof(again), &again_submit);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
-      err = dxb_header_submit_meta_read(&again_submit).err;
+      err = dxb_header_meta_read_submit_io_validate(&again_submit);
+      if (likely(err == MDBX_SUCCESS))
+        err = dxb_storage_submit_read_meta(again_submit.storage, &again_submit.submit).err;
 #if defined(_WIN32) || defined(_WIN64)
       if (err == ERROR_LOCK_VIOLATION) {
         SleepEx(0, true);
-        err = dxb_header_submit_meta_read(&again_submit).err;
+        err = dxb_header_meta_read_submit_io_validate(&again_submit);
+        if (likely(err == MDBX_SUCCESS))
+          err = dxb_storage_submit_read_meta(again_submit.storage, &again_submit.submit).err;
         if (err == ERROR_LOCK_VIOLATION && --retryleft) {
           WARNING("read meta[%" PRIu64 ",%zu]: %i, %s", request.bytes.offset, request.bytes.bytes, err,
                   mdbx_strerror(err));
