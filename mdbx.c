@@ -27698,167 +27698,6 @@ __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive,
   return MDBX_SUCCESS;
 }
 
-typedef struct dxb_readahead_toggle_submit_io {
-  const MDBX_env *env;
-  const dxb_storage_t *storage;
-  bool enable;
-  dxb_readahead_submit_io_t submit;
-} dxb_readahead_toggle_submit_io_t;
-
-static inline int dxb_readahead_make_toggle_submit_io(
-    const MDBX_env *env, bool enable, dxb_readahead_toggle_submit_io_t *io) {
-  if (unlikely(!env || !io))
-    return MDBX_EINVAL;
-
-  const dxb_storage_t *const storage = &env->dxb_storage;
-  dxb_readahead_submit_io_t submit;
-  int rc = dxb_storage_make_readahead_submit_io(enable, &submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->env = env;
-  io->storage = storage;
-  io->enable = enable != 0;
-  io->submit = submit;
-  return MDBX_SUCCESS;
-}
-
-static inline int
-dxb_readahead_toggle_submit_io_validate(const dxb_readahead_toggle_submit_io_t *io) {
-  if (unlikely(!io || !io->env || !io->storage ||
-               io->storage != &io->env->dxb_storage ||
-               (io->enable & 1) != (io->enable != 0)))
-    return MDBX_EINVAL;
-  int rc = dxb_storage_readahead_submit_io_validate(&io->submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io->submit.enable != io->enable))
-    return MDBX_EINVAL;
-
-  dxb_readahead_toggle_submit_io_t checked;
-  rc = dxb_readahead_make_toggle_submit_io(io->env, io->enable, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.env != io->env || checked.storage != io->storage ||
-               checked.enable != io->enable ||
-               checked.submit.enable != io->submit.enable))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-typedef struct dxb_readahead_advice_submit_io {
-  const MDBX_env *env;
-  const dxb_storage_t *storage;
-  dxb_byte_io_t range;
-  enum dxb_advice advice_mode;
-  dxb_advice_io_t advice;
-  dxb_advice_submit_io_t submit;
-} dxb_readahead_advice_submit_io_t;
-
-static inline int dxb_readahead_make_advice_submit_io(
-    const MDBX_env *env, const dxb_byte_io_t *range,
-    enum dxb_advice advice_mode, dxb_readahead_advice_submit_io_t *io) {
-  if (unlikely(!env || !range || !io))
-    return MDBX_EINVAL;
-
-  const dxb_storage_t *const storage = &env->dxb_storage;
-  int rc = dxb_storage_byte_io_validate(range);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_advice_io_t advice;
-  rc = dxb_storage_make_advice_io(storage, range, advice_mode, &advice);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_advice_submit_io_t submit;
-  rc = dxb_storage_make_advice_submit_io(storage, &advice, &submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->env = env;
-  io->storage = storage;
-  io->range = *range;
-  io->advice_mode = advice_mode;
-  io->advice = advice;
-  io->submit = submit;
-  return MDBX_SUCCESS;
-}
-
-static inline int
-dxb_readahead_advice_submit_io_validate(const dxb_readahead_advice_submit_io_t *io) {
-  if (unlikely(!io || !io->env || !io->storage ||
-               io->storage != &io->env->dxb_storage))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_byte_io_validate(&io->range);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_advice_io_validate(io->storage, &io->advice);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_advice_submit_io_validate(io->storage, &io->submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io->advice.advice != io->advice_mode ||
-               io->advice.range.request.offset != io->range.offset ||
-               io->advice.range.request.bytes != io->range.bytes ||
-               io->submit.advice.range.request.offset !=
-                   io->advice.range.request.offset ||
-               io->submit.advice.range.request.bytes !=
-                   io->advice.range.request.bytes ||
-               io->submit.advice.advice != io->advice.advice))
-    return MDBX_EINVAL;
-
-  dxb_readahead_advice_submit_io_t checked;
-  rc = dxb_readahead_make_advice_submit_io(
-      io->env, &io->range, io->advice_mode, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.env != io->env || checked.storage != io->storage ||
-               checked.range.offset != io->range.offset ||
-               checked.range.bytes != io->range.bytes ||
-               checked.advice_mode != io->advice_mode ||
-               checked.advice.range.request.offset !=
-                   io->advice.range.request.offset ||
-               checked.advice.range.request.bytes !=
-                   io->advice.range.request.bytes ||
-               checked.advice.range.pages.pgno != io->advice.range.pages.pgno ||
-               checked.advice.range.pages.end_pgno !=
-                   io->advice.range.pages.end_pgno ||
-               checked.advice.range.pages.npages !=
-                   io->advice.range.pages.npages ||
-               checked.advice.range.pages.offset !=
-                   io->advice.range.pages.offset ||
-               checked.advice.range.pages.bytes != io->advice.range.pages.bytes ||
-               checked.advice.range.page_bytes.offset !=
-                   io->advice.range.page_bytes.offset ||
-               checked.advice.range.page_bytes.bytes !=
-                   io->advice.range.page_bytes.bytes ||
-               checked.advice.advice != io->advice.advice))
-    return MDBX_EINVAL;
-  if (unlikely(checked.submit.advice.range.request.offset !=
-                   io->submit.advice.range.request.offset ||
-               checked.submit.advice.range.request.bytes !=
-                   io->submit.advice.range.request.bytes ||
-               checked.submit.advice.range.pages.pgno !=
-                   io->submit.advice.range.pages.pgno ||
-               checked.submit.advice.range.pages.end_pgno !=
-                   io->submit.advice.range.pages.end_pgno ||
-               checked.submit.advice.range.pages.npages !=
-                   io->submit.advice.range.pages.npages ||
-               checked.submit.advice.range.pages.offset !=
-                   io->submit.advice.range.pages.offset ||
-               checked.submit.advice.range.pages.bytes !=
-                   io->submit.advice.range.pages.bytes ||
-               checked.submit.advice.range.page_bytes.offset !=
-                   io->submit.advice.range.page_bytes.offset ||
-               checked.submit.advice.range.page_bytes.bytes !=
-                   io->submit.advice.range.page_bytes.bytes ||
-               checked.submit.advice.advice != io->submit.advice.advice))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 typedef struct dxb_resize_storage_size_submit_io {
   MDBX_env *env;
   dxb_storage_t *storage;
@@ -28123,29 +27962,38 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
          window_coverage.pages.end_pgno);
 
   if (toggle) {
-    dxb_readahead_toggle_submit_io_t readahead_submit;
-    int err = dxb_readahead_make_toggle_submit_io(env, enable, &readahead_submit);
+    dxb_readahead_submit_io_t readahead_submit;
+    err = dxb_storage_make_readahead_submit_io(enable, &readahead_submit);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_readahead_toggle_submit_io_validate(&readahead_submit);
+    err = dxb_storage_readahead_submit_io_validate(&readahead_submit);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    dxb_readahead_result_t readahead_result =
-        dxb_storage_submit_readahead(readahead_submit.storage, &readahead_submit.submit);
+    dxb_readahead_result_t readahead_result = dxb_storage_submit_readahead(storage, &readahead_submit);
     err = readahead_result.err;
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
 
   if (enable) {
-    dxb_readahead_advice_submit_io_t advice_submit;
-    err = dxb_readahead_make_advice_submit_io(env, &window, dxb_advice_normal, &advice_submit);
+    dxb_advice_io_t advice;
+    err = dxb_storage_byte_io_validate(&window);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_readahead_advice_submit_io_validate(&advice_submit);
+    err = dxb_storage_make_advice_io(storage, &window, dxb_advice_normal, &advice);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_storage_submit_advise_io(advice_submit.storage, &advice_submit.submit).err;
+    err = dxb_storage_advice_io_validate(storage, &advice);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    dxb_advice_submit_io_t advice_submit;
+    err = dxb_storage_make_advice_submit_io(storage, &advice, &advice_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = dxb_storage_advice_submit_io_validate(storage, &advice_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = dxb_storage_submit_advise_io(storage, &advice_submit).err;
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
     if (toggle) {
@@ -28154,27 +28002,45 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
        * on following access to the hinted region.
        * 19.6.0 Darwin Kernel Version 19.6.0: Tue Jan 12 22:13:05 PST 2021;
        * root:xnu-6153.141.16~1/RELEASE_X86_64 x86_64 */
-      err = dxb_readahead_make_advice_submit_io(
-          env, &window_coverage.page_bytes, dxb_advice_willneed, &advice_submit);
+      err = dxb_storage_byte_io_validate(&window_coverage.page_bytes);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
-      err = dxb_readahead_advice_submit_io_validate(&advice_submit);
+      err = dxb_storage_make_advice_io(storage, &window_coverage.page_bytes, dxb_advice_willneed, &advice);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
-      err = dxb_storage_submit_advise_io(advice_submit.storage, &advice_submit.submit).err;
+      err = dxb_storage_advice_io_validate(storage, &advice);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+      err = dxb_storage_make_advice_submit_io(storage, &advice, &advice_submit);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+      err = dxb_storage_advice_submit_io_validate(storage, &advice_submit);
+      if (unlikely(err != MDBX_SUCCESS))
+        return err;
+      err = dxb_storage_submit_advise_io(storage, &advice_submit).err;
       if (unlikely(MDBX_IS_ERROR(err)))
         return err;
     }
   } else {
     env_clear_incore_cache(env);
-    dxb_readahead_advice_submit_io_t advice_submit;
-    err = dxb_readahead_make_advice_submit_io(env, &window, dxb_advice_random, &advice_submit);
+    dxb_advice_io_t advice;
+    err = dxb_storage_byte_io_validate(&window);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_readahead_advice_submit_io_validate(&advice_submit);
+    err = dxb_storage_make_advice_io(storage, &window, dxb_advice_random, &advice);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_storage_submit_advise_io(advice_submit.storage, &advice_submit.submit).err;
+    err = dxb_storage_advice_io_validate(storage, &advice);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    dxb_advice_submit_io_t advice_submit;
+    err = dxb_storage_make_advice_submit_io(storage, &advice, &advice_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = dxb_storage_advice_submit_io_validate(storage, &advice_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = dxb_storage_submit_advise_io(storage, &advice_submit).err;
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
   }

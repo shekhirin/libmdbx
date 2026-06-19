@@ -14450,6 +14450,29 @@ migration CTest suite including API checks and tool roundtrips, the ASAN build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.112`
 batch, `1.145` crud, `0.785` iterate, `0.836` get, and `1.061` delete.
 
+A later readahead descriptor cleanup removed
+`dxb_readahead_toggle_submit_io_t`,
+`dxb_readahead_make_toggle_submit_io()`,
+`dxb_readahead_toggle_submit_io_validate()`,
+`dxb_readahead_advice_submit_io_t`,
+`dxb_readahead_make_advice_submit_io()`, and
+`dxb_readahead_advice_submit_io_validate()` from `mdbx.c`.
+`dxb_set_readahead()` now builds, validates, and submits
+`dxb_readahead_submit_io_t` directly for whole-file readahead toggles, and
+builds direct `dxb_advice_io_t`/`dxb_advice_submit_io_t` descriptors for
+normal, willneed, and random advice windows before calling
+`dxb_storage_submit_advise_io()`. Verification passed `git diff --check`, a
+source scan proving the removed readahead descriptor helpers are absent from
+`mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.109` batch, `1.149` crud, `0.978`
+iterate, `1.022` get, and `1.062` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
