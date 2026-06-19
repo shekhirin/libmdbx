@@ -30080,14 +30080,6 @@ static inline int dxb_storage_filesize_shrink_cache_invalidate_submit_io_validat
   return MDBX_SUCCESS;
 }
 
-static dxb_cache_result_t dxb_storage_submit_filesize_shrink_cache_invalidate(
-    dxb_storage_t *storage, const dxb_filesize_shrink_cache_invalidate_submit_io_t *io) {
-  int rc = dxb_storage_filesize_shrink_cache_invalidate_submit_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_cache_error(rc);
-  return dxb_storage_submit_invalidate_cached_io(storage, &io->submit);
-}
-
 typedef struct dxb_filesize_set_bytes_submit_io {
   dxb_filesize_submit_io_t setsize;
   uint64_t old_filesize;
@@ -30238,8 +30230,10 @@ static dxb_filesize_result_t dxb_storage_submit_set_filesize_bytes(dxb_storage_t
 
   const dxb_filesize_result_t setsize = dxb_filesize_completed(io->setsize.target);
   if (io->has_shrink_invalidate) {
-    dxb_cache_result_t invalidate =
-        dxb_storage_submit_filesize_shrink_cache_invalidate(storage, &io->shrink_invalidate);
+    rc = dxb_storage_filesize_shrink_cache_invalidate_submit_io_validate(storage, &io->shrink_invalidate);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return dxb_filesize_completed_error(rc, setsize.filesize);
+    dxb_cache_result_t invalidate = dxb_storage_submit_invalidate_cached_io(storage, &io->shrink_invalidate.submit);
     if (unlikely(invalidate.err != MDBX_SUCCESS))
       return dxb_filesize_completed_error(invalidate.err, setsize.filesize);
   }
