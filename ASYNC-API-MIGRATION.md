@@ -2685,3 +2685,53 @@ Additional meta-write submit validation checkpoint:
   The write-heavy result remains below the pre-migration baseline for batch,
   CRUD, and delete. This checkpoint slightly improves default batch versus the
   previous passing repeat but does not close the migration gap.
+
+Additional async write benchmark coverage checkpoint:
+
+- profiled the remaining forced no-map CRUD gap with `perf record` against
+  `ioarena -D mdbx -B crud -m lazy -n 10000`. The hot path is dominated by
+  kernel buffered write calls from `dxb_storage_write_queued()`:
+  `txn_basal_commit()` -> `txn_write()` -> `iov_write()` ->
+  `dxb_storage_write_queued()` accounted for about 25% of samples, with
+  `pwrite`/`pwritev` syscall paths accounting for most of that subtree.
+- a direct `MDBX_EXPLICIT_IO_BACKEND=io_uring` spot comparison on the same
+  small transactional CRUD pattern was slower on this host, so the next change
+  did not make io_uring automatic for the default backend.
+- extended `ut_and_examples/async-api-bench.c` beyond read throughput: it now
+  accepts `MDBX_ASYNC_BENCH_WRITE_OPS` and reports a bounded single-writer
+  transaction benchmark comparing blocking `mdbx_put()` with windowed
+  `mdbx_async_put()` submissions on one async executor. This keeps the blocking
+  API unchanged and makes write-operation async API overhead visible in the
+  same public benchmark harness as GET and cursor scans.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|migration_smoke)'`: passed 9/9
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h`: `blocking=171 async-covered=132 exempt=39 missing=0`
+- reduced benchmark sanity check:
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking write put
+  2.628 Mops/s, async write put 2.288 Mops/s, async-put/blocking-put 0.871.
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000
+  MDBX_ASYNC_BENCH_WRITE_OPS=20000` spot check reported
+  async/blocking-parallel 1.183, async-many/blocking-parallel 1.117,
+  async-thread/blocking-parallel 1.123,
+  async-thread-many/blocking-parallel 1.119,
+  async-thread-batch/blocking-parallel 1.159,
+  async-batch/blocking-parallel 1.186,
+  async-batch-callback/blocking-parallel 1.190,
+  async-loop/blocking-parallel 1.138,
+  async-thread-loop/blocking-parallel 1.151,
+  async-cursor/blocking-parallel 1.399,
+  async-loop-cursor/blocking-parallel 1.766, and
+  async-put/blocking-put 0.736.
+- conclusion: read and cursor async benchmarks remain above blocking-parallel
+  in the forced no-map spot check. The new write benchmark confirms that
+  single-writer async `put` is currently slower than direct blocking `put`,
+  which matches the serialized write model and the profile showing kernel
+  write submission as the remaining cost rather than public API coverage.
