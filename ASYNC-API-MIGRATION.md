@@ -1210,3 +1210,36 @@ Additional benchmark cursor restart checkpoint:
   16384 did not justify changing the default 2048-pair cursor batch size; the
   cursor ratios remained scheduler-noisy across both default and forced no-map
   runs
+
+Additional coarse submitted-cursor benchmark checkpoint:
+
+- added an `mdbx_async_api_bench` cursor path that uses the existing generic
+  `mdbx_async_submit()` API to run one complete cursor-batch loop per async
+  executor instead of submitting one typed `mdbx_async_cursor_get_batch()`
+  operation per cursor chunk
+- the benchmark now reports `async submitted cursor`,
+  `async-submit-cursor/par`, and `async-submit-cursor/ser`; this keeps the
+  typed cursor-batch wrapper measurement while also measuring coarse async work
+  that better amortizes operation-handle and condition-variable overhead
+- a rejected tuning sweep tried `MDBX_ASYNC_BENCH_WINDOW=128` and
+  `MDBX_ASYNC_BENCH_CURSOR_BATCH_PAIRS=20000`; neither justified changing the
+  defaults because cursor and forced no-map samples remained noisy or regressed
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_bench` plus
+  `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- three clean default `mdbx_async_api_bench` samples passed; average ratios
+  were async/blocking-parallel 1.075, async-batch/blocking-parallel 1.077,
+  typed async-cursor/blocking-parallel 1.004, and
+  async-submit-cursor/blocking-parallel 1.278
+- three forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` samples passed;
+  average ratios were async/blocking-parallel 1.001,
+  async-batch/blocking-parallel 0.993, typed async-cursor/blocking-parallel
+  0.971, and async-submit-cursor/blocking-parallel 1.125
+- longer `MDBX_ASYNC_BENCH_OPS=1000000` samples were mixed: default reported
+  async-submit-cursor/blocking-parallel 0.977 while forced no-map/tiny-cache
+  reported 1.457; the point-get paths remained above parity in both longer
+  runs
