@@ -16438,6 +16438,7 @@ static int async_op_enqueue(MDBX_async *async, MDBX_async_op *op, MDBX_async_op 
   if (unlikely(async->stop)) {
     rc = MDBX_EINVAL;
   } else {
+    const bool wake_worker = !async->head && !async->active;
     MDBX_async_op *const previous_tail = async->tail;
     if (async->tail)
       async->tail->next = op;
@@ -16446,7 +16447,7 @@ static int async_op_enqueue(MDBX_async *async, MDBX_async_op *op, MDBX_async_op 
     async->tail = op;
     async->refs += 1;
     queued = true;
-    rc = osal_condpair_signal(&async->condpair, true);
+    rc = wake_worker ? osal_condpair_signal(&async->condpair, true) : MDBX_SUCCESS;
     if (likely(rc == MDBX_SUCCESS)) {
       *out = op;
     } else {
