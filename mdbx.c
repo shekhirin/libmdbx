@@ -9172,20 +9172,15 @@ static inline int walk_page_get_submit_io_validate(const dxb_walk_page_get_submi
   return MDBX_SUCCESS;
 }
 
-static inline pgr_t walk_submit_page_get(const dxb_walk_page_get_submit_io_t *io) {
-  int err = walk_page_get_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-
-  return page_submit_cursor_get(&io->get);
-}
-
 static inline pgr_t walk_page_get(walk_ctx_t *ctx, pgno_t pgno, txnid_t front) {
   dxb_walk_page_get_submit_io_t submit;
   int err = walk_make_page_get_submit_io(ctx, pgno, front, &submit);
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  return walk_submit_page_get(&submit);
+  err = walk_page_get_submit_io_validate(&submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return page_submit_cursor_get(&submit.get);
 }
 
 typedef struct dxb_walk_large_page_get_submit_io {
@@ -9271,21 +9266,16 @@ static inline int walk_large_page_get_submit_io_validate(const dxb_walk_large_pa
   return MDBX_SUCCESS;
 }
 
-static inline pgr_t walk_submit_large_page_get(const dxb_walk_large_page_get_submit_io_t *io) {
-  int err = walk_large_page_get_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-
-  return page_submit_cursor_get(&io->get);
-}
-
 static inline pgr_t walk_large_page_get(walk_ctx_t *ctx, const page_t *source, size_t node_index,
                                         const node_t *node) {
   dxb_walk_large_page_get_submit_io_t submit;
   int err = walk_make_large_page_get_submit_io(ctx, source, node_index, node, &submit);
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  return walk_submit_large_page_get(&submit);
+  err = walk_large_page_get_submit_io_validate(&submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return page_submit_cursor_get(&submit.get);
 }
 
 MDBX_INTERNAL int walk_tbl(walk_ctx_t *ctx, walk_tbl_t *tbl, pgno_t parent_page);
@@ -10568,20 +10558,15 @@ static inline int compacting_large_page_get_submit_io_validate(
   return MDBX_SUCCESS;
 }
 
-static inline pgr_t compacting_submit_large_page_get(const dxb_compacting_large_page_get_submit_io_t *io) {
-  int err = compacting_large_page_get_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-
-  return page_submit_cursor_get(&io->get);
-}
-
 static inline pgr_t compacting_large_page_get(ctx_t *ctx, MDBX_cursor *mc, page_t *source, size_t node_index) {
   dxb_compacting_large_page_get_submit_io_t submit;
   int err = compacting_make_large_page_get_submit_io(ctx, mc, source, node_index, &submit);
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  return compacting_submit_large_page_get(&submit);
+  err = compacting_large_page_get_submit_io_validate(&submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return page_submit_cursor_get(&submit.get);
 }
 
 __cold static int compacting_walk(ctx_t *ctx, MDBX_cursor *mc, pgno_t *const parent_pgno, txnid_t parent_txnid) {
@@ -25376,27 +25361,23 @@ static inline int defrag_page_get_submit_io_validate(const dxb_defrag_page_get_s
   return MDBX_SUCCESS;
 }
 
-static inline pgr_t defrag_submit_page_get(const dxb_defrag_page_get_submit_io_t *io) {
-  int err = defrag_page_get_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-
-#if MDBX_ENABLE_PGET_STAT
-  io->txn->ops_pget += 1;
-#endif /* MDBX_ENABLE_PGET_STAT */
-
-  pgr_t pgr = page_submit_get_unchecked(io->txn, &io->get);
-  if (likely(pgr.err == MDBX_SUCCESS) && unlikely(pgr.page->flags & ~(P_BRANCH | P_LEAF | P_DUPFIX | P_LARGE)))
-    pgr.err = bad_page(pgr.page, "unexpected page flags 0x%x", pgr.page->flags);
-  return pgr;
-}
-
 MDBX_MAYBE_UNUSED static pgr_t defrag_get_page(dfc_t *dfc, pgno_t pgno) {
   dxb_defrag_page_get_submit_io_t submit;
   int err = defrag_make_page_get_submit_io(dfc, pgno, &submit);
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  return defrag_submit_page_get(&submit);
+  err = defrag_page_get_submit_io_validate(&submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+#if MDBX_ENABLE_PGET_STAT
+  submit.txn->ops_pget += 1;
+#endif /* MDBX_ENABLE_PGET_STAT */
+
+  pgr_t pgr = page_submit_get_unchecked(submit.txn, &submit.get);
+  if (likely(pgr.err == MDBX_SUCCESS) && unlikely(pgr.page->flags & ~(P_BRANCH | P_LEAF | P_DUPFIX | P_LARGE)))
+    pgr.err = bad_page(pgr.page, "unexpected page flags 0x%x", pgr.page->flags);
+  return pgr;
 }
 
 typedef struct dxb_defrag_page_read_submit_io {
@@ -45198,20 +45179,15 @@ page_check_bigdata_page_get_submit_io_validate(const dxb_page_check_bigdata_page
   return MDBX_SUCCESS;
 }
 
-static inline pgr_t page_check_submit_bigdata_page_get(const dxb_page_check_bigdata_page_get_submit_io_t *io) {
-  int err = page_check_bigdata_page_get_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-
-  return page_submit_cursor_get(&io->get);
-}
-
 static inline pgr_t page_check_bigdata_page_get(const MDBX_cursor *mc, const page_t *source, size_t node_index) {
   dxb_page_check_bigdata_page_get_submit_io_t submit;
   int err = page_check_make_bigdata_page_get_submit_io(mc, source, node_index, &submit);
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  return page_check_submit_bigdata_page_get(&submit);
+  err = page_check_bigdata_page_get_submit_io_validate(&submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return page_submit_cursor_get(&submit.get);
 }
 
 __cold int page_check(const MDBX_cursor *const mc, const page_t *const mp) {
@@ -47139,25 +47115,21 @@ static inline int page_retire_page_get_submit_io_validate(const dxb_page_retire_
   return MDBX_SUCCESS;
 }
 
-static inline pgr_t page_retire_submit_page_get(const dxb_page_retire_page_get_submit_io_t *io) {
-  int err = page_retire_page_get_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-
-  pgr_t pgr = page_submit_cursor_get(&io->get);
-  if (likely(pgr.err == MDBX_SUCCESS) && io->check_pageflags) {
-    cASSERT0(io->txn, ((unsigned)pgr.page->flags & ~P_SPILLED) == (io->pageflags & ~P_FROZEN));
-    cASSERT0(io->txn, !(io->pageflags & P_FROZEN) || is_frozen(io->txn, pgr.page));
-  }
-  return pgr;
-}
-
 static inline pgr_t page_retire_page_get(MDBX_cursor *mc, pgno_t pgno, unsigned pageflags, bool check_pageflags) {
   dxb_page_retire_page_get_submit_io_t submit;
   int err = page_retire_make_page_get_submit_io(mc, pgno, pageflags, check_pageflags, &submit);
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  return page_retire_submit_page_get(&submit);
+  err = page_retire_page_get_submit_io_validate(&submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  pgr_t pgr = page_submit_cursor_get(&submit.get);
+  if (likely(pgr.err == MDBX_SUCCESS) && submit.check_pageflags) {
+    cASSERT0(submit.txn, ((unsigned)pgr.page->flags & ~P_SPILLED) == (submit.pageflags & ~P_FROZEN));
+    cASSERT0(submit.txn, !(submit.pageflags & P_FROZEN) || is_frozen(submit.txn, pgr.page));
+  }
+  return pgr;
 }
 
 /* Retire, loosen or free a single page.
@@ -50685,20 +50657,15 @@ static inline int tree_cutoff_page_get_submit_io_validate(const dxb_tree_cutoff_
   return MDBX_SUCCESS;
 }
 
-static inline pgr_t tree_cutoff_submit_page_get(const dxb_tree_cutoff_page_get_submit_io_t *io) {
-  int err = tree_cutoff_page_get_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-
-  return page_submit_cursor_get(&io->get);
-}
-
 static inline pgr_t tree_cutoff_page_get(MDBX_cursor *mc, pgno_t pgno, size_t deep, txnid_t front, bool whole_tree) {
   dxb_tree_cutoff_page_get_submit_io_t submit;
   int err = tree_cutoff_make_page_get_submit_io(mc, pgno, deep, front, whole_tree, &submit);
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  return tree_cutoff_submit_page_get(&submit);
+  err = tree_cutoff_page_get_submit_io_validate(&submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  return page_submit_cursor_get(&submit.get);
 }
 
 int tree_cutoff_twig(MDBX_cursor *mc, const pgno_t pgno, size_t deep, txnid_t parent_txnid, const bool whole_tree) {

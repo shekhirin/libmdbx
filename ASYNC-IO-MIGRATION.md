@@ -13458,6 +13458,29 @@ and tool roundtrips. The paired `mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.124` batch, `1.149` crud, `0.855` iterate, `0.806`
 get, and `1.076` delete.
 
+A later transient page-get submit-boundary cleanup removed the one-call
+`walk_submit_page_get()`, `walk_submit_large_page_get()`,
+`compacting_submit_large_page_get()`, `defrag_submit_page_get()`,
+`page_check_submit_bigdata_page_get()`, `page_retire_submit_page_get()`, and
+`tree_cutoff_submit_page_get()` helpers from `mdbx.c`. Page walking,
+compacting-copy overflow fetches, defrag fallback page fetches, page-check
+overflow validation, page retirement, and tree cutoff now validate their
+prepared page-get descriptors at the local caller, then submit directly through
+`page_submit_cursor_get()` or `page_submit_get_unchecked()`. This keeps
+transient page-cache pinning decisions at the ownership site while preserving
+the checked descriptor shapes a later async backend can queue. Verification
+passed `git diff --check`, source scans proving the removed transient page-get
+helpers are absent from `mdbx.c` and the public/internal headers, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.094` batch, `1.154` crud, `1.151` iterate,
+`0.967` get, and `1.077` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
