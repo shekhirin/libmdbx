@@ -1978,3 +1978,40 @@ Additional many-submit spare-window checkpoint:
   lock. The local threaded many-submit samples improved versus the immediately
   preceding spot checks, but this remains a lock-contention cleanup rather than
   proof that the storage-level pre-migration benchmark gap is closed.
+
+Additional completion-chunk checkpoint:
+
+- changed the async executor worker to publish completed operations in small
+  chunks instead of locking the condition pair once per operation; each handle
+  still has its own result and completion flag, and targeted waits are woken at
+  chunk boundaries or at the end of the detached queue segment
+- the chunk is intentionally bounded at 16 operations so single-handle waits
+  remain responsive while GET windows avoid most per-operation completion-lock
+  traffic
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed with direct ratios
+  async-many/async 1.165 and async-thread-many/thread 1.059
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- default benchmark spot check reported async/blocking-parallel 1.035,
+  async-many/blocking-parallel 1.061,
+  async-thread/blocking-parallel 1.046,
+  async-thread-many/blocking-parallel 1.057,
+  async-many/async 1.025, and async-thread-many/thread 1.010
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check reported
+  async/blocking-parallel 1.005, async-many/blocking-parallel 1.063,
+  async-thread/blocking-parallel 0.928,
+  async-thread-many/blocking-parallel 1.066,
+  async-many/async 1.058, and async-thread-many/thread 1.148
+- larger default `MDBX_ASYNC_BENCH_OPS=1000000` sample reported all GET paths
+  above blocking-parallel, with async-many/async 0.994 and
+  async-thread-many/thread 1.008
+- conclusion: completion chunking reduces executor mutex churn for dense async
+  windows and improves the direct many-submit comparison in the local short
+  samples, while the larger sample remains near-neutral. This is still an async
+  executor throughput cleanup, not a fix for the separate pre-migration
+  ioarena storage-throughput gap.

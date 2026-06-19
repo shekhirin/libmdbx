@@ -15134,6 +15134,7 @@ enum mdbx_async_typed_option {
 #define MDBX_ASYNC_INLINE_WORDS 2
 #define MDBX_ASYNC_INLINE_BYTES (MDBX_ASYNC_INLINE_WORDS * sizeof(uint64_t))
 #define MDBX_ASYNC_SPARE_LIMIT 1024
+#define MDBX_ASYNC_COMPLETE_CHUNK 16
 
 struct MDBX_async {
   int32_t signature;
@@ -16671,17 +16672,34 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
 
     osal_condpair_unlock(&async->condpair);
 
+    MDBX_async_op *ready_head = nullptr;
+    MDBX_async_op *ready_tail = nullptr;
+    size_t ready_count = 0;
     for (;;) {
       MDBX_async_op *const next = op->next;
       op->next = nullptr;
-      const int result = async_op_execute(op);
+      op->result = async_op_execute(op);
+      if (ready_tail)
+        ready_tail->next = op;
+      else
+        ready_head = op;
+      ready_tail = op;
+      ready_count += 1;
+
+      if (next && ready_count < MDBX_ASYNC_COMPLETE_CHUNK) {
+        op = next;
+        continue;
+      }
 
       rc = osal_condpair_lock(&async->condpair);
       if (unlikely(rc != MDBX_SUCCESS))
         return (THREAD_RESULT)0;
-      op->result = result;
-      op->done = true;
-      async->completed_seq = op->seq;
+      for (MDBX_async_op *ready = ready_head;; ready = ready->next) {
+        ready->done = true;
+        if (ready == ready_tail)
+          break;
+      }
+      async->completed_seq = ready_tail->seq;
       if (!next) {
         async->active = false;
         async_signal_waiters(async, true);
@@ -16690,6 +16708,9 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
       async_signal_waiters(async, false);
       osal_condpair_unlock(&async->condpair);
 
+      ready_head = nullptr;
+      ready_tail = nullptr;
+      ready_count = 0;
       op = next;
     }
   }
