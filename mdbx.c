@@ -52152,38 +52152,22 @@ static inline int cursor_branch_child_push_submit_io_validate(const dxb_cursor_b
   return MDBX_SUCCESS;
 }
 
-static inline int cursor_submit_branch_child_push(const dxb_cursor_branch_child_push_submit_io_t *io) {
-  int err = cursor_branch_child_push_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  pgr_t child = page_submit_cursor_get(&io->get);
-  if (unlikely(child.err != MDBX_SUCCESS)) {
-    err = child.err;
-    pgr_release(io->cursor, &child);
-    return err;
-  }
-
-  io->cursor->ki[io->parent_top] = io->parent_ki;
-  indx_t child_ki = io->child_ki;
-  if (io->child_ki_last) {
-    const size_t nkeys = page_numkeys(child.page);
-    cASSERT0(io->cursor, nkeys > 0);
-    if (unlikely(nkeys == 0)) {
-      pgr_release(io->cursor, &child);
-      return MDBX_CORRUPTED;
-    }
-    child_ki = (indx_t)(nkeys - 1);
-  }
-  return cursor_push_pgr_consume(io->cursor, &child, child_ki);
-}
-
 static inline int cursor_branch_child_push(MDBX_cursor *mc, indx_t parent_ki, indx_t child_ki) {
   dxb_cursor_branch_child_push_submit_io_t submit;
   int err = cursor_make_branch_child_push_submit_io(mc, parent_ki, child_ki, &submit);
   cASSERT0(mc, err == MDBX_SUCCESS);
   if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_submit_branch_child_push(&submit);
+    err = cursor_branch_child_push_submit_io_validate(&submit);
+    if (likely(err == MDBX_SUCCESS)) {
+      pgr_t child = page_submit_cursor_get(&submit.get);
+      if (unlikely(child.err != MDBX_SUCCESS)) {
+        err = child.err;
+        pgr_release(submit.cursor, &child);
+      } else {
+        submit.cursor->ki[submit.parent_top] = submit.parent_ki;
+        err = cursor_push_pgr_consume(submit.cursor, &child, submit.child_ki);
+      }
+    }
     cASSERT0(mc, err != MDBX_RESULT_TRUE);
   }
   return err;
@@ -52194,7 +52178,28 @@ static inline int cursor_branch_child_edge_push(MDBX_cursor *mc, indx_t parent_k
   int err = cursor_make_branch_child_edge_push_submit_io(mc, parent_ki, last_child_ki, &submit);
   cASSERT0(mc, err == MDBX_SUCCESS);
   if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_submit_branch_child_push(&submit);
+    err = cursor_branch_child_push_submit_io_validate(&submit);
+    if (likely(err == MDBX_SUCCESS)) {
+      pgr_t child = page_submit_cursor_get(&submit.get);
+      if (unlikely(child.err != MDBX_SUCCESS)) {
+        err = child.err;
+        pgr_release(submit.cursor, &child);
+      } else {
+        submit.cursor->ki[submit.parent_top] = submit.parent_ki;
+        indx_t push_ki = submit.child_ki;
+        if (submit.child_ki_last) {
+          const size_t nkeys = page_numkeys(child.page);
+          cASSERT0(submit.cursor, nkeys > 0);
+          if (unlikely(nkeys == 0)) {
+            pgr_release(submit.cursor, &child);
+            err = MDBX_CORRUPTED;
+          } else
+            push_ki = (indx_t)(nkeys - 1);
+        }
+        if (likely(err == MDBX_SUCCESS))
+          err = cursor_push_pgr_consume(submit.cursor, &child, push_ki);
+      }
+    }
     cASSERT0(mc, err != MDBX_RESULT_TRUE);
   }
   return err;
