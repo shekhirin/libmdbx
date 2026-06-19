@@ -14988,6 +14988,28 @@ migration CTest suite including API checks and tool roundtrips, the ASAN build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.123`
 batch, `1.166` crud, `0.984` iterate, `1.011` get, and `1.077` delete.
 
+A later Linux `io_uring` probe checkpoint added a guarded OSAL queue setup
+path behind `MDBX_HAVE_LINUX_IO_URING`. On Linux builds with both
+`<linux/io_uring.h>` and the `io_uring` syscalls available, the explicit write
+queue now recognizes `MDBX_EXPLICIT_WRITE_BACKEND=io_uring`, `linux_uring`,
+`uring`, or `auto`, attempts an `io_uring_setup()` probe, records the ring
+descriptor/parameters on the queue, and closes the descriptor during queue
+destroy. POSIX queued writes still intentionally select the synchronous backend
+after a successful probe; the reserved Linux backend remains disabled until SQE
+submission, CQE completion, cancellation/reset, and error mapping are wired
+behind the same queue contract. This checkpoint proves the async-capable
+backend can be detected and owned without changing transaction I/O semantics.
+Verification passed `git diff --check`, the GNUmake `mdbx_migration_smoke`
+build target, direct rebuilt `mdbx_migration_smoke` default, forced tiny-cache,
+and `MDBX_EXPLICIT_WRITE_BACKEND=io_uring` forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.111` batch, `1.165` crud, `1.136`
+iterate, `0.938` get, and `1.077` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

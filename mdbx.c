@@ -36193,6 +36193,39 @@ static size_t osal_iov_max;
 #undef OSAL_IOV_MAX
 #endif /* OSAL_IOV_MAX */
 
+#if MDBX_HAVE_LINUX_IO_URING
+static bool osal_ioring_linux_uring_requested(void) {
+  const char *const value = osal_getenv("MDBX_EXPLICIT_WRITE_BACKEND", false);
+  return value && (strcmp(value, "io_uring") == 0 || strcmp(value, "linux_uring") == 0 ||
+                   strcmp(value, "uring") == 0 || strcmp(value, "auto") == 0);
+}
+
+static int osal_ioring_linux_uring_setup(osal_ioring_t *ior, unsigned entries) {
+  struct io_uring_params params;
+  memset(&params, 0, sizeof(params));
+#if defined(IORING_SETUP_CLAMP)
+  params.flags = IORING_SETUP_CLAMP;
+#endif /* IORING_SETUP_CLAMP */
+  const long fd = syscall(__NR_io_uring_setup, entries, &params);
+  if (unlikely(fd < 0))
+    return errno;
+
+  ior->linux_uring_fd = (int)fd;
+  ior->linux_uring_params = params;
+  ior->linux_uring_entries = params.sq_entries ? params.sq_entries : entries;
+  return MDBX_SUCCESS;
+}
+
+static void osal_ioring_linux_uring_destroy(osal_ioring_t *ior) {
+  if (ior->linux_uring_fd >= 0) {
+    (void)close(ior->linux_uring_fd);
+    ior->linux_uring_fd = -1;
+  }
+  ior->linux_uring_entries = 0;
+  memset(&ior->linux_uring_params, 0, sizeof(ior->linux_uring_params));
+}
+#endif /* MDBX_HAVE_LINUX_IO_URING */
+
 int osal_ioring_create(osal_ioring_t *ior
 #if defined(_WIN32) || defined(_WIN64)
                        ,
@@ -36201,6 +36234,9 @@ int osal_ioring_create(osal_ioring_t *ior
 ) {
   memset(ior, 0, sizeof(osal_ioring_t));
   ior->backend = osal_ioring_backend_sync;
+#if MDBX_HAVE_LINUX_IO_URING
+  ior->linux_uring_fd = -1;
+#endif /* MDBX_HAVE_LINUX_IO_URING */
 
 #if defined(_WIN32) || defined(_WIN64)
   ior->overlapped_fd = overlapped_fd;
@@ -36217,6 +36253,18 @@ int osal_ioring_create(osal_ioring_t *ior
 #if MDBX_HAVE_PWRITEV && defined(_SC_IOV_MAX)
   ASSERT(osal_iov_max > 0);
 #endif /* MDBX_HAVE_PWRITEV && _SC_IOV_MAX */
+
+#if MDBX_HAVE_LINUX_IO_URING
+  ior->linux_uring_requested = osal_ioring_linux_uring_requested();
+  if (ior->linux_uring_requested) {
+    const int rc = osal_ioring_linux_uring_setup(ior, 32);
+    if (rc == MDBX_SUCCESS) {
+      /* Keep using the synchronous backend until Linux io_uring submission and
+       * completion are wired behind the same queue contract. */
+      ior->backend = osal_ioring_backend_sync;
+    }
+  }
+#endif /* MDBX_HAVE_LINUX_IO_URING */
 
   ior->boundary = ptr_disp(ior->pool, ior->allocated);
   return MDBX_SUCCESS;
@@ -37064,6 +37112,9 @@ void osal_ioring_destroy(osal_ioring_t *ior) {
   if (ior->overlapped_fd)
     CloseHandle(ior->overlapped_fd);
 #else
+#if MDBX_HAVE_LINUX_IO_URING
+  osal_ioring_linux_uring_destroy(ior);
+#endif /* MDBX_HAVE_LINUX_IO_URING */
   osal_free(ior->pool);
 #endif
   memset(ior, 0, sizeof(osal_ioring_t));

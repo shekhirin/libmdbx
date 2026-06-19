@@ -452,6 +452,16 @@ __extern_C key_t ftok(const char *, int);
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#if defined(__linux__) && __has_include(<linux/io_uring.h>) && __has_include(<sys/syscall.h>)
+#include <linux/io_uring.h>
+#include <sys/syscall.h>
+#if defined(__NR_io_uring_setup) && defined(__NR_io_uring_enter)
+#define MDBX_HAVE_LINUX_IO_URING 1
+#endif
+#endif /* Linux io_uring */
+#ifndef MDBX_HAVE_LINUX_IO_URING
+#define MDBX_HAVE_LINUX_IO_URING 0
+#endif /* MDBX_HAVE_LINUX_IO_URING */
 #include <sys/time.h>
 #include <sys/uio.h>
 
@@ -1642,6 +1652,12 @@ typedef struct osal_ioring {
 #else
 #define ior_last_sgvcnt(ior, item) (1)
 #endif /* !Windows */
+#if MDBX_HAVE_LINUX_IO_URING
+  int linux_uring_fd;
+  struct io_uring_params linux_uring_params;
+  unsigned linux_uring_entries;
+  bool linux_uring_requested;
+#endif /* MDBX_HAVE_LINUX_IO_URING */
 #define ior_last_bytes(ior, item) (item)->io.bytes.bytes
   ior_item_t *last;
   ior_item_t *pool;
