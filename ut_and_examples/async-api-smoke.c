@@ -301,14 +301,31 @@ bailout:
   return rc == MDBX_SUCCESS ? MDBX_SUCCESS : fail_rc("verify_copied_value", rc, file, line);
 }
 
-static int exercise_async_recovery_turn(const char *path, const char *file, int line) {
+static int exercise_async_preopen_recovery(const char *path, const char *file, int line) {
   MDBX_env *recovery_env = NULL;
+  MDBX_async *preopen_async = NULL;
   MDBX_async *recovery_async = NULL;
   MDBX_async_op *recovery_op = NULL;
+  MDBX_envinfo snapinfo;
   int rc = MDBX_SUCCESS;
 
+  memset(&snapinfo, 0, sizeof(snapinfo));
+  CHECK(mdbx_async_create(NULL, MDBX_ASYNC_DEFAULTS, &preopen_async));
+  REQUIRE(mdbx_async_env(preopen_async) == NULL, "unbound async executor returned an environment");
+  CHECK(mdbx_async_preopen_snapinfo(preopen_async, path, &snapinfo, sizeof(snapinfo), &recovery_op));
+  rc = wait_success("mdbx_async_preopen_snapinfo", &recovery_op, file, line);
+  if (rc != MDBX_SUCCESS)
+    goto bailout;
+  REQUIRE(snapinfo.mi_dxb_pagesize > 0 && snapinfo.mi_geo.current > 0, "async preopen snapinfo returned empty data");
+
   CHECK(mdbx_env_create(&recovery_env));
-  CHECK(mdbx_env_open_for_recovery(recovery_env, path, 0, true));
+  CHECK(mdbx_async_env_open_for_recovery(preopen_async, recovery_env, path, 0, true, &recovery_op));
+  rc = wait_success("mdbx_async_env_open_for_recovery", &recovery_op, file, line);
+  if (rc != MDBX_SUCCESS)
+    goto bailout;
+  CHECK(mdbx_async_destroy(preopen_async, true));
+  preopen_async = NULL;
+
   CHECK(mdbx_async_create(recovery_env, MDBX_ASYNC_DEFAULTS, &recovery_async));
   CHECK(mdbx_async_env_turn_for_recovery(recovery_async, 0, &recovery_op));
   rc = wait_success("mdbx_async_env_turn_for_recovery", &recovery_op, file, line);
@@ -326,11 +343,13 @@ bailout:
     (void)mdbx_async_wait(recovery_op, &operation_result);
     (void)mdbx_async_op_release(recovery_op);
   }
+  if (preopen_async)
+    (void)mdbx_async_destroy(preopen_async, true);
   if (recovery_async)
     (void)mdbx_async_destroy(recovery_async, true);
   if (recovery_env)
     (void)mdbx_env_close(recovery_env);
-  return rc ? rc : fail_msg("async recovery turn failed", file, line);
+  return rc ? rc : fail_msg("async preopen recovery failed", file, line);
 }
 
 int main(void) {
@@ -1428,7 +1447,7 @@ int main(void) {
   async = NULL;
   CHECK(mdbx_env_close(env));
   env = NULL;
-  CHECK(exercise_async_recovery_turn(path, __FILE__, __LINE__));
+  CHECK(exercise_async_preopen_recovery(path, __FILE__, __LINE__));
 
   rc = mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
   if (rc == MDBX_RESULT_TRUE)

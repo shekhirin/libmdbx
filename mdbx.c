@@ -14979,8 +14979,10 @@ enum mdbx_async_opcode {
   async_op_env_info,
   async_op_env_sync,
   async_op_env_warmup,
+  async_op_preopen_snapinfo,
   async_op_env_copy,
 #if defined(_WIN32) || defined(_WIN64)
+  async_op_preopen_snapinfoW,
   async_op_env_copyW,
 #endif /* Windows */
   async_op_env_copy2fd,
@@ -15004,6 +15006,10 @@ enum mdbx_async_opcode {
   async_op_env_get_valsize4page,
   async_op_env_defrag,
   async_op_env_chk,
+  async_op_env_open_for_recovery,
+#if defined(_WIN32) || defined(_WIN64)
+  async_op_env_open_for_recoveryW,
+#endif /* Windows */
   async_op_env_turn_for_recovery,
   async_op_reader_list,
   async_op_reader_check,
@@ -15167,6 +15173,10 @@ struct MDBX_async_op {
       unsigned timeout_seconds_16dot16;
     } env_warmup;
     struct {
+      MDBX_envinfo *info;
+      size_t bytes;
+    } preopen_snapinfo;
+    struct {
       MDBX_txn *txn;
       MDBX_copy_flags_t flags;
       mdbx_filehandle_t fd;
@@ -15239,6 +15249,11 @@ struct MDBX_async_op {
       MDBX_chk_severity_t verbosity;
       unsigned timeout_seconds_16dot16;
     } env_chk;
+    struct {
+      MDBX_env *env;
+      unsigned target_meta;
+      bool writeable;
+    } env_open_for_recovery;
     struct {
       unsigned target_meta;
     } env_turn_for_recovery;
@@ -15756,9 +15771,14 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_env_warmup:
     return mdbx_env_warmup(op->async->env, op->args.env_warmup.txn, op->args.env_warmup.flags,
                            op->args.env_warmup.timeout_seconds_16dot16);
+  case async_op_preopen_snapinfo:
+    return mdbx_preopen_snapinfo(op->name_copy, op->args.preopen_snapinfo.info, op->args.preopen_snapinfo.bytes);
   case async_op_env_copy:
     return mdbx_env_copy(op->async->env, op->name_copy, op->args.copy.flags);
 #if defined(_WIN32) || defined(_WIN64)
+  case async_op_preopen_snapinfoW:
+    return mdbx_preopen_snapinfoW((const wchar_t *)op->name_copy, op->args.preopen_snapinfo.info,
+                                  op->args.preopen_snapinfo.bytes);
   case async_op_env_copyW:
     return mdbx_env_copyW(op->async->env, (const wchar_t *)op->name_copy, op->args.copy.flags);
 #endif /* Windows */
@@ -15818,6 +15838,16 @@ static int async_op_execute(MDBX_async_op *op) {
     return mdbx_env_chk(op->async->env, op->args.env_chk.callbacks, op->args.env_chk.context,
                         op->args.env_chk.flags, op->args.env_chk.verbosity,
                         op->args.env_chk.timeout_seconds_16dot16);
+  case async_op_env_open_for_recovery:
+    return mdbx_env_open_for_recovery(op->args.env_open_for_recovery.env, op->name_copy,
+                                      op->args.env_open_for_recovery.target_meta,
+                                      op->args.env_open_for_recovery.writeable);
+#if defined(_WIN32) || defined(_WIN64)
+  case async_op_env_open_for_recoveryW:
+    return mdbx_env_open_for_recoveryW(op->args.env_open_for_recovery.env, (const wchar_t *)op->name_copy,
+                                       op->args.env_open_for_recovery.target_meta,
+                                       op->args.env_open_for_recovery.writeable);
+#endif /* Windows */
   case async_op_env_turn_for_recovery:
     return mdbx_env_turn_for_recovery(op->async->env, op->args.env_turn_for_recovery.target_meta);
   case async_op_reader_list:
@@ -16316,9 +16346,11 @@ int mdbx_async_create(MDBX_env *env, MDBX_async_flags_t flags, MDBX_async **out)
   *out = nullptr;
   if (unlikely(flags != MDBX_ASYNC_DEFAULTS))
     return LOG_IFERR(MDBX_EINVAL);
-  int rc = check_env(env, true);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return LOG_IFERR(rc);
+  if (env) {
+    int err = check_env(env, true);
+    if (unlikely(err != MDBX_SUCCESS))
+      return LOG_IFERR(err);
+  }
 
   MDBX_async *const async = osal_calloc(1, sizeof(MDBX_async));
   if (unlikely(!async))
@@ -16326,7 +16358,7 @@ int mdbx_async_create(MDBX_env *env, MDBX_async_flags_t flags, MDBX_async **out)
   async->signature = async_signature;
   async->env = env;
 
-  rc = osal_condpair_init(&async->condpair);
+  int rc = osal_condpair_init(&async->condpair);
   if (unlikely(rc != MDBX_SUCCESS)) {
     osal_free(async);
     return LOG_IFERR(rc);
@@ -16673,6 +16705,45 @@ int mdbx_async_env_warmup(MDBX_async *async, const MDBX_txn *txn, MDBX_warmup_fl
   return LOG_IFERR(rc);
 }
 
+static int async_preopen_snapinfo_path_submit(MDBX_async *async, const void *pathname, MDBX_envinfo *info,
+                                              size_t bytes, enum mdbx_async_opcode opcode, MDBX_async_op **out) {
+  if (unlikely(!info))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, opcode);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+#if defined(_WIN32) || defined(_WIN64)
+  rc = (opcode == async_op_preopen_snapinfoW) ? async_copy_wpath(op, (const wchar_t *)pathname)
+                                             : async_copy_path(op, (const char *)pathname);
+#else
+  rc = async_copy_path(op, (const char *)pathname);
+#endif /* Windows */
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.preopen_snapinfo.info = info;
+    op->args.preopen_snapinfo.bytes = bytes;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_preopen_snapinfo(MDBX_async *async, const char *pathname, MDBX_envinfo *info, size_t bytes,
+                                MDBX_async_op **out) {
+  return async_preopen_snapinfo_path_submit(async, pathname, info, bytes, async_op_preopen_snapinfo, out);
+}
+
+#if defined(_WIN32) || defined(_WIN64)
+int mdbx_async_preopen_snapinfoW(MDBX_async *async, const wchar_t *pathname, MDBX_envinfo *info, size_t bytes,
+                                 MDBX_async_op **out) {
+  return async_preopen_snapinfo_path_submit(async, pathname, info, bytes, async_op_preopen_snapinfoW, out);
+}
+#endif /* Windows */
+
 static int async_env_copy_path_submit(MDBX_async *async, const void *dest, MDBX_copy_flags_t flags,
                                       enum mdbx_async_opcode opcode, MDBX_async_op **out) {
   MDBX_async_op *op = nullptr;
@@ -17003,6 +17074,49 @@ int mdbx_async_env_chk(MDBX_async *async, const MDBX_chk_callbacks_t *callbacks,
   }
   return LOG_IFERR(rc);
 }
+
+static int async_env_open_for_recovery_path_submit(MDBX_async *async, MDBX_env *env, const void *pathname,
+                                                   unsigned target_meta, bool writeable,
+                                                   enum mdbx_async_opcode opcode, MDBX_async_op **out) {
+  if (unlikely(!env))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, opcode);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+#if defined(_WIN32) || defined(_WIN64)
+  rc = (opcode == async_op_env_open_for_recoveryW) ? async_copy_wpath(op, (const wchar_t *)pathname)
+                                                   : async_copy_path(op, (const char *)pathname);
+#else
+  rc = async_copy_path(op, (const char *)pathname);
+#endif /* Windows */
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.env_open_for_recovery.env = env;
+    op->args.env_open_for_recovery.target_meta = target_meta;
+    op->args.env_open_for_recovery.writeable = writeable;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_env_open_for_recovery(MDBX_async *async, MDBX_env *env, const char *pathname, unsigned target_meta,
+                                     bool writeable, MDBX_async_op **out) {
+  return async_env_open_for_recovery_path_submit(async, env, pathname, target_meta, writeable,
+                                                 async_op_env_open_for_recovery, out);
+}
+
+#if defined(_WIN32) || defined(_WIN64)
+int mdbx_async_env_open_for_recoveryW(MDBX_async *async, MDBX_env *env, const wchar_t *pathname, unsigned target_meta,
+                                      bool writeable, MDBX_async_op **out) {
+  return async_env_open_for_recovery_path_submit(async, env, pathname, target_meta, writeable,
+                                                 async_op_env_open_for_recoveryW, out);
+}
+#endif /* Windows */
 
 int mdbx_async_env_turn_for_recovery(MDBX_async *async, unsigned target_meta, MDBX_async_op **out) {
   MDBX_async_op *op = nullptr;

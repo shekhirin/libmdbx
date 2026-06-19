@@ -4593,11 +4593,16 @@ typedef int (*MDBX_async_func)(MDBX_env *env, void *context);
  * API must continue to be used through the same executor unless the environment
  * and transaction flags explicitly allow otherwise.
  *
- * \param [in] env    An open environment handle.
+ * \param [in] env    An open environment handle, or `nullptr` to create an
+ *                    unbound executor for pre-open operations.
  * \param [in] flags  Reserved for future extensions, must be \ref MDBX_ASYNC_DEFAULTS.
  * \param [out] async Address where the executor handle will be stored.
  *
- * \returns A non-zero error value on failure and 0 on success. */
+ * \returns A non-zero error value on failure and 0 on success.
+ *
+ * \note Environment-bound async wrappers require an executor associated with
+ *       an open environment. Pre-open wrappers such as
+ *       \ref mdbx_async_preopen_snapinfo() may use an unbound executor. */
 LIBMDBX_API int mdbx_async_create(MDBX_env *env, MDBX_async_flags_t flags, MDBX_async **async);
 
 /** \brief Destroy an asynchronous executor.
@@ -7905,6 +7910,16 @@ LIBMDBX_API int mdbx_async_txn_unlock(MDBX_async *async, MDBX_async_op **op);
  * to use. */
 LIBMDBX_API int mdbx_env_open_for_recovery(MDBX_env *env, const char *pathname, unsigned target_meta, bool writeable);
 
+/** \brief Asynchronously open an environment instance using specific meta-page
+ * for checking and recovery.
+ * \ingroup c_async
+ * \details The pathname is copied during submission. The environment handle
+ *          must remain valid until completion. This operation may be submitted
+ *          to an unbound executor.
+ * \see mdbx_env_open_for_recovery() */
+LIBMDBX_API int mdbx_async_env_open_for_recovery(MDBX_async *async, MDBX_env *env, const char *pathname,
+                                                 unsigned target_meta, bool writeable, MDBX_async_op **op);
+
 #if defined(_WIN32) || defined(_WIN64) || defined(DOXYGEN)
 /** \copydoc mdbx_env_open_for_recovery()
  * \ingroup c_extra
@@ -7912,6 +7927,12 @@ LIBMDBX_API int mdbx_env_open_for_recovery(MDBX_env *env, const char *pathname, 
  * \see mdbx_env_open_for_recovery() */
 LIBMDBX_API int mdbx_env_open_for_recoveryW(MDBX_env *env, const wchar_t *pathname, unsigned target_meta,
                                             bool writeable);
+/** \copydoc mdbx_async_env_open_for_recovery()
+ * \ingroup c_async
+ * \note Available only on Windows.
+ * \see mdbx_env_open_for_recoveryW() */
+LIBMDBX_API int mdbx_async_env_open_for_recoveryW(MDBX_async *async, MDBX_env *env, const wchar_t *pathname,
+                                                  unsigned target_meta, bool writeable, MDBX_async_op **op);
 #define mdbx_env_open_for_recoveryT(env, pathname, target_mets, writeable)                                             \
   mdbx_env_open_for_recoveryW(env, pathname, target_mets, writeable)
 #else
@@ -7960,12 +7981,28 @@ LIBMDBX_API int mdbx_async_env_turn_for_recovery(MDBX_async *async, unsigned tar
  *
  * \returns A non-zero error value on failure and 0 on success. */
 LIBMDBX_API int mdbx_preopen_snapinfo(const char *pathname, MDBX_envinfo *info, size_t bytes);
+
+/** \brief Asynchronously get basic information about the database without opening it.
+ * \ingroup c_async
+ * \details The pathname is copied during submission. The output storage must
+ *          remain valid until completion. This operation may be submitted to an
+ *          unbound executor.
+ * \see mdbx_preopen_snapinfo() */
+LIBMDBX_API int mdbx_async_preopen_snapinfo(MDBX_async *async, const char *pathname, MDBX_envinfo *info, size_t bytes,
+                                            MDBX_async_op **op);
+
 #if defined(_WIN32) || defined(_WIN64) || defined(DOXYGEN)
 /** \copydoc mdbx_preopen_snapinfo()
  * \ingroup c_opening
  * \note Available only on Windows.
  * \see mdbx_preopen_snapinfo() */
 LIBMDBX_API int mdbx_preopen_snapinfoW(const wchar_t *pathname, MDBX_envinfo *info, size_t bytes);
+/** \copydoc mdbx_async_preopen_snapinfo()
+ * \ingroup c_async
+ * \note Available only on Windows.
+ * \see mdbx_preopen_snapinfoW() */
+LIBMDBX_API int mdbx_async_preopen_snapinfoW(MDBX_async *async, const wchar_t *pathname, MDBX_envinfo *info,
+                                             size_t bytes, MDBX_async_op **op);
 #define mdbx_preopen_snapinfoT(pathname, info, bytes) mdbx_preopen_snapinfoW(pathname, info, bytes)
 #else
 #define mdbx_preopen_snapinfoT(pathname, info, bytes) mdbx_preopen_snapinfo(pathname, info, bytes)
