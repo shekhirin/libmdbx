@@ -3491,3 +3491,36 @@ Additional cursor-scan benchmark checkpoint:
   hot blocking serial scan, and is slightly slower than the existing async
   cursor-loop helper, so predicate-scan dispatch is competitive for parallel
   cursor traversal but not the fastest async cursor iteration shape.
+
+Additional cursor-scan-from benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` to measure
+  `mdbx_cursor_scan_from()` and `mdbx_async_cursor_scan_from()` beside the
+  direct cursor-scan benchmark. The async wrapper already existed and had smoke
+  coverage; this checkpoint adds performance visibility for the positioned
+  lower-bound scan path without changing the public API.
+- reused the cursor-scan predicate verifier and cursor scan runners with a
+  `scan_from` mode. Each bounded scan chunk starts from key 0 via
+  `MDBX_SET_LOWERBOUND` and then scans forward with `MDBX_NEXT`, exercising the
+  caller-supplied key/value result slots required by the scan-from API.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking cursor scan
+  148.471 Mops/s, parallel cursor scan 77.980 Mops/s, async cursor scan
+  96.053 Mops/s, blocking cursor scan_from 149.405 Mops/s, parallel cursor
+  scan_from 79.952 Mops/s, and async cursor scan_from 86.500 Mops/s. Ratios
+  were async-scan-from/par 1.082, async-scan-from/ser 0.579, and
+  async-scan-from/scan 0.901.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=187 async-covered=132 async-only=55 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: async cursor scan-from is now benchmarked directly. In this
+  reduced run it still beats the blocking pthread-parallel scan-from path, but
+  it trails direct async cursor scan, which makes the extra positioned-start
+  machinery visible and gives future scan-from optimization a baseline.
