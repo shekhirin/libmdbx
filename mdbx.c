@@ -15364,6 +15364,8 @@ struct MDBX_async_op {
       MDBX_txn *txn;
       MDBX_db_flags_t flags;
       MDBX_dbi *dbi;
+      MDBX_cmp_func keycmp;
+      MDBX_cmp_func datacmp;
     } dbi_open;
     struct {
       MDBX_txn *txn;
@@ -16048,7 +16050,9 @@ static int async_op_execute(MDBX_async_op *op) {
     return mdbx_gc_info(op->args.gc_info.txn, op->args.gc_info.info, op->args.gc_info.bytes,
                         op->args.gc_info.iter_func, op->args.gc_info.iter_ctx);
   case async_op_dbi_open:
-    return mdbx_dbi_open2(op->args.dbi_open.txn, &op->key, op->args.dbi_open.flags, op->args.dbi_open.dbi);
+    return mdbx_dbi_open_ex2(op->args.dbi_open.txn, &op->key, op->args.dbi_open.flags,
+                             op->args.dbi_open.dbi, op->args.dbi_open.keycmp,
+                             op->args.dbi_open.datacmp);
   case async_op_dbi_rename:
     return mdbx_dbi_rename2(op->args.dbi_rename.txn, op->args.dbi_rename.dbi, &op->key);
   case async_op_dbi_stat:
@@ -17956,8 +17960,9 @@ static const MDBX_val *async_name_from_cstr(const char *name, MDBX_val *thunk) {
   return thunk;
 }
 
-int mdbx_async_dbi_open2(MDBX_async *async, MDBX_txn *txn, const MDBX_val *name, MDBX_db_flags_t flags,
-                         MDBX_dbi *dbi, MDBX_async_op **out) {
+static int async_dbi_open_submit(MDBX_async *async, MDBX_txn *txn, const MDBX_val *name,
+                                 MDBX_db_flags_t flags, MDBX_dbi *dbi,
+                                 MDBX_cmp_func keycmp, MDBX_cmp_func datacmp, MDBX_async_op **out) {
   if (unlikely(!txn || !dbi))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
@@ -17969,6 +17974,8 @@ int mdbx_async_dbi_open2(MDBX_async *async, MDBX_txn *txn, const MDBX_val *name,
     op->args.dbi_open.txn = txn;
     op->args.dbi_open.flags = flags;
     op->args.dbi_open.dbi = dbi;
+    op->args.dbi_open.keycmp = keycmp;
+    op->args.dbi_open.datacmp = datacmp;
     rc = async_op_enqueue(async, op, out);
   }
   if (unlikely(rc != MDBX_SUCCESS)) {
@@ -17979,10 +17986,29 @@ int mdbx_async_dbi_open2(MDBX_async *async, MDBX_txn *txn, const MDBX_val *name,
   return rc;
 }
 
+int mdbx_async_dbi_open2(MDBX_async *async, MDBX_txn *txn, const MDBX_val *name, MDBX_db_flags_t flags,
+                         MDBX_dbi *dbi, MDBX_async_op **out) {
+  return async_dbi_open_submit(async, txn, name, flags, dbi, nullptr, nullptr, out);
+}
+
 int mdbx_async_dbi_open(MDBX_async *async, MDBX_txn *txn, const char *name, MDBX_db_flags_t flags, MDBX_dbi *dbi,
                         MDBX_async_op **out) {
   MDBX_val thunk;
   return mdbx_async_dbi_open2(async, txn, async_name_from_cstr(name, &thunk), flags, dbi, out);
+}
+
+int mdbx_async_dbi_open_ex2(MDBX_async *async, MDBX_txn *txn, const MDBX_val *name, MDBX_db_flags_t flags,
+                            MDBX_dbi *dbi, MDBX_cmp_func keycmp, MDBX_cmp_func datacmp,
+                            MDBX_async_op **out) {
+  return async_dbi_open_submit(async, txn, name, flags, dbi, keycmp, datacmp, out);
+}
+
+int mdbx_async_dbi_open_ex(MDBX_async *async, MDBX_txn *txn, const char *name, MDBX_db_flags_t flags,
+                           MDBX_dbi *dbi, MDBX_cmp_func keycmp, MDBX_cmp_func datacmp,
+                           MDBX_async_op **out) {
+  MDBX_val thunk;
+  return async_dbi_open_submit(async, txn, async_name_from_cstr(name, &thunk), flags, dbi, keycmp,
+                               datacmp, out);
 }
 
 int mdbx_async_dbi_rename2(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *name,

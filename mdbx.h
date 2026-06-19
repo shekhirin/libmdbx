@@ -5052,6 +5052,31 @@ LIBMDBX_API int mdbx_async_dbi_open(MDBX_async *async, MDBX_txn *txn, const char
 LIBMDBX_API int mdbx_async_dbi_open2(MDBX_async *async, MDBX_txn *txn, const MDBX_val *name, MDBX_db_flags_t flags,
                                      MDBX_dbi *dbi, MDBX_async_op **op);
 
+/** \brief Asynchronously open or create a named table with custom comparison functions.
+ * \ingroup c_async
+ * \details The name bytes are copied during submission. Custom comparators run
+ *          on the async executor worker thread.
+ * \deprecated Please \ref avoid_custom_comparators
+ * "avoid using custom comparators" and use \ref mdbx_async_dbi_open() instead.
+ * \see mdbx_dbi_open_ex() */
+MDBX_DEPRECATED LIBMDBX_API int mdbx_async_dbi_open_ex(MDBX_async *async, MDBX_txn *txn, const char *name,
+                                                       MDBX_db_flags_t flags, MDBX_dbi *dbi,
+                                                       int (*keycmp)(const MDBX_val *a, const MDBX_val *b)
+                                                           MDBX_CXX17_NOEXCEPT,
+                                                       int (*datacmp)(const MDBX_val *a, const MDBX_val *b)
+                                                           MDBX_CXX17_NOEXCEPT,
+                                                       MDBX_async_op **op);
+
+/** \copydoc mdbx_async_dbi_open_ex()
+ * \see mdbx_dbi_open_ex2() */
+MDBX_DEPRECATED LIBMDBX_API int mdbx_async_dbi_open_ex2(MDBX_async *async, MDBX_txn *txn, const MDBX_val *name,
+                                                        MDBX_db_flags_t flags, MDBX_dbi *dbi,
+                                                        int (*keycmp)(const MDBX_val *a, const MDBX_val *b)
+                                                            MDBX_CXX17_NOEXCEPT,
+                                                        int (*datacmp)(const MDBX_val *a, const MDBX_val *b)
+                                                            MDBX_CXX17_NOEXCEPT,
+                                                        MDBX_async_op **op);
+
 /** \brief Asynchronously rename a DBI handle.
  * \ingroup c_async
  * \details The new name bytes are copied during submission.

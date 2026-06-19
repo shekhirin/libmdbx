@@ -187,6 +187,16 @@ static int preserve_probe_func(void *context, MDBX_val *target, const void *src,
   return MDBX_SUCCESS;
 }
 
+static int async_custom_cmp(const MDBX_val *a, const MDBX_val *b) {
+  if (!a || !b)
+    return 0;
+  const size_t common = a->iov_len < b->iov_len ? a->iov_len : b->iov_len;
+  const int diff = common ? memcmp(a->iov_base, b->iov_base, common) : 0;
+  if (diff)
+    return diff;
+  return (a->iov_len > b->iov_len) - (a->iov_len < b->iov_len);
+}
+
 static int scan_probe_func(void *context, MDBX_val *key, MDBX_val *value, void *arg) {
   (void)arg;
   struct scan_probe *const probe = (struct scan_probe *)context;
@@ -377,6 +387,8 @@ int main(void) {
   MDBX_dbi rename_dbi = 0;
   MDBX_dbi range_dbi = 0;
   MDBX_dbi bunch_dbi = 0;
+  MDBX_dbi custom_cstr_dbi = 0;
+  MDBX_dbi custom_val_dbi = 0;
   uint64_t keys[ITEM_COUNT];
   uint64_t values[ITEM_COUNT];
   uint64_t cursor_extra_key = ITEM_COUNT;
@@ -394,8 +406,18 @@ int main(void) {
   MDBX_val put_values[ITEM_COUNT];
   uint8_t open2_name_bytes[] = {'a', 's', 'y', 'n', 'c', '-', 'o', 'p', 'e', 'n', '2', 0, 'o', 'l', 'd'};
   uint8_t rename2_name_bytes[] = {'a', 's', 'y', 'n', 'c', '-', 'o', 'p', 'e', 'n', '2', 0, 'n', 'e', 'w'};
+  uint8_t custom_val_name_bytes[] = {'a', 's', 'y', 'n', 'c', '-', 'c', 'm', 'p', 0, 'v', 'a', 'l'};
+  uint8_t custom_key_a[] = {'a'};
+  uint8_t custom_key_b[] = {'b'};
+  uint8_t custom_value_a[] = {'A'};
+  uint8_t custom_value_b[] = {'B'};
   MDBX_val open2_name = val(open2_name_bytes, sizeof(open2_name_bytes));
   MDBX_val rename2_name = val(rename2_name_bytes, sizeof(rename2_name_bytes));
+  MDBX_val custom_val_name = val(custom_val_name_bytes, sizeof(custom_val_name_bytes));
+  MDBX_val custom_key_a_value = val(custom_key_a, sizeof(custom_key_a));
+  MDBX_val custom_key_b_value = val(custom_key_b, sizeof(custom_key_b));
+  MDBX_val custom_put_value_a = val(custom_value_a, sizeof(custom_value_a));
+  MDBX_val custom_put_value_b = val(custom_value_b, sizeof(custom_value_b));
   MDBX_val cursor_extra_key_value = val(&cursor_extra_key, sizeof(cursor_extra_key));
   MDBX_val cursor_extra_put_value = val(&cursor_extra_value, sizeof(cursor_extra_value));
   MDBX_val checkpoint_key_value = val(&checkpoint_key, sizeof(checkpoint_key));
@@ -729,6 +751,51 @@ int main(void) {
   CHECK(mdbx_async_drop(async, txn, rename_dbi, true, &op));
   CHECK_OP(op);
   rename_dbi = 0;
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+  CHECK(mdbx_async_dbi_open_ex(async, txn, "async-custom-cstr", MDBX_CREATE, &custom_cstr_dbi,
+                               async_custom_cmp, NULL, &op));
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+  CHECK_OP(op);
+  CHECK(mdbx_async_put(async, txn, custom_cstr_dbi, &custom_key_b_value, &custom_put_value_b, 0, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put(async, txn, custom_cstr_dbi, &custom_key_a_value, &custom_put_value_a, 0, &op));
+  CHECK_OP(op);
+  MDBX_stat custom_stat;
+  memset(&custom_stat, 0, sizeof(custom_stat));
+  CHECK(mdbx_async_dbi_stat(async, txn, custom_cstr_dbi, &custom_stat, sizeof(custom_stat), &op));
+  CHECK_OP(op);
+  REQUIRE(custom_stat.ms_entries == 2, "async custom-comparator cstr table lost payload");
+  CHECK(mdbx_async_drop(async, txn, custom_cstr_dbi, true, &op));
+  CHECK_OP(op);
+  custom_cstr_dbi = 0;
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+  CHECK(mdbx_async_dbi_open_ex2(async, txn, &custom_val_name, MDBX_CREATE, &custom_val_dbi,
+                                async_custom_cmp, NULL, &op));
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+  CHECK_OP(op);
+  CHECK(mdbx_async_put(async, txn, custom_val_dbi, &custom_key_a_value, &custom_put_value_a, 0, &op));
+  CHECK_OP(op);
+  MDBX_val custom_data = val(NULL, 0);
+  CHECK(mdbx_async_get(async, txn, custom_val_dbi, &custom_key_a_value, &custom_data, &op));
+  CHECK_OP(op);
+  REQUIRE(custom_data.iov_len == sizeof(custom_value_a) &&
+              memcmp(custom_data.iov_base, custom_value_a, sizeof(custom_value_a)) == 0,
+          "async custom-comparator val table returned wrong payload");
+  CHECK(mdbx_async_drop(async, txn, custom_val_dbi, true, &op));
+  CHECK_OP(op);
+  custom_val_dbi = 0;
 
   CHECK(mdbx_async_dbi_open(async, txn, "async-range-target", MDBX_CREATE, &range_dbi, &op));
   CHECK_OP(op);

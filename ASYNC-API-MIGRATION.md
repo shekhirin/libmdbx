@@ -978,3 +978,22 @@ Additional compatibility alias checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.072, async-batch/blocking-parallel ratio 1.071, and async-cursor/blocking-parallel ratio 0.638
+
+Additional custom-comparator DBI open checkpoint:
+
+- added deprecated async custom-comparator DBI open wrappers:
+  `mdbx_async_dbi_open_ex()` and `mdbx_async_dbi_open_ex2()`
+- the async DBI-open worker now carries optional key/data comparator function
+  pointers and calls `mdbx_dbi_open_ex2()`; existing `mdbx_async_dbi_open()`
+  and `mdbx_async_dbi_open2()` continue to submit null comparators
+- smoke coverage now opens custom-comparator named tables through both the
+  C-string and arbitrary-length-name async wrappers, writes payloads, and
+  verifies the resulting tables
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.024, async-batch/blocking-parallel ratio 1.027, and async-cursor/blocking-parallel ratio 1.141
