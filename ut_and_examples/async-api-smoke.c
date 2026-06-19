@@ -141,6 +141,8 @@ int main(void) {
   MDBX_env *env = NULL;
   MDBX_async *async = NULL;
   MDBX_txn *txn = NULL;
+  MDBX_txn *origin_txn = NULL;
+  MDBX_txn *clone_txn = NULL;
   MDBX_cursor *cursor = NULL;
   MDBX_cursor *cursor2 = NULL;
   MDBX_async_op *op = NULL;
@@ -153,6 +155,12 @@ int main(void) {
   uint64_t values[ITEM_COUNT];
   uint64_t cursor_extra_key = ITEM_COUNT;
   uint64_t cursor_extra_value = expected_value(ITEM_COUNT);
+  uint64_t checkpoint_key = ITEM_COUNT + 100;
+  uint64_t checkpoint_value = expected_value(checkpoint_key);
+  uint64_t rollback_key = ITEM_COUNT + 101;
+  uint64_t rollback_value = expected_value(rollback_key);
+  uint64_t amend_key = ITEM_COUNT + 102;
+  uint64_t amend_value = expected_value(amend_key);
   uint64_t replacement_value = expected_value(1) + UINT64_C(1000);
   MDBX_val key_values[ITEM_COUNT];
   MDBX_val delete_keys[ITEM_COUNT];
@@ -163,6 +171,12 @@ int main(void) {
   MDBX_val rename2_name = val(rename2_name_bytes, sizeof(rename2_name_bytes));
   MDBX_val cursor_extra_key_value = val(&cursor_extra_key, sizeof(cursor_extra_key));
   MDBX_val cursor_extra_put_value = val(&cursor_extra_value, sizeof(cursor_extra_value));
+  MDBX_val checkpoint_key_value = val(&checkpoint_key, sizeof(checkpoint_key));
+  MDBX_val checkpoint_put_value = val(&checkpoint_value, sizeof(checkpoint_value));
+  MDBX_val rollback_key_value = val(&rollback_key, sizeof(rollback_key));
+  MDBX_val rollback_put_value = val(&rollback_value, sizeof(rollback_value));
+  MDBX_val amend_key_value = val(&amend_key, sizeof(amend_key));
+  MDBX_val amend_put_value = val(&amend_value, sizeof(amend_value));
   MDBX_val replacement_put_value = val(&replacement_value, sizeof(replacement_value));
   MDBX_val get_values[ITEM_COUNT];
   MDBX_async_op *ops[ITEM_COUNT];
@@ -289,7 +303,67 @@ int main(void) {
   CHECK_OP(op);
   REQUIRE(txn != NULL, "write transaction was not returned");
 
+  int txn_userctx_a = 51;
+  int txn_userctx_b = 52;
+  void *txn_context = NULL;
+  CHECK(mdbx_async_txn_set_userctx(async, txn, &txn_userctx_a, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_txn_get_userctx(async, txn, &txn_context, &op));
+  CHECK_OP(op);
+  REQUIRE(txn_context == &txn_userctx_a, "unexpected async transaction context");
+  CHECK(mdbx_async_txn_set_userctx(async, txn, &txn_userctx_b, &op));
+  CHECK_OP(op);
+  txn_context = NULL;
+  CHECK(mdbx_async_txn_get_userctx(async, txn, &txn_context, &op));
+  CHECK_OP(op);
+  REQUIRE(txn_context == &txn_userctx_b, "unexpected updated async transaction context");
+
+  MDBX_env *txn_env = NULL;
+  CHECK(mdbx_async_txn_env(async, txn, &txn_env, &op));
+  CHECK_OP(op);
+  REQUIRE(txn_env == env, "unexpected async transaction environment");
+
+  MDBX_txn_flags_t txn_flags = MDBX_TXN_INVALID;
+  CHECK(mdbx_async_txn_flags(async, txn, &txn_flags, &op));
+  CHECK_OP(op);
+  REQUIRE((txn_flags & MDBX_TXN_RDONLY) == 0, "write transaction reported readonly flag");
+
+  uint64_t txn_id = 0;
+  CHECK(mdbx_async_txn_id(async, txn, &txn_id, &op));
+  CHECK_OP(op);
+  REQUIRE(txn_id != 0, "async transaction id was empty");
+
+  int txn_lag = -1;
+  int txn_percent = -1;
+  CHECK(mdbx_async_txn_straggler(async, txn, &txn_lag, &txn_percent, &op));
+  CHECK_OP(op);
+  REQUIRE(txn_lag >= 0 && txn_percent >= 0 && txn_percent <= 100, "unexpected async transaction straggler info");
+
   CHECK(mdbx_async_dbi_open(async, txn, NULL, MDBX_DB_DEFAULTS, &dbi, &op));
+  CHECK_OP(op);
+
+  CHECK(mdbx_async_put(async, txn, dbi, &checkpoint_key_value, &checkpoint_put_value, 0, &op));
+  CHECK_OP(op);
+  MDBX_commit_latency checkpoint_latency;
+  memset(&checkpoint_latency, 0, sizeof(checkpoint_latency));
+  int checkpoint_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_txn_checkpoint(async, txn, MDBX_TXN_NOWEAKING, &checkpoint_latency, &op));
+  CHECK(wait_result("mdbx_async_txn_checkpoint", &op, &checkpoint_result, __FILE__, __LINE__));
+  REQUIRE(checkpoint_result == MDBX_SUCCESS, "unexpected async transaction checkpoint result");
+  CHECK(mdbx_async_put(async, txn, dbi, &rollback_key_value, &rollback_put_value, 0, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_txn_rollback(async, txn, &op));
+  CHECK_OP(op);
+  MDBX_val checkpoint_data = val(NULL, 0);
+  CHECK(mdbx_async_get(async, txn, dbi, &checkpoint_key_value, &checkpoint_data, &op));
+  CHECK_OP(op);
+  CHECK(expect_payload(&checkpoint_data, checkpoint_value, __FILE__, __LINE__));
+  MDBX_val rollback_data = val(NULL, 0);
+  int rollback_get_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_get(async, txn, dbi, &rollback_key_value, &rollback_data, &op));
+  CHECK(wait_result("mdbx_async_get rollback marker", &op, &rollback_get_result, __FILE__, __LINE__));
+  REQUIRE(rollback_get_result == MDBX_NOTFOUND, "async rollback marker survived rollback");
+  CHECK(mdbx_async_del(async, txn, dbi, &checkpoint_key_value, NULL, &op));
   CHECK_OP(op);
 
   uint64_t sequence_value = UINT64_MAX;
@@ -441,6 +515,24 @@ int main(void) {
   CHECK(mdbx_async_env_stat_ex(async, NULL, &env_stat, sizeof(env_stat), &op));
   CHECK_OP(op);
   REQUIRE(env_stat.ms_entries == ITEM_COUNT, "unexpected async environment stat entries after commit");
+
+  CHECK(mdbx_txn_begin(env, NULL, MDBX_TXN_RDONLY, &origin_txn));
+  CHECK(mdbx_async_txn_clone(async, origin_txn, &clone_txn, &txn_userctx_a, &op));
+  CHECK_OP(op);
+  REQUIRE(clone_txn != NULL, "async transaction clone was not returned");
+  txn_context = NULL;
+  CHECK(mdbx_async_txn_get_userctx(async, clone_txn, &txn_context, &op));
+  CHECK_OP(op);
+  REQUIRE(txn_context == &txn_userctx_a, "unexpected async cloned transaction context");
+  MDBX_val clone_data = val(NULL, 0);
+  CHECK(mdbx_async_get(async, clone_txn, dbi, &key_values[0], &clone_data, &op));
+  CHECK_OP(op);
+  CHECK(expect_value(&clone_data, keys[0], __FILE__, __LINE__));
+  CHECK(mdbx_async_txn_abort(async, clone_txn, NULL, &op));
+  CHECK_OP(op);
+  clone_txn = NULL;
+  CHECK(mdbx_txn_abort(origin_txn));
+  origin_txn = NULL;
 
   CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
   CHECK_OP(op);
@@ -891,12 +983,14 @@ int main(void) {
       goto bailout;
     }
   }
-  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  CHECK(mdbx_async_txn_commit_embark_read(async, &txn, NULL, &op));
   CHECK_OP(op);
-  txn = NULL;
+  REQUIRE(txn != NULL, "commit-embark-read did not return a read transaction");
+  txn_flags = MDBX_TXN_INVALID;
+  CHECK(mdbx_async_txn_flags(async, txn, &txn_flags, &op));
+  CHECK_OP(op);
+  REQUIRE((txn_flags & MDBX_TXN_RDONLY) != 0, "commit-embark-read did not return a read transaction");
 
-  CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
-  CHECK_OP(op);
   for (unsigned i = 0; i < ITEM_COUNT; ++i)
     get_values[i] = val(NULL, 0);
   CHECK(mdbx_async_get_batch(async, txn, dbi, key_values, get_values, op_results, ITEM_COUNT, &op));
@@ -913,6 +1007,30 @@ int main(void) {
       CHECK(expect_value(&get_values[i], keys[i], __FILE__, __LINE__));
     }
   }
+
+  CHECK(mdbx_async_txn_amend(async, txn, &txn, 0, &txn_userctx_b, &op));
+  CHECK_OP(op);
+  REQUIRE(txn != NULL, "async transaction amend did not return a write transaction");
+  txn_flags = MDBX_TXN_INVALID;
+  CHECK(mdbx_async_txn_flags(async, txn, &txn_flags, &op));
+  CHECK_OP(op);
+  REQUIRE((txn_flags & MDBX_TXN_RDONLY) == 0, "async transaction amend did not return a write transaction");
+  txn_context = NULL;
+  CHECK(mdbx_async_txn_get_userctx(async, txn, &txn_context, &op));
+  CHECK_OP(op);
+  REQUIRE(txn_context == &txn_userctx_b, "unexpected amended transaction context");
+  CHECK(mdbx_async_put(async, txn, dbi, &amend_key_value, &amend_put_value, 0, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  CHECK_OP(op);
+  txn = NULL;
+
+  CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
+  CHECK_OP(op);
+  MDBX_val amend_data = val(NULL, 0);
+  CHECK(mdbx_async_get(async, txn, dbi, &amend_key_value, &amend_data, &op));
+  CHECK_OP(op);
+  CHECK(expect_payload(&amend_data, amend_value, __FILE__, __LINE__));
   CHECK(mdbx_async_txn_break(async, txn, &op));
   CHECK_OP(op);
   CHECK(mdbx_async_txn_abort(async, txn, NULL, &op));
@@ -932,6 +1050,8 @@ int main(void) {
   return rc;
 
 bailout:
+  if (origin_txn)
+    (void)mdbx_txn_abort(origin_txn);
   if (async)
     (void)mdbx_async_destroy(async, true);
   if (env)

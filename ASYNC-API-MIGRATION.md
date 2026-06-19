@@ -688,3 +688,26 @@ Additional environment metadata/control checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.126, async-batch/blocking-parallel ratio 1.125, and async-cursor/blocking-parallel ratio 0.957
+
+Additional transaction utility/lifecycle checkpoint:
+
+- added async wrappers for transaction clone, user context set/get, env/flags/id
+  lookup, straggler lag reporting, checkpoint, commit-and-embark-read, amend,
+  and rollback
+- direct-return helpers store the returned value in caller-provided output
+  storage while the async operation result reports wrapper completion;
+  `mdbx_async_txn_straggler()` stores the lag separately because the blocking
+  API returns lag as a non-error integer
+- smoke coverage now verifies transaction user context round-tripping,
+  env/flags/id/straggler helpers, checkpoint preserving an earlier write,
+  rollback discarding a later write, cloning a main-thread read transaction
+  into the async worker, commit-embark-read returning a read transaction, and
+  amending a read transaction into a write transaction
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.075, async-batch/blocking-parallel ratio 1.079, and async-cursor/blocking-parallel ratio 1.126

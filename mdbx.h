@@ -4772,11 +4772,74 @@ LIBMDBX_API int mdbx_async_env_get_valsize4page_max(MDBX_async *async, MDBX_db_f
 LIBMDBX_API int mdbx_async_txn_begin(MDBX_async *async, MDBX_txn *parent, MDBX_txn_flags_t flags, MDBX_txn **txn,
                                      void *context, MDBX_async_op **op);
 
+/** \brief Asynchronously clone a transaction.
+ * \ingroup c_async
+ * \see mdbx_txn_clone() */
+LIBMDBX_API int mdbx_async_txn_clone(MDBX_async *async, const MDBX_txn *origin, MDBX_txn **clone, void *context,
+                                     MDBX_async_op **op);
+
+/** \brief Asynchronously set transaction user context.
+ * \ingroup c_async
+ * \see mdbx_txn_set_userctx() */
+LIBMDBX_API int mdbx_async_txn_set_userctx(MDBX_async *async, MDBX_txn *txn, void *context, MDBX_async_op **op);
+
+/** \brief Asynchronously get transaction user context.
+ * \ingroup c_async
+ * \see mdbx_txn_get_userctx() */
+LIBMDBX_API int mdbx_async_txn_get_userctx(MDBX_async *async, const MDBX_txn *txn, void **context,
+                                           MDBX_async_op **op);
+
+/** \brief Asynchronously get the transaction environment.
+ * \ingroup c_async
+ * \see mdbx_txn_env() */
+LIBMDBX_API int mdbx_async_txn_env(MDBX_async *async, const MDBX_txn *txn, MDBX_env **env, MDBX_async_op **op);
+
+/** \brief Asynchronously get transaction flags.
+ * \ingroup c_async
+ * \see mdbx_txn_flags() */
+LIBMDBX_API int mdbx_async_txn_flags(MDBX_async *async, const MDBX_txn *txn, MDBX_txn_flags_t *flags,
+                                     MDBX_async_op **op);
+
+/** \brief Asynchronously get transaction ID.
+ * \ingroup c_async
+ * \see mdbx_txn_id() */
+LIBMDBX_API int mdbx_async_txn_id(MDBX_async *async, const MDBX_txn *txn, uint64_t *txnid, MDBX_async_op **op);
+
+/** \brief Asynchronously check transaction straggler distance.
+ * \ingroup c_async
+ * \see mdbx_txn_straggler() */
+LIBMDBX_API int mdbx_async_txn_straggler(MDBX_async *async, const MDBX_txn *txn, int *lag, int *percent,
+                                         MDBX_async_op **op);
+
 /** \brief Asynchronously commit a transaction.
  * \ingroup c_async
  * \see mdbx_txn_commit_ex() */
 LIBMDBX_API int mdbx_async_txn_commit(MDBX_async *async, MDBX_txn *txn, MDBX_commit_latency *latency,
                                       MDBX_async_op **op);
+
+/** \brief Asynchronously commit and continue the transaction.
+ * \ingroup c_async
+ * \see mdbx_txn_checkpoint() */
+LIBMDBX_API int mdbx_async_txn_checkpoint(MDBX_async *async, MDBX_txn *txn,
+                                          MDBX_txn_flags_t weakening_durability,
+                                          MDBX_commit_latency *latency, MDBX_async_op **op);
+
+/** \brief Asynchronously commit a write transaction and embark a read transaction.
+ * \ingroup c_async
+ * \see mdbx_txn_commit_embark_read() */
+LIBMDBX_API int mdbx_async_txn_commit_embark_read(MDBX_async *async, MDBX_txn **txn,
+                                                  MDBX_commit_latency *latency, MDBX_async_op **op);
+
+/** \brief Asynchronously amend a read transaction into a write transaction.
+ * \ingroup c_async
+ * \see mdbx_txn_amend() */
+LIBMDBX_API int mdbx_async_txn_amend(MDBX_async *async, MDBX_txn *read_txn, MDBX_txn **write_txn,
+                                     MDBX_txn_flags_t flags, void *context, MDBX_async_op **op);
+
+/** \brief Asynchronously rollback a transaction while keeping it running.
+ * \ingroup c_async
+ * \see mdbx_txn_rollback() */
+LIBMDBX_API int mdbx_async_txn_rollback(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **op);
 
 /** \brief Asynchronously abort a transaction.
  * \ingroup c_async
