@@ -9118,193 +9118,6 @@ __cold static int copy_with_compacting(MDBX_env *env, MDBX_txn *txn, mdbx_fileha
 
 //----------------------------------------------------------------------------
 
-typedef struct dxb_copy_asis_read_submit_io {
-  const dxb_storage_t *storage;
-  dxb_byte_io_t source;
-  uint64_t dst_offset;
-  dxb_data_export_read_io_t export_read;
-  dxb_read_submit_io_t read;
-  void *buffer;
-  size_t buffer_bytes;
-} dxb_copy_asis_read_submit_io_t;
-
-static inline int copy_asis_make_read_submit_io(const dxb_storage_t *storage, const dxb_byte_io_t *source,
-                                                uint64_t dst_offset, void *buffer, size_t buffer_bytes,
-                                                dxb_copy_asis_read_submit_io_t *io) {
-  if (unlikely(!storage || !source || !buffer || !io || buffer_bytes < dxb_storage_pagesize(storage)))
-    return MDBX_EINVAL;
-
-  dxb_data_export_read_io_t export_read;
-  int rc = dxb_storage_make_data_export_read_io(storage, source, dst_offset, buffer_bytes, &export_read);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_data_export_read_io_validate(storage, &export_read);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(export_read.read.bytes.bytes > buffer_bytes))
-    return MDBX_EINVAL;
-
-  dxb_read_submit_io_t read;
-  rc = dxb_storage_make_read_submit_io(storage, &export_read.read, buffer, &read);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->storage = storage;
-  io->source = *source;
-  io->dst_offset = dst_offset;
-  io->export_read = export_read;
-  io->read = read;
-  io->buffer = buffer;
-  io->buffer_bytes = buffer_bytes;
-  return MDBX_SUCCESS;
-}
-
-static inline int copy_asis_read_submit_io_validate(const dxb_copy_asis_read_submit_io_t *io) {
-  if (unlikely(!io || !io->storage || !io->buffer || !io->read.buffer ||
-               io->buffer_bytes < dxb_storage_pagesize(io->storage)))
-    return MDBX_EINVAL;
-  if (unlikely(io->read.buffer != io->buffer || io->read.data.bytes.bytes > io->buffer_bytes))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_data_export_read_io_validate(io->storage, &io->export_read);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_read_submit_io_validate(io->storage, &io->read);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io->export_read.export.source.request.offset != io->source.offset ||
-               io->export_read.export.source.request.bytes != io->source.bytes ||
-               io->export_read.export.dst_offset != io->dst_offset))
-    return MDBX_EINVAL;
-
-  dxb_copy_asis_read_submit_io_t checked;
-  rc = copy_asis_make_read_submit_io(io->storage, &io->source, io->dst_offset, io->buffer, io->buffer_bytes, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.storage != io->storage || checked.buffer != io->buffer ||
-               checked.buffer_bytes != io->buffer_bytes || checked.source.offset != io->source.offset ||
-               checked.source.bytes != io->source.bytes || checked.dst_offset != io->dst_offset ||
-               checked.export_read.export.source.request.offset != io->export_read.export.source.request.offset ||
-               checked.export_read.export.source.request.bytes != io->export_read.export.source.request.bytes ||
-               checked.export_read.export.source.pages.pgno != io->export_read.export.source.pages.pgno ||
-               checked.export_read.export.source.pages.end_pgno != io->export_read.export.source.pages.end_pgno ||
-               checked.export_read.export.source.pages.npages != io->export_read.export.source.pages.npages ||
-               checked.export_read.export.source.pages.offset != io->export_read.export.source.pages.offset ||
-               checked.export_read.export.source.pages.bytes != io->export_read.export.source.pages.bytes ||
-               checked.export_read.export.source.page_bytes.offset != io->export_read.export.source.page_bytes.offset ||
-               checked.export_read.export.source.page_bytes.bytes != io->export_read.export.source.page_bytes.bytes ||
-               checked.export_read.export.dst_offset != io->export_read.export.dst_offset ||
-               checked.export_read.read.pages.pgno != io->export_read.read.pages.pgno ||
-               checked.export_read.read.pages.end_pgno != io->export_read.read.pages.end_pgno ||
-               checked.export_read.read.pages.npages != io->export_read.read.pages.npages ||
-               checked.export_read.read.pages.offset != io->export_read.read.pages.offset ||
-               checked.export_read.read.pages.bytes != io->export_read.read.pages.bytes ||
-               checked.export_read.read.bytes.offset != io->export_read.read.bytes.offset ||
-               checked.export_read.read.bytes.bytes != io->export_read.read.bytes.bytes ||
-               checked.export_read.payload_offset != io->export_read.payload_offset ||
-               checked.read.data.pages.pgno != io->read.data.pages.pgno ||
-               checked.read.data.pages.end_pgno != io->read.data.pages.end_pgno ||
-               checked.read.data.pages.npages != io->read.data.pages.npages ||
-               checked.read.data.pages.offset != io->read.data.pages.offset ||
-               checked.read.data.pages.bytes != io->read.data.pages.bytes ||
-               checked.read.data.bytes.offset != io->read.data.bytes.offset ||
-               checked.read.data.bytes.bytes != io->read.data.bytes.bytes || checked.read.buffer != io->read.buffer))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-#if MDBX_USE_SENDFILE || MDBX_USE_COPYFILERANGE
-typedef struct dxb_copy_asis_export_submit_io {
-  const dxb_storage_t *storage;
-  dxb_byte_io_t source;
-  uint64_t dst_offset;
-  mdbx_filehandle_t dst_fd;
-  dxb_data_export_io_t export_io;
-  dxb_data_export_submit_io_t export_submit;
-} dxb_copy_asis_export_submit_io_t;
-
-static inline int copy_asis_make_export_submit_io(const dxb_storage_t *storage, const dxb_byte_io_t *source,
-                                                  uint64_t dst_offset, mdbx_filehandle_t dst_fd,
-                                                  dxb_copy_asis_export_submit_io_t *io) {
-  if (unlikely(!storage || !source || !io || dst_fd == INVALID_HANDLE_VALUE))
-    return MDBX_EINVAL;
-
-  dxb_data_export_io_t export_io;
-  int rc = dxb_storage_make_data_export_io(storage, source, dst_offset, &export_io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_data_export_io_validate(storage, &export_io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_data_export_submit_io_t export_submit;
-  rc = dxb_storage_make_data_export_submit_io(storage, &export_io, dst_fd, &export_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->storage = storage;
-  io->source = *source;
-  io->dst_offset = dst_offset;
-  io->dst_fd = dst_fd;
-  io->export_io = export_io;
-  io->export_submit = export_submit;
-  return MDBX_SUCCESS;
-}
-
-static inline int copy_asis_export_submit_io_validate(const dxb_copy_asis_export_submit_io_t *io) {
-  if (unlikely(!io || !io->storage || io->dst_fd == INVALID_HANDLE_VALUE))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_data_export_io_validate(io->storage, &io->export_io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_data_export_submit_io_validate(io->storage, &io->export_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io->export_io.source.request.offset != io->source.offset ||
-               io->export_io.source.request.bytes != io->source.bytes ||
-               io->export_io.dst_offset != io->dst_offset ||
-               io->export_submit.export.source.request.offset != io->export_io.source.request.offset ||
-               io->export_submit.export.source.request.bytes != io->export_io.source.request.bytes ||
-               io->export_submit.export.dst_offset != io->export_io.dst_offset ||
-               io->export_submit.dst_fd != io->dst_fd))
-    return MDBX_EINVAL;
-
-  dxb_copy_asis_export_submit_io_t checked;
-  rc = copy_asis_make_export_submit_io(io->storage, &io->source, io->dst_offset, io->dst_fd, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.storage != io->storage || checked.dst_fd != io->dst_fd ||
-               checked.source.offset != io->source.offset || checked.source.bytes != io->source.bytes ||
-               checked.dst_offset != io->dst_offset ||
-               checked.export_io.source.request.offset != io->export_io.source.request.offset ||
-               checked.export_io.source.request.bytes != io->export_io.source.request.bytes ||
-               checked.export_io.source.pages.pgno != io->export_io.source.pages.pgno ||
-               checked.export_io.source.pages.end_pgno != io->export_io.source.pages.end_pgno ||
-               checked.export_io.source.pages.npages != io->export_io.source.pages.npages ||
-               checked.export_io.source.pages.offset != io->export_io.source.pages.offset ||
-               checked.export_io.source.pages.bytes != io->export_io.source.pages.bytes ||
-               checked.export_io.source.page_bytes.offset != io->export_io.source.page_bytes.offset ||
-               checked.export_io.source.page_bytes.bytes != io->export_io.source.page_bytes.bytes ||
-               checked.export_io.dst_offset != io->export_io.dst_offset ||
-               checked.export_submit.export.source.request.offset != io->export_submit.export.source.request.offset ||
-               checked.export_submit.export.source.request.bytes != io->export_submit.export.source.request.bytes ||
-               checked.export_submit.export.source.pages.pgno != io->export_submit.export.source.pages.pgno ||
-               checked.export_submit.export.source.pages.end_pgno != io->export_submit.export.source.pages.end_pgno ||
-               checked.export_submit.export.source.pages.npages != io->export_submit.export.source.pages.npages ||
-               checked.export_submit.export.source.pages.offset != io->export_submit.export.source.pages.offset ||
-               checked.export_submit.export.source.pages.bytes != io->export_submit.export.source.pages.bytes ||
-               checked.export_submit.export.source.page_bytes.offset !=
-                   io->export_submit.export.source.page_bytes.offset ||
-               checked.export_submit.export.source.page_bytes.bytes !=
-                   io->export_submit.export.source.page_bytes.bytes ||
-               checked.export_submit.export.dst_offset != io->export_submit.export.dst_offset ||
-               checked.export_submit.dst_fd != io->export_submit.dst_fd))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-#endif /* MDBX_USE_SENDFILE || MDBX_USE_COPYFILERANGE */
-
 __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, uint8_t *buffer,
                             const bool dest_is_pipe, const MDBX_copy_flags_t flags) {
   const dxb_storage_t *const storage = &env->dxb_storage;
@@ -9390,15 +9203,21 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
 #if MDBX_USE_SENDFILE
     static bool sendfile_unavailable;
     if (dest_is_pipe && likely(!sendfile_unavailable)) {
-      dxb_copy_asis_export_submit_io_t export_submit;
-      rc = copy_asis_make_export_submit_io(storage, &remaining, 0, fd, &export_submit);
+      dxb_data_export_io_t export_io;
+      rc = dxb_storage_make_data_export_io(storage, &remaining, 0, &export_io);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
-      rc = copy_asis_export_submit_io_validate(&export_submit);
+      rc = dxb_storage_data_export_io_validate(storage, &export_io);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
-      dxb_copy_result_t sendfile_result =
-          dxb_storage_submit_sendfile_data_to_fd(export_submit.storage, &export_submit.export_submit);
+      dxb_data_export_submit_io_t export_submit;
+      rc = dxb_storage_make_data_export_submit_io(storage, &export_io, fd, &export_submit);
+      if (unlikely(rc != MDBX_SUCCESS))
+        break;
+      rc = dxb_storage_data_export_submit_io_validate(storage, &export_submit);
+      if (unlikely(rc != MDBX_SUCCESS))
+        break;
+      dxb_copy_result_t sendfile_result = dxb_storage_submit_sendfile_data_to_fd(storage, &export_submit);
       rc = sendfile_result.err;
       if (likely(sendfile_result.copied)) {
         offset += sendfile_result.payload_bytes;
@@ -9415,15 +9234,21 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
 
 #if MDBX_USE_COPYFILERANGE
     if (!dest_is_pipe && !not_the_same_filesystem && likely(!copyfilerange_unavailable)) {
-      dxb_copy_asis_export_submit_io_t export_submit;
-      rc = copy_asis_make_export_submit_io(storage, &remaining, offset, fd, &export_submit);
+      dxb_data_export_io_t export_io;
+      rc = dxb_storage_make_data_export_io(storage, &remaining, offset, &export_io);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
-      rc = copy_asis_export_submit_io_validate(&export_submit);
+      rc = dxb_storage_data_export_io_validate(storage, &export_io);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
-      dxb_copy_result_t copy_result =
-          dxb_storage_submit_copy_data_to_fd(export_submit.storage, &export_submit.export_submit);
+      dxb_data_export_submit_io_t export_submit;
+      rc = dxb_storage_make_data_export_submit_io(storage, &export_io, fd, &export_submit);
+      if (unlikely(rc != MDBX_SUCCESS))
+        break;
+      rc = dxb_storage_data_export_submit_io_validate(storage, &export_submit);
+      if (unlikely(rc != MDBX_SUCCESS))
+        break;
+      dxb_copy_result_t copy_result = dxb_storage_submit_copy_data_to_fd(storage, &export_submit);
       rc = copy_result.err;
       if (likely(copy_result.copied)) {
         offset += copy_result.payload_bytes;
@@ -9442,13 +9267,20 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
 #endif /* MDBX_USE_COPYFILERANGE */
 
     /* fallback to portable */
-    dxb_copy_asis_read_submit_io_t submit;
-    rc = copy_asis_make_read_submit_io(storage, &remaining, dest_is_pipe ? 0 : offset, data_buffer,
-                                       (size_t)MDBX_ENVCOPY_WRITEBUF, &submit);
+    dxb_data_export_read_io_t export_read;
+    rc = dxb_storage_make_data_export_read_io(storage, &remaining, dest_is_pipe ? 0 : offset,
+                                             (size_t)MDBX_ENVCOPY_WRITEBUF, &export_read);
     if (likely(rc == MDBX_SUCCESS))
-      rc = copy_asis_read_submit_io_validate(&submit);
+      rc = dxb_storage_data_export_read_io_validate(storage, &export_read);
+    if (likely(rc == MDBX_SUCCESS) && unlikely(export_read.read.bytes.bytes > (size_t)MDBX_ENVCOPY_WRITEBUF))
+      rc = MDBX_EINVAL;
+    dxb_read_submit_io_t read;
     if (likely(rc == MDBX_SUCCESS))
-      rc = dxb_storage_submit_read_data(submit.storage, &submit.read).err;
+      rc = dxb_storage_make_read_submit_io(storage, &export_read.read, data_buffer, &read);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = dxb_storage_read_submit_io_validate(storage, &read);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = dxb_storage_submit_read_data(storage, &read).err;
     if (unlikely(rc != MDBX_SUCCESS))
       break;
     if (flags & MDBX_CP_THROTTLE_MVCC) {
@@ -9456,9 +9288,8 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
       if (unlikely(rc != MDBX_SUCCESS))
         break;
     }
-    rc = osal_write(fd, data_buffer + submit.export_read.payload_offset,
-                    submit.export_read.export.source.request.bytes);
-    offset += submit.export_read.export.source.request.bytes;
+    rc = osal_write(fd, data_buffer + export_read.payload_offset, export_read.export.source.request.bytes);
+    offset += export_read.export.source.request.bytes;
   }
 
   /* Extend file if required */

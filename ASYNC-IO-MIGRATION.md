@@ -14210,6 +14210,29 @@ migration CTest suite including API checks and tool roundtrips, the ASAN build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.115`
 batch, `1.130` crud, `1.075` iterate, `0.959` get, and `1.066` delete.
 
+A later copy-as-is descriptor cleanup removed
+`dxb_copy_asis_read_submit_io_t`, `copy_asis_make_read_submit_io()`,
+`copy_asis_read_submit_io_validate()`,
+`dxb_copy_asis_export_submit_io_t`, `copy_asis_make_export_submit_io()`, and
+`copy_asis_export_submit_io_validate()` from `mdbx.c`. The environment-copy
+sendfile, copy-file-range, and portable fallback paths now build the existing
+storage export/read descriptors directly at their call sites, validate those
+storage requests, and submit through
+`dxb_storage_submit_sendfile_data_to_fd()`,
+`dxb_storage_submit_copy_data_to_fd()`, or `dxb_storage_submit_read_data()`.
+This keeps environment-copy I/O on storage request boundaries without
+copy-as-is-local mirror descriptors. Verification passed `git diff --check`, a
+source scan proving the removed copy-as-is descriptor helpers are absent from
+`mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.104` batch, `1.131` crud, `1.013`
+iterate, `0.990` get, and `1.072` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
