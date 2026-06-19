@@ -3062,3 +3062,33 @@ Additional replace-ex benchmark coverage checkpoint:
   Batch `replace_ex` recovers most of the per-item async overhead in the reduced
   sample, but write-heavy end-to-end ioarena results still trail the
   pre-migration baseline and remain the main performance gap.
+
+Additional GET-family batch benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` with parallel batch measurements
+  for `mdbx_async_get_ex_batch()` and
+  `mdbx_async_get_equal_or_great_batch()`. These use the same multi-executor
+  windowing shape as the existing plain `mdbx_async_get_batch()` benchmark, so
+  the output now covers the extended GET variants without changing the blocking
+  API.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking parallel get
+  554.779 Kops/s, async batch parallel get 891.385 Kops/s,
+  async get_ex batch 1.091 Mops/s, and async lowerbound batch
+  989.825 Kops/s. Ratios were async-batch/blocking-parallel 1.607,
+  async-get-ex-batch/par 1.966, async-lower-batch/par 1.784,
+  async-get-ex-batch/batch 1.224, and async-lower-batch/batch 1.110.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=179 async-covered=132 async-only=47 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the public benchmark now exercises the extended async GET family
+  under the same parallel-heavy shape as plain GET. In this reduced sample,
+  both extended batch paths beat the benchmark's blocking-parallel GET baseline
+  and the plain async batch GET line.
