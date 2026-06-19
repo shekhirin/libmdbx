@@ -25414,8 +25414,8 @@ static dxb_stat_result_t dxb_storage_submit_stat(const dxb_storage_t *storage) {
   if (unlikely(!storage))
     return dxb_stat_zero_error(MDBX_EINVAL);
   struct stat st;
-  return unlikely(fstat(dxb_storage_data_fd(storage), &st)) ? dxb_stat_zero_submitted_error(errno)
-                                                            : dxb_stat_completed(&st);
+  const int rc = osal_ioring_fstat((osal_ioring_t *)&storage->ioring, dxb_storage_data_fd(storage), &st);
+  return unlikely(rc != MDBX_SUCCESS) ? dxb_stat_zero_submitted_error(rc) : dxb_stat_completed(&st);
 }
 #endif /* !Windows */
 
@@ -37255,12 +37255,12 @@ bailout:
 #if defined(AT_EMPTY_PATH) && defined(STATX_SIZE)
 #define MDBX_IORING_OP_STATX 21u /* Stable Linux io_uring ABI opcode value. */
 
-static int osal_ioring_linux_uring_filesize(osal_ioring_t *ior, mdbx_filehandle_t fd, uint64_t *length) {
-  if (unlikely(!osal_ioring_linux_uring_ready(ior) || !length))
+static int osal_ioring_linux_uring_statx(osal_ioring_t *ior, mdbx_filehandle_t fd, unsigned mask,
+                                         struct statx *statxbuf) {
+  if (unlikely(!osal_ioring_linux_uring_ready(ior) || !statxbuf || !mask))
     return MDBX_EINVAL;
 
-  struct statx statxbuf;
-  memset(&statxbuf, 0, sizeof(statxbuf));
+  memset(statxbuf, 0, sizeof(*statxbuf));
   const char empty_path[] = "";
 
   int rc = osal_ioring_linux_uring_lock(ior);
@@ -37281,11 +37281,11 @@ static int osal_ioring_linux_uring_filesize(osal_ioring_t *ior, mdbx_filehandle_
   memset(sqe, 0, sizeof(*sqe));
   sqe->opcode = MDBX_IORING_OP_STATX;
   sqe->fd = fd;
-  sqe->off = (uintptr_t)&statxbuf;
+  sqe->off = (uintptr_t)statxbuf;
   sqe->addr = (uintptr_t)empty_path;
-  sqe->len = STATX_SIZE;
+  sqe->len = mask;
   sqe->rw_flags = AT_EMPTY_PATH;
-  sqe->user_data = (uintptr_t)&statxbuf;
+  sqe->user_data = (uintptr_t)statxbuf;
   ior->linux_uring_sq_array[index] = index;
   osal_ioring_linux_store(ior->linux_uring_sq_tail, tail + 1);
 
@@ -37310,22 +37310,31 @@ static int osal_ioring_linux_uring_filesize(osal_ioring_t *ior, mdbx_filehandle_
 
   const uint32_t cq_index = cq_head & *ior->linux_uring_cq_mask;
   const struct io_uring_cqe *const cqe = &ior->linux_uring_cqes[cq_index];
-  if (unlikely(cqe->user_data != (uintptr_t)&statxbuf))
+  if (unlikely(cqe->user_data != (uintptr_t)statxbuf))
     rc = MDBX_EINVAL;
   else if (unlikely(cqe->res < 0))
     rc = -cqe->res;
   else if (unlikely(cqe->res != 0))
     rc = MDBX_EIO;
-  else if (unlikely((statxbuf.stx_mask & STATX_SIZE) == 0))
-    rc = MDBX_ENODATA;
-  else {
-    *length = statxbuf.stx_size;
+  else
     rc = MDBX_SUCCESS;
-  }
   osal_ioring_linux_store(ior->linux_uring_cq_head, cq_head + 1);
 
 bailout:
   return osal_ioring_linux_uring_unlock(ior, rc);
+}
+
+static int osal_ioring_linux_uring_filesize(osal_ioring_t *ior, mdbx_filehandle_t fd, uint64_t *length) {
+  if (unlikely(!length))
+    return MDBX_EINVAL;
+  struct statx statxbuf;
+  int rc = osal_ioring_linux_uring_statx(ior, fd, STATX_SIZE, &statxbuf);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely((statxbuf.stx_mask & STATX_SIZE) == 0))
+    return MDBX_ENODATA;
+  *length = statxbuf.stx_size;
+  return MDBX_SUCCESS;
 }
 #endif /* AT_EMPTY_PATH && STATX_SIZE */
 
@@ -37976,6 +37985,44 @@ int osal_ioring_filesize(osal_ioring_t *ior, mdbx_filehandle_t fd, uint64_t *len
 #endif /* MDBX_HAVE_LINUX_IO_URING && AT_EMPTY_PATH && STATX_SIZE */
   return osal_filesize(fd, length);
 }
+
+#if !defined(_WIN32) && !defined(_WIN64)
+#if MDBX_HAVE_LINUX_IO_URING && defined(AT_EMPTY_PATH) && defined(STATX_BASIC_STATS)
+static void osal_stat_from_statx(struct stat *st, const struct statx *statxbuf) {
+  memset(st, 0, sizeof(*st));
+  st->st_ino = statxbuf->stx_ino;
+  st->st_mode = statxbuf->stx_mode;
+  st->st_nlink = statxbuf->stx_nlink;
+  st->st_uid = statxbuf->stx_uid;
+  st->st_gid = statxbuf->stx_gid;
+  st->st_size = statxbuf->stx_size;
+  st->st_blksize = statxbuf->stx_blksize;
+  st->st_blocks = statxbuf->stx_blocks;
+}
+#endif /* MDBX_HAVE_LINUX_IO_URING && AT_EMPTY_PATH && STATX_BASIC_STATS */
+
+int osal_ioring_fstat(osal_ioring_t *ior, mdbx_filehandle_t fd, struct stat *st) {
+  if (unlikely(!st))
+    return MDBX_EINVAL;
+#if MDBX_HAVE_LINUX_IO_URING && defined(AT_EMPTY_PATH) && defined(STATX_BASIC_STATS)
+  if (likely(ior && ior->backend == osal_ioring_backend_linux_uring &&
+             osal_ioring_linux_uring_ready(ior))) {
+    struct statx statxbuf;
+    const int err = osal_ioring_linux_uring_statx(ior, fd, STATX_BASIC_STATS, &statxbuf);
+    const unsigned required = STATX_TYPE | STATX_MODE | STATX_NLINK | STATX_SIZE | STATX_BLOCKS;
+    if (likely(err == MDBX_SUCCESS && (statxbuf.stx_mask & required) == required)) {
+      osal_stat_from_statx(st, &statxbuf);
+      return MDBX_SUCCESS;
+    }
+    if (likely(err != MDBX_SUCCESS && err != MDBX_EINVAL && err != MDBX_ENOSYS && err != EOPNOTSUPP))
+      return err;
+  }
+#else
+  (void)ior;
+#endif /* MDBX_HAVE_LINUX_IO_URING && AT_EMPTY_PATH && STATX_BASIC_STATS */
+  return unlikely(fstat(fd, st)) ? errno : MDBX_SUCCESS;
+}
+#endif /* !Windows */
 
 int osal_ioring_fsetsize(osal_ioring_t *ior, mdbx_filehandle_t fd, const uint64_t length) {
 #if MDBX_HAVE_LINUX_IO_URING && MDBX_USE_FALLOCATE

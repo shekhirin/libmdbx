@@ -1868,6 +1868,9 @@ MDBX_INTERNAL int osal_ioring_fsetsize(osal_ioring_t *ior, mdbx_filehandle_t fd,
 MDBX_INTERNAL int osal_fseek(mdbx_filehandle_t fd, uint64_t pos);
 MDBX_INTERNAL int osal_filesize(mdbx_filehandle_t fd, uint64_t *length);
 MDBX_INTERNAL int osal_ioring_filesize(osal_ioring_t *ior, mdbx_filehandle_t fd, uint64_t *length);
+#if !defined(_WIN32) && !defined(_WIN64)
+MDBX_INTERNAL int osal_ioring_fstat(osal_ioring_t *ior, mdbx_filehandle_t fd, struct stat *st);
+#endif /* !Windows */
 
 enum osal_openfile_purpose {
   MDBX_OPEN_DXB_READ,

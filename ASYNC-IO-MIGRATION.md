@@ -15192,6 +15192,31 @@ The paired `MDBX_EXPLICIT_IO_BACKEND=io_uring make -f GNUmakefile
 mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.042`
 batch, `0.996` crud, `0.899` iterate, `1.039` get, and `0.995` delete.
 
+A later Linux `io_uring` stat checkpoint factored the existing STATX SQE
+submit/wait path into `osal_ioring_linux_uring_statx()`, added the POSIX
+`osal_ioring_fstat()` wrapper, and routed `dxb_storage_submit_stat()` through
+it. Requested/ready Linux rings can now serve DXB stat probes with
+`IORING_OP_STATX`/`AT_EMPTY_PATH` and convert the basic result back to
+`struct stat`; unsupported kernels, incomplete STATX masks, non-Linux builds,
+and unavailable rings fall back to direct `fstat()`. This moves environment
+info, lock setup, and readonly/setup DXB stat probes behind the same
+async-capable OSAL boundary as filesize fetches while preserving the existing
+POSIX result shape. A forced smoke fd-decoded trace showed
+`io_uring_setup=61`, `io_uring_enter=153896`, `direct_statx=0`, and
+`direct_newfstatat_smoke_paths=0` for the smoke database path. Verification
+passed `git diff --check`, the Ninja build (`cmake --build
+@cmake-ninja-build`), the GNUmake `mdbx_migration_smoke` build target, direct
+default, forced no-mmap, `MDBX_EXPLICIT_IO_BACKEND=io_uring`, and compatibility
+`MDBX_EXPLICIT_WRITE_BACKEND=io_uring` forced tiny-cache smokes. Normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` focused `migration_smoke` CTest entries
+passed 6/6, the ASAN build (`cmake --build @cmake-asan-build`) passed, normal
+and `MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest
+entries passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `MDBX_EXPLICIT_IO_BACKEND=io_uring make -f GNUmakefile
+mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.127`
+batch, `1.053` crud, `0.788` iterate, `1.024` get, and `1.048` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
