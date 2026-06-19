@@ -2777,3 +2777,50 @@ Additional async put-batch benchmark checkpoint:
   overhead versus per-item async submission. The smaller reduced run can edge
   ahead of blocking writes, while the larger forced no-map write sample remains
   below blocking but improves from 0.816 to 0.922 of blocking throughput.
+
+Additional async delete benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` to measure delete operations
+  alongside write puts: blocking `mdbx_del()`, windowed per-item
+  `mdbx_async_del()`, and batched `mdbx_async_del_batch()`.
+- delete benchmarks reseed the default table before each variant and delete
+  sequential keys, avoiding randomized read-key repeats that can make delete
+  workloads hit already-removed keys.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking delete 2.029 Mops/s,
+  async delete 1.522 Mops/s, async batch delete 2.144 Mops/s,
+  async-del/blocking-del 0.750, async-del-batch/blocking 1.057, and
+  async-del-batch/async-del 1.408.
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000
+  MDBX_ASYNC_BENCH_WRITE_OPS=20000` spot check reported
+  async/blocking-parallel 1.080, async-many/blocking-parallel 1.081,
+  async-thread/blocking-parallel 1.041,
+  async-thread-many/blocking-parallel 0.983,
+  async-thread-batch/blocking-parallel 1.092,
+  async-batch/blocking-parallel 1.107,
+  async-batch-callback/blocking-parallel 1.104,
+  async-loop/blocking-parallel 1.072,
+  async-thread-loop/blocking-parallel 1.027,
+  async-put/blocking-put 0.854,
+  async-put-batch/blocking 0.946,
+  async-put-batch/async-put 1.108,
+  async-del/blocking-del 0.832,
+  async-del-batch/blocking 0.970, and async-del-batch/async-del 1.166.
+  Cursor samples were noisy in this spot run, with async cursor ratios below
+  blocking-parallel, so this remains a benchmark observation rather than a
+  pass/fail gate.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|migration_smoke)'`: passed 9/9
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h`: `blocking=171 async-covered=132 exempt=39 missing=0`
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: batched async delete materially reduces async delete API
+  overhead versus per-item async submission. The reduced run beats blocking,
+  and the larger forced no-map sample nearly reaches blocking throughput
+  (0.970) while improving 16.6% over per-item async delete.
