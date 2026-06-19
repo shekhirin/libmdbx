@@ -30363,14 +30363,6 @@ static inline dxb_copy_result_t dxb_copy_cross_device(void) {
 #endif /* MDBX_USE_COPYFILERANGE || MDBX_USE_SENDFILE */
 
 #if MDBX_USE_COPYFILERANGE
-static dxb_cache_result_t dxb_storage_submit_copy_cache_invalidate(
-    dxb_storage_t *storage, const dxb_copy_cache_invalidate_submit_io_t *io) {
-  int rc = dxb_storage_copy_cache_invalidate_submit_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_cache_error(rc);
-  return dxb_storage_submit_invalidate_cached_io(storage, &io->submit);
-}
-
 static dxb_copy_result_t dxb_storage_submit_copy_data_to_fd(const dxb_storage_t *storage,
                                                             const dxb_data_export_submit_io_t *io) {
   int rc = dxb_storage_data_export_submit_io_validate(storage, io);
@@ -30427,7 +30419,10 @@ static dxb_copy_result_t dxb_storage_submit_copy_data(dxb_storage_t *storage, co
   rc = dxb_fault_inject("copy-complete");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_copy_submitted_error(rc);
-  dxb_cache_result_t invalidate = dxb_storage_submit_copy_cache_invalidate(storage, &io->invalidate);
+  rc = dxb_storage_copy_cache_invalidate_submit_io_validate(storage, &io->invalidate);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_copy_completed_error(rc, copy->src_bytes.bytes);
+  dxb_cache_result_t invalidate = dxb_storage_submit_invalidate_cached_io(storage, &io->invalidate.submit);
   if (unlikely(invalidate.err != MDBX_SUCCESS))
     return dxb_copy_completed_error(invalidate.err, copy->src_bytes.bytes);
   return dxb_copy_completed(copy->src_bytes.bytes);
