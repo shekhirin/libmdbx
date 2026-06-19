@@ -346,15 +346,6 @@ typedef struct dxb_page_touch_redirect_submit_io {
   bool inner;
 } dxb_page_touch_redirect_submit_io_t;
 
-typedef struct dxb_cursor_stack_page_get_submit_io {
-  MDBX_cursor *cursor;
-  pgno_t pgno;
-  txnid_t front;
-  dxb_cursor_page_get_submit_io_t get;
-  intptr_t slot;
-  intptr_t captured_top;
-} dxb_cursor_stack_page_get_submit_io_t;
-
 typedef struct dxb_node_read_submit_io {
   MDBX_cursor *cursor;
   MDBX_val *data;
@@ -7382,66 +7373,26 @@ static inline int __must_check_result page_get(const MDBX_cursor *mc, const pgno
   return page_get_with_ref(mc, pgno, mp, nullptr, front);
 }
 
-static inline int cursor_make_stack_page_get_submit_io(MDBX_cursor *mc, intptr_t slot, pgno_t pgno, txnid_t front,
-                                                       dxb_cursor_stack_page_get_submit_io_t *io) {
-  if (unlikely(!mc || !mc->txn || !io || slot < 0 || slot >= CURSOR_STACK_SIZE || pgno < NUM_METAS ||
+static inline int cursor_stack_page_get(MDBX_cursor *mc, intptr_t slot, pgno_t pgno, txnid_t front) {
+  if (unlikely(!mc || !mc->txn || slot < 0 || slot >= CURSOR_STACK_SIZE || pgno < NUM_METAS ||
                pgno >= mc->txn->geo.first_unallocated))
     return MDBX_EINVAL;
 
+  const intptr_t captured_top = mc->top;
   dxb_cursor_page_get_submit_io_t get;
   int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_LARGE, pgno, front, &get);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  io->cursor = mc;
-  io->pgno = get.get.request.pgno;
-  io->front = get.get.front;
-  io->get = get;
-  io->slot = slot;
-  io->captured_top = mc->top;
-  return MDBX_SUCCESS;
-}
-
-static inline int cursor_stack_page_get_submit_io_validate(const dxb_cursor_stack_page_get_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->cursor->txn || io->slot < 0 || io->slot >= CURSOR_STACK_SIZE ||
-               io->pgno < NUM_METAS || io->pgno >= io->cursor->txn->geo.first_unallocated))
-    return MDBX_EINVAL;
-  if (unlikely(io->cursor->top != io->captured_top))
-    return MDBX_EINVAL;
-
-  dxb_cursor_stack_page_get_submit_io_t checked;
-  int err = cursor_make_stack_page_get_submit_io(io->cursor, io->slot, io->pgno, io->front, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.pgno != io->pgno || checked.front != io->front ||
-               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
-               checked.get.get.request.pgno != io->get.get.request.pgno ||
-               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
-               checked.get.get.request.npages != io->get.get.request.npages ||
-               checked.get.get.request.offset != io->get.get.request.offset ||
-               checked.get.get.request.bytes != io->get.get.request.bytes ||
-               checked.get.get.front != io->get.get.front ||
-               checked.get.get.track_private != io->get.get.track_private ||
-               checked.slot != io->slot || checked.captured_top != io->captured_top))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline int cursor_stack_page_get(MDBX_cursor *mc, intptr_t slot, pgno_t pgno, txnid_t front) {
-  dxb_cursor_stack_page_get_submit_io_t submit;
-  int err = cursor_make_stack_page_get_submit_io(mc, slot, pgno, front, &submit);
   cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS))
-    err = cursor_stack_page_get_submit_io_validate(&submit);
   if (likely(err == MDBX_SUCCESS)) {
-    pgr_t pgr = page_submit_cursor_get(&submit.get);
+    if (unlikely(mc->top != captured_top))
+      return MDBX_EINVAL;
+    pgr_t pgr = page_submit_cursor_get(&get);
     err = pgr.err;
     if (unlikely(err != MDBX_SUCCESS)) {
-      pgr_release(submit.cursor, &pgr);
+      pgr_release(mc, &pgr);
       return err;
     }
 
-    cursor_stack_set_pgr_consume(submit.cursor, submit.slot, &pgr);
+    cursor_stack_set_pgr_consume(mc, slot, &pgr);
   }
   return err;
 }

@@ -13932,6 +13932,27 @@ six focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.142` batch, `1.145` crud, `0.848`
 iterate, `1.108` get, and `1.062` delete.
 
+A later cursor stack page-get descriptor cleanup removed
+`dxb_cursor_stack_page_get_submit_io_t`,
+`cursor_make_stack_page_get_submit_io()`, and
+`cursor_stack_page_get_submit_io_validate()` from `mdbx.c`.
+`cursor_stack_page_get()` now validates the requested stack slot and page
+number, snapshots the cursor top, builds the existing checked cursor page-get
+request directly, rechecks the top, and installs the fetched page/ref through
+`cursor_stack_set_pgr_consume()`. This keeps root reload and cursor stack
+page-fetch handoff at the stack mutation site without a descriptor wrapper for
+a single immediate fetch. Verification passed `git diff --check`, a source
+scan proving the removed cursor stack page-get descriptor helpers are absent
+from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.134` batch, `1.154` crud, `0.982`
+iterate, `1.020` get, and `1.053` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
