@@ -664,3 +664,27 @@ Additional cursor utility checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.037, async-batch/blocking-parallel ratio 1.046, and async-cursor/blocking-parallel ratio 0.982
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional environment metadata/control checkpoint:
+
+- added async wrappers for environment statistics, environment information,
+  sync, warmup, generic option get/set, flag get/set, path/fd lookup, geometry
+  updates, environment user context set/get, and environment max-size helpers
+- wrappers are bound to the executor's environment; transaction-scoped
+  stat/info/warmup calls accept an optional transaction and let the underlying
+  MDBX API enforce normal environment/transaction compatibility
+- direct-return helpers such as environment user context and max-size queries
+  store the returned value in caller-provided output storage while the async
+  operation result reports wrapper completion
+- smoke coverage now checks env context round-tripping, path/fd lookup,
+  option set/get, flag toggling, geometry no-op update, sync/warmup,
+  value-returning max-size helpers, and stat/info snapshots both outside and
+  inside a read transaction
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.126, async-batch/blocking-parallel ratio 1.125, and async-cursor/blocking-parallel ratio 0.957

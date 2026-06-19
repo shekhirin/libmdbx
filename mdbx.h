@@ -4662,6 +4662,110 @@ LIBMDBX_API int mdbx_async_op_release(MDBX_async_op *op);
  * \returns \ref MDBX_BUSY if any operation has not completed yet. */
 LIBMDBX_API int mdbx_async_op_release_all(MDBX_async_op *ops[], size_t count);
 
+/** \brief Asynchronously get environment statistics.
+ * \ingroup c_async
+ * \see mdbx_env_stat_ex() */
+LIBMDBX_API int mdbx_async_env_stat_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_stat *stat, size_t bytes,
+                                       MDBX_async_op **op);
+
+/** \brief Asynchronously get environment information.
+ * \ingroup c_async
+ * \see mdbx_env_info_ex() */
+LIBMDBX_API int mdbx_async_env_info_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_envinfo *info, size_t bytes,
+                                       MDBX_async_op **op);
+
+/** \brief Asynchronously sync the environment bound to an executor.
+ * \ingroup c_async
+ * \see mdbx_env_sync_ex() */
+LIBMDBX_API int mdbx_async_env_sync_ex(MDBX_async *async, bool force, bool nonblock, MDBX_async_op **op);
+
+/** \brief Asynchronously warm up the environment bound to an executor.
+ * \ingroup c_async
+ * \see mdbx_env_warmup() */
+LIBMDBX_API int mdbx_async_env_warmup(MDBX_async *async, const MDBX_txn *txn, MDBX_warmup_flags_t flags,
+                                      unsigned timeout_seconds_16dot16, MDBX_async_op **op);
+
+/** \brief Asynchronously set an environment option.
+ * \ingroup c_async
+ * \see mdbx_env_set_option() */
+LIBMDBX_API int mdbx_async_env_set_option(MDBX_async *async, MDBX_option_t option, uint64_t value,
+                                          MDBX_async_op **op);
+
+/** \brief Asynchronously get an environment option.
+ * \ingroup c_async
+ * \see mdbx_env_get_option() */
+LIBMDBX_API int mdbx_async_env_get_option(MDBX_async *async, MDBX_option_t option, uint64_t *value,
+                                          MDBX_async_op **op);
+
+/** \brief Asynchronously set environment flags.
+ * \ingroup c_async
+ * \see mdbx_env_set_flags() */
+LIBMDBX_API int mdbx_async_env_set_flags(MDBX_async *async, MDBX_env_flags_t flags, bool onoff,
+                                         MDBX_async_op **op);
+
+/** \brief Asynchronously get environment flags.
+ * \ingroup c_async
+ * \see mdbx_env_get_flags() */
+LIBMDBX_API int mdbx_async_env_get_flags(MDBX_async *async, unsigned *flags, MDBX_async_op **op);
+
+/** \brief Asynchronously get the environment path.
+ * \ingroup c_async
+ * \see mdbx_env_get_path() */
+LIBMDBX_API int mdbx_async_env_get_path(MDBX_async *async, const char **path, MDBX_async_op **op);
+
+#if defined(_WIN32) || defined(_WIN64) || defined(DOXYGEN)
+/** \brief Asynchronously get the wide-character environment path.
+ * \ingroup c_async
+ * \see mdbx_env_get_pathW() */
+LIBMDBX_API int mdbx_async_env_get_pathW(MDBX_async *async, const wchar_t **path, MDBX_async_op **op);
+#endif /* Windows */
+
+/** \brief Asynchronously get the environment file descriptor.
+ * \ingroup c_async
+ * \see mdbx_env_get_fd() */
+LIBMDBX_API int mdbx_async_env_get_fd(MDBX_async *async, mdbx_filehandle_t *fd, MDBX_async_op **op);
+
+/** \brief Asynchronously set environment geometry.
+ * \ingroup c_async
+ * \see mdbx_env_set_geometry() */
+LIBMDBX_API int mdbx_async_env_set_geometry(MDBX_async *async, intptr_t size_lower, intptr_t size_now,
+                                            intptr_t size_upper, intptr_t growth_step, intptr_t shrink_threshold,
+                                            intptr_t pagesize, MDBX_async_op **op);
+
+/** \brief Asynchronously set the environment user context.
+ * \ingroup c_async
+ * \see mdbx_env_set_userctx() */
+LIBMDBX_API int mdbx_async_env_set_userctx(MDBX_async *async, void *context, MDBX_async_op **op);
+
+/** \brief Asynchronously get the environment user context.
+ * \ingroup c_async
+ * \see mdbx_env_get_userctx() */
+LIBMDBX_API int mdbx_async_env_get_userctx(MDBX_async *async, void **context, MDBX_async_op **op);
+
+/** \brief Asynchronously get the maximum key size for the environment.
+ * \ingroup c_async
+ * \see mdbx_env_get_maxkeysize_ex() */
+LIBMDBX_API int mdbx_async_env_get_maxkeysize_ex(MDBX_async *async, MDBX_db_flags_t flags, int *size,
+                                                MDBX_async_op **op);
+
+/** \brief Asynchronously get the maximum value size for the environment.
+ * \ingroup c_async
+ * \see mdbx_env_get_maxvalsize_ex() */
+LIBMDBX_API int mdbx_async_env_get_maxvalsize_ex(MDBX_async *async, MDBX_db_flags_t flags, int *size,
+                                                MDBX_async_op **op);
+
+/** \brief Asynchronously get the maximum key-value pair size for a leaf page.
+ * \ingroup c_async
+ * \see mdbx_env_get_pairsize4page_max() */
+LIBMDBX_API int mdbx_async_env_get_pairsize4page_max(MDBX_async *async, MDBX_db_flags_t flags, int *size,
+                                                    MDBX_async_op **op);
+
+/** \brief Asynchronously get the maximum value size for a leaf or overflow page.
+ * \ingroup c_async
+ * \see mdbx_env_get_valsize4page_max() */
+LIBMDBX_API int mdbx_async_env_get_valsize4page_max(MDBX_async *async, MDBX_db_flags_t flags, int *size,
+                                                   MDBX_async_op **op);
+
 /** \brief Asynchronously create a transaction.
  * \ingroup c_async
  * \see mdbx_txn_begin_ex() */

@@ -189,6 +189,102 @@ int main(void) {
   CHECK_OP(op);
   REQUIRE(probe.calls == 1, "generic async callback was not executed exactly once");
 
+  int env_userctx_a = 41;
+  int env_userctx_b = 42;
+  void *env_context = NULL;
+  CHECK(mdbx_async_env_set_userctx(async, &env_userctx_a, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_env_get_userctx(async, &env_context, &op));
+  CHECK_OP(op);
+  REQUIRE(env_context == &env_userctx_a, "unexpected async environment context");
+  CHECK(mdbx_async_env_set_userctx(async, &env_userctx_b, &op));
+  CHECK_OP(op);
+  env_context = NULL;
+  CHECK(mdbx_async_env_get_userctx(async, &env_context, &op));
+  CHECK_OP(op);
+  REQUIRE(env_context == &env_userctx_b, "unexpected updated async environment context");
+
+  const char *env_path = NULL;
+  CHECK(mdbx_async_env_get_path(async, &env_path, &op));
+  CHECK_OP(op);
+  REQUIRE(env_path && strcmp(env_path, path) == 0, "unexpected async environment path");
+
+  mdbx_filehandle_t env_fd;
+  CHECK(mdbx_async_env_get_fd(async, &env_fd, &op));
+  CHECK_OP(op);
+#if defined(_WIN32) || defined(_WIN64)
+  REQUIRE(env_fd != INVALID_HANDLE_VALUE && env_fd != NULL, "unexpected async environment file descriptor");
+#else
+  REQUIRE(env_fd >= 0, "unexpected async environment file descriptor");
+#endif
+
+  uint64_t option_value = 0;
+  CHECK(mdbx_async_env_set_option(async, MDBX_opt_sync_bytes, 131072, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_env_get_option(async, MDBX_opt_sync_bytes, &option_value, &op));
+  CHECK_OP(op);
+  REQUIRE(option_value == 131072, "unexpected async environment sync-bytes option");
+
+  CHECK(mdbx_async_env_set_option(async, MDBX_opt_sync_period, 65536, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_env_get_option(async, MDBX_opt_sync_period, &option_value, &op));
+  CHECK_OP(op);
+  REQUIRE(option_value != 0, "unexpected async environment sync-period option");
+
+  unsigned env_flags = 0;
+  CHECK(mdbx_async_env_get_flags(async, &env_flags, &op));
+  CHECK_OP(op);
+  REQUIRE((env_flags & MDBX_NOSUBDIR) != 0, "async environment flags missed NOSUBDIR");
+  CHECK(mdbx_async_env_set_flags(async, MDBX_NOMETASYNC, true, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_env_get_flags(async, &env_flags, &op));
+  CHECK_OP(op);
+  REQUIRE((env_flags & MDBX_NOMETASYNC) != 0, "async environment flag set did not stick");
+  CHECK(mdbx_async_env_set_flags(async, MDBX_NOMETASYNC, false, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_env_get_flags(async, &env_flags, &op));
+  CHECK_OP(op);
+  REQUIRE((env_flags & MDBX_NOMETASYNC) == 0, "async environment flag clear did not stick");
+
+  int env_limit = 0;
+  CHECK(mdbx_async_env_get_maxkeysize_ex(async, MDBX_DB_DEFAULTS, &env_limit, &op));
+  CHECK_OP(op);
+  REQUIRE(env_limit > 0, "unexpected async max key size");
+  CHECK(mdbx_async_env_get_maxvalsize_ex(async, MDBX_DB_DEFAULTS, &env_limit, &op));
+  CHECK_OP(op);
+  REQUIRE(env_limit > 0, "unexpected async max value size");
+  CHECK(mdbx_async_env_get_pairsize4page_max(async, MDBX_DB_DEFAULTS, &env_limit, &op));
+  CHECK_OP(op);
+  REQUIRE(env_limit > 0, "unexpected async max pair size");
+  CHECK(mdbx_async_env_get_valsize4page_max(async, MDBX_DB_DEFAULTS, &env_limit, &op));
+  CHECK_OP(op);
+  REQUIRE(env_limit > 0, "unexpected async max page value size");
+
+  CHECK(mdbx_async_env_set_geometry(async, -1, -1, -1, -1, -1, -1, &op));
+  CHECK_OP(op);
+
+  int env_operation_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_env_sync_ex(async, false, true, &op));
+  CHECK(wait_result("mdbx_async_env_sync_ex", &op, &env_operation_result, __FILE__, __LINE__));
+  REQUIRE(env_operation_result == MDBX_SUCCESS || env_operation_result == MDBX_RESULT_TRUE,
+          "unexpected async environment sync result");
+  CHECK(mdbx_async_env_warmup(async, NULL, MDBX_warmup_default, 0, &op));
+  CHECK(wait_result("mdbx_async_env_warmup", &op, &env_operation_result, __FILE__, __LINE__));
+  REQUIRE(env_operation_result == MDBX_SUCCESS || env_operation_result == MDBX_ENOSYS,
+          "unexpected async environment warmup result");
+
+  MDBX_stat env_stat;
+  memset(&env_stat, 0, sizeof(env_stat));
+  CHECK(mdbx_async_env_stat_ex(async, NULL, &env_stat, sizeof(env_stat), &op));
+  CHECK_OP(op);
+  REQUIRE(env_stat.ms_psize != 0, "async environment stat returned empty page size");
+
+  MDBX_envinfo env_info;
+  memset(&env_info, 0, sizeof(env_info));
+  CHECK(mdbx_async_env_info_ex(async, NULL, &env_info, sizeof(env_info), &op));
+  CHECK_OP(op);
+  REQUIRE(env_info.mi_dxb_pagesize != 0, "async environment info returned empty page size");
+
   CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
   CHECK_OP(op);
   REQUIRE(txn != NULL, "write transaction was not returned");
@@ -341,9 +437,24 @@ int main(void) {
   CHECK_OP(op);
   txn = NULL;
 
+  memset(&env_stat, 0, sizeof(env_stat));
+  CHECK(mdbx_async_env_stat_ex(async, NULL, &env_stat, sizeof(env_stat), &op));
+  CHECK_OP(op);
+  REQUIRE(env_stat.ms_entries == ITEM_COUNT, "unexpected async environment stat entries after commit");
+
   CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
   CHECK_OP(op);
   REQUIRE(txn != NULL, "read transaction was not returned");
+
+  memset(&env_stat, 0, sizeof(env_stat));
+  CHECK(mdbx_async_env_stat_ex(async, txn, &env_stat, sizeof(env_stat), &op));
+  CHECK_OP(op);
+  REQUIRE(env_stat.ms_entries == ITEM_COUNT, "unexpected async txn-scoped environment stat entries");
+
+  memset(&env_info, 0, sizeof(env_info));
+  CHECK(mdbx_async_env_info_ex(async, txn, &env_info, sizeof(env_info), &op));
+  CHECK_OP(op);
+  REQUIRE(env_info.mi_recent_txnid != 0, "async txn-scoped environment info returned empty transaction id");
 
   MDBX_txn_info txn_info;
   memset(&txn_info, 0, sizeof(txn_info));
