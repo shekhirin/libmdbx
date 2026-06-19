@@ -435,19 +435,6 @@ typedef struct dxb_cursor_validate_branch_child_submit_io {
   bool expect_leaf;
 } dxb_cursor_validate_branch_child_submit_io_t;
 
-typedef struct dxb_cursor_stack_release_submit_io {
-  MDBX_cursor *cursor;
-  page_t *page;
-  page_ref_t ref;
-  intptr_t slot;
-} dxb_cursor_stack_release_submit_io_t;
-
-typedef struct dxb_cursor_stack_release_from_submit_io {
-  MDBX_cursor *cursor;
-  intptr_t first;
-  intptr_t captured_top;
-} dxb_cursor_stack_release_from_submit_io_t;
-
 typedef struct dxb_cursor_push_pgr_submit_io {
   MDBX_cursor *cursor;
   pgr_t pgr;
@@ -5954,90 +5941,40 @@ static inline void cursor_stack_init(MDBX_cursor *mc) {
   mc->value_ref = page_ref_empty();
 }
 
-static inline int cursor_make_stack_release_submit_io(MDBX_cursor *mc, intptr_t i,
-                                                      dxb_cursor_stack_release_submit_io_t *io) {
-  if (unlikely(!mc || !io || i < 0 || i >= CURSOR_STACK_SIZE))
+static inline int cursor_stack_release_slot_checked(MDBX_cursor *mc, intptr_t i) {
+  if (unlikely(!mc || i < 0 || i >= CURSOR_STACK_SIZE))
     return MDBX_EINVAL;
 
-  io->cursor = mc;
-  io->page = mc->pg[i];
-  io->ref = mc->pgref[i];
-  io->slot = i;
-  return MDBX_SUCCESS;
-}
-
-static inline int cursor_stack_release_submit_io_validate(const dxb_cursor_stack_release_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || io->slot < 0 || io->slot >= CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-  if (unlikely(io->ref.page != nullptr && io->ref.page != io->page))
-    return MDBX_EINVAL;
-  if (unlikely(io->cursor->pg[io->slot] != io->page || !page_ref_equal(&io->cursor->pgref[io->slot], &io->ref)))
+  page_t *const page = mc->pg[i];
+  page_ref_t old = mc->pgref[i];
+  if (unlikely(old.page != nullptr && old.page != page))
     return MDBX_EINVAL;
 
-  dxb_cursor_stack_release_submit_io_t checked;
-  int err = cursor_make_stack_release_submit_io(io->cursor, io->slot, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.slot != io->slot ||
-               !page_ref_equal(&checked.ref, &io->ref)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
+  mc->pg[i] = nullptr;
+  mc->pgref[i] = page_ref_empty();
+  return cursor_ref_release_checked(mc, &old);
 }
 
 static inline void cursor_stack_release_slot(MDBX_cursor *mc, intptr_t i) {
-  dxb_cursor_stack_release_submit_io_t submit;
-  int err = cursor_make_stack_release_submit_io(mc, i, &submit);
+  int err = cursor_stack_release_slot_checked(mc, i);
   cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_stack_release_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      page_ref_t old = submit.ref;
-      submit.cursor->pg[submit.slot] = nullptr;
-      submit.cursor->pgref[submit.slot] = page_ref_empty();
-      cursor_ref_release(submit.cursor, &old);
-    }
-    cASSERT0(mc, err == MDBX_SUCCESS);
+}
+
+static inline int cursor_stack_release_from_checked(MDBX_cursor *mc, intptr_t first) {
+  if (unlikely(!mc || first < 0 || first > CURSOR_STACK_SIZE))
+    return MDBX_EINVAL;
+
+  for (intptr_t i = first; i < CURSOR_STACK_SIZE; ++i) {
+    int err = cursor_stack_release_slot_checked(mc, i);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
   }
-}
-
-static inline int cursor_make_stack_release_from_submit_io(MDBX_cursor *mc, intptr_t first,
-                                                           dxb_cursor_stack_release_from_submit_io_t *io) {
-  if (unlikely(!mc || !io || first < 0 || first > CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-
-  io->cursor = mc;
-  io->first = first;
-  io->captured_top = mc->top;
-  return MDBX_SUCCESS;
-}
-
-static inline int cursor_stack_release_from_submit_io_validate(const dxb_cursor_stack_release_from_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || io->first < 0 || io->first > CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-  if (unlikely(io->cursor->top != io->captured_top))
-    return MDBX_EINVAL;
-
-  dxb_cursor_stack_release_from_submit_io_t checked;
-  int err = cursor_make_stack_release_from_submit_io(io->cursor, io->first, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.first != io->first ||
-               checked.captured_top != io->captured_top))
-    return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
 
 static inline void cursor_stack_release_from(MDBX_cursor *mc, intptr_t first) {
-  dxb_cursor_stack_release_from_submit_io_t submit;
-  int err = cursor_make_stack_release_from_submit_io(mc, first, &submit);
+  int err = cursor_stack_release_from_checked(mc, first);
   cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_stack_release_from_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS))
-      for (intptr_t i = submit.first; i < CURSOR_STACK_SIZE; ++i)
-        cursor_stack_release_slot(submit.cursor, i);
-    cASSERT0(mc, err == MDBX_SUCCESS);
-  }
 }
 
 static inline void cursor_stack_release_all(MDBX_cursor *mc) {
