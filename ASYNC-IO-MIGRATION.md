@@ -14744,6 +14744,27 @@ The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
 of `1.135` batch, `1.160` crud, `0.808` iterate, `1.016` get, and `1.077`
 delete.
 
+A later filesize-shrink cleanup removed
+`dxb_filesize_shrink_cache_invalidate_submit_io_t`,
+`dxb_storage_make_filesize_shrink_cache_invalidate_submit_io()`,
+`dxb_storage_filesize_shrink_cache_invalidate_submit_io_validate()`, and the
+shrink-cache-invalidation equality helpers from `mdbx.c`. Filesize set-submit
+descriptors now retain only the requested target, captured old size, shrink
+flag, and filesize-state update. `dxb_storage_submit_set_filesize_bytes()`
+derives, validates, and submits stale-tail page-cache invalidation directly
+after successful `ftruncate()`, keeping cache invalidation at the storage
+operation boundary and avoiding another nested submit payload. Verification
+passed `git diff --check`, a source scan proving the removed shrink-cache
+helpers are absent from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.084` batch, `1.159` crud, `0.998`
+iterate, `0.995` get, and `1.072` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -26412,138 +26412,10 @@ static inline dxb_filesize_result_t dxb_filesize_completed(uint64_t filesize) {
   return dxb_filesize_result(MDBX_SUCCESS, filesize, true, true);
 }
 
-typedef struct dxb_filesize_shrink_cache_invalidate_submit_io {
-  dxb_filesize_submit_io_t setsize;
-  uint64_t old_filesize;
-  dxb_page_coverage_io_t stale;
-  dxb_cache_invalidate_io_t invalidate;
-  dxb_cache_invalidate_submit_io_t submit;
-} dxb_filesize_shrink_cache_invalidate_submit_io_t;
-
-static inline bool dxb_filesize_shrink_cache_invalidate_page_io_equal(const dxb_page_io_t *a,
-                                                                      const dxb_page_io_t *b) {
-  return a->pgno == b->pgno && a->end_pgno == b->end_pgno && a->npages == b->npages &&
-         a->offset == b->offset && a->bytes == b->bytes;
-}
-
-static inline bool dxb_filesize_shrink_cache_invalidate_byte_io_equal(const dxb_byte_io_t *a,
-                                                                      const dxb_byte_io_t *b) {
-  return a->offset == b->offset && a->bytes == b->bytes;
-}
-
-static inline bool dxb_filesize_shrink_cache_invalidate_coverage_io_equal(const dxb_page_coverage_io_t *a,
-                                                                          const dxb_page_coverage_io_t *b) {
-  return dxb_filesize_shrink_cache_invalidate_byte_io_equal(&a->request, &b->request) &&
-         dxb_filesize_shrink_cache_invalidate_page_io_equal(&a->pages, &b->pages) &&
-         dxb_filesize_shrink_cache_invalidate_byte_io_equal(&a->page_bytes, &b->page_bytes);
-}
-
-static inline bool dxb_filesize_shrink_cache_invalidate_io_equal(const dxb_cache_invalidate_io_t *a,
-                                                                 const dxb_cache_invalidate_io_t *b) {
-  return dxb_filesize_shrink_cache_invalidate_page_io_equal(&a->pages, &b->pages) &&
-         a->include_reusable == b->include_reusable;
-}
-
-static inline bool dxb_filesize_shrink_cache_invalidate_submit_io_equal(
-    const dxb_filesize_shrink_cache_invalidate_submit_io_t *a,
-    const dxb_filesize_shrink_cache_invalidate_submit_io_t *b) {
-  return a->setsize.target == b->setsize.target && a->setsize.set == b->setsize.set &&
-         a->old_filesize == b->old_filesize &&
-         dxb_filesize_shrink_cache_invalidate_coverage_io_equal(&a->stale, &b->stale) &&
-         dxb_filesize_shrink_cache_invalidate_io_equal(&a->invalidate, &b->invalidate) &&
-         dxb_filesize_shrink_cache_invalidate_io_equal(&a->submit.invalidate, &b->submit.invalidate);
-}
-
-static inline int dxb_storage_make_filesize_shrink_cache_invalidate_submit_io(
-    dxb_storage_t *storage, uint64_t old_filesize, const dxb_filesize_submit_io_t *setsize,
-    dxb_filesize_shrink_cache_invalidate_submit_io_t *io) {
-  if (unlikely(!storage || !setsize || !io))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_filesize_set_submit_io_validate(setsize);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(setsize->target >= old_filesize))
-    return MDBX_EINVAL;
-
-  const uint64_t tail_bytes = old_filesize - setsize->target;
-  const size_t bytes = tail_bytes > SIZE_MAX ? SIZE_MAX : (size_t)tail_bytes;
-  if (unlikely((uint64_t)bytes > UINT64_MAX - setsize->target))
-    return MDBX_EINVAL;
-
-  dxb_byte_io_t stale_bytes;
-  rc = dxb_storage_byte_span_io(setsize->target, setsize->target + bytes, &stale_bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_page_coverage_io_t stale;
-  rc = dxb_storage_make_page_coverage_io(storage, &stale_bytes, &stale);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_cache_invalidate_io_t invalidate;
-  rc = dxb_storage_make_cache_invalidate_io(storage, &stale.pages, true, &invalidate);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_cache_invalidate_submit_io_t submit;
-  rc = dxb_storage_make_cache_invalidate_submit_io(storage, &invalidate, &submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->setsize = *setsize;
-  io->old_filesize = old_filesize;
-  io->stale = stale;
-  io->invalidate = invalidate;
-  io->submit = submit;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_filesize_shrink_cache_invalidate_submit_io_validate(
-    dxb_storage_t *storage, const dxb_filesize_shrink_cache_invalidate_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_filesize_set_submit_io_validate(&io->setsize);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io->setsize.target >= io->old_filesize))
-    return MDBX_EINVAL;
-
-  dxb_page_coverage_io_t stale;
-  rc = dxb_storage_make_page_coverage_io(storage, &io->stale.request, &stale);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(!dxb_filesize_shrink_cache_invalidate_coverage_io_equal(&stale, &io->stale)))
-    return MDBX_EINVAL;
-
-  rc = dxb_storage_cache_invalidate_io_validate(storage, &io->invalidate);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_cache_invalidate_submit_io_validate(storage, &io->submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io->stale.request.offset != io->setsize.target ||
-               !dxb_filesize_shrink_cache_invalidate_page_io_equal(&io->stale.pages, &io->invalidate.pages) ||
-               !io->invalidate.include_reusable ||
-               !dxb_filesize_shrink_cache_invalidate_io_equal(&io->invalidate, &io->submit.invalidate)))
-    return MDBX_EINVAL;
-
-  dxb_filesize_shrink_cache_invalidate_submit_io_t checked;
-  rc = dxb_storage_make_filesize_shrink_cache_invalidate_submit_io(storage, io->old_filesize, &io->setsize, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(!dxb_filesize_shrink_cache_invalidate_submit_io_equal(&checked, io)))
-    return MDBX_EINVAL;
-
-  return MDBX_SUCCESS;
-}
-
 typedef struct dxb_filesize_set_bytes_submit_io {
   dxb_filesize_submit_io_t setsize;
   uint64_t old_filesize;
   bool has_shrink_invalidate;
-  dxb_filesize_shrink_cache_invalidate_submit_io_t shrink_invalidate;
   dxb_filesize_state_submit_io_t filesize_state;
 } dxb_filesize_set_bytes_submit_io_t;
 
@@ -26556,7 +26428,6 @@ static inline bool dxb_filesize_set_bytes_submit_io_equal(const dxb_filesize_set
                                                           const dxb_filesize_set_bytes_submit_io_t *b) {
   return a->setsize.target == b->setsize.target && a->setsize.set == b->setsize.set &&
          a->old_filesize == b->old_filesize && a->has_shrink_invalidate == b->has_shrink_invalidate &&
-         dxb_filesize_shrink_cache_invalidate_submit_io_equal(&a->shrink_invalidate, &b->shrink_invalidate) &&
          a->filesize_state.filesize == b->filesize_state.filesize;
 }
 
@@ -26575,19 +26446,11 @@ static inline int dxb_storage_make_filesize_set_bytes_submit_io(
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  dxb_filesize_shrink_cache_invalidate_submit_io_t shrink_invalidate = {0};
   const bool has_shrink_invalidate = setsize->target < old_filesize;
-  if (has_shrink_invalidate) {
-    rc = dxb_storage_make_filesize_shrink_cache_invalidate_submit_io(storage, old_filesize, setsize,
-                                                                     &shrink_invalidate);
-    if (unlikely(rc != MDBX_SUCCESS))
-      return rc;
-  }
 
   io->setsize = *setsize;
   io->old_filesize = old_filesize;
   io->has_shrink_invalidate = has_shrink_invalidate;
-  io->shrink_invalidate = shrink_invalidate;
   io->filesize_state = filesize_state;
   return MDBX_SUCCESS;
 }
@@ -26607,19 +26470,6 @@ static inline int dxb_storage_filesize_set_bytes_submit_io_validate(
                io->filesize_state.filesize != io->setsize.target ||
                io->has_shrink_invalidate != (io->setsize.target < io->old_filesize)))
     return MDBX_EINVAL;
-  if (io->has_shrink_invalidate) {
-    rc = dxb_storage_filesize_shrink_cache_invalidate_submit_io_validate(storage, &io->shrink_invalidate);
-    if (unlikely(rc != MDBX_SUCCESS))
-      return rc;
-    if (unlikely(io->shrink_invalidate.old_filesize != io->old_filesize ||
-                 io->shrink_invalidate.setsize.target != io->setsize.target ||
-                 io->shrink_invalidate.setsize.set != io->setsize.set))
-      return MDBX_EINVAL;
-  } else {
-    const dxb_filesize_shrink_cache_invalidate_submit_io_t empty = {0};
-    if (unlikely(!dxb_filesize_shrink_cache_invalidate_submit_io_equal(&io->shrink_invalidate, &empty)))
-      return MDBX_EINVAL;
-  }
 
   dxb_filesize_set_bytes_submit_io_t checked;
   rc = dxb_storage_make_filesize_set_bytes_submit_io(storage, &io->setsize, &checked);
@@ -26689,12 +26539,42 @@ static dxb_filesize_result_t dxb_storage_submit_set_filesize_bytes(dxb_storage_t
 
   const dxb_filesize_result_t setsize = dxb_filesize_completed(io->setsize.target);
   if (io->has_shrink_invalidate) {
-    rc = dxb_storage_filesize_shrink_cache_invalidate_submit_io_validate(storage, &io->shrink_invalidate);
+    const uint64_t tail_bytes = io->old_filesize - io->setsize.target;
+    const size_t bytes = tail_bytes > SIZE_MAX ? SIZE_MAX : (size_t)tail_bytes;
+    if (unlikely((uint64_t)bytes > UINT64_MAX - io->setsize.target))
+      return dxb_filesize_completed_error(MDBX_EINVAL, setsize.filesize);
+
+    dxb_byte_io_t stale_bytes;
+    rc = dxb_storage_byte_span_io(io->setsize.target, io->setsize.target + bytes, &stale_bytes);
     if (unlikely(rc != MDBX_SUCCESS))
       return dxb_filesize_completed_error(rc, setsize.filesize);
-    dxb_cache_result_t invalidate = dxb_storage_submit_invalidate_cached_io(storage, &io->shrink_invalidate.submit);
-    if (unlikely(invalidate.err != MDBX_SUCCESS))
-      return dxb_filesize_completed_error(invalidate.err, setsize.filesize);
+
+    dxb_page_coverage_io_t stale;
+    rc = dxb_storage_make_page_coverage_io(storage, &stale_bytes, &stale);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return dxb_filesize_completed_error(rc, setsize.filesize);
+
+    dxb_cache_invalidate_io_t invalidate;
+    rc = dxb_storage_make_cache_invalidate_io(storage, &stale.pages, true, &invalidate);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return dxb_filesize_completed_error(rc, setsize.filesize);
+    rc = dxb_storage_cache_invalidate_io_validate(storage, &invalidate);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return dxb_filesize_completed_error(rc, setsize.filesize);
+    if (unlikely(stale.request.offset != io->setsize.target || !invalidate.include_reusable ||
+                 !dxb_page_io_equal(&stale.pages, &invalidate.pages)))
+      return dxb_filesize_completed_error(MDBX_EINVAL, setsize.filesize);
+
+    dxb_cache_invalidate_submit_io_t invalidate_submit;
+    rc = dxb_storage_make_cache_invalidate_submit_io(storage, &invalidate, &invalidate_submit);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return dxb_filesize_completed_error(rc, setsize.filesize);
+    rc = dxb_storage_cache_invalidate_submit_io_validate(storage, &invalidate_submit);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return dxb_filesize_completed_error(rc, setsize.filesize);
+    dxb_cache_result_t invalidate_result = dxb_storage_submit_invalidate_cached_io(storage, &invalidate_submit);
+    if (unlikely(invalidate_result.err != MDBX_SUCCESS))
+      return dxb_filesize_completed_error(invalidate_result.err, setsize.filesize);
   }
   rc = dxb_storage_submit_filesize_state(storage, &io->filesize_state).err;
   if (unlikely(rc != MDBX_SUCCESS))
