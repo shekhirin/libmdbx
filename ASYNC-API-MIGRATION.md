@@ -1147,3 +1147,34 @@ Additional completion-signal suppression checkpoint:
 - forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` sample passed with
   ratios async/blocking-parallel 1.035, async-batch/blocking-parallel 1.080,
   and async-cursor/blocking-parallel 1.522
+
+Additional recycled-op reset checkpoint:
+
+- added `async_op_prepare()` so recycled operation handles reset only their
+  fixed header, payload-pointer, and copied-value descriptor fields instead of
+  clearing the entire large operation object and opcode-specific union
+- kept fresh operation allocation zero-initialized, while the spare-list hot
+  path avoids the full-object `memset()` used by many single-op async reads
+- made `mdbx_async_del()` initialize its optional-data flag explicitly so a
+  recycled operation cannot inherit a stale `has_data` state when called with a
+  null data selector
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- three clean default `mdbx_async_api_bench` samples passed; average ratios
+  were async/blocking-parallel 1.133, async-batch/blocking-parallel 1.133, and
+  async-cursor/blocking-parallel 1.554
+- larger `MDBX_ASYNC_BENCH_OPS=1000000` default sample passed with ratios
+  async/blocking-parallel 1.105, async-batch/blocking-parallel 1.107, and
+  async-cursor/blocking-parallel 1.436
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` samples were mixed:
+  three-sample averages were async/blocking-parallel 0.984,
+  async-batch/blocking-parallel 1.055, and async-cursor/blocking-parallel
+  1.207
+- longer forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=1000000` sample passed
+  with ratios async/blocking-parallel 1.039, async-batch/blocking-parallel
+  1.044, and async-cursor/blocking-parallel 1.921

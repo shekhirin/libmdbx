@@ -15671,6 +15671,29 @@ static int async_op_check(const MDBX_async_op *op) {
   return likely(op->signature == async_op_signature) ? MDBX_SUCCESS : MDBX_EBADSIGN;
 }
 
+static void async_op_prepare(MDBX_async_op *op, enum mdbx_async_opcode opcode) {
+  op->signature = async_op_signature;
+  op->async = nullptr;
+  op->next = nullptr;
+  op->opcode = opcode;
+  op->seq = 0;
+  op->done = false;
+  op->result = 0;
+  op->key_copy = nullptr;
+  op->data_copy = nullptr;
+  op->old_data_copy = nullptr;
+  op->extra_copy = nullptr;
+  op->name_copy = nullptr;
+  op->key.iov_base = nullptr;
+  op->key.iov_len = 0;
+  op->data.iov_base = nullptr;
+  op->data.iov_len = 0;
+  op->old_data.iov_base = nullptr;
+  op->old_data.iov_len = 0;
+  op->extra.iov_base = nullptr;
+  op->extra.iov_len = 0;
+}
+
 static int async_ops_check(MDBX_async_op *const ops[], size_t count, MDBX_async **out) {
   if (unlikely(!out))
     return MDBX_EINVAL;
@@ -16414,15 +16437,12 @@ static int async_op_alloc(MDBX_async *async, MDBX_async_op **out, enum mdbx_asyn
     return unlock_err;
   }
 
-  if (op)
-    memset(op, 0, sizeof(MDBX_async_op));
-  else {
+  if (!op) {
     op = osal_calloc(1, sizeof(MDBX_async_op));
     if (unlikely(!op))
       return MDBX_ENOMEM;
   }
-  op->signature = async_op_signature;
-  op->opcode = opcode;
+  async_op_prepare(op, opcode);
   *out = op;
   return MDBX_SUCCESS;
 }
@@ -18534,6 +18554,7 @@ int mdbx_async_del(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_va
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, key);
+  op->args.del.has_data = false;
   if (likely(rc == MDBX_SUCCESS) && data) {
     rc = async_copy_val(&op->data, &op->data_copy, op->data_inline, MDBX_ASYNC_INLINE_BYTES, data);
     op->args.del.has_data = (rc == MDBX_SUCCESS);
