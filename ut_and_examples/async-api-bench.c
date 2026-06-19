@@ -75,6 +75,13 @@ struct async_del_loop_check {
   uint64_t key;
 };
 
+struct async_replace_loop_check {
+  size_t checked;
+  uint64_t key;
+  uint64_t value;
+  uint64_t old_value;
+};
+
 struct async_worker {
   MDBX_async *async;
   MDBX_txn *txn;
@@ -315,6 +322,43 @@ static int async_del_loop_result_func(void *context, size_t index, const MDBX_va
   memcpy(&actual_key, key->iov_base, sizeof(actual_key));
   if (actual_key != index)
     return fail_msg("unexpected async delete loop key payload", __FILE__, __LINE__);
+  check->checked += 1;
+  return MDBX_SUCCESS;
+}
+
+static int async_replace_loop_item_func(void *context, size_t index, MDBX_val *key, MDBX_val *new_data,
+                                        MDBX_val *old_data) {
+  struct async_replace_loop_check *const check = (struct async_replace_loop_check *)context;
+  if (!check || !key || !new_data || !old_data)
+    return fail_msg("missing async replace loop item state", __FILE__, __LINE__);
+  check->key = (uint64_t)index;
+  check->value = write_value(check->key, index, UINT64_C(1101));
+  check->old_value = 0;
+  *key = val(&check->key, sizeof(check->key));
+  *new_data = val(&check->value, sizeof(check->value));
+  *old_data = val(&check->old_value, sizeof(check->old_value));
+  return MDBX_SUCCESS;
+}
+
+static int async_replace_loop_result_func(void *context, size_t index, const MDBX_val *key,
+                                          const MDBX_val *new_data, MDBX_val *old_data, int result) {
+  struct async_replace_loop_check *const check = (struct async_replace_loop_check *)context;
+  if (!check || !key || !new_data || !old_data)
+    return fail_msg("missing async replace loop result state", __FILE__, __LINE__);
+  if (result != MDBX_SUCCESS)
+    return fail_rc("mdbx_async_replace_loop item", result, __FILE__, __LINE__);
+  if (key->iov_len != sizeof(uint64_t) || new_data->iov_len != sizeof(uint64_t) ||
+      old_data->iov_len != sizeof(uint64_t))
+    return fail_msg("unexpected async replace loop value size", __FILE__, __LINE__);
+  uint64_t actual_key = 0;
+  uint64_t actual_new = 0;
+  uint64_t actual_old = 0;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  memcpy(&actual_new, new_data->iov_base, sizeof(actual_new));
+  memcpy(&actual_old, old_data->iov_base, sizeof(actual_old));
+  if (actual_key != index || actual_new != write_value(actual_key, index, UINT64_C(1101)) ||
+      actual_old != expected_value(actual_key))
+    return fail_msg("unexpected async replace loop payload", __FILE__, __LINE__);
   check->checked += 1;
   return MDBX_SUCCESS;
 }
@@ -1708,6 +1752,52 @@ bailout:
   free(old_values);
   free(values);
   free(keys);
+  return (rc == MDBX_SUCCESS) ? rate : -1.0;
+}
+
+static double async_loop_replace(MDBX_env *env, MDBX_dbi dbi, size_t ops) {
+  MDBX_async *async = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_async_op *op = NULL;
+  struct async_replace_loop_check check;
+  int rc = MDBX_SUCCESS;
+  double rate = -1.0;
+
+  if (!ops)
+    return -1.0;
+  memset(&check, 0, sizeof(check));
+  CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+
+  size_t completed = 0;
+  int operation_rc = MDBX_SUCCESS;
+  const uint64_t start = monotime_ns();
+  CHECK(mdbx_async_replace_loop(async, txn, dbi, ops, async_replace_loop_item_func,
+                                async_replace_loop_result_func, &check, &completed, 0, &op));
+  CHECK(wait_success(&op, &operation_rc, __FILE__, __LINE__));
+  if (operation_rc != MDBX_SUCCESS) {
+    rc = fail_rc("mdbx_async_replace_loop", operation_rc, __FILE__, __LINE__);
+    goto bailout;
+  }
+  if (completed != ops || check.checked != ops) {
+    rc = fail_msg("unexpected async replace loop completion count", __FILE__, __LINE__);
+    goto bailout;
+  }
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  txn = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  const uint64_t finish = monotime_ns();
+  if (finish > start)
+    rate = (double)ops * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  if (async)
+    (void)mdbx_async_destroy(async, true);
   return (rc == MDBX_SUCCESS) ? rate : -1.0;
 }
 
@@ -3364,6 +3454,8 @@ int main(void) {
   CHECK(seed_database(env, &dbi, items));
   const double async_replace_batch_rate = async_batch_replace(env, dbi, replace_ops, write_batch);
   CHECK(seed_database(env, &dbi, items));
+  const double async_replace_loop_rate = async_loop_replace(env, dbi, replace_ops);
+  CHECK(seed_database(env, &dbi, items));
   const double blocking_replace_ex_rate = blocking_replace_ex(env, dbi, replace_ops);
   CHECK(seed_database(env, &dbi, items));
   const double async_replace_ex_rate = async_window_replace_ex(env, dbi, replace_ops, window);
@@ -3422,6 +3514,7 @@ int main(void) {
   print_rate("blocking replace", blocking_replace_rate);
   print_rate("async replace", async_replace_rate);
   print_rate("async batch replace", async_replace_batch_rate);
+  print_rate("async loop replace", async_replace_loop_rate);
   print_rate("blocking replace_ex", blocking_replace_ex_rate);
   print_rate("async replace_ex", async_replace_ex_rate);
   print_rate("async batch replace_ex", async_replace_ex_batch_rate);
@@ -3541,8 +3634,14 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-replace/blocking", async_replace_rate / blocking_replace_rate);
   if (blocking_replace_rate > 0.0 && async_replace_batch_rate > 0.0)
     printf("%-28s %8.3f\n", "async-repl-batch/blocking", async_replace_batch_rate / blocking_replace_rate);
+  if (blocking_replace_rate > 0.0 && async_replace_loop_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-repl-loop/blocking", async_replace_loop_rate / blocking_replace_rate);
   if (async_replace_rate > 0.0 && async_replace_batch_rate > 0.0)
     printf("%-28s %8.3f\n", "async-repl-batch/async", async_replace_batch_rate / async_replace_rate);
+  if (async_replace_rate > 0.0 && async_replace_loop_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-repl-loop/async", async_replace_loop_rate / async_replace_rate);
+  if (async_replace_batch_rate > 0.0 && async_replace_loop_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-repl-loop/batch", async_replace_loop_rate / async_replace_batch_rate);
   if (blocking_replace_ex_rate > 0.0 && async_replace_ex_rate > 0.0)
     printf("%-28s %8.3f\n", "async-replace-ex/blocking", async_replace_ex_rate / blocking_replace_ex_rate);
   if (blocking_replace_ex_rate > 0.0 && async_replace_ex_batch_rate > 0.0)

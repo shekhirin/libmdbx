@@ -100,6 +100,14 @@ struct del_loop_probe {
   size_t results;
 };
 
+struct replace_loop_probe {
+  uint64_t keys[3];
+  uint64_t new_values[3];
+  uint64_t old_buffers[3];
+  size_t items;
+  size_t results;
+};
+
 static int fail_rc(const char *expr, int rc, const char *file, int line) {
   fprintf(stderr, "%s:%d: %s failed: (%d) %s\n", file, line, expr, rc, mdbx_strerror(rc));
   return rc ? rc : MDBX_PROBLEM;
@@ -432,6 +440,40 @@ static int del_loop_result_func(void *context, size_t index, const MDBX_val *key
   return MDBX_SUCCESS;
 }
 
+static int replace_loop_item_func(void *context, size_t index, MDBX_val *key, MDBX_val *new_data,
+                                  MDBX_val *old_data) {
+  struct replace_loop_probe *const probe = (struct replace_loop_probe *)context;
+  if (!probe || !key || !new_data || !old_data || index >= sizeof(probe->keys) / sizeof(probe->keys[0]))
+    return MDBX_PROBLEM;
+  probe->new_values[index] = expected_value(probe->keys[index]) + UINT64_C(9000) + (uint64_t)index;
+  probe->old_buffers[index] = 0;
+  *key = val(&probe->keys[index], sizeof(probe->keys[index]));
+  *new_data = val(&probe->new_values[index], sizeof(probe->new_values[index]));
+  *old_data = val(&probe->old_buffers[index], sizeof(probe->old_buffers[index]));
+  probe->items += 1;
+  return MDBX_SUCCESS;
+}
+
+static int replace_loop_result_func(void *context, size_t index, const MDBX_val *key, const MDBX_val *new_data,
+                                    MDBX_val *old_data, int result) {
+  struct replace_loop_probe *const probe = (struct replace_loop_probe *)context;
+  if (!probe || !key || !new_data || !old_data || result != MDBX_SUCCESS ||
+      index >= sizeof(probe->keys) / sizeof(probe->keys[0]))
+    return MDBX_PROBLEM;
+  if (key->iov_base != &probe->keys[index] || key->iov_len != sizeof(probe->keys[index]))
+    return MDBX_PROBLEM;
+  if (new_data->iov_base != &probe->new_values[index] || new_data->iov_len != sizeof(probe->new_values[index]))
+    return MDBX_PROBLEM;
+  if (old_data->iov_len != sizeof(probe->old_buffers[index]))
+    return MDBX_PROBLEM;
+  uint64_t old_value = 0;
+  memcpy(&old_value, old_data->iov_base, sizeof(old_value));
+  if (old_value != expected_value(probe->keys[index]))
+    return MDBX_PROBLEM;
+  probe->results += 1;
+  return MDBX_SUCCESS;
+}
+
 static int get_ex_loop_key_func(void *context, size_t index, MDBX_val *key) {
   struct get_ex_loop_probe *const probe = (struct get_ex_loop_probe *)context;
   if (!probe || !key || index >= ITEM_COUNT)
@@ -682,6 +724,7 @@ int main(void) {
   MDBX_dbi del_loop_dbi = 0;
   MDBX_dbi put_loop_dbi = 0;
   MDBX_dbi key_del_loop_dbi = 0;
+  MDBX_dbi replace_loop_dbi = 0;
   MDBX_dbi custom_cstr_dbi = 0;
   MDBX_dbi custom_val_dbi = 0;
   uint64_t keys[ITEM_COUNT];
@@ -1245,6 +1288,37 @@ int main(void) {
   CHECK(mdbx_async_drop(async, txn, key_del_loop_dbi, true, &op));
   CHECK_OP(op);
   key_del_loop_dbi = 0;
+
+  CHECK(mdbx_async_dbi_open(async, txn, "async-replace-loop-target", MDBX_CREATE, &replace_loop_dbi, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put_batch(async, txn, replace_loop_dbi, key_values, put_values, op_results, 5, 0, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < 5; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_put_batch replace loop", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
+  }
+  struct replace_loop_probe replace_loop_probe;
+  memset(&replace_loop_probe, 0, sizeof(replace_loop_probe));
+  const size_t replace_loop_count = sizeof(replace_loop_probe.keys) / sizeof(replace_loop_probe.keys[0]);
+  for (size_t i = 0; i < replace_loop_count; ++i)
+    replace_loop_probe.keys[i] = keys[i + 1];
+  size_t replace_loop_completed = 0;
+  CHECK(mdbx_async_replace_loop(async, txn, replace_loop_dbi, replace_loop_count, replace_loop_item_func,
+                                replace_loop_result_func, &replace_loop_probe, &replace_loop_completed, 0, &op));
+  CHECK_OP(op);
+  REQUIRE(replace_loop_completed == replace_loop_count, "unexpected async replace loop completion count");
+  REQUIRE(replace_loop_probe.items == replace_loop_count && replace_loop_probe.results == replace_loop_count,
+          "async replace loop callbacks did not cover all items");
+  MDBX_val replace_loop_key = val(&replace_loop_probe.keys[2], sizeof(replace_loop_probe.keys[2]));
+  MDBX_val replace_loop_data = val(NULL, 0);
+  CHECK(mdbx_async_get(async, txn, replace_loop_dbi, &replace_loop_key, &replace_loop_data, &op));
+  CHECK_OP(op);
+  CHECK(expect_payload(&replace_loop_data, replace_loop_probe.new_values[2], __FILE__, __LINE__));
+  CHECK(mdbx_async_drop(async, txn, replace_loop_dbi, true, &op));
+  CHECK_OP(op);
+  replace_loop_dbi = 0;
 
   CHECK(mdbx_async_put(async, txn, dbi, &key_values[0], &put_values[0], 0, &op));
   CHECK_OP(op);

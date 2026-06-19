@@ -3292,3 +3292,46 @@ Additional async delete-loop API checkpoint:
 - conclusion: worker-side delete loops give callers a streaming key-generation
   delete shape that avoids prebuilt arrays and, in this reduced run, slightly
   improves on the existing async delete-batch path.
+
+Additional async replace-loop API checkpoint:
+
+- added `mdbx_async_replace_loop()` as an async-only worker-side loop helper for
+  repeated regular `mdbx_replace()` calls. The blocking API is unchanged.
+- the API invokes an item callback on the executor worker thread to prepare the
+  key, new-data, and old-data descriptors for each replacement, then invokes an
+  optional result callback after each `mdbx_replace()` call. An optional
+  `completed` output reports the number of replacement attempts completed before
+  the operation returns.
+- the first implementation rejects `MDBX_RESERVE` and `MDBX_MULTIPLE`, matching
+  the existing async put/replace wrappers' in-place memory constraints. It does
+  not yet cover `mdbx_replace_ex()` preservation callbacks or the
+  `new_data == NULL` delete-with-old-value form.
+- extended `ut_and_examples/async-api-smoke.c` with a temporary table that
+  seeds five records, replaces three through `mdbx_async_replace_loop()`,
+  verifies callback counts and old-value retrieval, reads one replacement back,
+  and drops the table.
+- extended `ut_and_examples/async-api-bench.c` with async replace-loop timing
+  beside per-item async replace and async replace-batch.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking replace 2.535 Mops/s,
+  async replace 1.790 Mops/s, async batch replace 2.438 Mops/s, and async
+  loop replace 2.429 Mops/s. Ratios were async-replace/blocking 0.706,
+  async-repl-batch/blocking 0.962, async-repl-loop/blocking 0.958,
+  async-repl-batch/async 1.361, async-repl-loop/async 1.357, and
+  async-repl-loop/batch 0.996.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=183 async-covered=132 async-only=51 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: worker-side replacement loops give callers a streaming
+  replacement shape that avoids prebuilt batch arrays and removes most of the
+  per-item async replace overhead. In this reduced run the loop is essentially
+  tied with replace-batch and remains just below the blocking replacement
+  sample, making `replace_ex` and delete-with-old-value loop coverage the next
+  replacement-family gaps.
