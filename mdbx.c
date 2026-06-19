@@ -537,20 +537,6 @@ typedef struct dxb_cursor_value_release_submit_io {
   page_ref_t ref;
 } dxb_cursor_value_release_submit_io_t;
 
-typedef struct dxb_node_key_submit_io {
-  const node_t *node;
-  void *key;
-  size_t bytes;
-} dxb_node_key_submit_io_t;
-
-typedef struct dxb_dupfix_key_submit_io {
-  const page_t *page;
-  void *key;
-  size_t index;
-  size_t requested_bytes;
-  size_t bytes;
-} dxb_dupfix_key_submit_io_t;
-
 typedef struct dxb_bigdata_read_submit_io {
   MDBX_cursor *cursor;
   MDBX_val *data;
@@ -5365,33 +5351,10 @@ static inline int check_key(const MDBX_cursor *mc, const MDBX_val *key, alignkey
   return MDBX_SUCCESS;
 }
 
-MDBX_NOTHROW_PURE_FUNCTION static inline dxb_node_key_submit_io_t node_make_key_submit_io(const node_t *node) {
-  dxb_node_key_submit_io_t io;
-  io.node = node;
-  io.key = node_key(node);
-  io.bytes = node_ks(node);
-  return io;
-}
-
-MDBX_NOTHROW_PURE_FUNCTION static inline bool node_key_submit_io_validate(const dxb_node_key_submit_io_t *io) {
-  if (unlikely(!io || !io->node || !io->key))
-    return false;
-
-  dxb_node_key_submit_io_t checked = node_make_key_submit_io(io->node);
-  return checked.node == io->node && checked.key == io->key && checked.bytes == io->bytes;
-}
-
-MDBX_NOTHROW_PURE_FUNCTION static inline MDBX_val node_submit_key(const dxb_node_key_submit_io_t *io) {
-  MDBX_ANALYSIS_ASSUME(node_key_submit_io_validate(io));
-  MDBX_val key;
-  key.iov_len = io->bytes;
-  key.iov_base = io->key;
-  return key;
-}
-
 MDBX_NOTHROW_PURE_FUNCTION static inline MDBX_val get_key(const node_t *node) {
-  dxb_node_key_submit_io_t submit = node_make_key_submit_io(node);
-  MDBX_val key = node_submit_key(&submit);
+  MDBX_val key;
+  key.iov_base = node_key(node);
+  key.iov_len = node_ks(node);
   return key;
 }
 
@@ -5447,40 +5410,10 @@ MDBX_NOTHROW_PURE_FUNCTION static inline void *page_dupfix_ptr(const page_t *mp,
   return ptr_disp(mp, PAGEHDRSZ + mp->dupfix_ksize * (indx_t)i);
 }
 
-MDBX_NOTHROW_PURE_FUNCTION static inline dxb_dupfix_key_submit_io_t
-page_make_dupfix_key_submit_io(const page_t *mp, size_t i, size_t keysize) {
-  dxb_dupfix_key_submit_io_t io;
-  io.page = mp;
-  io.key = page_dupfix_ptr(mp, i, keysize);
-  io.index = i;
-  io.requested_bytes = keysize;
-  io.bytes = mp->dupfix_ksize;
-  return io;
-}
-
-MDBX_NOTHROW_PURE_FUNCTION static inline bool
-page_dupfix_key_submit_io_validate(const dxb_dupfix_key_submit_io_t *io) {
-  if (unlikely(!io || !io->page || !io->key))
-    return false;
-
-  dxb_dupfix_key_submit_io_t checked =
-      page_make_dupfix_key_submit_io(io->page, io->index, io->requested_bytes);
-  return checked.page == io->page && checked.key == io->key && checked.index == io->index &&
-         checked.requested_bytes == io->requested_bytes && checked.bytes == io->bytes;
-}
-
-MDBX_NOTHROW_PURE_FUNCTION static inline MDBX_val page_submit_dupfix_key(
-    const dxb_dupfix_key_submit_io_t *io) {
-  MDBX_ANALYSIS_ASSUME(page_dupfix_key_submit_io_validate(io));
-  MDBX_val r;
-  r.iov_base = io->key;
-  r.iov_len = io->bytes;
-  return r;
-}
-
 MDBX_NOTHROW_PURE_FUNCTION static inline MDBX_val page_dupfix_key(const page_t *mp, size_t i, size_t keysize) {
-  dxb_dupfix_key_submit_io_t submit = page_make_dupfix_key_submit_io(mp, i, keysize);
-  MDBX_val r = page_submit_dupfix_key(&submit);
+  MDBX_val r;
+  r.iov_base = page_dupfix_ptr(mp, i, keysize);
+  r.iov_len = mp->dupfix_ksize;
   return r;
 }
 

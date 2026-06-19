@@ -13650,6 +13650,24 @@ including API checks and tool roundtrips, the ASAN build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.096`
 batch, `1.137` crud, `0.860` iterate, `1.042` get, and `1.073` delete.
 
+A later pure page-key cleanup removed the non-I/O `node_submit_key()`,
+`page_submit_dupfix_key()`, and their local submit descriptor structs and
+validators from `mdbx.c`. Node-key and dupfix-key access now construct
+`MDBX_val` directly from the already-pinned page/node memory, so the remaining
+submit terminology is not spent on page-local pointer/length extraction. This
+keeps submit boundaries focused on storage, cache, and page-ref ownership
+handoff points needed by the async-capable backend. Verification passed
+`git diff --check`, a source scan proving the removed pure key submit helpers
+and descriptor types are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.102`
+batch, `1.139` crud, `0.999` iterate, `0.991` get, and `1.065` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
