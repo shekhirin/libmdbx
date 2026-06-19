@@ -1588,3 +1588,48 @@ Additional async API coverage audit checkpoint:
 - conclusion: this slice does not change libmdbx runtime behavior or storage
   internals, but it makes the "async API should cover the blocking API" part of
   the migration objective mechanically checkable in the normal public test gate
+
+Benchmark comparison checkpoint:
+
+- committed the async API coverage audit as `a7fa8c0`
+- re-read the machine-local ioarena lazy-mode logs and compared the current
+  explicit-I/O runs against the pre-migration mapped/no-map baselines
+- using all currently available lazy logs, current explicit default remains
+  below the earlier mapped baseline on every ioarena phase:
+
+| phase | earlier mapped avg | current explicit default avg | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1033.245 ops/s | 910.524 ops/s | 0.881 |
+| crud | 55.675 Kops/s | 46.191 Kops/s | 0.830 |
+| iterate | 26.143 Mops/s | 24.567 Mops/s | 0.940 |
+| get | 279.409 Kops/s | 230.557 Kops/s | 0.825 |
+| delete | 66.398 Kops/s | 54.803 Kops/s | 0.825 |
+
+- current explicit forced no-map also remains below the earlier no-map baseline:
+
+| phase | earlier no-map avg | current explicit forced avg | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1089.750 ops/s | 944.646 ops/s | 0.867 |
+| crud | 59.786 Kops/s | 48.615 Kops/s | 0.813 |
+| iterate | 25.827 Mops/s | 23.311 Mops/s | 0.902 |
+| get | 274.039 Kops/s | 242.864 Kops/s | 0.886 |
+| delete | 69.067 Kops/s | 56.264 Kops/s | 0.815 |
+
+- fresh `mdbx_async_api_bench` default sample:
+  async/blocking-parallel 1.053, async-thread/blocking-parallel 0.905,
+  async-thread-batch/blocking-parallel 0.855,
+  async-batch/blocking-parallel 0.968,
+  async-batch-callback/blocking-parallel 1.043,
+  async-loop/blocking-parallel 1.095, and
+  async-thread-loop/blocking-parallel 1.099
+- fresh forced no-map/tiny-cache sample with `MDBX_ASYNC_BENCH_OPS=300000`:
+  async/blocking-parallel 0.944, async-thread/blocking-parallel 0.900,
+  async-thread-batch/blocking-parallel 0.981,
+  async-batch/blocking-parallel 1.025,
+  async-batch-callback/blocking-parallel 0.995,
+  async-loop/blocking-parallel 1.047, and
+  async-thread-loop/blocking-parallel 1.056
+- conclusion: the additive async public API can beat the benchmark's blocking
+  pthread-parallel GET path when work is coalesced into worker-side loop
+  operations, but the explicit-I/O storage backend has not recovered the
+  pre-migration ioarena throughput baseline yet
