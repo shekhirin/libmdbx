@@ -21,6 +21,10 @@ struct enum_probe {
   bool saw_target;
 };
 
+struct reader_probe {
+  unsigned calls;
+};
+
 struct preserve_probe {
   unsigned calls;
 };
@@ -98,6 +102,35 @@ static int enum_probe_func(void *ctx, const MDBX_txn *txn, const MDBX_val *name,
       return MDBX_PROBLEM;
   }
   return MDBX_SUCCESS;
+}
+
+static int reader_probe_func(void *ctx, int num, int slot, mdbx_pid_t pid, mdbx_tid_t thread, uint64_t txnid,
+                             uint64_t lag, size_t bytes_used, size_t bytes_retained) {
+  (void)num;
+  (void)slot;
+  (void)thread;
+  (void)txnid;
+  (void)lag;
+  (void)bytes_used;
+  (void)bytes_retained;
+  struct reader_probe *const probe = (struct reader_probe *)ctx;
+  if (!probe || !pid)
+    return MDBX_EINVAL;
+  probe->calls += 1;
+  return MDBX_SUCCESS;
+}
+
+static int hsr_probe_func(const MDBX_env *env, const MDBX_txn *txn, mdbx_pid_t pid, mdbx_tid_t tid, uint64_t laggard,
+                          unsigned gap, size_t space, int retry) {
+  (void)env;
+  (void)txn;
+  (void)pid;
+  (void)tid;
+  (void)laggard;
+  (void)gap;
+  (void)space;
+  (void)retry;
+  return -1;
 }
 
 static int preserve_probe_func(void *context, MDBX_val *target, const void *src, size_t bytes) {
@@ -321,6 +354,19 @@ int main(void) {
   CHECK_OP(op);
   REQUIRE(env_context == &env_userctx_b, "unexpected updated async environment context");
 
+  MDBX_hsr_func hsr_callback = NULL;
+  CHECK(mdbx_async_env_set_hsr(async, hsr_probe_func, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_env_get_hsr(async, &hsr_callback, &op));
+  CHECK_OP(op);
+  REQUIRE(hsr_callback == hsr_probe_func, "unexpected async HSR callback");
+  CHECK(mdbx_async_env_set_hsr(async, NULL, &op));
+  CHECK_OP(op);
+  hsr_callback = hsr_probe_func;
+  CHECK(mdbx_async_env_get_hsr(async, &hsr_callback, &op));
+  CHECK_OP(op);
+  REQUIRE(hsr_callback == NULL, "async HSR callback was not cleared");
+
   const char *env_path = NULL;
   CHECK(mdbx_async_env_get_path(async, &env_path, &op));
   CHECK_OP(op);
@@ -389,6 +435,31 @@ int main(void) {
   CHECK(wait_result("mdbx_async_env_warmup", &op, &env_operation_result, __FILE__, __LINE__));
   REQUIRE(env_operation_result == MDBX_SUCCESS || env_operation_result == MDBX_ENOSYS,
           "unexpected async environment warmup result");
+
+  CHECK(mdbx_async_thread_register(async, &op));
+  CHECK(wait_result("mdbx_async_thread_register", &op, &env_operation_result, __FILE__, __LINE__));
+  REQUIRE(env_operation_result == MDBX_SUCCESS || env_operation_result == MDBX_RESULT_TRUE,
+          "unexpected async thread register result");
+  struct reader_probe reader_probe = {0};
+  CHECK(mdbx_async_reader_list(async, reader_probe_func, &reader_probe, &op));
+  CHECK(wait_result("mdbx_async_reader_list", &op, &env_operation_result, __FILE__, __LINE__));
+  REQUIRE(env_operation_result == MDBX_SUCCESS, "unexpected async reader list result");
+  REQUIRE(reader_probe.calls > 0, "async reader list did not see registered worker");
+  int dead_readers = -1;
+  CHECK(mdbx_async_reader_check(async, &dead_readers, &op));
+  CHECK(wait_result("mdbx_async_reader_check", &op, &env_operation_result, __FILE__, __LINE__));
+  REQUIRE(env_operation_result == MDBX_SUCCESS || env_operation_result == MDBX_RESULT_TRUE,
+          "unexpected async reader check result");
+  REQUIRE(dead_readers >= 0, "async reader check did not update dead count");
+  CHECK(mdbx_async_thread_unregister(async, &op));
+  CHECK(wait_result("mdbx_async_thread_unregister", &op, &env_operation_result, __FILE__, __LINE__));
+  REQUIRE(env_operation_result == MDBX_SUCCESS || env_operation_result == MDBX_RESULT_TRUE,
+          "unexpected async thread unregister result");
+
+  CHECK(mdbx_async_txn_lock(async, true, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_txn_unlock(async, &op));
+  CHECK_OP(op);
 
   MDBX_stat env_stat;
   memset(&env_stat, 0, sizeof(env_stat));

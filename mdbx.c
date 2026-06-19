@@ -14996,10 +14996,18 @@ enum mdbx_async_opcode {
   async_op_env_set_geometry,
   async_op_env_set_userctx,
   async_op_env_get_userctx,
+  async_op_env_set_hsr,
+  async_op_env_get_hsr,
   async_op_env_get_maxkeysize,
   async_op_env_get_maxvalsize,
   async_op_env_get_pairsize4page,
   async_op_env_get_valsize4page,
+  async_op_reader_list,
+  async_op_reader_check,
+  async_op_thread_register,
+  async_op_thread_unregister,
+  async_op_txn_lock,
+  async_op_txn_unlock,
   async_op_txn_begin,
   async_op_txn_clone,
   async_op_txn_set_userctx,
@@ -15195,9 +15203,21 @@ struct MDBX_async_op {
       void **out;
     } env_userctx;
     struct {
+      MDBX_hsr_func callback;
+      MDBX_hsr_func *out;
+    } env_hsr;
+    struct {
       MDBX_db_flags_t flags;
       int *size;
     } env_get_size;
+    struct {
+      MDBX_reader_list_func func;
+      void *ctx;
+      int *dead;
+    } reader;
+    struct {
+      bool dont_wait;
+    } txn_lock;
     struct {
       MDBX_txn *parent;
       MDBX_txn_flags_t flags;
@@ -15739,6 +15759,11 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_env_get_userctx:
     *op->args.env_userctx.out = mdbx_env_get_userctx(op->async->env);
     return MDBX_SUCCESS;
+  case async_op_env_set_hsr:
+    return mdbx_env_set_hsr(op->async->env, op->args.env_hsr.callback);
+  case async_op_env_get_hsr:
+    *op->args.env_hsr.out = mdbx_env_get_hsr(op->async->env);
+    return MDBX_SUCCESS;
   case async_op_env_get_maxkeysize:
     *op->args.env_get_size.size = mdbx_env_get_maxkeysize_ex(op->async->env, op->args.env_get_size.flags);
     return MDBX_SUCCESS;
@@ -15751,6 +15776,18 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_env_get_valsize4page:
     *op->args.env_get_size.size = mdbx_env_get_valsize4page_max(op->async->env, op->args.env_get_size.flags);
     return MDBX_SUCCESS;
+  case async_op_reader_list:
+    return mdbx_reader_list(op->async->env, op->args.reader.func, op->args.reader.ctx);
+  case async_op_reader_check:
+    return mdbx_reader_check(op->async->env, op->args.reader.dead);
+  case async_op_thread_register:
+    return mdbx_thread_register(op->async->env);
+  case async_op_thread_unregister:
+    return mdbx_thread_unregister(op->async->env);
+  case async_op_txn_lock:
+    return mdbx_txn_lock(op->async->env, op->args.txn_lock.dont_wait);
+  case async_op_txn_unlock:
+    return mdbx_txn_unlock(op->async->env);
   case async_op_txn_begin:
     return mdbx_txn_begin_ex(op->async->env, op->args.txn_begin.parent, op->args.txn_begin.flags,
                              op->args.txn_begin.txn, op->args.txn_begin.context);
@@ -16806,6 +16843,38 @@ int mdbx_async_env_get_userctx(MDBX_async *async, void **context, MDBX_async_op 
   return LOG_IFERR(rc);
 }
 
+int mdbx_async_env_set_hsr(MDBX_async *async, MDBX_hsr_func callback, MDBX_async_op **out) {
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_env_set_hsr);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.env_hsr.callback = callback;
+  op->args.env_hsr.out = nullptr;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_env_get_hsr(MDBX_async *async, MDBX_hsr_func *callback, MDBX_async_op **out) {
+  if (unlikely(!callback))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_env_get_hsr);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.env_hsr.callback = nullptr;
+  op->args.env_hsr.out = callback;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
 static int async_env_get_size_submit(MDBX_async *async, MDBX_db_flags_t flags, int *size,
                                      enum mdbx_async_opcode opcode, MDBX_async_op **out) {
   if (unlikely(!size))
@@ -16839,6 +16908,79 @@ int mdbx_async_env_get_pairsize4page_max(MDBX_async *async, MDBX_db_flags_t flag
 
 int mdbx_async_env_get_valsize4page_max(MDBX_async *async, MDBX_db_flags_t flags, int *size, MDBX_async_op **out) {
   return async_env_get_size_submit(async, flags, size, async_op_env_get_valsize4page, out);
+}
+
+static int async_env_noarg_submit(MDBX_async *async, enum mdbx_async_opcode opcode, MDBX_async_op **out) {
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, opcode);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_reader_list(MDBX_async *async, MDBX_reader_list_func func, void *ctx, MDBX_async_op **out) {
+  if (unlikely(!func))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_reader_list);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.reader.func = func;
+  op->args.reader.ctx = ctx;
+  op->args.reader.dead = nullptr;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_reader_check(MDBX_async *async, int *dead, MDBX_async_op **out) {
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_reader_check);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.reader.func = nullptr;
+  op->args.reader.ctx = nullptr;
+  op->args.reader.dead = dead;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_thread_register(MDBX_async *async, MDBX_async_op **out) {
+  return async_env_noarg_submit(async, async_op_thread_register, out);
+}
+
+int mdbx_async_thread_unregister(MDBX_async *async, MDBX_async_op **out) {
+  return async_env_noarg_submit(async, async_op_thread_unregister, out);
+}
+
+int mdbx_async_txn_lock(MDBX_async *async, bool dont_wait, MDBX_async_op **out) {
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_txn_lock);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.txn_lock.dont_wait = dont_wait;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_txn_unlock(MDBX_async *async, MDBX_async_op **out) {
+  return async_env_noarg_submit(async, async_op_txn_unlock, out);
 }
 
 int mdbx_async_txn_begin(MDBX_async *async, MDBX_txn *parent, MDBX_txn_flags_t flags, MDBX_txn **txn, void *context,

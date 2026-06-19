@@ -7659,6 +7659,13 @@ typedef int (*MDBX_reader_list_func)(void *ctx, int num, int slot, mdbx_pid_t pi
  * or \ref MDBX_RESULT_TRUE if the reader lock table is empty. */
 LIBMDBX_API int mdbx_reader_list(const MDBX_env *env, MDBX_reader_list_func func, void *ctx);
 
+/** \brief Asynchronously enumerate the reader lock table.
+ * \ingroup c_async
+ * \details The callback runs on the async executor worker thread. The callback
+ *          function and context must remain valid until completion.
+ * \see mdbx_reader_list() */
+LIBMDBX_API int mdbx_async_reader_list(MDBX_async *async, MDBX_reader_list_func func, void *ctx, MDBX_async_op **op);
+
 /** \brief Check for stale entries in the reader lock table.
  * \ingroup c_extra
  *
@@ -7668,6 +7675,13 @@ LIBMDBX_API int mdbx_reader_list(const MDBX_env *env, MDBX_reader_list_func func
  * \returns A non-zero error value on failure and 0 on success,
  * or \ref MDBX_RESULT_TRUE if a dead reader(s) found or mutex was recovered. */
 LIBMDBX_API int mdbx_reader_check(MDBX_env *env, int *dead);
+
+/** \brief Asynchronously check for stale entries in the reader lock table.
+ * \ingroup c_async
+ * \details The `dead` pointer, when non-NULL, must remain valid until
+ *          completion.
+ * \see mdbx_reader_check() */
+LIBMDBX_API int mdbx_async_reader_check(MDBX_async *async, int *dead, MDBX_async_op **op);
 
 /** \brief Returns a lag of the reading for the given transaction.
  * \ingroup c_statinfo
@@ -7703,6 +7717,11 @@ MDBX_DEPRECATED LIBMDBX_API int mdbx_txn_straggler(const MDBX_txn *txn, int *per
  * or \ref MDBX_RESULT_TRUE if thread is already registered. */
 LIBMDBX_API int mdbx_thread_register(const MDBX_env *env);
 
+/** \brief Asynchronously register the executor worker thread as a reader.
+ * \ingroup c_async
+ * \see mdbx_thread_register() */
+LIBMDBX_API int mdbx_async_thread_register(MDBX_async *async, MDBX_async_op **op);
+
 /** \brief Unregisters the current thread as a reader for the environment.
  * \ingroup c_extra
  *
@@ -7717,6 +7736,11 @@ LIBMDBX_API int mdbx_thread_register(const MDBX_env *env);
  * \returns A non-zero error value on failure and 0 on success, or
  * \ref MDBX_RESULT_TRUE if thread is not registered or already unregistered. */
 LIBMDBX_API int mdbx_thread_unregister(const MDBX_env *env);
+
+/** \brief Asynchronously unregister the executor worker thread as a reader.
+ * \ingroup c_async
+ * \see mdbx_thread_unregister() */
+LIBMDBX_API int mdbx_async_thread_unregister(MDBX_async *async, MDBX_async_op **op);
 
 /** \brief A Handle-Slow-Readers callback function to resolve database
  * full/overflow issue due to a reader(s) which prevents the old data from being
@@ -7814,6 +7838,12 @@ typedef int (*MDBX_hsr_func)(const MDBX_env *env, const MDBX_txn *txn, mdbx_pid_
  * \returns A non-zero error value on failure and 0 on success. */
 LIBMDBX_API int mdbx_env_set_hsr(MDBX_env *env, MDBX_hsr_func hsr_callback);
 
+/** \brief Asynchronously set the Handle-Slow-Readers callback.
+ * \ingroup c_async
+ * \details The callback pointer is copied during submission.
+ * \see mdbx_env_set_hsr() */
+LIBMDBX_API int mdbx_async_env_set_hsr(MDBX_async *async, MDBX_hsr_func hsr_callback, MDBX_async_op **op);
+
 /** \brief Gets current Handle-Slow-Readers callback used to resolve database
  * full/overflow issue due to a reader(s) which prevents the old data from being
  * recycled.
@@ -7828,6 +7858,12 @@ LIBMDBX_API int mdbx_env_set_hsr(MDBX_env *env, MDBX_hsr_func hsr_callback);
  *          or something wrong. */
 MDBX_NOTHROW_PURE_FUNCTION LIBMDBX_API MDBX_hsr_func mdbx_env_get_hsr(const MDBX_env *env);
 
+/** \brief Asynchronously get the Handle-Slow-Readers callback.
+ * \ingroup c_async
+ * \details The output pointer must remain valid until completion.
+ * \see mdbx_env_get_hsr() */
+LIBMDBX_API int mdbx_async_env_get_hsr(MDBX_async *async, MDBX_hsr_func *hsr_callback, MDBX_async_op **op);
+
 /** \defgroup chk Checking and Recovery
  * Basically this is internal API for `mdbx_chk` tool, etc.
  * You should avoid to use it, except some extremal special cases.
@@ -7840,11 +7876,22 @@ MDBX_NOTHROW_PURE_FUNCTION LIBMDBX_API MDBX_hsr_func mdbx_env_get_hsr(const MDBX
  * \returns A non-zero error value on failure and 0 on success. */
 LIBMDBX_API int mdbx_txn_lock(MDBX_env *env, bool dont_wait);
 
+/** \brief Asynchronously acquire the write-transaction lock on the executor worker.
+ * \ingroup c_async
+ * \details Pair this with \ref mdbx_async_txn_unlock() on the same executor.
+ * \see mdbx_txn_lock() */
+LIBMDBX_API int mdbx_async_txn_lock(MDBX_async *async, bool dont_wait, MDBX_async_op **op);
+
 /** \brief Releases write-transaction lock.
  * Provided for custom and/or complex locking scenarios.
  * \ingroup c_extra
  * \returns A non-zero error value on failure and 0 on success. */
 LIBMDBX_API int mdbx_txn_unlock(MDBX_env *env);
+
+/** \brief Asynchronously release the write-transaction lock on the executor worker.
+ * \ingroup c_async
+ * \see mdbx_txn_unlock() */
+LIBMDBX_API int mdbx_async_txn_unlock(MDBX_async *async, MDBX_async_op **op);
 
 /** \brief Open an environment instance using specific meta-page
  * for checking and recovery.

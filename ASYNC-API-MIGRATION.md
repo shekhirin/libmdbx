@@ -779,3 +779,25 @@ Additional copy/backup checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.060, async-batch/blocking-parallel ratio 1.100, and async-cursor/blocking-parallel ratio 0.660
+
+Additional environment maintenance checkpoint:
+
+- added async wrappers for reader-table enumeration and cleanup
+  (`mdbx_reader_list()` and `mdbx_reader_check()`)
+- added async wrappers for registering and unregistering the executor worker
+  thread as an MDBX reader (`mdbx_thread_register()` and
+  `mdbx_thread_unregister()`)
+- added async HSR callback set/get wrappers and async write-transaction lock
+  acquire/release wrappers; lock and unlock run on the same executor worker to
+  preserve owner-thread semantics
+- smoke coverage now verifies async HSR set/get/clear, worker reader
+  registration/list/check/unregister, and a queued write-lock/unlock round trip
+  before normal transaction work begins
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 0.991, async-batch/blocking-parallel ratio 1.028, and async-cursor/blocking-parallel ratio 1.572
