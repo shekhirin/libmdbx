@@ -1657,6 +1657,8 @@ typedef struct osal_ioring {
   struct io_uring_params linux_uring_params;
   unsigned linux_uring_entries;
   bool linux_uring_requested;
+  bool linux_uring_lock_initialized;
+  osal_fastmutex_t linux_uring_lock;
   void *linux_uring_sq_ring;
   void *linux_uring_cq_ring;
   struct io_uring_sqe *linux_uring_sqes;
@@ -1728,6 +1730,8 @@ typedef struct osal_ioring_write_result {
 } osal_ioring_write_result_t;
 MDBX_INTERNAL osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior,
                                                            const dxb_queued_write_io_t *io);
+MDBX_INTERNAL int osal_ioring_pread(osal_ioring_t *ior, mdbx_filehandle_t fd, void *buf, size_t count,
+                                    uint64_t offset);
 
 MDBX_INTERNAL dxb_queue_op_result_t osal_ioring_walk(osal_ioring_t *ior,
                                                      const dxb_dirty_write_walk_io_t *io);

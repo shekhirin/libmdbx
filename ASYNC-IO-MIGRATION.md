@@ -15034,6 +15034,33 @@ including API checks and tool roundtrips, the ASAN build (`cmake --build
 mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.049`
 batch, `0.909` crud, `1.214` iterate, `1.006` get, and `1.000` delete.
 
+A later Linux `io_uring` read-backend checkpoint routed explicit data/meta
+read submissions through `osal_ioring_pread()`. Startup and readonly reads
+still fall back to `pread()` when no ring exists, while writable environments
+that request `MDBX_EXPLICIT_IO_BACKEND=io_uring` or the older
+`MDBX_EXPLICIT_WRITE_BACKEND=io_uring` reuse the mapped OSAL ring for
+steady-state cache/data reads. The ring now owns an internal mutex so single
+read SQEs and queued write batches serialize SQ/CQ access across reader and
+writer paths, while public MDBX calls remain synchronous at the existing
+submission boundary. The write submitter now also tracks how many SQEs entered
+the kernel before draining completions, avoiding an empty drain after a submit
+syscall failure. Verification passed `git diff --check`, the GNUmake
+`mdbx_migration_smoke` build target, direct default, forced no-mmap,
+`MDBX_EXPLICIT_IO_BACKEND=io_uring`, and compatibility
+`MDBX_EXPLICIT_WRITE_BACKEND=io_uring` forced tiny-cache smokes, and an
+`strace` check showing successful `io_uring_setup()` plus many one-SQE
+`io_uring_enter()` read submissions alongside multi-SQE write submissions. The
+Ninja build (`cmake --build @cmake-ninja-build`), the ASAN build
+(`cmake --build @cmake-asan-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` focused `migration_smoke` CTest entries,
+normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused
+`migration_smoke` CTest entries with `LSAN_OPTIONS=detect_leaks=0`, the normal
+15-test public migration CTest suite, and the
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suite all passed.
+The paired `MDBX_EXPLICIT_IO_BACKEND=io_uring make -f GNUmakefile
+mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.113`
+batch, `1.143` crud, `1.025` iterate, `0.986` get, and `1.089` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
