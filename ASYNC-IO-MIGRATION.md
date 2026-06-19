@@ -89,9 +89,10 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   retained from direct cursor snapshots, cursor stack releases clear slots
   through checked direct helpers, stack slot installs retain/swap/release
   directly, stack ref-consume installs now use direct checked ownership
-  transfer, synthetic stack installs now build refs directly, and short-lived
-  page results are released after they are retained by cursor/value stacks or
-  after transient validation/copy/retire use. This now covers tree descent,
+  transfer, synthetic stack installs now build refs directly, stack copies
+  retain through direct source-slot snapshots, and short-lived page results are
+  released after they are retained by cursor/value stacks or after transient
+  validation/copy/retire use. This now covers tree descent,
   sibling movement, root setup/collapse, compacting, defrag, overflow
   read/validate/delete paths, subtree cutoff, page retirement, page walking, and
   rebalance neighbor clones. For non-`MDBX_WRITEMAP` transactions,

@@ -368,15 +368,6 @@ typedef struct dxb_page_touch_redirect_submit_io {
   bool inner;
 } dxb_page_touch_redirect_submit_io_t;
 
-typedef struct dxb_cursor_stack_copy_submit_io {
-  MDBX_cursor *dst;
-  const MDBX_cursor *src;
-  page_t *page;
-  page_ref_t ref;
-  intptr_t dst_slot;
-  intptr_t src_slot;
-} dxb_cursor_stack_copy_submit_io_t;
-
 typedef struct dxb_cursor_stack_set_pgr_submit_io {
   MDBX_cursor *cursor;
   const pgr_t *pgr;
@@ -6612,49 +6603,18 @@ static inline void cursor_stack_set_synthetic(MDBX_cursor *mc, intptr_t i, page_
   cASSERT0(mc, err == MDBX_SUCCESS);
 }
 
-static inline int cursor_make_stack_copy_submit_io(MDBX_cursor *dst, intptr_t di, const MDBX_cursor *src, intptr_t si,
-                                                   dxb_cursor_stack_copy_submit_io_t *io) {
-  if (unlikely(!dst || !src || !io || di < 0 || di >= CURSOR_STACK_SIZE || si < 0 || si >= CURSOR_STACK_SIZE))
+static inline int cursor_stack_copy_checked(MDBX_cursor *dst, intptr_t di, const MDBX_cursor *src, intptr_t si) {
+  if (unlikely(!dst || !src || di < 0 || di >= CURSOR_STACK_SIZE || si < 0 || si >= CURSOR_STACK_SIZE))
     return MDBX_EINVAL;
 
-  io->dst = dst;
-  io->src = src;
-  io->page = src->pg[si];
-  io->ref = src->pgref[si];
-  io->dst_slot = di;
-  io->src_slot = si;
-  return MDBX_SUCCESS;
-}
-
-static inline int cursor_stack_copy_submit_io_validate(const dxb_cursor_stack_copy_submit_io_t *io) {
-  if (unlikely(!io || !io->dst || !io->src || io->dst_slot < 0 || io->dst_slot >= CURSOR_STACK_SIZE ||
-               io->src_slot < 0 || io->src_slot >= CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-  if (unlikely(io->src->pg[io->src_slot] != io->page ||
-               !page_ref_equal(&io->src->pgref[io->src_slot], &io->ref)))
-    return MDBX_EINVAL;
-
-  dxb_cursor_stack_copy_submit_io_t checked;
-  int err = cursor_make_stack_copy_submit_io(io->dst, io->dst_slot, io->src, io->src_slot, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.dst != io->dst || checked.src != io->src || checked.page != io->page ||
-               checked.dst_slot != io->dst_slot || checked.src_slot != io->src_slot ||
-               !page_ref_equal(&checked.ref, &io->ref)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
+  page_t *const page = src->pg[si];
+  page_ref_t ref = src->pgref[si];
+  return cursor_stack_set_checked(dst, di, page, ref);
 }
 
 static inline void cursor_stack_copy(MDBX_cursor *dst, intptr_t di, const MDBX_cursor *src, intptr_t si) {
-  dxb_cursor_stack_copy_submit_io_t submit;
-  int err = cursor_make_stack_copy_submit_io(dst, di, src, si, &submit);
+  int err = cursor_stack_copy_checked(dst, di, src, si);
   cASSERT0(dst, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_stack_copy_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS))
-      cursor_stack_set(submit.dst, submit.dst_slot, submit.page, submit.ref);
-    cASSERT0(dst, err == MDBX_SUCCESS);
-  }
 }
 
 static inline int cursor_make_stack_set_pgr_submit_io(MDBX_cursor *mc, intptr_t i, const pgr_t *pgr,
