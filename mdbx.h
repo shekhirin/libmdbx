@@ -6962,6 +6962,24 @@ LIBMDBX_API int mdbx_async_cache_get(MDBX_async *async, const MDBX_txn *txn, MDB
                                      MDBX_val *data, volatile MDBX_cache_entry_t *entry,
                                      MDBX_cache_result_t *result, MDBX_async_op **op);
 
+/** \brief Asynchronously submit many independent cache-get operations.
+ * \ingroup c_async
+ * \details This is equivalent to calling \ref mdbx_async_cache_get() once per
+ *          item, but allocates and enqueues the operation window with fewer
+ *          executor lock round trips. Key bytes are copied during submission.
+ *          The `data`, `entries`, `results`, and `ops` arrays must remain
+ *          valid until the submitted operation handles complete. Each
+ *          successful `data` slot follows \ref mdbx_cache_get() value lifetime
+ *          rules.
+ * \see mdbx_cache_get()
+ * \see mdbx_async_cache_get()
+ * \see mdbx_async_wait_release_all() */
+LIBMDBX_API int mdbx_async_cache_get_many(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                          const MDBX_val keys[], MDBX_val data[],
+                                          volatile MDBX_cache_entry_t entries[],
+                                          MDBX_cache_result_t results[], size_t count,
+                                          MDBX_async_op *ops[]);
+
 /** \brief Gets items from a table using cache within single-thread cases only.
  * \ingroup c_crud
  * \details The essence of this "caching" is using a cached information to check as quickly as possible whether the data
@@ -6998,6 +7016,25 @@ LIBMDBX_API int mdbx_async_cache_get_SingleThreaded(MDBX_async *async, const MDB
                                                     const MDBX_val *key, MDBX_val *data,
                                                     MDBX_cache_entry_t *entry, MDBX_cache_result_t *result,
                                                     MDBX_async_op **op);
+
+/** \brief Asynchronously submit many independent single-threaded cache-get operations.
+ * \ingroup c_async
+ * \details This is equivalent to calling
+ *          \ref mdbx_async_cache_get_SingleThreaded() once per item, but
+ *          allocates and enqueues the operation window with fewer executor
+ *          lock round trips. Key bytes are copied during submission. The
+ *          `data`, `entries`, `results`, and `ops` arrays must remain valid
+ *          until the submitted operation handles complete. Each cache entry
+ *          must be used only by the executor worker while the corresponding
+ *          operation is pending.
+ * \see mdbx_cache_get_SingleThreaded()
+ * \see mdbx_async_cache_get_SingleThreaded()
+ * \see mdbx_async_wait_release_all() */
+LIBMDBX_API int mdbx_async_cache_get_SingleThreaded_many(MDBX_async *async, const MDBX_txn *txn,
+                                                         MDBX_dbi dbi, const MDBX_val keys[],
+                                                         MDBX_val data[], MDBX_cache_entry_t entries[],
+                                                         MDBX_cache_result_t results[], size_t count,
+                                                         MDBX_async_op *ops[]);
 
 /** \brief Store items into a table.
  * \ingroup c_crud

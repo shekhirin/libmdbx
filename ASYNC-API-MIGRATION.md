@@ -3948,3 +3948,54 @@ Additional positioned lower-bound result handling checkpoint:
   story materially. Count-limited positioned cursor reads remain useful when
   batched on the worker, and the threaded batch-loop-from helper is still the
   best positioned count-limited shape in the current public API benchmark.
+
+Additional async cache-get-many checkpoint:
+
+- added `mdbx_async_cache_get_many()` and
+  `mdbx_async_cache_get_SingleThreaded_many()` as async-only many-submit
+  helpers for the cache GET API. Both copy submitted key bytes before enqueue,
+  allocate/enqueue an operation window in one executor lock round trip, and
+  preserve independent operation handles for `mdbx_async_wait_release_all()`.
+- smoke coverage now initializes several cache entries, submits the
+  multithread-safe cache-many helper, validates per-item cache results and
+  values, then reuses the same entries through the single-threaded cache-many
+  helper and verifies cache-hit results.
+- extended `ut_and_examples/async-api-bench.c` with cache-many and
+  single-threaded-cache-many GET rows. The benchmark keeps each worker/window
+  slot on a stable key so repeated operations exercise the cache entries rather
+  than constantly rebinding a cache entry to unrelated keys.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking parallel get
+  751.873 Kops/s, async many parallel get 948.298 Kops/s, async get_ex many
+  822.091 Kops/s, async cache many 1.543 Mops/s, and async cache st many
+  2.102 Mops/s.
+- current ratios were async-cache-many/blocking-parallel 2.052,
+  async-cache-st-many/blocking-parallel 2.796, async-cache-many/plain-many
+  1.627, async-cache-st/cache 1.363, async-cache-many/blocking-serial 0.824,
+  and async-cache-st-many/blocking-serial 1.123.
+- comparison with the previous lower-bound checkpoint: ordinary GET-path
+  baseline numbers moved with run noise, but the new cache-many rows create a
+  stronger read-heavy async shape than the existing plain many path in this
+  workload. The single-threaded-cache-many variant is the first reduced public
+  async API sample in this log that beats the hot blocking serial point-GET
+  baseline while also staying well above blocking pthread-parallel GET.
+- comparison with the pre-async ioarena baseline at the top of this log remains
+  separate: cache-many measures public API/cache lookup overhead on a stable-key
+  in-process workload, not the storage-level lazy-mode phases. It improves the
+  async API read story, but it does not remeasure the storage/ioarena migration
+  gap.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=192 async-covered=132 async-only=60 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: cache-backed point reads now have a many-submit async API shape
+  and benchmark evidence above blocking pthread-parallel GET. In the
+  single-threaded-cache-entry case, the reduced benchmark also exceeds the hot
+  blocking serial point-GET baseline, which is a useful new high-water mark for
+  public async read performance.

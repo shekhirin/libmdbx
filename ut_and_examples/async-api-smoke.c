@@ -1899,6 +1899,42 @@ int main(void) {
           "unexpected async single-thread cache get result");
   CHECK(expect_value(&cache_hit_data, keys[4], __FILE__, __LINE__));
 
+  MDBX_cache_entry_t cache_many_entries[4];
+  MDBX_cache_result_t cache_many_results[4];
+  MDBX_val cache_many_keys[4];
+  MDBX_val cache_many_data[4];
+  for (unsigned i = 0; i < 4; ++i) {
+    mdbx_cache_init(&cache_many_entries[i]);
+    cache_many_results[i].errcode = MDBX_PROBLEM;
+    cache_many_results[i].status = MDBX_CACHE_ERROR;
+    cache_many_keys[i] = key_values[i + 2];
+    cache_many_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_cache_get_many(async, txn, dbi, cache_many_keys, cache_many_data, cache_many_entries,
+                                  cache_many_results, 4, ops));
+  CHECK(wait_many_success("mdbx_async_cache_get_many", ops, 4, op_results, __FILE__, __LINE__));
+  for (unsigned i = 0; i < 4; ++i) {
+    REQUIRE(cache_many_results[i].errcode == MDBX_SUCCESS &&
+                cache_many_results[i].status != MDBX_CACHE_ERROR,
+            "unexpected async cache get many result");
+    CHECK(expect_value(&cache_many_data[i], keys[i + 2], __FILE__, __LINE__));
+  }
+
+  for (unsigned i = 0; i < 4; ++i) {
+    cache_many_results[i].errcode = MDBX_PROBLEM;
+    cache_many_results[i].status = MDBX_CACHE_ERROR;
+    cache_many_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_cache_get_SingleThreaded_many(async, txn, dbi, cache_many_keys, cache_many_data,
+                                                 cache_many_entries, cache_many_results, 4, ops));
+  CHECK(wait_many_success("mdbx_async_cache_get_SingleThreaded_many", ops, 4, op_results, __FILE__, __LINE__));
+  for (unsigned i = 0; i < 4; ++i) {
+    REQUIRE(cache_many_results[i].errcode == MDBX_SUCCESS &&
+                cache_many_results[i].status == MDBX_CACHE_HIT,
+            "unexpected async single-thread cache get many result");
+    CHECK(expect_value(&cache_many_data[i], keys[i + 2], __FILE__, __LINE__));
+  }
+
   CHECK(mdbx_async_txn_copy2pathname(async, txn, copy_txn_path, MDBX_CP_COMPACT | MDBX_CP_DONT_FLUSH, &op));
   CHECK_OP(op);
   CHECK(verify_copied_value(copy_txn_path, keys[8], __FILE__, __LINE__));
