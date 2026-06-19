@@ -1796,22 +1796,6 @@ struct MDBX_cursor {
 #endif /* MDBX_DEBUG_SEARCH_DISPATCHING */
 };
 
-typedef struct dxb_txn_retained_refs_release_submit_io {
-  MDBX_txn *txn;
-  page_ref_t *retained_refs;
-  size_t retained_refs_count;
-  size_t retained_refs_capacity;
-} dxb_txn_retained_refs_release_submit_io_t;
-
-typedef struct dxb_txn_retained_ref_append_submit_io {
-  MDBX_txn *txn;
-  const MDBX_cursor *cursor;
-  page_ref_t *retained_refs;
-  page_ref_t ref;
-  size_t retained_refs_count;
-  size_t retained_refs_capacity;
-} dxb_txn_retained_ref_append_submit_io_t;
-
 struct inner_cursor {
   MDBX_cursor cursor;
   tree_t nested_tree;
@@ -5939,103 +5923,39 @@ static int txn_retained_refs_reserve(MDBX_txn *txn, size_t extra) {
   return MDBX_SUCCESS;
 }
 
-static inline int txn_make_retained_ref_append_submit_io(MDBX_txn *txn, const MDBX_cursor *mc, page_ref_t ref,
-                                                         dxb_txn_retained_ref_append_submit_io_t *io) {
-  if (unlikely(!txn || !io || !page_ref_requires_txn_pin(&ref)))
+static inline int txn_retained_ref_append(MDBX_txn *txn, const MDBX_cursor *mc, page_ref_t ref) {
+  if (unlikely(!txn || !page_ref_requires_txn_pin(&ref)))
     return MDBX_EINVAL;
   if (unlikely(mc && mc->txn != txn))
-    return MDBX_EINVAL;
-
-  io->txn = txn;
-  io->cursor = mc;
-  io->retained_refs = txn->retained_refs;
-  io->retained_refs_count = txn->retained_refs_count;
-  io->retained_refs_capacity = txn->retained_refs_capacity;
-  io->ref = ref;
-  return MDBX_SUCCESS;
-}
-
-static inline int txn_retained_ref_append_submit_io_validate(const dxb_txn_retained_ref_append_submit_io_t *io) {
-  if (unlikely(!io || !io->txn || !page_ref_requires_txn_pin(&io->ref)))
-    return MDBX_EINVAL;
-
-  MDBX_txn *const txn = io->txn;
-  const MDBX_cursor *const mc = io->cursor;
-  if (unlikely(mc && mc->txn != txn))
-    return MDBX_EINVAL;
-  if (unlikely(txn->retained_refs != io->retained_refs || txn->retained_refs_count != io->retained_refs_count ||
-               txn->retained_refs_capacity != io->retained_refs_capacity))
     return MDBX_EINVAL;
   if (unlikely(txn->retained_refs_count >= txn->retained_refs_capacity || !txn->retained_refs))
     return MDBX_EINVAL;
 
-  dxb_txn_retained_ref_append_submit_io_t checked;
-  int err = txn_make_retained_ref_append_submit_io(txn, mc, io->ref, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.txn != io->txn || checked.cursor != io->cursor ||
-               checked.retained_refs != io->retained_refs ||
-               checked.retained_refs_count != io->retained_refs_count ||
-               checked.retained_refs_capacity != io->retained_refs_capacity ||
-               !page_ref_equal(&checked.ref, &io->ref)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
+  page_ref_t retained;
+  int err = cursor_ref_retain_checked(mc, ref, &retained);
+  if (likely(err == MDBX_SUCCESS))
+    txn->retained_refs[txn->retained_refs_count++] = retained;
+  return err;
 }
 
-static inline int txn_make_retained_refs_release_submit_io(MDBX_txn *txn,
-                                                           dxb_txn_retained_refs_release_submit_io_t *io) {
-  if (unlikely(!txn || !io))
+static int txn_retained_refs_release_checked(MDBX_txn *txn) {
+  if (unlikely(!txn || txn->retained_refs_count > txn->retained_refs_capacity))
+    return MDBX_EINVAL;
+  if (unlikely(txn->retained_refs_count && !txn->retained_refs))
     return MDBX_EINVAL;
 
-  io->txn = txn;
-  io->retained_refs = txn->retained_refs;
-  io->retained_refs_count = txn->retained_refs_count;
-  io->retained_refs_capacity = txn->retained_refs_capacity;
-  return MDBX_SUCCESS;
-}
-
-static inline int txn_retained_refs_release_submit_io_validate(const dxb_txn_retained_refs_release_submit_io_t *io) {
-  if (unlikely(!io || !io->txn))
-    return MDBX_EINVAL;
-
-  MDBX_txn *const txn = io->txn;
-  if (unlikely(txn->retained_refs != io->retained_refs || txn->retained_refs_count != io->retained_refs_count ||
-               txn->retained_refs_capacity != io->retained_refs_capacity))
-    return MDBX_EINVAL;
-  if (unlikely(io->retained_refs_count > io->retained_refs_capacity))
-    return MDBX_EINVAL;
-  if (unlikely(io->retained_refs_count && !io->retained_refs))
-    return MDBX_EINVAL;
-
-  dxb_txn_retained_refs_release_submit_io_t checked;
-  int err = txn_make_retained_refs_release_submit_io(txn, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.txn != io->txn || checked.retained_refs != io->retained_refs ||
-               checked.retained_refs_count != io->retained_refs_count ||
-               checked.retained_refs_capacity != io->retained_refs_capacity))
-    return MDBX_EINVAL;
+  for (size_t i = 0; i < txn->retained_refs_count; ++i) {
+    int err = cursor_ref_release_checked(nullptr, &txn->retained_refs[i]);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+  }
+  txn->retained_refs_count = 0;
   return MDBX_SUCCESS;
 }
 
 static void txn_retained_refs_release(MDBX_txn *txn) {
-  dxb_txn_retained_refs_release_submit_io_t submit;
-  int err = txn_make_retained_refs_release_submit_io(txn, &submit);
+  int err = txn_retained_refs_release_checked(txn);
   ASSERT(err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = txn_retained_refs_release_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      MDBX_txn *const submitted_txn = submit.txn;
-      for (size_t i = 0; i < submit.retained_refs_count; ++i) {
-        err = cursor_ref_release_checked(nullptr, &submitted_txn->retained_refs[i]);
-        if (unlikely(err != MDBX_SUCCESS))
-          break;
-      }
-      if (likely(err == MDBX_SUCCESS))
-        submitted_txn->retained_refs_count = 0;
-    }
-    ASSERT(err == MDBX_SUCCESS);
-  }
 }
 
 static void txn_retained_refs_destroy(MDBX_txn *txn) {
@@ -6043,16 +5963,6 @@ static void txn_retained_refs_destroy(MDBX_txn *txn) {
   osal_free(txn->retained_refs);
   txn->retained_refs = nullptr;
   txn->retained_refs_capacity = 0;
-}
-
-static inline int txn_retained_ref_append(MDBX_txn *txn, const MDBX_cursor *mc, page_ref_t ref) {
-  dxb_txn_retained_ref_append_submit_io_t append;
-  int err = txn_make_retained_ref_append_submit_io(txn, mc, ref, &append);
-  if (likely(err == MDBX_SUCCESS))
-    err = txn_retained_ref_append_submit_io_validate(&append);
-  if (likely(err == MDBX_SUCCESS))
-    append.txn->retained_refs[append.txn->retained_refs_count++] = cursor_ref_retain(append.cursor, append.ref);
-  return err;
 }
 
 static int cursor_capture_txn_pins_checked(MDBX_cursor *mc) {
@@ -14180,15 +14090,9 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
     goto bailout;
 
   if (retain) {
-    dxb_txn_retained_ref_append_submit_io_t retain_submit;
-    err = txn_make_retained_ref_append_submit_io((MDBX_txn *)txn, nullptr, pgr.ref, &retain_submit);
+    err = txn_retained_ref_append((MDBX_txn *)txn, nullptr, pgr.ref);
     if (unlikely(err != MDBX_SUCCESS))
       goto bailout;
-    err = txn_retained_ref_append_submit_io_validate(&retain_submit);
-    if (unlikely(err != MDBX_SUCCESS))
-      goto bailout;
-    retain_submit.txn->retained_refs[retain_submit.txn->retained_refs_count++] =
-        cursor_ref_retain(retain_submit.cursor, retain_submit.ref);
   }
 
   *data = materialized_data;

@@ -13841,6 +13841,30 @@ including API checks and tool roundtrips, the ASAN build (`cmake --build
 passed with forced/default ratios of `1.083` batch, `1.129` crud, `1.184`
 iterate, `0.955` get, and `1.069` delete.
 
+A later transaction retained-ref descriptor cleanup removed
+`dxb_txn_retained_refs_release_submit_io_t`,
+`dxb_txn_retained_ref_append_submit_io_t`,
+`txn_make_retained_ref_append_submit_io()`,
+`txn_retained_ref_append_submit_io_validate()`,
+`txn_make_retained_refs_release_submit_io()`, and
+`txn_retained_refs_release_submit_io_validate()` from `mdbx.c`.
+Retained-ref append/release now use direct checked helpers:
+`txn_retained_ref_append()` validates and retains refs into the transaction
+list, while `txn_retained_refs_release_checked()` releases cached refs and
+clears the list. Materialized-read retention and cursor transaction-pin capture
+callers now append through that direct helper, keeping public-result lifetime
+pins at the transaction ownership site without submit descriptors for local
+list mutation. Verification passed `git diff --check`, a source scan proving
+the removed retained-ref descriptor helpers are absent from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including API checks and tool roundtrips,
+the ASAN build (`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.097`
+batch, `1.149` crud, `1.151` iterate, `1.057` get, and `1.083` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
