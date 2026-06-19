@@ -4646,8 +4646,6 @@ static dxb_readonly_result_t dxb_storage_submit_check_readonly(const dxb_storage
 static inline int dxb_storage_make_filesize_state_submit_io(uint64_t filesize, dxb_filesize_state_submit_io_t *io);
 static inline dxb_state_result_t dxb_storage_submit_filesize_state(dxb_storage_t *storage,
                                                                    const dxb_filesize_state_submit_io_t *io);
-static inline dxb_state_result_t dxb_storage_set_filesize(dxb_storage_t *storage, uint64_t filesize);
-static inline dxb_state_result_t dxb_storage_set_current(dxb_storage_t *storage, uint64_t filesize);
 static dxb_filesize_result_t dxb_storage_submit_fetch_filesize(dxb_storage_t *storage,
                                                                const dxb_filesize_submit_io_t *io);
 MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno_t used_pgno, const pgno_t size_pgno,
@@ -28356,45 +28354,11 @@ dxb_deinit_result_t dxb_storage_submit_deinit(dxb_storage_t *storage, const dxb_
   return dxb_deinit_result(rc, reset.reset, true, cache_lock_destroyed, true, cache_lock_destroyed);
 }
 
-static inline dxb_state_result_t dxb_storage_set_filesize(dxb_storage_t *storage, uint64_t filesize) {
-  storage->filesize = filesize;
-  return dxb_state_result(MDBX_SUCCESS, storage, false);
-}
-
 static inline bool dxb_storage_pagesize_ln_valid(uint8_t pagesize_ln) {
   if (unlikely(pagesize_ln >= sizeof(size_t) * 8))
     return false;
   const size_t pagesize = (size_t)1 << pagesize_ln;
   return pagesize >= MDBX_MIN_PAGESIZE && pagesize <= MDBX_MAX_PAGESIZE;
-}
-
-static inline dxb_state_result_t dxb_storage_set_pagesize_state(dxb_storage_t *storage, uint8_t pagesize_ln) {
-  if (unlikely(!dxb_storage_pagesize_ln_valid(pagesize_ln) ||
-               (storage->pagesize_ln != 0 && storage->pagesize_ln != pagesize_ln) ||
-               storage->page_cache.entries != nullptr))
-    return dxb_state_result(MDBX_EINVAL, storage, false);
-  dxb_storage_set_pagesize_ln(storage, pagesize_ln);
-  return dxb_state_result(MDBX_SUCCESS, storage, false);
-}
-
-static inline dxb_state_result_t dxb_storage_set_current(dxb_storage_t *storage, uint64_t filesize) {
-  if (unlikely(filesize > SIZE_MAX))
-    return dxb_state_result(MDBX_EINVAL, storage, false);
-
-  storage->current = (size_t)filesize;
-  return dxb_state_result(MDBX_SUCCESS, storage, false);
-}
-
-static inline dxb_state_result_t dxb_storage_set_size(dxb_storage_t *storage, const dxb_size_io_t *size,
-                                                      uint64_t filesize) {
-  int rc = dxb_storage_size_io_validate(size);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_state_result(rc, storage, false);
-
-  storage->current = size->current;
-  storage->limit = size->limit;
-  storage->filesize = filesize;
-  return dxb_state_result(MDBX_SUCCESS, storage, false);
 }
 
 static inline dxb_state_result_t dxb_state_submitted(dxb_state_result_t result) {
@@ -28426,7 +28390,8 @@ static inline dxb_state_result_t dxb_storage_submit_filesize_state(dxb_storage_t
   if (unlikely(rc != MDBX_SUCCESS || !storage))
     return storage ? dxb_state_result((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL, storage, false)
                    : dxb_state_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
-  return dxb_state_submitted(dxb_storage_set_filesize(storage, io->filesize));
+  storage->filesize = io->filesize;
+  return dxb_state_submitted(dxb_state_result(MDBX_SUCCESS, storage, false));
 }
 
 static inline int dxb_storage_make_pagesize_state_submit_io(uint8_t pagesize_ln,
@@ -28453,7 +28418,11 @@ static inline dxb_state_result_t dxb_storage_submit_pagesize_state(dxb_storage_t
   if (unlikely(rc != MDBX_SUCCESS || !storage))
     return storage ? dxb_state_result((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL, storage, false)
                    : dxb_state_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
-  return dxb_state_submitted(dxb_storage_set_pagesize_state(storage, io->pagesize_ln));
+  if (unlikely((storage->pagesize_ln != 0 && storage->pagesize_ln != io->pagesize_ln) ||
+               storage->page_cache.entries != nullptr))
+    return dxb_state_submitted(dxb_state_result(MDBX_EINVAL, storage, false));
+  dxb_storage_set_pagesize_ln(storage, io->pagesize_ln);
+  return dxb_state_submitted(dxb_state_result(MDBX_SUCCESS, storage, false));
 }
 
 static inline int dxb_storage_make_current_state_submit_io(uint64_t current, dxb_current_state_submit_io_t *io) {
@@ -28479,7 +28448,8 @@ static inline dxb_state_result_t dxb_storage_submit_current_state(dxb_storage_t 
   if (unlikely(rc != MDBX_SUCCESS || !storage))
     return storage ? dxb_state_result((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL, storage, false)
                    : dxb_state_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
-  return dxb_state_submitted(dxb_storage_set_current(storage, io->current));
+  storage->current = (size_t)io->current;
+  return dxb_state_submitted(dxb_state_result(MDBX_SUCCESS, storage, false));
 }
 
 static inline int dxb_storage_make_size_state_submit_io(const dxb_size_io_t *size, uint64_t filesize,
@@ -28513,7 +28483,10 @@ static inline dxb_state_result_t dxb_storage_submit_size_state(dxb_storage_t *st
   if (unlikely(rc != MDBX_SUCCESS || !storage))
     return storage ? dxb_state_result((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL, storage, false)
                    : dxb_state_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
-  return dxb_state_submitted(dxb_storage_set_size(storage, &io->size, io->filesize));
+  storage->current = io->size.current;
+  storage->limit = io->size.limit;
+  storage->filesize = io->filesize;
+  return dxb_state_submitted(dxb_state_result(MDBX_SUCCESS, storage, false));
 }
 
 static inline size_t dxb_storage_current_from_filesize(uint64_t filesize, size_t limit) {

@@ -11679,8 +11679,9 @@ routes checker filesize seeding, post-`ftruncate()` cached filesize updates,
 `dxb_storage_set_filesize_as_current()`, fetched-filesize bookkeeping,
 setup-size bookkeeping, resize-size bookkeeping, and limit-from-filesize
 bookkeeping through explicit state-submit descriptors instead of direct helper
-calls. The raw setters remain the synchronous backend implementation behind the
-submit layer. Verification passed `git diff --check`, source scans covering
+calls. The raw setters still remained the synchronous backend implementation
+behind the submit layer at this checkpoint. Verification passed
+`git diff --check`, source scans covering
 `dxb_filesize_state_submit_io_t`, `dxb_current_state_submit_io_t`,
 `dxb_size_state_submit_io_t`, `dxb_storage_make_filesize_state_submit_io()`,
 `dxb_storage_make_current_state_submit_io()`,
@@ -12835,6 +12836,28 @@ including tool roundtrips, forced tiny-cache fault injection, the ASAN build
 ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.115` batch, `1.142` crud, `1.207` iterate,
 `0.976` get, and `1.061` delete.
+
+A later storage state submit-boundary cleanup folded the raw
+`dxb_storage_set_filesize()`, `dxb_storage_set_current()`,
+`dxb_storage_set_size()`, and `dxb_storage_set_pagesize_state()` helpers into
+their state submitters. `dxb_storage_submit_filesize_state()`,
+`dxb_storage_submit_current_state()`, `dxb_storage_submit_size_state()`, and
+`dxb_storage_submit_pagesize_state()` now validate their full payloads before
+mutating storage filesize/current/limit/page-size state directly, preserving
+the submitted/completed result accounting and the page-size mismatch/cache-entry
+guards. This leaves storage state bookkeeping with descriptor-shaped entry
+points and no parallel raw state-setter helper paths in the C source or
+public/internal headers. Verification passed `git diff --check`, source scans
+confirming no raw storage state setters remain in `mdbx.c` or the
+public/internal headers, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.107`
+batch, `1.147` crud, `0.945` iterate, `1.036` get, and `1.070` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
