@@ -8400,21 +8400,15 @@ meta_shadow_refresh_read_submit_io_validate(const dxb_meta_shadow_refresh_read_s
   return MDBX_SUCCESS;
 }
 
-static dxb_read_result_t meta_shadow_submit_refresh_read(const dxb_meta_shadow_refresh_read_submit_io_t *io) {
-  int err = meta_shadow_refresh_read_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS)) {
-    const dxb_read_result_t result = {err, 0, false, false};
-    return result;
-  }
-  return dxb_storage_submit_read_data(io->storage, &io->read);
-}
-
 static int meta_shadow_refresh_read(MDBX_env *env, const dxb_data_read_io_t *meta_pages) {
   dxb_meta_shadow_refresh_read_submit_io_t submit;
   int err = meta_shadow_make_refresh_read_submit_io(env, meta_pages, &submit);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  return meta_shadow_submit_refresh_read(&submit).err;
+  err = meta_shadow_refresh_read_submit_io_validate(&submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  return dxb_storage_submit_read_data(submit.storage, &submit.read).err;
 }
 
 int meta_shadow_refresh(MDBX_env *env) {

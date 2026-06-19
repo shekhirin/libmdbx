@@ -13114,6 +13114,25 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.106` batch, `1.160` crud, `0.959`
 iterate, `1.066` get, and `1.063` delete.
 
+A later meta-shadow refresh submit-boundary cleanup removed the one-call
+`meta_shadow_submit_refresh_read()` helper from `mdbx.c`.
+`meta_shadow_refresh_read()` now revalidates its three-meta-page shadow refresh
+descriptor and submits the nested `dxb_read_submit_io_t` directly through
+`dxb_storage_submit_read_data()`. This leaves metadata shadow refresh on the
+same explicit data-file read boundary that a later async storage backend can
+replace. Verification passed `git diff --check`, source scans proving
+`meta_shadow_submit_refresh_read()` is absent from `mdbx.c` and the
+public/internal headers, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.120` batch, `1.159` crud, `0.985` iterate,
+`0.978` get, and `1.078` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
