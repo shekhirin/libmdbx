@@ -304,6 +304,17 @@ Cursor batch benchmark checkpoint:
   returned batch descriptors before moving to another leaf page, preserving the
   public descriptor lifetime under tiny no-map caches
 
+Cursor utility checkpoint:
+
+- added `mdbx_async_cursor_count()` and `mdbx_async_cursor_count_ex()` for
+  retrieving duplicate counts and nested duplicate-tree statistics from an
+  async-owned cursor
+- added async cursor state probes for EOF, first item, first duplicate, last
+  item, and last duplicate; the async operation result preserves the underlying
+  `MDBX_RESULT_TRUE`/`MDBX_RESULT_FALSE` return code
+- smoke coverage now checks cursor count/count_ex and state transitions at the
+  first and last cursor positions
+
 ## Validation
 
 Completed for this checkpoint:
@@ -423,4 +434,15 @@ Additional cursor batch benchmark checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.090, async-cursor/blocking-parallel ratio 1.015
 - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.050, async-cursor/blocking-parallel ratio 1.149
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional cursor utility checkpoint:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-cursor/blocking-parallel ratio 1.103
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17

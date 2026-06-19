@@ -278,6 +278,44 @@ int main(void) {
   REQUIRE(first_key == 0, "unexpected cursor key before reset");
   CHECK(expect_value(&cursor_data, first_key, __FILE__, __LINE__));
 
+  size_t cursor_count = 0;
+  CHECK(mdbx_async_cursor_count(async, cursor, &cursor_count, &op));
+  CHECK_OP(op);
+  REQUIRE(cursor_count == 1, "unexpected cursor count");
+
+  MDBX_stat cursor_stat;
+  memset(&cursor_stat, 0, sizeof(cursor_stat));
+  cursor_count = 0;
+  CHECK(mdbx_async_cursor_count_ex(async, cursor, &cursor_count, &cursor_stat, sizeof(cursor_stat), &op));
+  CHECK_OP(op);
+  REQUIRE(cursor_count == 1, "unexpected cursor count_ex count");
+
+  int cursor_state = MDBX_SUCCESS;
+  CHECK(mdbx_async_cursor_eof(async, cursor, &op));
+  CHECK(wait_result("mdbx_async_cursor_eof", &op, &cursor_state, __FILE__, __LINE__));
+  REQUIRE(cursor_state == MDBX_RESULT_FALSE, "cursor unexpectedly at eof");
+  CHECK(mdbx_async_cursor_on_first(async, cursor, &op));
+  CHECK(wait_result("mdbx_async_cursor_on_first", &op, &cursor_state, __FILE__, __LINE__));
+  REQUIRE(cursor_state == MDBX_RESULT_TRUE, "cursor not on first item");
+  CHECK(mdbx_async_cursor_on_last(async, cursor, &op));
+  CHECK(wait_result("mdbx_async_cursor_on_last", &op, &cursor_state, __FILE__, __LINE__));
+  REQUIRE(cursor_state == MDBX_RESULT_FALSE, "cursor unexpectedly on last item");
+  CHECK(mdbx_async_cursor_on_first_dup(async, cursor, &op));
+  CHECK(wait_result("mdbx_async_cursor_on_first_dup", &op, &cursor_state, __FILE__, __LINE__));
+  REQUIRE(cursor_state == MDBX_RESULT_TRUE, "cursor not on first dup");
+  CHECK(mdbx_async_cursor_on_last_dup(async, cursor, &op));
+  CHECK(wait_result("mdbx_async_cursor_on_last_dup", &op, &cursor_state, __FILE__, __LINE__));
+  REQUIRE(cursor_state == MDBX_RESULT_TRUE, "cursor not on last dup");
+
+  CHECK(mdbx_async_cursor_get(async, cursor, &cursor_key, &cursor_data, MDBX_LAST, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_cursor_on_first(async, cursor, &op));
+  CHECK(wait_result("mdbx_async_cursor_on_first last", &op, &cursor_state, __FILE__, __LINE__));
+  REQUIRE(cursor_state == MDBX_RESULT_FALSE, "last cursor unexpectedly on first item");
+  CHECK(mdbx_async_cursor_on_last(async, cursor, &op));
+  CHECK(wait_result("mdbx_async_cursor_on_last last", &op, &cursor_state, __FILE__, __LINE__));
+  REQUIRE(cursor_state == MDBX_RESULT_TRUE, "cursor not on last item");
+
   CHECK(mdbx_async_cursor_reset(async, cursor, &op));
   CHECK_OP(op);
 

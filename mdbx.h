@@ -4791,6 +4791,50 @@ LIBMDBX_API int mdbx_async_cursor_get(MDBX_async *async, MDBX_cursor *cursor, MD
 LIBMDBX_API int mdbx_async_cursor_get_batch(MDBX_async *async, MDBX_cursor *cursor, size_t *count, MDBX_val *pairs,
                                             size_t limit, MDBX_cursor_op cursor_op, MDBX_async_op **op);
 
+/** \brief Asynchronously return the duplicate count for the current cursor key.
+ * \ingroup c_async
+ * \details The `count` output must remain valid until completion.
+ * \see mdbx_cursor_count() */
+LIBMDBX_API int mdbx_async_cursor_count(MDBX_async *async, const MDBX_cursor *cursor, size_t *count,
+                                        MDBX_async_op **op);
+
+/** \brief Asynchronously return duplicate count and nested-tree statistics for the current cursor key.
+ * \ingroup c_async
+ * \details The `count` and `stat` outputs must remain valid until completion.
+ * \see mdbx_cursor_count_ex() */
+LIBMDBX_API int mdbx_async_cursor_count_ex(MDBX_async *async, const MDBX_cursor *cursor, size_t *count,
+                                           MDBX_stat *stat, size_t bytes, MDBX_async_op **op);
+
+/** \brief Asynchronously determine whether the cursor is at EOF.
+ * \ingroup c_async
+ * \details The async operation result is the \ref mdbx_cursor_eof() return code.
+ * \see mdbx_cursor_eof() */
+LIBMDBX_API int mdbx_async_cursor_eof(MDBX_async *async, const MDBX_cursor *cursor, MDBX_async_op **op);
+
+/** \brief Asynchronously determine whether the cursor is on the first item.
+ * \ingroup c_async
+ * \details The async operation result is the \ref mdbx_cursor_on_first() return code.
+ * \see mdbx_cursor_on_first() */
+LIBMDBX_API int mdbx_async_cursor_on_first(MDBX_async *async, const MDBX_cursor *cursor, MDBX_async_op **op);
+
+/** \brief Asynchronously determine whether the cursor is on the first duplicate.
+ * \ingroup c_async
+ * \details The async operation result is the \ref mdbx_cursor_on_first_dup() return code.
+ * \see mdbx_cursor_on_first_dup() */
+LIBMDBX_API int mdbx_async_cursor_on_first_dup(MDBX_async *async, const MDBX_cursor *cursor, MDBX_async_op **op);
+
+/** \brief Asynchronously determine whether the cursor is on the last item.
+ * \ingroup c_async
+ * \details The async operation result is the \ref mdbx_cursor_on_last() return code.
+ * \see mdbx_cursor_on_last() */
+LIBMDBX_API int mdbx_async_cursor_on_last(MDBX_async *async, const MDBX_cursor *cursor, MDBX_async_op **op);
+
+/** \brief Asynchronously determine whether the cursor is on the last duplicate.
+ * \ingroup c_async
+ * \details The async operation result is the \ref mdbx_cursor_on_last_dup() return code.
+ * \see mdbx_cursor_on_last_dup() */
+LIBMDBX_API int mdbx_async_cursor_on_last_dup(MDBX_async *async, const MDBX_cursor *cursor, MDBX_async_op **op);
+
 /** \brief Asynchronously store an item through a cursor.
  * \ingroup c_async
  * \details Key and data bytes are copied during submission. The initial async
