@@ -59,7 +59,6 @@ struct async_worker {
   int *results;
   size_t pending;
   bool cursor_started;
-  bool needs_reset;
 };
 
 static int fail_rc(const char *expr, int rc, const char *file, int line) {
@@ -287,16 +286,7 @@ static int blocking_cursor_batch_loop(MDBX_cursor *cursor, size_t items, size_t 
     if (rc != MDBX_SUCCESS)
       goto bailout;
     *completed_pairs += count / 2;
-    if (operation_rc == MDBX_SUCCESS)
-      op = MDBX_NEXT;
-    if (operation_rc == MDBX_RESULT_TRUE) {
-      rc = mdbx_cursor_reset(cursor);
-      if (rc != MDBX_SUCCESS) {
-        rc = fail_rc("mdbx_cursor_reset", rc, __FILE__, __LINE__);
-        goto bailout;
-      }
-      op = MDBX_FIRST;
-    }
+    op = (operation_rc == MDBX_SUCCESS) ? MDBX_NEXT : MDBX_FIRST;
   }
 
 bailout:
@@ -611,7 +601,6 @@ static int async_cursor_batch_worker_init(MDBX_env *env, struct async_worker *wo
   CHECK(mdbx_async_cursor_open(worker->async, worker->txn, dbi, &worker->cursor, &op));
   CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
   worker->cursor_started = false;
-  worker->needs_reset = false;
   return MDBX_SUCCESS;
 
 bailout:
@@ -638,16 +627,6 @@ static double async_parallel_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t it
   while (completed_pairs < target_pairs) {
     for (size_t i = 0; i < workers_count && completed_pairs < target_pairs; ++i) {
       struct async_worker *const worker = &workers[i];
-      if (worker->needs_reset) {
-        rc = mdbx_async_cursor_reset(worker->async, worker->cursor, &worker->ops[0]);
-        if (rc != MDBX_SUCCESS)
-          goto bailout;
-        rc = wait_success(&worker->ops[0], NULL, __FILE__, __LINE__);
-        if (rc != MDBX_SUCCESS)
-          goto bailout;
-        worker->needs_reset = false;
-        worker->cursor_started = false;
-      }
       worker->count = 0;
       rc = mdbx_async_cursor_get_batch(worker->async, worker->cursor, &worker->count, worker->pairs, batch_pairs * 2,
                                        worker->cursor_started ? MDBX_NEXT : MDBX_FIRST, &worker->ops[0]);
@@ -672,11 +651,7 @@ static double async_parallel_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t it
       if (rc != MDBX_SUCCESS)
         goto bailout;
       completed_pairs += worker->count / 2;
-      if (operation_rc == MDBX_RESULT_TRUE) {
-        worker->needs_reset = true;
-        worker->cursor_started = false;
-      } else
-        worker->cursor_started = true;
+      worker->cursor_started = operation_rc == MDBX_SUCCESS;
       worker->pending = 0;
     }
   }

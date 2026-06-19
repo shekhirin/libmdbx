@@ -1178,3 +1178,35 @@ Additional recycled-op reset checkpoint:
 - longer forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=1000000` sample passed
   with ratios async/blocking-parallel 1.039, async-batch/blocking-parallel
   1.044, and async-cursor/blocking-parallel 1.921
+
+Additional benchmark cursor restart checkpoint:
+
+- audited exported C API coverage against exported async wrappers; the only
+  remaining exported blocking names without async counterparts are
+  `mdbx_assert_fail()` and `mdbx_module_handler()`, which are process/module
+  support entry points rather than database operations
+- simplified `mdbx_async_api_bench` cursor-batch restart logic so both blocking
+  and async cursor-batch loops use `MDBX_FIRST` after an end-of-data batch
+  instead of issuing a separate cursor reset
+- this removes a redundant async enqueue/wait/release cycle after each full
+  cursor scan while keeping the benchmark on the public cursor-batch contract:
+  `mdbx_cursor_get_batch()` supports `MDBX_FIRST` and repositions a hard-EOF
+  cursor itself
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_bench` plus
+  `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed
+- three clean default `mdbx_async_api_bench` samples passed; average ratios
+  were async/blocking-parallel 1.047, async-batch/blocking-parallel 1.046, and
+  async-cursor/blocking-parallel 1.062
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` remained noisy; the
+  first sample reported async-cursor/blocking-parallel 0.615, while the
+  immediate three-sample rerun averaged async/blocking-parallel 1.055,
+  async-batch/blocking-parallel 1.061, and async-cursor/blocking-parallel
+  1.470
+- spot checks with `MDBX_ASYNC_BENCH_CURSOR_BATCH_PAIRS` set to 4096, 8192, and
+  16384 did not justify changing the default 2048-pair cursor batch size; the
+  cursor ratios remained scheduler-noisy across both default and forced no-map
+  runs
