@@ -2060,3 +2060,50 @@ Additional explicit page-cache LRU checkpoint:
   ioarena baseline for `iterate` and `get`, including forced no-map/tiny-cache.
   The storage migration is still not complete because batch, CRUD, and delete
   remain below the earlier mapped/no-map baselines.
+
+Additional reusable-cache invalidation checkpoint:
+
+- added an explicit page-cache `reusable_count` and used it to skip ordinary
+  write invalidation scans when every cached entry is reusable
+- ordinary CoW writes keep snapshot-keyed reusable cache entries valid, so this
+  removes avoidable full-cache scans from write-heavy paths after read-heavy
+  workloads populate the explicit cache; destructive invalidations still scan
+  and evict reusable entries
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_migration_smoke mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|migration_smoke)'`: passed 9/9
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench mdbx_migration_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check reported
+  async/blocking-parallel 1.114, async-many/blocking-parallel 1.084,
+  async-thread/blocking-parallel 1.062,
+  async-thread-many/blocking-parallel 1.083,
+  async-thread-batch/blocking-parallel 1.105,
+  async-batch/blocking-parallel 1.113, and
+  async-batch-callback/blocking-parallel 1.127
+- `make -f GNUmakefile mdbx_migration_bench_lazy`: passed, with current
+  explicit default:
+
+| phase | earlier mapped avg | current explicit default | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1033.245 ops/s | 942.085 ops/s | 0.912 |
+| crud | 55.675 Kops/s | 50.173 Kops/s | 0.901 |
+| iterate | 26.143 Mops/s | 31.920 Mops/s | 1.221 |
+| get | 279.409 Kops/s | 430.834 Kops/s | 1.542 |
+| delete | 66.398 Kops/s | 58.351 Kops/s | 0.879 |
+
+- current explicit forced no-map against the earlier no-map baseline:
+
+| phase | earlier no-map avg | current explicit forced | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1089.750 ops/s | 955.758 ops/s | 0.877 |
+| crud | 59.787 Kops/s | 50.309 Kops/s | 0.841 |
+| iterate | 25.827 Mops/s | 23.859 Mops/s | 0.924 |
+| get | 274.039 Kops/s | 434.173 Kops/s | 1.584 |
+| delete | 69.067 Kops/s | 58.151 Kops/s | 0.842 |
+
+- conclusion: skipping ordinary invalidation scans preserves the read-heavy
+  GET win and nudges CRUD upward in this sample, but batch/delete are still
+  below the pre-migration baselines and forced iterate remains noisy.

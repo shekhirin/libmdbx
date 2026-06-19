@@ -81,6 +81,7 @@ enum dxb_advice { dxb_advice_normal, dxb_advice_willneed, dxb_advice_random };
 typedef struct page_cache {
   page_cache_entry_t *entries;
   size_t entries_count;
+  size_t reusable_count;
   size_t pages;
   size_t bytes;
   size_t pinned;
@@ -28996,10 +28997,12 @@ static void page_cache_release_entry_locked(page_cache_entry_t *entry) {
     if (*scan == entry)
       *scan = entry->next;
     ASSERT(cache->entries_count > 0);
+    ASSERT(!entry->reusable || cache->reusable_count > 0);
     ASSERT(cache->pages >= entry->io.npages);
     ASSERT(cache->bytes >= entry->io.bytes);
     ASSERT(cache->pinned == 0 || cache->pinned >= entry->pins);
     cache->entries_count -= 1;
+    cache->reusable_count -= entry->reusable ? 1 : 0;
     cache->pages -= entry->io.npages;
     cache->bytes -= entry->io.bytes;
   }
@@ -29113,6 +29116,7 @@ static dxb_cache_result_t page_cache_release_all(dxb_storage_t *storage, bool en
   }
   cache->entries = nullptr;
   cache->entries_count = 0;
+  cache->reusable_count = 0;
   cache->pages = 0;
   cache->bytes = 0;
   cache->pinned = 0;
@@ -29205,6 +29209,10 @@ static dxb_cache_result_t dxb_storage_submit_invalidate_cached_io(dxb_storage_t 
   size_t entries = 0;
   page_cache_lock(storage);
   page_cache_t *const cache = &storage->page_cache;
+  if (!invalidate->include_reusable && cache->entries_count == cache->reusable_count) {
+    page_cache_unlock(storage);
+    return dxb_cache_submitted(dxb_cache_invalidated(invalidate, 0));
+  }
   page_cache_entry_t *entry = cache->entries;
   while (entry) {
     page_cache_entry_t *const next = entry->next;
@@ -29212,6 +29220,10 @@ static dxb_cache_result_t dxb_storage_submit_invalidate_cached_io(dxb_storage_t 
       /* Snapshot-keyed reusable entries remain valid across ordinary CoW
        * writes. Only destructive truncate/remove operations force them out. */
       if (invalidate->include_reusable || !entry->reusable) {
+        if (entry->reusable) {
+          ASSERT(cache->reusable_count > 0);
+          cache->reusable_count -= 1;
+        }
         entry->reusable = false;
         entries += 1;
         if (entry->pins == 0)
@@ -29251,6 +29263,7 @@ static dxb_cache_result_t dxb_storage_submit_insert_cached_page(dxb_storage_t *s
   entry->next = cache->entries;
   cache->entries = entry;
   cache->entries_count += 1;
+  cache->reusable_count += entry->reusable ? 1 : 0;
   cache->pages += entry->io.npages;
   cache->bytes += entry->io.bytes;
   cache->pinned += 1;
