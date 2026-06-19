@@ -1633,6 +1633,8 @@ typedef struct ior_item {
 typedef struct osal_ioring {
   unsigned slots_left;
   unsigned allocated;
+  unsigned write_items;
+  size_t payload_bytes;
   osal_ioring_backend_t backend;
 #if defined(_WIN32) || defined(_WIN64)
 #define IOR_STATE_LOCKED 1

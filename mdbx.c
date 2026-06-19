@@ -41696,33 +41696,17 @@ static size_t osal_ioring_item_sgvcnt(const osal_ioring_t *ior, const ior_item_t
 }
 
 static unsigned osal_ioring_write_items(const osal_ioring_t *ior) {
-  if (unlikely(!ior || !ior->last))
+  if (unlikely(!ior))
     return 0;
-
-  unsigned items = 0;
-  for (ior_item_t *item = ior->pool; item <= ior->last;) {
-    if (unlikely(items == UINT_MAX))
-      return UINT_MAX;
-    ++items;
-    item = ior_next(item, osal_ioring_item_sgvcnt(ior, item));
-  }
-  return items;
+  ASSERT(ior->write_items == 0 || ior->last != nullptr);
+  return ior->write_items;
 }
 
 static size_t osal_ioring_payload_bytes(const osal_ioring_t *ior) {
-  if (unlikely(!ior || !ior->last))
+  if (unlikely(!ior))
     return 0;
-
-  size_t total = 0;
-  for (ior_item_t *item = ior->pool; item <= ior->last;) {
-    const size_t bytes = item->io.bytes.bytes;
-    if (unlikely(bytes > SIZE_MAX - total))
-      return SIZE_MAX;
-    total += bytes;
-
-    item = ior_next(item, osal_ioring_item_sgvcnt(ior, item));
-  }
-  return total;
+  ASSERT(ior->payload_bytes == 0 || ior->last != nullptr);
+  return ior->payload_bytes;
 }
 
 static inline int ior_item_make_merged_io(const ior_item_t *item, const dxb_data_write_io_t *io,
@@ -41775,6 +41759,8 @@ dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued
 
   const size_t offset = (size_t)data_io->bytes.offset;
   const size_t bytes = data_io->bytes.bytes;
+  if (unlikely(bytes > SIZE_MAX - ior->payload_bytes))
+    return osal_ioring_add_result(ior, MDBX_EINVAL, false);
   ASSERT(bytes);
   ASSERT(bytes % MDBX_MIN_PAGESIZE == 0 && bytes <= MAX_WRITE);
   ASSERT(offset % MDBX_MIN_PAGESIZE == 0 && offset + (uint64_t)bytes <= MAX_MAPSIZE);
@@ -41801,6 +41787,7 @@ dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued
         ASSERT((item->single.iov_len & ior_WriteFile_flag) == 0);
         ASSERT(item->sgv[ior->last_sgvcnt].Buffer == 0);
         item->io = merged_io;
+        ior->payload_bytes += bytes;
         size_t i = 0;
         do {
           item->sgv[ior->last_sgvcnt + i].Buffer = PtrToPtr64(data);
@@ -41816,6 +41803,7 @@ dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued
         ASSERT((item->single.iov_len & ior_WriteFile_flag) != 0);
         item->single.iov_len += bytes;
         item->io = merged_io;
+        ior->payload_bytes += bytes;
         return osal_ioring_add_result(ior, MDBX_SUCCESS, true);
       }
 #elif MDBX_HAVE_PWRITEV
@@ -41824,6 +41812,7 @@ dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued
       if (unlikely(end == data)) {
         item->sgv[item->sgvcnt - 1].iov_len += bytes;
         item->io = merged_io;
+        ior->payload_bytes += bytes;
         return osal_ioring_add_result(ior, MDBX_SUCCESS, true);
       }
       if (likely(item->sgvcnt < OSAL_IOV_MAX)) {
@@ -41832,6 +41821,7 @@ dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued
         item->sgv[item->sgvcnt].iov_base = data;
         item->sgv[item->sgvcnt].iov_len = bytes;
         item->io = merged_io;
+        ior->payload_bytes += bytes;
         item->sgvcnt += 1;
         ior->slots_left -= 1;
         return osal_ioring_add_result(ior, MDBX_SUCCESS, true);
@@ -41841,6 +41831,7 @@ dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued
       if (unlikely(end == data)) {
         item->single.iov_len += bytes;
         item->io = merged_io;
+        ior->payload_bytes += bytes;
         return osal_ioring_add_result(ior, MDBX_SUCCESS, true);
       }
 #endif
@@ -41886,6 +41877,8 @@ dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued
   item->single.iov_len = bytes;
 #endif /* !Windows */
   ior->slots_left -= slots_used;
+  ior->write_items += 1;
+  ior->payload_bytes += bytes;
   ior->last = item;
   return osal_ioring_add_result(ior, MDBX_SUCCESS, true);
 }
@@ -43865,6 +43858,8 @@ dxb_queue_op_result_t osal_ioring_reset(osal_ioring_t *ior) {
   ResetEvent(ior->async_done);
 #endif /* !Windows */
   ior->slots_left = ior->allocated;
+  ior->write_items = 0;
+  ior->payload_bytes = 0;
   ior->last = nullptr;
   return dxb_queue_op_result(MDBX_SUCCESS, ior, false, false, false, true, true);
 }

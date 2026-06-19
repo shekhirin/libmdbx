@@ -2258,3 +2258,57 @@ Additional dirty-write enqueue wrapper and merge-probe checkpoint:
   read-heavy average wins and keeps write-heavy phases in the same improved band
   as the prior checkpoint, but batch, CRUD, and delete remain below the
   pre-migration baseline.
+
+Additional write-queue accounting checkpoint:
+
+- added cached `write_items` and `payload_bytes` counters to `osal_ioring_t`
+  and maintain them in `osal_ioring_add()` and `osal_ioring_reset()`
+- `dxb_storage_make_queued_write_io()`, `dxb_queue_op_result()`, and
+  `osal_ioring_write()` now get write-item and payload totals without walking
+  the queued dirty-write items repeatedly before submit/result construction
+- successful merges update only payload bytes; new queue items update both
+  counters. The existing slot accounting remains the source for `used_slots`.
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_migration_smoke mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|migration_smoke)'`: passed 9/9
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench mdbx_migration_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check reported
+  async/blocking-parallel 1.066, async-many/blocking-parallel 1.061,
+  async-thread-many/blocking-parallel 1.019,
+  async-thread-batch/blocking-parallel 1.039,
+  async-batch-callback/blocking-parallel 1.099, and
+  async-loop/blocking-parallel 1.041. The simple threaded and batch samples were
+  below blocking-parallel in this run, matching the existing benchmark noise.
+- `make -f GNUmakefile mdbx_migration_bench_lazy`: passed. A subsequent
+  `mdbx_migration_bench_lazy_repeat` attempt failed on the first pair because
+  forced/default `iterate` was 0.669 against the 0.700 gate; two following
+  paired lazy samples passed with forced/default `iterate` at 0.720 and 0.728.
+  This appears to be the same read-phase noise seen in earlier checkpoints, but
+  it is recorded as a failed repeat gate, not hidden.
+- latest passing explicit default sample:
+
+| phase | earlier mapped avg | current explicit default | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1033.245 ops/s | 959.275 ops/s | 0.928 |
+| crud | 55.675 Kops/s | 50.531 Kops/s | 0.908 |
+| iterate | 26.143 Mops/s | 31.176 Mops/s | 1.193 |
+| get | 279.409 Kops/s | 479.021 Kops/s | 1.714 |
+| delete | 66.398 Kops/s | 57.790 Kops/s | 0.870 |
+
+- latest passing explicit forced no-map sample:
+
+| phase | earlier no-map avg | current explicit forced | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1089.750 ops/s | 973.712 ops/s | 0.894 |
+| crud | 59.787 Kops/s | 50.193 Kops/s | 0.840 |
+| iterate | 25.827 Mops/s | 22.702 Mops/s | 0.879 |
+| get | 274.039 Kops/s | 367.657 Kops/s | 1.342 |
+| delete | 69.067 Kops/s | 58.540 Kops/s | 0.848 |
+
+- conclusion: cached queue accounting removes repeated dirty-queue scans from
+  the write submit path and keeps the normal migration gates passing. It does
+  not close the write-heavy pre-migration baseline gap, and the forced no-map
+  read phases remain noisy enough that the repeat benchmark gate can still fail.
