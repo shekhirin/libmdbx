@@ -15578,6 +15578,21 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.096` batch, `1.167` crud, `0.973` iterate, `1.061`
 get, and `1.082` delete.
 
+A later aggregate validation checkpoint ran
+`make -f GNUmakefile mdbx_migration_check` end to end after the data-file mmap
+removal and async-capable I/O boundary work. The aggregate gate passed the
+direct no-map smoke, randomized stress, crash/restart stress, fault-injection,
+public CTest, repeated public CTest, assertion, fault-enabled CTest, ASAN,
+UBSAN, audit, memcheck, leak, tool roundtrip, and three paired lazy benchmark
+repeats. The repeated benchmark ratios were repeat 1: `1.071` batch, `1.170`
+crud, `0.989` iterate, `1.030` get, `1.084` delete; repeat 2: `1.076` batch,
+`0.994` crud, `0.774` iterate, `1.073` get, `1.000` delete; and repeat 3:
+`0.997` batch, `0.994` crud, `0.860` iterate, `0.984` get, `0.998` delete.
+Source scans after the aggregate run found no `dxb_mmap`, `pgno2page`,
+`METAPAGE`, `PAGE_REF_MAPPED`, `dxb_msync`, or `osal_mresize`; the remaining
+`osal_mmap()` declaration/implementation and sole callsite are for lock-file
+mapping.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
