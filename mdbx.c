@@ -14979,6 +14979,11 @@ enum mdbx_async_opcode {
   async_op_env_info,
   async_op_env_sync,
   async_op_env_warmup,
+  async_op_env_copy,
+#if defined(_WIN32) || defined(_WIN64)
+  async_op_env_copyW,
+#endif /* Windows */
+  async_op_env_copy2fd,
   async_op_env_set_option,
   async_op_env_get_option,
   async_op_env_set_flags,
@@ -15017,6 +15022,11 @@ enum mdbx_async_opcode {
   async_op_txn_refresh,
   async_op_txn_info,
   async_op_txn_release_all_cursors,
+  async_op_txn_copy2pathname,
+#if defined(_WIN32) || defined(_WIN64)
+  async_op_txn_copy2pathnameW,
+#endif /* Windows */
+  async_op_txn_copy2fd,
   async_op_dbi_open,
   async_op_dbi_rename,
   async_op_dbi_stat,
@@ -15144,6 +15154,11 @@ struct MDBX_async_op {
       MDBX_warmup_flags_t flags;
       unsigned timeout_seconds_16dot16;
     } env_warmup;
+    struct {
+      MDBX_txn *txn;
+      MDBX_copy_flags_t flags;
+      mdbx_filehandle_t fd;
+    } copy;
     struct {
       MDBX_option_t option;
       uint64_t value;
@@ -15639,6 +15654,28 @@ static int async_copy_name(MDBX_async_op *op, const MDBX_val *name) {
   return async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, name);
 }
 
+static int async_copy_path(MDBX_async_op *op, const char *path) {
+  if (unlikely(!path))
+    return MDBX_EINVAL;
+  op->name_copy = osal_strdup(path);
+  return likely(op->name_copy != nullptr) ? MDBX_SUCCESS : MDBX_ENOMEM;
+}
+
+#if defined(_WIN32) || defined(_WIN64)
+static int async_copy_wpath(MDBX_async_op *op, const wchar_t *path) {
+  if (unlikely(!path))
+    return MDBX_EINVAL;
+  const size_t length = wcslen(path);
+  const size_t bytes = (length + 1) * sizeof(wchar_t);
+  wchar_t *const copy = osal_malloc(bytes);
+  if (unlikely(!copy))
+    return MDBX_ENOMEM;
+  memcpy(copy, path, bytes);
+  op->name_copy = (char *)copy;
+  return MDBX_SUCCESS;
+}
+#endif /* Windows */
+
 static void async_op_payload_release(MDBX_async_op *op) {
   osal_free(op->key_copy);
   osal_free(op->data_copy);
@@ -15667,6 +15704,14 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_env_warmup:
     return mdbx_env_warmup(op->async->env, op->args.env_warmup.txn, op->args.env_warmup.flags,
                            op->args.env_warmup.timeout_seconds_16dot16);
+  case async_op_env_copy:
+    return mdbx_env_copy(op->async->env, op->name_copy, op->args.copy.flags);
+#if defined(_WIN32) || defined(_WIN64)
+  case async_op_env_copyW:
+    return mdbx_env_copyW(op->async->env, (const wchar_t *)op->name_copy, op->args.copy.flags);
+#endif /* Windows */
+  case async_op_env_copy2fd:
+    return mdbx_env_copy2fd(op->async->env, op->args.copy.fd, op->args.copy.flags);
   case async_op_env_set_option:
     return mdbx_env_set_option(op->async->env, op->args.env_option.option, op->args.env_option.value);
   case async_op_env_get_option:
@@ -15771,6 +15816,14 @@ static int async_op_execute(MDBX_async_op *op) {
     return mdbx_txn_release_all_cursors_ex(op->args.txn_release_all_cursors.txn,
                                            op->args.txn_release_all_cursors.unbind,
                                            op->args.txn_release_all_cursors.count);
+  case async_op_txn_copy2pathname:
+    return mdbx_txn_copy2pathname(op->args.copy.txn, op->name_copy, op->args.copy.flags);
+#if defined(_WIN32) || defined(_WIN64)
+  case async_op_txn_copy2pathnameW:
+    return mdbx_txn_copy2pathnameW(op->args.copy.txn, (const wchar_t *)op->name_copy, op->args.copy.flags);
+#endif /* Windows */
+  case async_op_txn_copy2fd:
+    return mdbx_txn_copy2fd(op->args.copy.txn, op->args.copy.fd, op->args.copy.flags);
   case async_op_dbi_open:
     return mdbx_dbi_open2(op->args.dbi_open.txn, &op->key, op->args.dbi_open.flags, op->args.dbi_open.dbi);
   case async_op_dbi_rename:
@@ -16536,6 +16589,55 @@ int mdbx_async_env_warmup(MDBX_async *async, const MDBX_txn *txn, MDBX_warmup_fl
   return LOG_IFERR(rc);
 }
 
+static int async_env_copy_path_submit(MDBX_async *async, const void *dest, MDBX_copy_flags_t flags,
+                                      enum mdbx_async_opcode opcode, MDBX_async_op **out) {
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, opcode);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+#if defined(_WIN32) || defined(_WIN64)
+  rc = (opcode == async_op_env_copyW) ? async_copy_wpath(op, (const wchar_t *)dest)
+                                      : async_copy_path(op, (const char *)dest);
+#else
+  rc = async_copy_path(op, (const char *)dest);
+#endif /* Windows */
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.copy.flags = flags;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_env_copy(MDBX_async *async, const char *dest, MDBX_copy_flags_t flags, MDBX_async_op **out) {
+  return async_env_copy_path_submit(async, dest, flags, async_op_env_copy, out);
+}
+
+#if defined(_WIN32) || defined(_WIN64)
+int mdbx_async_env_copyW(MDBX_async *async, const wchar_t *dest, MDBX_copy_flags_t flags, MDBX_async_op **out) {
+  return async_env_copy_path_submit(async, dest, flags, async_op_env_copyW, out);
+}
+#endif /* Windows */
+
+int mdbx_async_env_copy2fd(MDBX_async *async, mdbx_filehandle_t fd, MDBX_copy_flags_t flags, MDBX_async_op **out) {
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_env_copy2fd);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.copy.fd = fd;
+  op->args.copy.flags = flags;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
 int mdbx_async_env_set_option(MDBX_async *async, MDBX_option_t option, uint64_t value, MDBX_async_op **out) {
   MDBX_async_op *op = nullptr;
   int rc = async_op_alloc(async, &op, async_op_env_set_option);
@@ -17102,6 +17204,64 @@ int mdbx_async_txn_release_all_cursors(MDBX_async *async, const MDBX_txn *txn, b
     osal_free(op);
   }
   return rc;
+}
+
+static int async_txn_copy_path_submit(MDBX_async *async, MDBX_txn *txn, const void *dest, MDBX_copy_flags_t flags,
+                                      enum mdbx_async_opcode opcode, MDBX_async_op **out) {
+  if (unlikely(!txn))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, opcode);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+#if defined(_WIN32) || defined(_WIN64)
+  rc = (opcode == async_op_txn_copy2pathnameW) ? async_copy_wpath(op, (const wchar_t *)dest)
+                                               : async_copy_path(op, (const char *)dest);
+#else
+  rc = async_copy_path(op, (const char *)dest);
+#endif /* Windows */
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.copy.txn = txn;
+    op->args.copy.flags = flags;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_txn_copy2pathname(MDBX_async *async, MDBX_txn *txn, const char *dest, MDBX_copy_flags_t flags,
+                                 MDBX_async_op **out) {
+  return async_txn_copy_path_submit(async, txn, dest, flags, async_op_txn_copy2pathname, out);
+}
+
+#if defined(_WIN32) || defined(_WIN64)
+int mdbx_async_txn_copy2pathnameW(MDBX_async *async, MDBX_txn *txn, const wchar_t *dest, MDBX_copy_flags_t flags,
+                                  MDBX_async_op **out) {
+  return async_txn_copy_path_submit(async, txn, dest, flags, async_op_txn_copy2pathnameW, out);
+}
+#endif /* Windows */
+
+int mdbx_async_txn_copy2fd(MDBX_async *async, MDBX_txn *txn, mdbx_filehandle_t fd, MDBX_copy_flags_t flags,
+                           MDBX_async_op **out) {
+  if (unlikely(!txn))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_txn_copy2fd);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.copy.txn = txn;
+  op->args.copy.fd = fd;
+  op->args.copy.flags = flags;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
 }
 
 static const MDBX_val *async_name_from_cstr(const char *name, MDBX_val *thunk) {

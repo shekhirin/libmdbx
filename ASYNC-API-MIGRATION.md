@@ -759,3 +759,23 @@ Additional cursor/read utility checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.063, async-batch/blocking-parallel ratio 1.073, and async-cursor/blocking-parallel ratio 1.417
+
+Additional copy/backup checkpoint:
+
+- added async wrappers for environment copies to pathname or file descriptor and
+  transaction snapshot copies to pathname or file descriptor
+- pathname wrappers copy the submitted destination path before enqueueing; file
+  descriptor wrappers require the caller to keep the descriptor valid until the
+  operation completes
+- copy operations run on the async executor worker thread and preserve the
+  blocking copy functions' snapshot, compaction, and flush flag semantics
+- smoke coverage now verifies async environment copy and async transaction
+  compact copy by reopening each copied database and reading expected records
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.060, async-batch/blocking-parallel ratio 1.100, and async-cursor/blocking-parallel ratio 0.660

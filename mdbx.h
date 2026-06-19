@@ -4685,6 +4685,29 @@ LIBMDBX_API int mdbx_async_env_sync_ex(MDBX_async *async, bool force, bool nonbl
 LIBMDBX_API int mdbx_async_env_warmup(MDBX_async *async, const MDBX_txn *txn, MDBX_warmup_flags_t flags,
                                       unsigned timeout_seconds_16dot16, MDBX_async_op **op);
 
+/** \brief Asynchronously copy the executor's environment to a path.
+ * \ingroup c_async
+ * \details The destination path is copied during submission.
+ * \see mdbx_env_copy() */
+LIBMDBX_API int mdbx_async_env_copy(MDBX_async *async, const char *dest, MDBX_copy_flags_t flags,
+                                    MDBX_async_op **op);
+
+#if defined(_WIN32) || defined(_WIN64) || defined(DOXYGEN)
+/** \copydoc mdbx_async_env_copy()
+ * \ingroup c_async
+ * \note Available only on Windows.
+ * \see mdbx_env_copyW() */
+LIBMDBX_API int mdbx_async_env_copyW(MDBX_async *async, const wchar_t *dest, MDBX_copy_flags_t flags,
+                                     MDBX_async_op **op);
+#endif /* Windows */
+
+/** \brief Asynchronously copy the executor's environment to a file descriptor.
+ * \ingroup c_async
+ * \details The destination descriptor must remain valid until completion.
+ * \see mdbx_env_copy2fd() */
+LIBMDBX_API int mdbx_async_env_copy2fd(MDBX_async *async, mdbx_filehandle_t fd, MDBX_copy_flags_t flags,
+                                       MDBX_async_op **op);
+
 /** \brief Asynchronously set an environment option.
  * \ingroup c_async
  * \see mdbx_env_set_option() */
@@ -5292,6 +5315,29 @@ LIBMDBX_API int mdbx_async_cursor_close(MDBX_async *async, MDBX_cursor *cursor, 
  * \see mdbx_txn_release_all_cursors_ex() */
 LIBMDBX_API int mdbx_async_txn_release_all_cursors(MDBX_async *async, const MDBX_txn *txn, bool unbind,
                                                    size_t *count, MDBX_async_op **op);
+
+/** \brief Asynchronously copy a transaction snapshot to a path.
+ * \ingroup c_async
+ * \details The destination path is copied during submission.
+ * \see mdbx_txn_copy2pathname() */
+LIBMDBX_API int mdbx_async_txn_copy2pathname(MDBX_async *async, MDBX_txn *txn, const char *dest,
+                                             MDBX_copy_flags_t flags, MDBX_async_op **op);
+
+#if defined(_WIN32) || defined(_WIN64) || defined(DOXYGEN)
+/** \copydoc mdbx_async_txn_copy2pathname()
+ * \ingroup c_async
+ * \note Available only on Windows.
+ * \see mdbx_txn_copy2pathnameW() */
+LIBMDBX_API int mdbx_async_txn_copy2pathnameW(MDBX_async *async, MDBX_txn *txn, const wchar_t *dest,
+                                              MDBX_copy_flags_t flags, MDBX_async_op **op);
+#endif /* Windows */
+
+/** \brief Asynchronously copy a transaction snapshot to a file descriptor.
+ * \ingroup c_async
+ * \details The destination descriptor must remain valid until completion.
+ * \see mdbx_txn_copy2fd() */
+LIBMDBX_API int mdbx_async_txn_copy2fd(MDBX_async *async, MDBX_txn *txn, mdbx_filehandle_t fd,
+                                       MDBX_copy_flags_t flags, MDBX_async_op **op);
 
 /** \brief Marks transaction as broken to prevent further operations.
  * \ingroup c_transactions

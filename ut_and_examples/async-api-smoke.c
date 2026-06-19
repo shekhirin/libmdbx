@@ -197,8 +197,42 @@ static int expect_value(const MDBX_val *data, uint64_t key, const char *file, in
   return expect_payload(data, expected_value(key), file, line);
 }
 
+static int verify_copied_value(const char *path, uint64_t key_value, const char *file, int line) {
+  MDBX_env *copy_env = NULL;
+  MDBX_txn *copy_txn = NULL;
+  MDBX_dbi copy_dbi = 0;
+  MDBX_val key = val(&key_value, sizeof(key_value));
+  MDBX_val data = val(NULL, 0);
+
+  int rc = mdbx_env_create(&copy_env);
+  if (rc != MDBX_SUCCESS)
+    goto bailout;
+  rc = mdbx_env_open(copy_env, path, MDBX_NOSUBDIR | MDBX_RDONLY | MDBX_EXCLUSIVE, 0);
+  if (rc != MDBX_SUCCESS)
+    goto bailout;
+  rc = mdbx_txn_begin(copy_env, NULL, MDBX_TXN_RDONLY, &copy_txn);
+  if (rc != MDBX_SUCCESS)
+    goto bailout;
+  rc = mdbx_dbi_open(copy_txn, NULL, MDBX_DB_DEFAULTS, &copy_dbi);
+  if (rc != MDBX_SUCCESS)
+    goto bailout;
+  rc = mdbx_get(copy_txn, copy_dbi, &key, &data);
+  if (rc != MDBX_SUCCESS)
+    goto bailout;
+  rc = expect_value(&data, key_value, file, line);
+
+bailout:
+  if (copy_txn)
+    (void)mdbx_txn_abort(copy_txn);
+  if (copy_env)
+    (void)mdbx_env_close(copy_env);
+  return rc == MDBX_SUCCESS ? MDBX_SUCCESS : fail_rc("verify_copied_value", rc, file, line);
+}
+
 int main(void) {
   char path[96];
+  char copy_env_path[128];
+  char copy_txn_path[128];
   MDBX_env *env = NULL;
   MDBX_async *async = NULL;
   MDBX_txn *txn = NULL;
@@ -250,12 +284,16 @@ int main(void) {
 
   memset(ops, 0, sizeof(ops));
   snprintf(path, sizeof(path), "./async-api-smoke-%llx", smoke_run_id());
+  snprintf(copy_env_path, sizeof(copy_env_path), "./async-api-smoke-copy-env-%llx", smoke_run_id());
+  snprintf(copy_txn_path, sizeof(copy_txn_path), "./async-api-smoke-copy-txn-%llx", smoke_run_id());
 
   rc = mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
   if (rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE) {
     rc = fail_rc("mdbx_env_delete", rc, __FILE__, __LINE__);
     goto bailout;
   }
+  (void)mdbx_env_delete(copy_env_path, MDBX_ENV_JUST_DELETE);
+  (void)mdbx_env_delete(copy_txn_path, MDBX_ENV_JUST_DELETE);
 
   CHECK(mdbx_env_create(&env));
   CHECK(mdbx_env_set_maxdbs(env, 12));
@@ -593,6 +631,10 @@ int main(void) {
   CHECK_OP(op);
   REQUIRE(env_stat.ms_entries == ITEM_COUNT, "unexpected async environment stat entries after commit");
 
+  CHECK(mdbx_async_env_copy(async, copy_env_path, MDBX_CP_DONT_FLUSH, &op));
+  CHECK_OP(op);
+  CHECK(verify_copied_value(copy_env_path, keys[7], __FILE__, __LINE__));
+
   CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
   CHECK_OP(op);
   CHECK(mdbx_async_dbi_open(async, txn, "async-close-target", MDBX_CREATE, &close_dbi, &op));
@@ -784,6 +826,10 @@ int main(void) {
   REQUIRE(cache_hit_result.errcode == MDBX_SUCCESS && cache_hit_result.status == MDBX_CACHE_HIT,
           "unexpected async single-thread cache get result");
   CHECK(expect_value(&cache_hit_data, keys[4], __FILE__, __LINE__));
+
+  CHECK(mdbx_async_txn_copy2pathname(async, txn, copy_txn_path, MDBX_CP_COMPACT | MDBX_CP_DONT_FLUSH, &op));
+  CHECK_OP(op);
+  CHECK(verify_copied_value(copy_txn_path, keys[8], __FILE__, __LINE__));
 
   int userctx_a = 1;
   int userctx_b = 2;
@@ -1209,6 +1255,12 @@ int main(void) {
     rc = MDBX_SUCCESS;
   if (rc != MDBX_SUCCESS)
     rc = fail_rc("mdbx_env_delete cleanup", rc, __FILE__, __LINE__);
+  int cleanup_rc = mdbx_env_delete(copy_env_path, MDBX_ENV_JUST_DELETE);
+  if (rc == MDBX_SUCCESS && cleanup_rc != MDBX_SUCCESS && cleanup_rc != MDBX_RESULT_TRUE)
+    rc = fail_rc("mdbx_env_delete copy-env cleanup", cleanup_rc, __FILE__, __LINE__);
+  cleanup_rc = mdbx_env_delete(copy_txn_path, MDBX_ENV_JUST_DELETE);
+  if (rc == MDBX_SUCCESS && cleanup_rc != MDBX_SUCCESS && cleanup_rc != MDBX_RESULT_TRUE)
+    rc = fail_rc("mdbx_env_delete copy-txn cleanup", cleanup_rc, __FILE__, __LINE__);
   return rc;
 
 bailout:
@@ -1219,5 +1271,7 @@ bailout:
   if (env)
     (void)mdbx_env_close(env);
   (void)mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
+  (void)mdbx_env_delete(copy_env_path, MDBX_ENV_JUST_DELETE);
+  (void)mdbx_env_delete(copy_txn_path, MDBX_ENV_JUST_DELETE);
   return rc ? rc : MDBX_PROBLEM;
 }
