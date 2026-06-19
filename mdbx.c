@@ -33304,15 +33304,6 @@ static inline dxb_open_result_t env_open_unsubmitted_error(int err) {
   return result;
 }
 
-static dxb_open_result_t env_submit_primary_open(const dxb_env_primary_open_submit_io_t *io) {
-  if (unlikely(!io || !io->storage))
-    return env_open_unsubmitted_error(MDBX_EINVAL);
-  int rc = env_primary_open_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_open_result(io->storage, rc, false, false);
-  return dxb_storage_submit_open_data(io->storage, &io->open);
-}
-
 static inline MDBX_env_flags_t env_dsync_open_flags(const MDBX_env *env) {
   MDBX_env_flags_t mask = MDBX_RDONLY | MDBX_SAFE_NOSYNC | MDBX_NOMETASYNC;
 #if defined(_WIN32) || defined(_WIN64)
@@ -33391,15 +33382,6 @@ static inline int env_dsync_open_submit_io_validate(const dxb_env_dsync_open_sub
     return MDBX_EINVAL;
 
   return MDBX_SUCCESS;
-}
-
-static dxb_open_result_t env_submit_dsync_open(const dxb_env_dsync_open_submit_io_t *io) {
-  if (unlikely(!io || !io->storage))
-    return env_open_unsubmitted_error(MDBX_EINVAL);
-  int rc = env_dsync_open_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_open_result(io->storage, rc, false, false);
-  return dxb_storage_submit_open_dsync(io->storage, &io->open);
 }
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -33592,19 +33574,6 @@ static inline int env_data_park_submit_io_validate(const dxb_env_data_park_submi
   return MDBX_SUCCESS;
 }
 
-static dxb_park_result_t env_submit_data_park(const dxb_env_data_park_submit_io_t *io) {
-  enum dxb_io_channel channel = io ? io->channel : dxb_io_data;
-  uint64_t offset = io ? io->position.offset : 0;
-  int rc = env_data_park_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_park_error(rc, channel, offset, false);
-  if (io->channel == dxb_io_data)
-    return dxb_storage_submit_park_data(io->storage, &io->park);
-  if (io->channel == dxb_io_data_dsync)
-    return dxb_storage_submit_park_dsync(io->storage, &io->park);
-  return dxb_park_error(MDBX_EINVAL, io->channel, io->position.offset, false);
-}
-
 #if !defined(_WIN32) && !defined(_WIN64)
 typedef struct dxb_env_mode_stat_submit_io {
   MDBX_env *env;
@@ -33649,19 +33618,6 @@ static inline int env_mode_stat_submit_io_validate(const dxb_env_mode_stat_submi
   return MDBX_SUCCESS;
 }
 
-static int env_submit_mode_stat(const dxb_env_mode_stat_submit_io_t *io, mdbx_mode_t *mode_bits) {
-  if (unlikely(!mode_bits))
-    return MDBX_EINVAL;
-  int rc = env_mode_stat_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_stat_result_t stat_result = dxb_storage_submit_stat(io->storage, &io->stat);
-  if (unlikely(stat_result.err != MDBX_SUCCESS))
-    return stat_result.err;
-  *mode_bits = stat_result.st.st_mode;
-  return MDBX_SUCCESS;
-}
 #endif /* !Windows */
 
 typedef struct dxb_env_incore_submit_io {
@@ -33701,13 +33657,6 @@ static inline int env_incore_submit_io_validate(const dxb_env_incore_submit_io_t
     return MDBX_EINVAL;
 
   return MDBX_SUCCESS;
-}
-
-static dxb_incore_result_t env_submit_incore_probe(const dxb_env_incore_submit_io_t *io) {
-  int rc = env_incore_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_incore_result(rc, false, false, false);
-  return dxb_storage_submit_check_incore(io->storage, &io->incore);
 }
 
 typedef struct dxb_env_write_queue_create_submit_io {
@@ -33755,13 +33704,6 @@ static inline int env_write_queue_create_submit_io_validate(const dxb_env_write_
     return MDBX_EINVAL;
 
   return MDBX_SUCCESS;
-}
-
-static dxb_queue_result_t env_submit_write_queue_create(const dxb_env_write_queue_create_submit_io_t *io) {
-  int rc = env_write_queue_create_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_queue_submitted_error(rc, io ? io->readonly : false);
-  return dxb_storage_submit_create_write_queue(io->storage, &io->queue);
 }
 
 typedef struct dxb_env_write_queue_destroy_submit_io {
@@ -33815,13 +33757,6 @@ static inline int env_write_queue_destroy_submit_io_validate(const dxb_env_write
   return MDBX_SUCCESS;
 }
 
-static dxb_queue_result_t env_submit_write_queue_destroy(const dxb_env_write_queue_destroy_submit_io_t *io) {
-  int rc = env_write_queue_destroy_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_queue_submitted_error(rc, io ? io->readonly : false);
-  return dxb_storage_submit_destroy_write_queue(io->storage, &io->queue);
-}
-
 typedef struct dxb_env_data_close_submit_io {
   MDBX_env *env;
   dxb_storage_t *storage;
@@ -33872,13 +33807,6 @@ static inline int env_data_close_submit_io_validate(const dxb_env_data_close_sub
     return MDBX_EINVAL;
 
   return MDBX_SUCCESS;
-}
-
-static dxb_close_result_t env_submit_data_close(const dxb_env_data_close_submit_io_t *io) {
-  int rc = env_data_close_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_close_error(rc);
-  return dxb_storage_submit_close(io->storage, &io->close);
 }
 
 __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
@@ -33953,8 +33881,9 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   int rc = env_make_primary_open_submit_io(env, mode, &primary_open_submit);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  dxb_open_result_t open_result = env_submit_primary_open(&primary_open_submit);
-  rc = open_result.err;
+  rc = env_primary_open_submit_io_validate(&primary_open_submit);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = dxb_storage_submit_open_data(primary_open_submit.storage, &primary_open_submit.open).err;
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
@@ -33975,7 +33904,8 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   rc = env_make_data_park_submit_io(env, dxb_io_data, &safe_parking_lot, &data_park_submit);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  (void)env_submit_data_park(&data_park_submit);
+  if (likely(env_data_park_submit_io_validate(&data_park_submit) == MDBX_SUCCESS))
+    (void)dxb_storage_submit_park_data(data_park_submit.storage, &data_park_submit.park);
 #if defined(_WIN32) || defined(_WIN64)
   env->dxb_lock_event = CreateEventW(nullptr, true, false, nullptr);
   if (unlikely(!env->dxb_lock_event))
@@ -34003,8 +33933,15 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
     /* pickup mode for lck-file */
     dxb_env_mode_stat_submit_io_t mode_stat_submit;
     rc = env_make_mode_stat_submit_io(env, mode, &mode_stat_submit);
-    if (likely(rc == MDBX_SUCCESS))
-      rc = env_submit_mode_stat(&mode_stat_submit, &mode);
+    if (likely(rc == MDBX_SUCCESS)) {
+      rc = env_mode_stat_submit_io_validate(&mode_stat_submit);
+      if (likely(rc == MDBX_SUCCESS)) {
+        dxb_stat_result_t stat_result = dxb_storage_submit_stat(mode_stat_submit.storage, &mode_stat_submit.stat);
+        rc = stat_result.err;
+        if (likely(rc == MDBX_SUCCESS))
+          mode = stat_result.st.st_mode;
+      }
+    }
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
   }
@@ -34024,15 +33961,17 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
     rc = env_make_dsync_open_submit_io(env, &dsync_open_submit);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    dxb_open_result_t dsync_result = env_submit_dsync_open(&dsync_open_submit);
-    rc = dsync_result.err;
+    rc = env_dsync_open_submit_io_validate(&dsync_open_submit);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = dxb_storage_submit_open_dsync(dsync_open_submit.storage, &dsync_open_submit.open).err;
     if (unlikely(MDBX_IS_ERROR(rc)))
       return rc;
     dxb_env_data_park_submit_io_t dsync_park_submit;
     rc = env_make_data_park_submit_io(env, dxb_io_data_dsync, &safe_parking_lot, &dsync_park_submit);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    (void)env_submit_data_park(&dsync_park_submit);
+    if (likely(env_data_park_submit_io_validate(&dsync_park_submit) == MDBX_SUCCESS))
+      (void)dxb_storage_submit_park_dsync(dsync_park_submit.storage, &dsync_park_submit.park);
   }
 
   const MDBX_env_flags_t lazy_flags = MDBX_SAFE_NOSYNC | MDBX_UTTERLY_NOSYNC | MDBX_NOMETASYNC;
@@ -34094,7 +34033,10 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   rc = env_make_incore_submit_io(env, &incore_submit);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  dxb_incore_result_t incore_result = env_submit_incore_probe(&incore_submit);
+  rc = env_incore_submit_io_validate(&incore_submit);
+  dxb_incore_result_t incore_result =
+      likely(rc == MDBX_SUCCESS) ? dxb_storage_submit_check_incore(incore_submit.storage, &incore_submit.incore)
+                                 : dxb_incore_result(rc, false, false, false);
   rc = incore_result.err;
   env->incore = incore_result.incore;
   if (env->incore) {
@@ -34136,8 +34078,10 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
 
   dxb_env_write_queue_create_submit_io_t queue_submit;
   rc = env_make_write_queue_create_submit_io(env, &queue_submit);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = env_write_queue_create_submit_io_validate(&queue_submit);
   dxb_queue_result_t queue_result =
-      likely(rc == MDBX_SUCCESS) ? env_submit_write_queue_create(&queue_submit)
+      likely(rc == MDBX_SUCCESS) ? dxb_storage_submit_create_write_queue(queue_submit.storage, &queue_submit.queue)
                                  : dxb_queue_submitted_error(rc, (env->flags & MDBX_RDONLY) != 0);
   return queue_result.err;
 }
@@ -34164,8 +34108,9 @@ __cold int env_close(MDBX_env *env, bool resurrect_after_fork) {
 
   dxb_env_write_queue_destroy_submit_io_t queue_submit;
   int queue_submit_rc = env_make_write_queue_destroy_submit_io(env, flags, &queue_submit);
-  if (likely(queue_submit_rc == MDBX_SUCCESS))
-    (void)env_submit_write_queue_destroy(&queue_submit);
+  if (likely(queue_submit_rc == MDBX_SUCCESS) &&
+      likely(env_write_queue_destroy_submit_io_validate(&queue_submit) == MDBX_SUCCESS))
+    (void)dxb_storage_submit_destroy_write_queue(queue_submit.storage, &queue_submit.queue);
 
   env->lck = nullptr;
   if (env->lck_mmap.lck)
@@ -34191,8 +34136,9 @@ __cold int env_close(MDBX_env *env, bool resurrect_after_fork) {
 
   dxb_env_data_close_submit_io_t close_submit;
   int close_submit_rc = env_make_data_close_submit_io(env, true, &close_submit);
-  if (likely(close_submit_rc == MDBX_SUCCESS))
-    (void)env_submit_data_close(&close_submit);
+  if (likely(close_submit_rc == MDBX_SUCCESS) &&
+      likely(env_data_close_submit_io_validate(&close_submit) == MDBX_SUCCESS))
+    (void)dxb_storage_submit_close(close_submit.storage, &close_submit.close);
 
   if (env->lck_mmap.fd != INVALID_HANDLE_VALUE) {
     (void)osal_closefile(env->lck_mmap.fd);
@@ -38411,8 +38357,11 @@ __cold int lck_destroy(MDBX_env *env, MDBX_env *inprocess_neighbor, const mdbx_p
   /* close dxb and restore lock */
   dxb_env_data_close_submit_io_t close_submit;
   int close_submit_rc = env_make_data_close_submit_io(env, false, &close_submit);
-  dxb_close_result_t close_dxb =
-      likely(close_submit_rc == MDBX_SUCCESS) ? env_submit_data_close(&close_submit) : dxb_close_error(close_submit_rc);
+  if (likely(close_submit_rc == MDBX_SUCCESS))
+    close_submit_rc = env_data_close_submit_io_validate(&close_submit);
+  dxb_close_result_t close_dxb = likely(close_submit_rc == MDBX_SUCCESS)
+                                     ? dxb_storage_submit_close(close_submit.storage, &close_submit.close)
+                                     : dxb_close_error(close_submit_rc);
   const int close_dxb_rc = close_dxb.err;
   if (unlikely(close_dxb_rc != MDBX_SUCCESS) && rc == MDBX_SUCCESS)
     rc = close_dxb_rc;

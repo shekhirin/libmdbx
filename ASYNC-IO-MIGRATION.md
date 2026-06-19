@@ -13322,6 +13322,32 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.157` batch, `1.156` crud, `1.235` iterate,
 `0.999` get, and `1.077` delete.
 
+A later data-file lifecycle submit-boundary cleanup removed the one-call
+`env_submit_primary_open()`, `env_submit_dsync_open()`,
+`env_submit_data_park()`, `env_submit_mode_stat()`,
+`env_submit_incore_probe()`, `env_submit_write_queue_create()`,
+`env_submit_write_queue_destroy()`, and `env_submit_data_close()` helpers from
+`mdbx.c`. The build-covered data-file open, dsync-open, safe descriptor
+parking, mode pickup, incore probe, dirty-write queue creation/destruction,
+ordinary close, and after-fork close/lock-restore paths now validate their
+prepared environment descriptors at the local policy site, then submit directly
+through the matching storage lifecycle operation. This keeps open-mode policy,
+ignored parking and close-result semantics, incore assignment/logging, queue
+error propagation, and close-result `had_data` lock restoration behavior at the
+callers while leaving descriptor lifecycle I/O on explicit storage request
+boundaries. Verification passed `git diff --check`, source scans proving the
+removed lifecycle submit helpers are absent from `mdbx.c` and the
+public/internal headers, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, forced tiny-cache fault injection,
+the ASAN build (`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.111` batch, `1.163` crud, `0.974` iterate,
+`0.961` get, and `1.058` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
