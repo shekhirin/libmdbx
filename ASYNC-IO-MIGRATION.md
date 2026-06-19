@@ -15593,6 +15593,24 @@ Source scans after the aggregate run found no `dxb_mmap`, `pgno2page`,
 `osal_mmap()` declaration/implementation and sole callsite are for lock-file
 mapping.
 
+A later Linux dirty-write checkpoint split the `io_uring` write backend into an
+internal submit phase and completion barrier while keeping the MDBX public API
+blocking. The Linux backend now submits queued dirty-page write SQEs without
+draining each submitted chunk immediately, drains early only when SQ/CQ capacity
+or an error path requires it, and drains all remaining completions before
+returning to `osal_ioring_write()`. This preserves the existing `iov_complete()`
+buffer lifetime rule: dirty page shadows are still released only after kernel
+write completions have been observed. Verification passed `git diff --check`,
+the Ninja build (`cmake --build @cmake-ninja-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed 9/9, the ASAN
+build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.157` batch, `1.169` crud, `0.913` iterate, `1.071`
+get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
