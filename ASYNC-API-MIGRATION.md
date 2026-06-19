@@ -325,6 +325,16 @@ DBI metadata checkpoint:
   non-dupsort flags, and preserves the `MDBX_RESULT_TRUE` non-dupsort
   depth-mask result
 
+DBI write-management checkpoint:
+
+- added `mdbx_async_dbi_sequence()` for async sequence read/increment, including
+  read-only transaction readback with `increment == 0`
+- added `mdbx_async_drop()` for async table purge/delete using the existing
+  `mdbx_drop()` semantics
+- smoke coverage now sets `maxdbs`, creates a temporary named table, checks
+  `drop(false)` empties it, checks `drop(true)` deletes it, and verifies the
+  main DBI sequence increment persists after commit
+
 ## Validation
 
 Completed for this checkpoint:
@@ -466,4 +476,15 @@ Additional DBI metadata checkpoint:
 - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.076, async-cursor/blocking-parallel ratio 1.425
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional DBI write-management checkpoint:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.060
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17

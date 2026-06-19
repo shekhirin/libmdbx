@@ -140,6 +140,7 @@ int main(void) {
   MDBX_cursor *cursor = NULL;
   MDBX_async_op *op = NULL;
   MDBX_dbi dbi = 0;
+  MDBX_dbi drop_dbi = 0;
   uint64_t keys[ITEM_COUNT];
   uint64_t values[ITEM_COUNT];
   uint64_t cursor_extra_key = ITEM_COUNT;
@@ -164,6 +165,7 @@ int main(void) {
   }
 
   CHECK(mdbx_env_create(&env));
+  CHECK(mdbx_env_set_maxdbs(env, 4));
   CHECK(mdbx_env_open(env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM, 0664));
   CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
   REQUIRE(mdbx_async_env(async) == env, "async executor returned wrong environment");
@@ -180,12 +182,35 @@ int main(void) {
   CHECK(mdbx_async_dbi_open(async, txn, NULL, MDBX_DB_DEFAULTS, &dbi, &op));
   CHECK_OP(op);
 
+  uint64_t sequence_value = UINT64_MAX;
+  CHECK(mdbx_async_dbi_sequence(async, txn, dbi, &sequence_value, 7, &op));
+  CHECK_OP(op);
+  REQUIRE(sequence_value == 0, "unexpected initial async dbi sequence");
+
   for (unsigned i = 0; i < ITEM_COUNT; ++i) {
     keys[i] = i;
     values[i] = expected_value(keys[i]);
     key_values[i] = val(&keys[i], sizeof(keys[i]));
     put_values[i] = val(&values[i], sizeof(values[i]));
   }
+
+  CHECK(mdbx_async_dbi_open(async, txn, "async-drop-target", MDBX_CREATE, &drop_dbi, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put(async, txn, drop_dbi, &key_values[0], &put_values[0], 0, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_drop(async, txn, drop_dbi, false, &op));
+  CHECK_OP(op);
+  MDBX_stat drop_stat;
+  memset(&drop_stat, 0, sizeof(drop_stat));
+  CHECK(mdbx_async_dbi_stat(async, txn, drop_dbi, &drop_stat, sizeof(drop_stat), &op));
+  CHECK_OP(op);
+  REQUIRE(drop_stat.ms_entries == 0, "async drop(false) did not empty table");
+  CHECK(mdbx_async_put(async, txn, drop_dbi, &key_values[0], &put_values[0], 0, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_drop(async, txn, drop_dbi, true, &op));
+  CHECK_OP(op);
+  drop_dbi = 0;
+
   CHECK(mdbx_async_put(async, txn, dbi, &key_values[0], &put_values[0], 0, &op));
   CHECK_OP(op);
   CHECK(mdbx_async_put_batch(async, txn, dbi, key_values + 1, put_values + 1, op_results, ITEM_COUNT - 1, 0, &op));
@@ -204,6 +229,11 @@ int main(void) {
   CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
   CHECK_OP(op);
   REQUIRE(txn != NULL, "read transaction was not returned");
+
+  sequence_value = UINT64_MAX;
+  CHECK(mdbx_async_dbi_sequence(async, txn, dbi, &sequence_value, 0, &op));
+  CHECK_OP(op);
+  REQUIRE(sequence_value == 7, "unexpected persisted async dbi sequence");
 
   MDBX_stat dbi_stat;
   memset(&dbi_stat, 0, sizeof(dbi_stat));

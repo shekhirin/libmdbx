@@ -4696,6 +4696,20 @@ LIBMDBX_API int mdbx_async_dbi_flags_ex(MDBX_async *async, const MDBX_txn *txn, 
 LIBMDBX_API int mdbx_async_dbi_dupsort_depthmask(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
                                                  uint32_t *mask, MDBX_async_op **op);
 
+/** \brief Asynchronously read or increment a table sequence.
+ * \ingroup c_async
+ * \details The optional `result` output must remain valid until completion.
+ *          Use `increment == 0` for read-only transactions, matching
+ *          \ref mdbx_dbi_sequence().
+ * \see mdbx_dbi_sequence() */
+LIBMDBX_API int mdbx_async_dbi_sequence(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, uint64_t *result,
+                                        uint64_t increment, MDBX_async_op **op);
+
+/** \brief Asynchronously purge or delete a table.
+ * \ingroup c_async
+ * \see mdbx_drop() */
+LIBMDBX_API int mdbx_async_drop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, bool del, MDBX_async_op **op);
+
 /** \brief Asynchronously get an item from a table.
  * \ingroup c_async
  * \details The key bytes are copied during submission. Returned value lifetime

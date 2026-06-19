@@ -14984,6 +14984,8 @@ enum mdbx_async_opcode {
   async_op_dbi_stat,
   async_op_dbi_flags_ex,
   async_op_dbi_dupsort_depthmask,
+  async_op_dbi_sequence,
+  async_op_drop,
   async_op_get,
   async_op_get_ex,
   async_op_get_equal_or_great,
@@ -15084,6 +15086,17 @@ struct MDBX_async_op {
       MDBX_dbi dbi;
       uint32_t *mask;
     } dbi_dupsort_depthmask;
+    struct {
+      MDBX_txn *txn;
+      MDBX_dbi dbi;
+      uint64_t *result;
+      uint64_t increment;
+    } dbi_sequence;
+    struct {
+      MDBX_txn *txn;
+      MDBX_dbi dbi;
+      bool del;
+    } drop;
     struct {
       const MDBX_txn *txn;
       MDBX_dbi dbi;
@@ -15287,6 +15300,11 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_dbi_dupsort_depthmask:
     return mdbx_dbi_dupsort_depthmask(op->args.dbi_dupsort_depthmask.txn,
                                       op->args.dbi_dupsort_depthmask.dbi, op->args.dbi_dupsort_depthmask.mask);
+  case async_op_dbi_sequence:
+    return mdbx_dbi_sequence(op->args.dbi_sequence.txn, op->args.dbi_sequence.dbi,
+                             op->args.dbi_sequence.result, op->args.dbi_sequence.increment);
+  case async_op_drop:
+    return mdbx_drop(op->args.drop.txn, op->args.drop.dbi, op->args.drop.del);
   case async_op_get: {
     MDBX_val data = {nullptr, 0};
     const int rc = mdbx_get(op->args.get.txn, op->args.get.dbi, &op->key, &data);
@@ -15987,6 +16005,44 @@ int mdbx_async_dbi_dupsort_depthmask(MDBX_async *async, const MDBX_txn *txn, MDB
   op->args.dbi_dupsort_depthmask.txn = txn;
   op->args.dbi_dupsort_depthmask.dbi = dbi;
   op->args.dbi_dupsort_depthmask.mask = mask;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_dbi_sequence(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, uint64_t *result, uint64_t increment,
+                            MDBX_async_op **out) {
+  if (unlikely(!txn))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_dbi_sequence);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.dbi_sequence.txn = txn;
+  op->args.dbi_sequence.dbi = dbi;
+  op->args.dbi_sequence.result = result;
+  op->args.dbi_sequence.increment = increment;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_drop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, bool del, MDBX_async_op **out) {
+  if (unlikely(!txn))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_drop);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.drop.txn = txn;
+  op->args.drop.dbi = dbi;
+  op->args.drop.del = del;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;
