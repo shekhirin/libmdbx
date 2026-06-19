@@ -14930,6 +14930,24 @@ focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.105` batch, `1.159` crud, `0.783`
 iterate, `0.981` get, and `1.083` delete.
 
+A later write-queue reset cleanup removed
+`dxb_write_queue_reset_submit_io_t`,
+`dxb_storage_make_write_queue_reset_submit_io()`, and
+`dxb_storage_write_queue_reset_submit_io_validate()` from `mdbx.c`. Write
+queue reset now submits directly with the storage pointer, while the callers
+retain their existing environment, storage, and data-channel validation before
+resetting queued I/O. Verification passed `git diff --check`, a source scan
+proving the removed queue-reset submit helpers and old descriptor-based reset
+submit calls are absent from `mdbx.c`, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache
+runs, the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.125` batch, `1.180` crud, `1.005`
+iterate, `0.983` get, and `1.087` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

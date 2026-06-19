@@ -212,10 +212,6 @@ typedef struct dxb_write_queue_submit_io {
   bool create;
 } dxb_write_queue_submit_io_t;
 
-typedef struct dxb_write_queue_reset_submit_io {
-  bool reset;
-} dxb_write_queue_reset_submit_io_t;
-
 typedef struct dxb_dirty_write_queue_submit_io {
   dxb_dirty_write_queue_io_t queue;
 } dxb_dirty_write_queue_submit_io_t;
@@ -2149,19 +2145,6 @@ static inline int dxb_storage_write_queue_submit_io_validate(const dxb_write_que
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (unlikely(checked.readonly != io->readonly || checked.create != io->create))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_make_write_queue_reset_submit_io(dxb_write_queue_reset_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-  io->reset = true;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_write_queue_reset_submit_io_validate(const dxb_write_queue_reset_submit_io_t *io) {
-  if (unlikely(!io || !io->reset))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -25069,11 +25052,9 @@ static dxb_queue_result_t dxb_storage_submit_destroy_write_queue(dxb_storage_t *
   return result;
 }
 
-static inline dxb_queue_op_result_t dxb_storage_submit_reset_write_queue(
-    dxb_storage_t *storage, const dxb_write_queue_reset_submit_io_t *io) {
-  int rc = dxb_storage_write_queue_reset_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS || !storage))
-    return dxb_queue_op_result((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL, nullptr, false, false, false, false, false);
+static inline dxb_queue_op_result_t dxb_storage_submit_reset_write_queue(dxb_storage_t *storage) {
+  if (unlikely(!storage))
+    return dxb_queue_op_result(MDBX_EINVAL, nullptr, false, false, false, false, false);
   return osal_ioring_reset(dxb_storage_write_queue(storage));
 }
 
@@ -40031,13 +40012,7 @@ int iov_init(MDBX_txn *const txn, iov_ctx_t *ctx, size_t items, size_t npages, e
     ctx->flush_begin = MAX_PAGENO;
     ctx->flush_end = MIN_PAGENO;
 #endif /* MDBX_NEED_WRITTEN_RANGE */
-    dxb_write_queue_reset_submit_io_t reset_submit;
-    ctx->err = dxb_storage_make_write_queue_reset_submit_io(&reset_submit);
-    if (likely(ctx->err == MDBX_SUCCESS)) {
-      ctx->err = dxb_storage_write_queue_reset_submit_io_validate(&reset_submit);
-      if (likely(ctx->err == MDBX_SUCCESS))
-        ctx->err = dxb_storage_submit_reset_write_queue(ctx->storage, &reset_submit).err;
-    }
+    ctx->err = dxb_storage_submit_reset_write_queue(ctx->storage).err;
   }
   return ctx->err;
 }
@@ -40127,16 +40102,13 @@ static void iov_complete(iov_ctx_t *ctx) {
       ctx->err = walk.err;
   } else if (ctx->err == MDBX_SUCCESS)
     ctx->err = err;
-  dxb_write_queue_reset_submit_io_t reset_submit;
   int reset_err = unlikely(!ctx->env || !ctx->storage || ctx->storage != &ctx->env->dxb_storage ||
                            !dxb_io_channel_is_data(ctx->channel))
                       ? MDBX_EINVAL
-                      : dxb_storage_make_write_queue_reset_submit_io(&reset_submit);
-  if (likely(reset_err == MDBX_SUCCESS))
-    reset_err = dxb_storage_write_queue_reset_submit_io_validate(&reset_submit);
+                      : MDBX_SUCCESS;
   dxb_queue_op_result_t reset =
       likely(reset_err == MDBX_SUCCESS)
-          ? dxb_storage_submit_reset_write_queue(ctx->storage, &reset_submit)
+          ? dxb_storage_submit_reset_write_queue(ctx->storage)
           : iov_queue_op_error(reset_err, ctx->storage);
   if (unlikely(ctx->err == MDBX_SUCCESS && reset.err != MDBX_SUCCESS))
     ctx->err = reset.err;
