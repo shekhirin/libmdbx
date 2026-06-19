@@ -335,6 +335,16 @@ DBI write-management checkpoint:
   `drop(false)` empties it, checks `drop(true)` deletes it, and verifies the
   main DBI sequence increment persists after commit
 
+Named DBI checkpoint:
+
+- added `mdbx_async_dbi_open2()` for arbitrary-length table names and changed
+  async DBI open dispatch to use the copied `MDBX_val` name path internally
+- added `mdbx_async_dbi_rename()` and `mdbx_async_dbi_rename2()` for async table
+  renames, copying the new name bytes before enqueue
+- smoke coverage now creates a named table with an embedded-NUL name, renames it
+  through both C-string and `MDBX_val` wrappers, verifies the payload survives,
+  and then deletes the renamed table
+
 ## Validation
 
 Completed for this checkpoint:
@@ -487,4 +497,15 @@ Additional DBI write-management checkpoint:
 - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.060
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional named DBI checkpoint:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.062, async-cursor/blocking-parallel ratio 1.608
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17

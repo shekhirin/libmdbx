@@ -14981,6 +14981,7 @@ enum mdbx_async_opcode {
   async_op_txn_reset,
   async_op_txn_renew,
   async_op_dbi_open,
+  async_op_dbi_rename,
   async_op_dbi_stat,
   async_op_dbi_flags_ex,
   async_op_dbi_dupsort_depthmask,
@@ -15069,6 +15070,10 @@ struct MDBX_async_op {
       MDBX_db_flags_t flags;
       MDBX_dbi *dbi;
     } dbi_open;
+    struct {
+      MDBX_txn *txn;
+      MDBX_dbi dbi;
+    } dbi_rename;
     struct {
       const MDBX_txn *txn;
       MDBX_dbi dbi;
@@ -15265,6 +15270,30 @@ static int async_copy_val(MDBX_val *dst, void **copy, void *inline_storage, size
   return MDBX_SUCCESS;
 }
 
+static int async_copy_name(MDBX_async_op *op, const MDBX_val *name) {
+  if (!name || name == MDBX_CHK_MAIN) {
+    op->key.iov_base = MDBX_CHK_MAIN;
+    op->key.iov_len = 0;
+    return MDBX_SUCCESS;
+  }
+  if (name == MDBX_CHK_GC) {
+    op->key.iov_base = MDBX_CHK_GC;
+    op->key.iov_len = 0;
+    return MDBX_SUCCESS;
+  }
+  if (name == MDBX_CHK_META) {
+    op->key.iov_base = MDBX_CHK_META;
+    op->key.iov_len = 0;
+    return MDBX_SUCCESS;
+  }
+  if (name->iov_base == MDBX_CHK_MAIN || name->iov_base == MDBX_CHK_GC || name->iov_base == MDBX_CHK_META) {
+    op->key.iov_base = name->iov_base;
+    op->key.iov_len = 0;
+    return MDBX_SUCCESS;
+  }
+  return async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, name);
+}
+
 static void async_op_payload_release(MDBX_async_op *op) {
   osal_free(op->key_copy);
   osal_free(op->data_copy);
@@ -15290,7 +15319,9 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_txn_renew:
     return mdbx_txn_renew(op->args.txn_reuse.txn);
   case async_op_dbi_open:
-    return mdbx_dbi_open(op->args.dbi_open.txn, op->name_copy, op->args.dbi_open.flags, op->args.dbi_open.dbi);
+    return mdbx_dbi_open2(op->args.dbi_open.txn, &op->key, op->args.dbi_open.flags, op->args.dbi_open.dbi);
+  case async_op_dbi_rename:
+    return mdbx_dbi_rename2(op->args.dbi_rename.txn, op->args.dbi_rename.dbi, &op->key);
   case async_op_dbi_stat:
     return mdbx_dbi_stat(op->args.dbi_stat.txn, op->args.dbi_stat.dbi, op->args.dbi_stat.stat,
                          op->args.dbi_stat.bytes);
@@ -15926,32 +15957,73 @@ int mdbx_async_txn_renew(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **out) 
   return rc;
 }
 
-int mdbx_async_dbi_open(MDBX_async *async, MDBX_txn *txn, const char *name, MDBX_db_flags_t flags, MDBX_dbi *dbi,
-                        MDBX_async_op **out) {
+static const MDBX_val *async_name_from_cstr(const char *name, MDBX_val *thunk) {
+  if (name == MDBX_CHK_MAIN || name == MDBX_CHK_GC || name == MDBX_CHK_META) {
+    thunk->iov_base = (void *)name;
+    thunk->iov_len = 0;
+    return thunk;
+  }
+  if (!name)
+    return nullptr;
+  thunk->iov_base = (void *)name;
+  thunk->iov_len = strlen(name);
+  return thunk;
+}
+
+int mdbx_async_dbi_open2(MDBX_async *async, MDBX_txn *txn, const MDBX_val *name, MDBX_db_flags_t flags,
+                         MDBX_dbi *dbi, MDBX_async_op **out) {
   if (unlikely(!txn || !dbi))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
   int rc = async_op_alloc(async, &op, async_op_dbi_open);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
-  if (name) {
-    op->name_copy = osal_strdup(name);
-    if (unlikely(!op->name_copy)) {
-      op->signature = 0;
-      osal_free(op);
-      return LOG_IFERR(MDBX_ENOMEM);
-    }
+  rc = async_copy_name(op, name);
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.dbi_open.txn = txn;
+    op->args.dbi_open.flags = flags;
+    op->args.dbi_open.dbi = dbi;
+    rc = async_op_enqueue(async, op, out);
   }
-  op->args.dbi_open.txn = txn;
-  op->args.dbi_open.flags = flags;
-  op->args.dbi_open.dbi = dbi;
-  rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     async_op_payload_release(op);
     op->signature = 0;
     osal_free(op);
   }
   return rc;
+}
+
+int mdbx_async_dbi_open(MDBX_async *async, MDBX_txn *txn, const char *name, MDBX_db_flags_t flags, MDBX_dbi *dbi,
+                        MDBX_async_op **out) {
+  MDBX_val thunk;
+  return mdbx_async_dbi_open2(async, txn, async_name_from_cstr(name, &thunk), flags, dbi, out);
+}
+
+int mdbx_async_dbi_rename2(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *name,
+                           MDBX_async_op **out) {
+  if (unlikely(!txn))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_dbi_rename);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  rc = async_copy_name(op, name);
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.dbi_rename.txn = txn;
+    op->args.dbi_rename.dbi = dbi;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_dbi_rename(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const char *name, MDBX_async_op **out) {
+  MDBX_val thunk;
+  return mdbx_async_dbi_rename2(async, txn, dbi, async_name_from_cstr(name, &thunk), out);
 }
 
 int mdbx_async_dbi_stat(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_stat *stat, size_t bytes,

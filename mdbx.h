@@ -4673,6 +4673,24 @@ LIBMDBX_API int mdbx_async_txn_renew(MDBX_async *async, MDBX_txn *txn, MDBX_asyn
 LIBMDBX_API int mdbx_async_dbi_open(MDBX_async *async, MDBX_txn *txn, const char *name, MDBX_db_flags_t flags,
                                     MDBX_dbi *dbi, MDBX_async_op **op);
 
+/** \copydoc mdbx_async_dbi_open()
+ * \details The `name` descriptor and name bytes are copied during submission.
+ * \see mdbx_dbi_open2() */
+LIBMDBX_API int mdbx_async_dbi_open2(MDBX_async *async, MDBX_txn *txn, const MDBX_val *name, MDBX_db_flags_t flags,
+                                     MDBX_dbi *dbi, MDBX_async_op **op);
+
+/** \brief Asynchronously rename a DBI handle.
+ * \ingroup c_async
+ * \details The new name bytes are copied during submission.
+ * \see mdbx_dbi_rename() */
+LIBMDBX_API int mdbx_async_dbi_rename(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const char *name,
+                                      MDBX_async_op **op);
+
+/** \copydoc mdbx_async_dbi_rename()
+ * \see mdbx_dbi_rename2() */
+LIBMDBX_API int mdbx_async_dbi_rename2(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *name,
+                                       MDBX_async_op **op);
+
 /** \brief Asynchronously retrieve statistics for a table.
  * \ingroup c_async
  * \details The `stat` output must remain valid until completion.

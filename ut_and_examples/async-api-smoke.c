@@ -141,6 +141,7 @@ int main(void) {
   MDBX_async_op *op = NULL;
   MDBX_dbi dbi = 0;
   MDBX_dbi drop_dbi = 0;
+  MDBX_dbi rename_dbi = 0;
   uint64_t keys[ITEM_COUNT];
   uint64_t values[ITEM_COUNT];
   uint64_t cursor_extra_key = ITEM_COUNT;
@@ -148,6 +149,10 @@ int main(void) {
   MDBX_val key_values[ITEM_COUNT];
   MDBX_val delete_keys[ITEM_COUNT];
   MDBX_val put_values[ITEM_COUNT];
+  uint8_t open2_name_bytes[] = {'a', 's', 'y', 'n', 'c', '-', 'o', 'p', 'e', 'n', '2', 0, 'o', 'l', 'd'};
+  uint8_t rename2_name_bytes[] = {'a', 's', 'y', 'n', 'c', '-', 'o', 'p', 'e', 'n', '2', 0, 'n', 'e', 'w'};
+  MDBX_val open2_name = val(open2_name_bytes, sizeof(open2_name_bytes));
+  MDBX_val rename2_name = val(rename2_name_bytes, sizeof(rename2_name_bytes));
   MDBX_val cursor_extra_key_value = val(&cursor_extra_key, sizeof(cursor_extra_key));
   MDBX_val cursor_extra_put_value = val(&cursor_extra_value, sizeof(cursor_extra_value));
   MDBX_val get_values[ITEM_COUNT];
@@ -210,6 +215,23 @@ int main(void) {
   CHECK(mdbx_async_drop(async, txn, drop_dbi, true, &op));
   CHECK_OP(op);
   drop_dbi = 0;
+
+  CHECK(mdbx_async_dbi_open2(async, txn, &open2_name, MDBX_CREATE, &rename_dbi, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put(async, txn, rename_dbi, &key_values[1], &put_values[1], 0, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_dbi_rename(async, txn, rename_dbi, "async-renamed-cstr", &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_dbi_rename2(async, txn, rename_dbi, &rename2_name, &op));
+  CHECK_OP(op);
+  MDBX_stat rename_stat;
+  memset(&rename_stat, 0, sizeof(rename_stat));
+  CHECK(mdbx_async_dbi_stat(async, txn, rename_dbi, &rename_stat, sizeof(rename_stat), &op));
+  CHECK_OP(op);
+  REQUIRE(rename_stat.ms_entries == 1, "async renamed table lost payload");
+  CHECK(mdbx_async_drop(async, txn, rename_dbi, true, &op));
+  CHECK_OP(op);
+  rename_dbi = 0;
 
   CHECK(mdbx_async_put(async, txn, dbi, &key_values[0], &put_values[0], 0, &op));
   CHECK_OP(op);
