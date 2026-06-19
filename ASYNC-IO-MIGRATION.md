@@ -13375,6 +13375,30 @@ and the six focused ASAN `migration_smoke` entries with
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.110`
 batch, `1.132` crud, `0.885` iterate, `1.056` get, and `1.064` delete.
 
+A later data-file setup submit-boundary cleanup removed the one-call
+`preopen_submit_readonly_open()`, `dxb_setup_submit_pagesize_state()`,
+`dxb_setup_submit_newdb_filesize()`,
+`dxb_setup_submit_meta_pages_write()`, and
+`dxb_txn_setup_submit_limit_size_state()` helpers from `mdbx.c`. Read-only
+preopen snapinfo, new-database creation, accepted-header page-size state
+pickup, initial meta triplet creation, new-file size publication, and writer
+transaction setup limit-state refresh now validate their prepared descriptors
+at the local setup policy site, then submit directly through the matching
+storage operation. This keeps setup-time geometry, page-size, aux-buffer,
+initial-meta, and limit-state decisions at the callers while leaving each
+open/setup I/O request on an explicit storage boundary. Verification passed
+`git diff --check`, source scans proving the removed setup submit helpers are
+absent from `mdbx.c` and the public/internal headers, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, forced
+tiny-cache fault injection, the ASAN build (`cmake --build @cmake-asan-build`),
+and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.092`
+batch, `1.148` crud, `1.208` iterate, `0.959` get, and `1.078` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

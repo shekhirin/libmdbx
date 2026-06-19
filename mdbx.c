@@ -14165,14 +14165,6 @@ static inline int preopen_readonly_open_submit_io_validate(const dxb_preopen_rea
   return MDBX_SUCCESS;
 }
 
-static int preopen_submit_readonly_open(const dxb_preopen_readonly_open_submit_io_t *io) {
-  int rc = preopen_readonly_open_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_open_result_t open_result = dxb_storage_submit_open_data(io->storage, &io->open);
-  return open_result.err;
-}
-
 __cold int mdbx_preopen_snapinfo(const char *pathname, MDBX_envinfo *out, size_t bytes) {
 #if defined(_WIN32) || defined(_WIN64)
   wchar_t *pathnameW = nullptr;
@@ -14227,7 +14219,9 @@ __cold int mdbx_preopen_snapinfoW(const wchar_t *pathname, MDBX_envinfo *out, si
   dxb_preopen_readonly_open_submit_io_t open_submit;
   rc = preopen_make_readonly_open_submit_io(&env, &open_submit);
   if (likely(rc == MDBX_SUCCESS))
-    rc = preopen_submit_readonly_open(&open_submit);
+    rc = preopen_readonly_open_submit_io_validate(&open_submit);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = dxb_storage_submit_open_data(open_submit.storage, &open_submit.open).err;
   if (unlikely(rc != MDBX_SUCCESS))
     goto bailout;
 
@@ -30679,14 +30673,6 @@ static inline int dxb_txn_setup_limit_size_state_submit_io_validate(
              : MDBX_EINVAL;
 }
 
-static dxb_state_result_t
-dxb_txn_setup_submit_limit_size_state(const dxb_txn_setup_limit_size_state_submit_io_t *io) {
-  int rc = dxb_txn_setup_limit_size_state_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_state_error(rc);
-  return dxb_storage_submit_size_state(io->storage, &io->submit);
-}
-
 typedef struct dxb_header_meta_read_submit_io {
   const dxb_storage_t *storage;
   dxb_meta_read_io_t request;
@@ -31516,14 +31502,6 @@ static inline int dxb_setup_pagesize_state_submit_io_validate(
              : MDBX_EINVAL;
 }
 
-static dxb_state_result_t dxb_setup_submit_pagesize_state(
-    const dxb_setup_pagesize_state_submit_io_t *io) {
-  int rc = dxb_setup_pagesize_state_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return io && io->storage ? dxb_state_result(rc, io->storage, false) : dxb_state_error(rc);
-  return dxb_storage_submit_pagesize_state(io->storage, &io->submit);
-}
-
 typedef struct dxb_setup_newdb_filesize_submit_io {
   MDBX_env *env;
   dxb_storage_t *storage;
@@ -31591,14 +31569,6 @@ static inline int dxb_setup_newdb_filesize_submit_io_validate(
                 dxb_filesize_set_current_submit_io_equal(&checked.submit, &io->submit))
              ? MDBX_SUCCESS
              : MDBX_EINVAL;
-}
-
-static dxb_filesize_result_t dxb_setup_submit_newdb_filesize(
-    const dxb_setup_newdb_filesize_submit_io_t *io) {
-  int rc = dxb_setup_newdb_filesize_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_error(rc);
-  return dxb_storage_submit_set_filesize_as_current(io->storage, &io->submit);
 }
 
 typedef struct dxb_setup_meta_pages_write_submit_io {
@@ -31716,16 +31686,6 @@ static inline int dxb_setup_meta_pages_write_submit_io_validate(
   return MDBX_SUCCESS;
 }
 
-static dxb_write_result_t dxb_setup_submit_meta_pages_write(
-    dxb_storage_t *storage, const dxb_setup_meta_pages_write_submit_io_t *io) {
-  if (unlikely(!storage || !io || storage != io->storage))
-    return dxb_write_error(MDBX_EINVAL);
-  int rc = dxb_setup_meta_pages_write_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
-  return dxb_storage_submit_write_data(storage, &io->write);
-}
-
 typedef struct dxb_setup_stale_tail_discard_submit_io {
   MDBX_env *env;
   dxb_storage_t *storage;
@@ -31840,7 +31800,10 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
     err = dxb_setup_make_pagesize_state_submit_io(env, &pagesize_submit);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_setup_submit_pagesize_state(&pagesize_submit).err;
+    err = dxb_setup_pagesize_state_submit_io_validate(&pagesize_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = dxb_storage_submit_pagesize_state(pagesize_submit.storage, &pagesize_submit.submit).err;
     if (unlikely(err != MDBX_SUCCESS))
       return err;
     err = env_page_auxbuffer(env);
@@ -31852,7 +31815,11 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
     err = dxb_setup_make_meta_pages_write_submit_io(env, env->page_auxbuf, &meta_pages_submit);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    dxb_write_result_t meta_pages_write = dxb_setup_submit_meta_pages_write(storage, &meta_pages_submit);
+    err = dxb_setup_meta_pages_write_submit_io_validate(&meta_pages_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    dxb_write_result_t meta_pages_write =
+        dxb_storage_submit_write_data(meta_pages_submit.storage, &meta_pages_submit.write);
     err = meta_pages_write.err;
     if (unlikely(err != MDBX_SUCCESS))
       return err;
@@ -31861,7 +31828,10 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
     err = dxb_setup_make_newdb_filesize_submit_io(env, &setsize_submit);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_setup_submit_newdb_filesize(&setsize_submit).err;
+    err = dxb_setup_newdb_filesize_submit_io_validate(&setsize_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = dxb_storage_submit_set_filesize_as_current(setsize_submit.storage, &setsize_submit.submit).err;
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
@@ -31897,7 +31867,10 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   err = dxb_setup_make_pagesize_state_submit_io(env, &pagesize_submit);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  err = dxb_setup_submit_pagesize_state(&pagesize_submit).err;
+  err = dxb_setup_pagesize_state_submit_io_validate(&pagesize_submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  err = dxb_storage_submit_pagesize_state(pagesize_submit.storage, &pagesize_submit.submit).err;
   if (unlikely(err != MDBX_SUCCESS))
     return err;
   if ((env->flags & MDBX_RDONLY) == 0) {
@@ -55262,7 +55235,9 @@ int txn_setup_primal(MDBX_txn *txn) {
         dxb_txn_setup_limit_size_state_submit_io_t limit_state_submit;
         err = dxb_txn_setup_make_limit_size_state_submit_io(env, &limit_state_submit);
         if (likely(err == MDBX_SUCCESS))
-          err = dxb_txn_setup_submit_limit_size_state(&limit_state_submit).err;
+          err = dxb_txn_setup_limit_size_state_submit_io_validate(&limit_state_submit);
+        if (likely(err == MDBX_SUCCESS))
+          err = dxb_storage_submit_size_state(limit_state_submit.storage, &limit_state_submit.submit).err;
       }
     }
 #if defined(_WIN32) || defined(_WIN64)
