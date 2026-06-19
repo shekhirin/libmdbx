@@ -3258,3 +3258,37 @@ Additional async put-loop API checkpoint:
 - conclusion: worker-side write loops now give callers a streaming put shape
   that avoids prebuilding batch arrays and, in this reduced run, slightly beats
   both the blocking put sample and the existing async put-batch sample.
+
+Additional async delete-loop API checkpoint:
+
+- added `mdbx_async_del_loop()` as an async-only worker-side loop helper for
+  repeated `mdbx_del()` calls. The blocking API is unchanged.
+- the API reuses the existing GET loop key callback style, accepts an optional
+  data callback for duplicate-data matching, invokes an optional result
+  callback for each delete, and reports completed delete attempts through an
+  optional `completed` output.
+- extended `ut_and_examples/async-api-smoke.c` with a dedicated temporary table
+  that writes five entries, deletes three by key through
+  `mdbx_async_del_loop()`, verifies callback counts, verifies the remaining
+  entry count, and drops the table.
+- extended `ut_and_examples/async-api-bench.c` with async delete-loop timing
+  beside per-item async delete and async delete-batch.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking delete 1.897 Mops/s,
+  async delete 1.494 Mops/s, async batch delete 2.038 Mops/s, and async loop
+  delete 2.057 Mops/s. Ratios were async-del/blocking 0.788,
+  async-del-batch/blocking 1.075, async-del-loop/blocking 1.085,
+  async-del-loop/async-del 1.377, and async-del-loop/batch 1.009.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=182 async-covered=132 async-only=50 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: worker-side delete loops give callers a streaming key-generation
+  delete shape that avoids prebuilt arrays and, in this reduced run, slightly
+  improves on the existing async delete-batch path.

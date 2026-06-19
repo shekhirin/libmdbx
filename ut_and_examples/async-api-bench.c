@@ -70,6 +70,11 @@ struct async_put_loop_check {
   uint64_t value;
 };
 
+struct async_del_loop_check {
+  size_t checked;
+  uint64_t key;
+};
+
 struct async_worker {
   MDBX_async *async;
   MDBX_txn *txn;
@@ -282,6 +287,34 @@ static int async_put_loop_result_func(void *context, size_t index, const MDBX_va
   const uint64_t expected_key = key_for(index, check->items);
   if (actual_key != expected_key || actual_value != write_value(expected_key, index, UINT64_C(1001)))
     return fail_msg("unexpected async put loop payload", __FILE__, __LINE__);
+  check->checked += 1;
+  return MDBX_SUCCESS;
+}
+
+static int async_del_loop_key_func(void *context, size_t index, MDBX_val *key) {
+  struct async_del_loop_check *const check = (struct async_del_loop_check *)context;
+  if (!check || !key)
+    return fail_msg("missing async delete loop key state", __FILE__, __LINE__);
+  check->key = (uint64_t)index;
+  *key = val(&check->key, sizeof(check->key));
+  return MDBX_SUCCESS;
+}
+
+static int async_del_loop_result_func(void *context, size_t index, const MDBX_val *key, const MDBX_val *data,
+                                      bool has_data, int result) {
+  struct async_del_loop_check *const check = (struct async_del_loop_check *)context;
+  if (!check || !key || !data)
+    return fail_msg("missing async delete loop result state", __FILE__, __LINE__);
+  if (has_data)
+    return fail_msg("unexpected async delete loop data flag", __FILE__, __LINE__);
+  if (result != MDBX_SUCCESS)
+    return fail_rc("mdbx_async_del_loop item", result, __FILE__, __LINE__);
+  if (key->iov_len != sizeof(uint64_t) || data->iov_base || data->iov_len)
+    return fail_msg("unexpected async delete loop value shape", __FILE__, __LINE__);
+  uint64_t actual_key = 0;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  if (actual_key != index)
+    return fail_msg("unexpected async delete loop key payload", __FILE__, __LINE__);
   check->checked += 1;
   return MDBX_SUCCESS;
 }
@@ -1050,6 +1083,52 @@ bailout:
   free(results);
   free(key_data);
   free(keys);
+  return (rc == MDBX_SUCCESS) ? rate : -1.0;
+}
+
+static double async_loop_delete(MDBX_env *env, MDBX_dbi dbi, size_t ops) {
+  MDBX_async *async = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_async_op *op = NULL;
+  struct async_del_loop_check check;
+  int rc = MDBX_SUCCESS;
+  double rate = -1.0;
+
+  if (!ops)
+    return -1.0;
+  memset(&check, 0, sizeof(check));
+  CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+
+  size_t completed = 0;
+  int operation_rc = MDBX_SUCCESS;
+  const uint64_t start = monotime_ns();
+  CHECK(mdbx_async_del_loop(async, txn, dbi, ops, async_del_loop_key_func, NULL, async_del_loop_result_func,
+                            &check, &completed, &op));
+  CHECK(wait_success(&op, &operation_rc, __FILE__, __LINE__));
+  if (operation_rc != MDBX_SUCCESS) {
+    rc = fail_rc("mdbx_async_del_loop", operation_rc, __FILE__, __LINE__);
+    goto bailout;
+  }
+  if (completed != ops || check.checked != ops) {
+    rc = fail_msg("unexpected async delete loop completion count", __FILE__, __LINE__);
+    goto bailout;
+  }
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  txn = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  const uint64_t finish = monotime_ns();
+  if (finish > start)
+    rate = (double)ops * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  if (async)
+    (void)mdbx_async_destroy(async, true);
   return (rc == MDBX_SUCCESS) ? rate : -1.0;
 }
 
@@ -3297,6 +3376,8 @@ int main(void) {
   CHECK(seed_database(env, &dbi, items));
   const double async_del_batch = async_batch_delete(env, dbi, delete_ops, write_batch);
   CHECK(seed_database(env, &dbi, items));
+  const double async_del_loop = async_loop_delete(env, dbi, delete_ops);
+  CHECK(seed_database(env, &dbi, items));
   const double blocking_cursor_del = blocking_cursor_delete(env, dbi, delete_ops);
   CHECK(seed_database(env, &dbi, items));
   const double async_cursor_del = async_cursor_delete(env, dbi, delete_ops);
@@ -3347,6 +3428,7 @@ int main(void) {
   print_rate("blocking delete", blocking_del);
   print_rate("async delete", async_del);
   print_rate("async batch delete", async_del_batch);
+  print_rate("async loop delete", async_del_loop);
   print_rate("blocking cursor delete", blocking_cursor_del);
   print_rate("async cursor delete", async_cursor_del);
   print_rate("async cursor del loop", async_cursor_del_loop);
@@ -3471,8 +3553,14 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-del/blocking del", async_del / blocking_del);
   if (blocking_del > 0.0 && async_del_batch > 0.0)
     printf("%-28s %8.3f\n", "async-del-batch/blocking", async_del_batch / blocking_del);
+  if (blocking_del > 0.0 && async_del_loop > 0.0)
+    printf("%-28s %8.3f\n", "async-del-loop/blocking", async_del_loop / blocking_del);
   if (async_del > 0.0 && async_del_batch > 0.0)
     printf("%-28s %8.3f\n", "async-del-batch/async-del", async_del_batch / async_del);
+  if (async_del > 0.0 && async_del_loop > 0.0)
+    printf("%-28s %8.3f\n", "async-del-loop/async-del", async_del_loop / async_del);
+  if (async_del_batch > 0.0 && async_del_loop > 0.0)
+    printf("%-28s %8.3f\n", "async-del-loop/batch", async_del_loop / async_del_batch);
   if (blocking_cursor_del > 0.0 && async_cursor_del > 0.0)
     printf("%-28s %8.3f\n", "async-cursor-del/block", async_cursor_del / blocking_cursor_del);
   if (blocking_cursor_del > 0.0 && async_cursor_del_loop > 0.0)

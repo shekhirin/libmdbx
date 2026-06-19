@@ -15110,6 +15110,7 @@ enum mdbx_async_opcode {
   async_op_replace_ex,
   async_op_del,
   async_op_del_batch,
+  async_op_del_loop,
   async_op_cursor_create,
   async_op_cursor_set_userctx,
   async_op_cursor_get_userctx,
@@ -15611,6 +15612,16 @@ struct MDBX_async_op {
       size_t count;
       bool has_data;
     } del_batch;
+    struct {
+      MDBX_txn *txn;
+      MDBX_dbi dbi;
+      size_t count;
+      MDBX_get_loop_key_func key_func;
+      MDBX_get_loop_data_func data_func;
+      MDBX_del_loop_result_func result_func;
+      void *context;
+      size_t *completed;
+    } del_loop;
     struct {
       void *context;
       MDBX_cursor **cursor;
@@ -16608,6 +16619,32 @@ static int async_op_execute(MDBX_async_op *op) {
       op->args.del_batch.results[i] =
           mdbx_del(op->args.del_batch.txn, op->args.del_batch.dbi, &op->args.del_batch.keys[i],
                    op->args.del_batch.has_data ? &op->args.del_batch.data[i] : nullptr);
+    return MDBX_SUCCESS;
+  case async_op_del_loop:
+    if (op->args.del_loop.completed)
+      *op->args.del_loop.completed = 0;
+    for (size_t i = 0; i < op->args.del_loop.count; ++i) {
+      MDBX_val key = {nullptr, 0};
+      MDBX_val data = {nullptr, 0};
+      int rc = op->args.del_loop.key_func(op->args.del_loop.context, i, &key);
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+      if (op->args.del_loop.data_func) {
+        rc = op->args.del_loop.data_func(op->args.del_loop.context, i, &key, &data);
+        if (unlikely(rc != MDBX_SUCCESS))
+          return rc;
+      }
+      const bool has_data = op->args.del_loop.data_func != nullptr;
+      const int del_rc = mdbx_del(op->args.del_loop.txn, op->args.del_loop.dbi, &key,
+                                  has_data ? &data : nullptr);
+      rc = op->args.del_loop.result_func
+               ? op->args.del_loop.result_func(op->args.del_loop.context, i, &key, &data, has_data, del_rc)
+               : del_rc;
+      if (op->args.del_loop.completed)
+        *op->args.del_loop.completed = i + 1;
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+    }
     return MDBX_SUCCESS;
   case async_op_cursor_create:
     *op->args.cursor_create.cursor = mdbx_cursor_create(op->args.cursor_create.context);
@@ -19537,6 +19574,34 @@ int mdbx_async_del_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const M
   op->args.del_batch.results = results;
   op->args.del_batch.count = count;
   op->args.del_batch.has_data = data != nullptr;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_del_loop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, size_t count,
+                        MDBX_get_loop_key_func key_func, MDBX_get_loop_data_func data_func,
+                        MDBX_del_loop_result_func result_func, void *context, size_t *completed,
+                        MDBX_async_op **out) {
+  if (unlikely(!txn || !count || !key_func))
+    return LOG_IFERR(MDBX_EINVAL);
+  if (completed)
+    *completed = 0;
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_del_loop);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.del_loop.txn = txn;
+  op->args.del_loop.dbi = dbi;
+  op->args.del_loop.count = count;
+  op->args.del_loop.key_func = key_func;
+  op->args.del_loop.data_func = data_func;
+  op->args.del_loop.result_func = result_func;
+  op->args.del_loop.context = context;
+  op->args.del_loop.completed = completed;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;

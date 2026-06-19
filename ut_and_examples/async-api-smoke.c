@@ -94,6 +94,12 @@ struct put_loop_probe {
   size_t results;
 };
 
+struct del_loop_probe {
+  uint64_t keys[3];
+  size_t keys_seen;
+  size_t results;
+};
+
 static int fail_rc(const char *expr, int rc, const char *file, int line) {
   fprintf(stderr, "%s:%d: %s failed: (%d) %s\n", file, line, expr, rc, mdbx_strerror(rc));
   return rc ? rc : MDBX_PROBLEM;
@@ -403,6 +409,29 @@ static int put_loop_result_func(void *context, size_t index, const MDBX_val *key
   return MDBX_SUCCESS;
 }
 
+static int del_loop_key_func(void *context, size_t index, MDBX_val *key) {
+  struct del_loop_probe *const probe = (struct del_loop_probe *)context;
+  if (!probe || !key || index >= sizeof(probe->keys) / sizeof(probe->keys[0]))
+    return MDBX_PROBLEM;
+  *key = val(&probe->keys[index], sizeof(probe->keys[index]));
+  probe->keys_seen += 1;
+  return MDBX_SUCCESS;
+}
+
+static int del_loop_result_func(void *context, size_t index, const MDBX_val *key, const MDBX_val *data,
+                                bool has_data, int result) {
+  struct del_loop_probe *const probe = (struct del_loop_probe *)context;
+  if (!probe || !key || !data || has_data || result != MDBX_SUCCESS ||
+      index >= sizeof(probe->keys) / sizeof(probe->keys[0]))
+    return MDBX_PROBLEM;
+  if (key->iov_base != &probe->keys[index] || key->iov_len != sizeof(probe->keys[index]))
+    return MDBX_PROBLEM;
+  if (data->iov_base != NULL || data->iov_len != 0)
+    return MDBX_PROBLEM;
+  probe->results += 1;
+  return MDBX_SUCCESS;
+}
+
 static int get_ex_loop_key_func(void *context, size_t index, MDBX_val *key) {
   struct get_ex_loop_probe *const probe = (struct get_ex_loop_probe *)context;
   if (!probe || !key || index >= ITEM_COUNT)
@@ -652,6 +681,7 @@ int main(void) {
   MDBX_dbi bunch_dbi = 0;
   MDBX_dbi del_loop_dbi = 0;
   MDBX_dbi put_loop_dbi = 0;
+  MDBX_dbi key_del_loop_dbi = 0;
   MDBX_dbi custom_cstr_dbi = 0;
   MDBX_dbi custom_val_dbi = 0;
   uint64_t keys[ITEM_COUNT];
@@ -1184,6 +1214,37 @@ int main(void) {
   CHECK(mdbx_async_drop(async, txn, put_loop_dbi, true, &op));
   CHECK_OP(op);
   put_loop_dbi = 0;
+
+  CHECK(mdbx_async_dbi_open(async, txn, "async-key-del-loop-target", MDBX_CREATE, &key_del_loop_dbi, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put_batch(async, txn, key_del_loop_dbi, key_values, put_values, op_results, 5, 0, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < 5; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_put_batch key del loop", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
+  }
+  struct del_loop_probe del_loop_probe;
+  memset(&del_loop_probe, 0, sizeof(del_loop_probe));
+  const size_t key_del_loop_count = sizeof(del_loop_probe.keys) / sizeof(del_loop_probe.keys[0]);
+  for (size_t i = 0; i < key_del_loop_count; ++i)
+    del_loop_probe.keys[i] = keys[i + 1];
+  size_t key_del_loop_completed = 0;
+  CHECK(mdbx_async_del_loop(async, txn, key_del_loop_dbi, key_del_loop_count, del_loop_key_func, NULL,
+                            del_loop_result_func, &del_loop_probe, &key_del_loop_completed, &op));
+  CHECK_OP(op);
+  REQUIRE(key_del_loop_completed == key_del_loop_count, "unexpected async delete loop completion count");
+  REQUIRE(del_loop_probe.keys_seen == key_del_loop_count && del_loop_probe.results == key_del_loop_count,
+          "async delete loop callbacks did not cover all items");
+  MDBX_stat key_del_loop_stat;
+  memset(&key_del_loop_stat, 0, sizeof(key_del_loop_stat));
+  CHECK(mdbx_async_dbi_stat(async, txn, key_del_loop_dbi, &key_del_loop_stat, sizeof(key_del_loop_stat), &op));
+  CHECK_OP(op);
+  REQUIRE(key_del_loop_stat.ms_entries == 2, "async delete loop left unexpected entries");
+  CHECK(mdbx_async_drop(async, txn, key_del_loop_dbi, true, &op));
+  CHECK_OP(op);
+  key_del_loop_dbi = 0;
 
   CHECK(mdbx_async_put(async, txn, dbi, &key_values[0], &put_values[0], 0, &op));
   CHECK_OP(op);

@@ -5375,6 +5375,15 @@ typedef int (*MDBX_put_loop_item_func)(void *context, size_t index, MDBX_val *ke
 typedef int (*MDBX_put_loop_result_func)(void *context, size_t index, const MDBX_val *key,
                                          MDBX_val *data, int result) MDBX_CXX17_NOEXCEPT;
 
+/** \brief Callback that consumes one \ref mdbx_async_del_loop() result.
+ * \ingroup c_async
+ * \details The callback runs on the executor worker thread after one
+ *          \ref mdbx_del() call. `has_data` is true when the loop used a data
+ *          callback for duplicate-data matching. Returning a non-success result
+ *          stops the loop and becomes the async operation result. */
+typedef int (*MDBX_del_loop_result_func)(void *context, size_t index, const MDBX_val *key,
+                                         const MDBX_val *data, bool has_data, int result) MDBX_CXX17_NOEXCEPT;
+
 /** \brief Asynchronously get a batch of items from a table.
  * \ingroup c_async
  * \details The `keys`, key bytes, `data`, and `results` arrays must remain
@@ -5588,6 +5597,24 @@ LIBMDBX_API int mdbx_async_del(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, c
  * \see mdbx_del() */
 LIBMDBX_API int mdbx_async_del_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
                                      const MDBX_val data[], int results[], size_t count, MDBX_async_op **op);
+
+/** \brief Asynchronously run a worker-side loop of delete operations.
+ * \ingroup c_async
+ * \details This submits one async operation that invokes `key_func` for each
+ *          index, invokes optional `data_func` for duplicate-data matching,
+ *          calls \ref mdbx_del(), and then invokes `result_func` when it is
+ *          non-NULL. If no result callback is supplied, the first non-success
+ *          \ref mdbx_del() result stops the loop and becomes the async
+ *          operation result. If `completed` is non-NULL, it receives the number
+ *          of delete attempts completed before the operation returned.
+ * \see mdbx_del()
+ * \see MDBX_get_loop_key_func
+ * \see MDBX_get_loop_data_func
+ * \see MDBX_del_loop_result_func */
+LIBMDBX_API int mdbx_async_del_loop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, size_t count,
+                                    MDBX_get_loop_key_func key_func, MDBX_get_loop_data_func data_func,
+                                    MDBX_del_loop_result_func result_func, void *context,
+                                    size_t *completed, MDBX_async_op **op);
 
 /** \brief Asynchronously open a cursor.
  * \ingroup c_async
