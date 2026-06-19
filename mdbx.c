@@ -15088,6 +15088,7 @@ enum mdbx_async_opcode {
   async_op_cursor_scan,
   async_op_cursor_scan_from,
   async_op_cursor_get_batch,
+  async_op_cursor_get_batches,
   async_op_cursor_count,
   async_op_cursor_txn,
   async_op_cursor_dbi,
@@ -15556,6 +15557,14 @@ struct MDBX_async_op {
       MDBX_cursor_op op;
     } cursor_get_batch;
     struct {
+      MDBX_cursor *cursor;
+      size_t target_pairs;
+      size_t batch_pairs;
+      MDBX_cursor_batch_func func;
+      void *context;
+      size_t *completed_pairs;
+    } cursor_get_batches;
+    struct {
       const MDBX_cursor *cursor;
       size_t *count;
       MDBX_stat *stat;
@@ -15824,6 +15833,53 @@ static void async_op_payload_release(MDBX_async_op *op) {
   op->old_data_copy = nullptr;
   op->extra_copy = nullptr;
   op->name_copy = nullptr;
+}
+
+static int async_cursor_get_batches_execute(MDBX_async_op *op) {
+  const size_t target_pairs = op->args.cursor_get_batches.target_pairs;
+  const size_t batch_pairs = op->args.cursor_get_batches.batch_pairs;
+  size_t *const completed_pairs = op->args.cursor_get_batches.completed_pairs;
+  if (completed_pairs)
+    *completed_pairs = 0;
+  if (target_pairs == 0)
+    return MDBX_SUCCESS;
+  if (unlikely(batch_pairs == 0 || batch_pairs > SIZE_MAX / 2))
+    return MDBX_EINVAL;
+  const size_t limit = batch_pairs * 2;
+  if (unlikely(limit > SIZE_MAX / sizeof(MDBX_val)))
+    return MDBX_EINVAL;
+
+  MDBX_val *const pairs = osal_calloc(limit, sizeof(*pairs));
+  if (unlikely(!pairs))
+    return MDBX_ENOMEM;
+
+  size_t completed = 0;
+  int rc = MDBX_SUCCESS;
+  MDBX_cursor_op cursor_op = MDBX_FIRST;
+  while (completed < target_pairs) {
+    size_t count = 0;
+    rc = mdbx_cursor_get_batch(op->args.cursor_get_batches.cursor, &count, pairs, limit, cursor_op);
+    if (unlikely(rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE))
+      break;
+    const int batch_rc = rc;
+    if (unlikely(count == 0)) {
+      rc = batch_rc;
+      break;
+    }
+    if (op->args.cursor_get_batches.func) {
+      rc = op->args.cursor_get_batches.func(op->args.cursor_get_batches.context, pairs, count);
+      if (unlikely(rc != MDBX_SUCCESS))
+        break;
+    }
+    completed += count / 2;
+    if (completed_pairs)
+      *completed_pairs = completed;
+    cursor_op = batch_rc == MDBX_SUCCESS ? MDBX_NEXT : MDBX_FIRST;
+    rc = MDBX_SUCCESS;
+  }
+
+  osal_free(pairs);
+  return rc;
 }
 
 static int async_op_execute(MDBX_async_op *op) {
@@ -16279,6 +16335,8 @@ static int async_op_execute(MDBX_async_op *op) {
     return mdbx_cursor_get_batch(op->args.cursor_get_batch.cursor, op->args.cursor_get_batch.count,
                                  op->args.cursor_get_batch.pairs, op->args.cursor_get_batch.limit,
                                  op->args.cursor_get_batch.op);
+  case async_op_cursor_get_batches:
+    return async_cursor_get_batches_execute(op);
   case async_op_cursor_count:
     return mdbx_cursor_count_ex(op->args.cursor_count.cursor, op->args.cursor_count.count,
                                 op->args.cursor_count.stat, op->args.cursor_count.bytes);
@@ -18820,6 +18878,29 @@ int mdbx_async_cursor_get_batch(MDBX_async *async, MDBX_cursor *cursor, size_t *
   op->args.cursor_get_batch.pairs = pairs;
   op->args.cursor_get_batch.limit = limit;
   op->args.cursor_get_batch.op = cursor_op;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return rc;
+}
+
+int mdbx_async_cursor_get_batches(MDBX_async *async, MDBX_cursor *cursor, size_t target_pairs, size_t batch_pairs,
+                                  MDBX_cursor_batch_func func, void *context, size_t *completed_pairs,
+                                  MDBX_async_op **out) {
+  if (unlikely(!cursor || (target_pairs && batch_pairs == 0)))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_get_batches);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cursor_get_batches.cursor = cursor;
+  op->args.cursor_get_batches.target_pairs = target_pairs;
+  op->args.cursor_get_batches.batch_pairs = batch_pairs;
+  op->args.cursor_get_batches.func = func;
+  op->args.cursor_get_batches.context = context;
+  op->args.cursor_get_batches.completed_pairs = completed_pairs;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;

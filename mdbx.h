@@ -4640,6 +4640,14 @@ DEFINE_ENUM_FLAG_OPERATORS(MDBX_async_flags)
  * \details The function runs on the executor worker thread and may call the regular blocking MDBX API there. */
 typedef int (*MDBX_async_func)(MDBX_env *env, void *context);
 
+/** \brief Callback for batches fetched by \ref mdbx_async_cursor_get_batches().
+ * \ingroup c_async
+ * \details The callback runs on the executor worker thread. The `pairs` array
+ *          contains alternating key/value descriptors and remains valid only
+ *          until the callback returns. Returning a non-zero error stops the
+ *          batch loop and becomes the async operation result. */
+typedef int (*MDBX_cursor_batch_func)(void *context, const MDBX_val *pairs, size_t count) MDBX_CXX17_NOEXCEPT;
+
 /** \brief Create an asynchronous executor bound to an open environment.
  * \ingroup c_async
  *
@@ -5334,6 +5342,33 @@ LIBMDBX_API int mdbx_async_cursor_get(MDBX_async *async, MDBX_cursor *cursor, MD
  * \see mdbx_cursor_get_batch() */
 LIBMDBX_API int mdbx_async_cursor_get_batch(MDBX_async *async, MDBX_cursor *cursor, size_t *count, MDBX_val *pairs,
                                             size_t limit, MDBX_cursor_op cursor_op, MDBX_async_op **op);
+
+/** \brief Asynchronously fetch cursor batches until a target pair count is reached.
+ * \ingroup c_async
+ * \details The operation runs on the async executor worker thread and repeatedly
+ *          calls \ref mdbx_cursor_get_batch(), starting with \ref MDBX_FIRST and
+ *          then using \ref MDBX_NEXT. When a batch reports end-of-data, the next
+ *          internal fetch restarts at \ref MDBX_FIRST.
+ *
+ *          `func`, when non-NULL, is called once per internal batch. Its
+ *          `pairs` descriptors are reused by the next internal batch and must
+ *          not be retained after the callback returns. `completed_pairs`, when
+ *          non-NULL, is updated as batches are consumed and must remain valid
+ *          until operation completion.
+ *
+ * \param [in] async           Async executor handle.
+ * \param [in] cursor          Cursor owned by the async executor.
+ * \param [in] target_pairs    Minimum key/value pair count to consume.
+ * \param [in] batch_pairs     Maximum key/value pair count per internal fetch.
+ * \param [in] func            Optional callback invoked for each fetched batch.
+ * \param [in] context         Callback context pointer.
+ * \param [out] completed_pairs Optional consumed key/value pair count.
+ * \param [out] op             Address where the async operation handle will be stored.
+ *
+ * \see mdbx_cursor_get_batch() */
+LIBMDBX_API int mdbx_async_cursor_get_batches(MDBX_async *async, MDBX_cursor *cursor, size_t target_pairs,
+                                              size_t batch_pairs, MDBX_cursor_batch_func func, void *context,
+                                              size_t *completed_pairs, MDBX_async_op **op);
 
 /** \brief Asynchronously return the duplicate count for the current cursor key.
  * \ingroup c_async

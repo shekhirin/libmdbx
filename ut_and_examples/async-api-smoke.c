@@ -43,6 +43,11 @@ struct scan_probe {
   unsigned calls;
 };
 
+struct batch_probe {
+  unsigned calls;
+  size_t pairs;
+};
+
 static int fail_rc(const char *expr, int rc, const char *file, int line) {
   fprintf(stderr, "%s:%d: %s failed: (%d) %s\n", file, line, expr, rc, mdbx_strerror(rc));
   return rc ? rc : MDBX_PROBLEM;
@@ -210,6 +215,25 @@ static int scan_probe_func(void *context, MDBX_val *key, MDBX_val *value, void *
     return MDBX_PROBLEM;
   probe->calls += 1;
   return actual_key == probe->target ? MDBX_RESULT_TRUE : MDBX_RESULT_FALSE;
+}
+
+static int batch_probe_func(void *context, const MDBX_val *pairs, size_t count) {
+  struct batch_probe *const probe = (struct batch_probe *)context;
+  if (!probe || !pairs || count == 0 || (count & 1))
+    return MDBX_PROBLEM;
+  for (size_t i = 0; i < count; i += 2) {
+    if (pairs[i].iov_len != sizeof(uint64_t) || pairs[i + 1].iov_len != sizeof(uint64_t))
+      return MDBX_PROBLEM;
+    uint64_t actual_key = 0;
+    uint64_t actual_value = 0;
+    memcpy(&actual_key, pairs[i].iov_base, sizeof(actual_key));
+    memcpy(&actual_value, pairs[i + 1].iov_base, sizeof(actual_value));
+    if (actual_key >= ITEM_COUNT || actual_value != expected_value(actual_key))
+      return MDBX_PROBLEM;
+  }
+  probe->calls += 1;
+  probe->pairs += count / 2;
+  return MDBX_SUCCESS;
 }
 
 static int wait_result(const char *expr, MDBX_async_op **op, int *operation_result, const char *file, int line) {
@@ -1343,6 +1367,15 @@ int main(void) {
     REQUIRE(batch_key == keys[i], "unexpected cursor batch all key");
     CHECK(expect_value(&all_pairs[i * 2 + 1], batch_key, __FILE__, __LINE__));
   }
+
+  struct batch_probe batch_probe = {0, 0};
+  size_t loop_pairs = 0;
+  CHECK(mdbx_async_cursor_get_batches(async, cursor, ITEM_COUNT + 5, 8, batch_probe_func, &batch_probe,
+                                      &loop_pairs, &op));
+  CHECK_OP(op);
+  REQUIRE(loop_pairs >= ITEM_COUNT + 5, "async cursor batch loop consumed too few pairs");
+  REQUIRE(batch_probe.pairs == loop_pairs, "async cursor batch loop probe mismatch");
+  REQUIRE(batch_probe.calls >= 2, "async cursor batch loop did not restart");
 
   struct scan_probe scan_probe = {12, 0};
   int scan_result = MDBX_SUCCESS;
