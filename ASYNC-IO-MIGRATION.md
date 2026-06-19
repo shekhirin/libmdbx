@@ -14494,6 +14494,24 @@ including API checks and tool roundtrips, the ASAN build (`cmake --build
 passed with forced/default ratios of `1.089` batch, `1.143` crud, `1.009`
 iterate, `0.979` get, and `1.071` delete.
 
+A later sync shrink-discard descriptor cleanup removed
+`dxb_sync_shrink_discard_submit_io_t`,
+`dxb_sync_make_shrink_discard_submit_io()`, and
+`dxb_sync_shrink_discard_submit_io_validate()` from `mdbx.c`. `dxb_sync_locked()`
+now builds, validates, and submits the shrink-tail byte/discard descriptors
+directly before `dxb_storage_submit_discard_io()`, matching the resize shrink
+path and keeping the sync-time data-file cleanup on storage descriptors.
+Verification passed `git diff --check`, a source scan proving the removed sync
+shrink-discard helpers are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.131`
+batch, `1.140` crud, `0.978` iterate, `1.006` get, and `1.061` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
