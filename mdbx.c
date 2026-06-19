@@ -377,14 +377,6 @@ typedef struct dxb_page_touch_redirect_submit_io {
   bool inner;
 } dxb_page_touch_redirect_submit_io_t;
 
-typedef struct dxb_pgr_release_submit_io {
-  const MDBX_cursor *cursor;
-  pgr_t *pgr;
-  page_t *page;
-  int err;
-  page_ref_t ref;
-} dxb_pgr_release_submit_io_t;
-
 typedef struct dxb_cursor_stack_set_submit_io {
   MDBX_cursor *cursor;
   page_t *page;
@@ -5968,52 +5960,22 @@ static inline void cursor_ref_release(const MDBX_cursor *mc, page_ref_t *ref) {
     ASSERT(err == MDBX_SUCCESS);
 }
 
-static inline int pgr_make_release_submit_io(const MDBX_cursor *mc, pgr_t *pgr, dxb_pgr_release_submit_io_t *io) {
-  if (unlikely(!pgr || !io))
+static inline int pgr_release_checked(const MDBX_cursor *mc, pgr_t *pgr) {
+  if (unlikely(!pgr))
     return MDBX_EINVAL;
 
-  io->cursor = mc;
-  io->pgr = pgr;
-  io->page = pgr->page;
-  io->err = pgr->err;
-  io->ref = pgr->ref;
-  return MDBX_SUCCESS;
-}
-
-static inline int pgr_release_submit_io_validate(const dxb_pgr_release_submit_io_t *io) {
-  if (unlikely(!io || !io->pgr))
-    return MDBX_EINVAL;
-  if (unlikely(io->pgr->page != io->page || io->pgr->err != io->err || !page_ref_equal(&io->pgr->ref, &io->ref)))
-    return MDBX_EINVAL;
-
-  dxb_pgr_release_submit_io_t checked;
-  int err = pgr_make_release_submit_io(io->cursor, io->pgr, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.pgr != io->pgr || checked.page != io->page ||
-               checked.err != io->err || !page_ref_equal(&checked.ref, &io->ref)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
+  int err = cursor_ref_release_checked(mc, &pgr->ref);
+  if (likely(err == MDBX_SUCCESS))
+    pgr->page = nullptr;
+  return err;
 }
 
 static inline void pgr_release(const MDBX_cursor *mc, pgr_t *pgr) {
-  dxb_pgr_release_submit_io_t submit;
-  int err = pgr_make_release_submit_io(mc, pgr, &submit);
+  int err = pgr_release_checked(mc, pgr);
   if (mc)
     cASSERT0(mc, err == MDBX_SUCCESS);
   else
     ASSERT(err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = pgr_release_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      cursor_ref_release(submit.cursor, &submit.pgr->ref);
-      submit.pgr->page = nullptr;
-    }
-    if (mc)
-      cASSERT0(mc, err == MDBX_SUCCESS);
-    else
-      ASSERT(err == MDBX_SUCCESS);
-  }
 }
 
 static inline void cursor_value_release(MDBX_cursor *mc) {
