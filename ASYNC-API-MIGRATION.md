@@ -268,6 +268,18 @@ This narrows the remaining gap between cursor operations in the blocking API
 and the additive async API. A one-run default read benchmark after this change
 reported async-batch/blocking-parallel ratio 1.121.
 
+Extended get checkpoint:
+
+- added `mdbx_async_get_ex()` so async reads can return the same optional
+  duplicate-count metadata as `mdbx_get_ex()`
+- added `mdbx_async_get_equal_or_great()` for lower-bound lookups, preserving
+  both exact-match `MDBX_SUCCESS` and greater-key `MDBX_RESULT_TRUE` results
+- both wrappers copy submitted key bytes before enqueue; the equal-or-greater
+  wrapper also copies the submitted data descriptor payload for duplicate-aware
+  lower-bound searches
+- smoke coverage now checks `mdbx_async_get_ex()` count/data return and both
+  exact and greater-key `mdbx_async_get_equal_or_great()` result paths
+
 ## Validation
 
 Completed for this checkpoint:
@@ -356,4 +368,14 @@ Additional cursor mutation checkpoint:
 - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.121
 - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional extended get checkpoint:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.096
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17

@@ -14967,6 +14967,8 @@ enum mdbx_async_opcode {
   async_op_txn_renew,
   async_op_dbi_open,
   async_op_get,
+  async_op_get_ex,
+  async_op_get_equal_or_great,
   async_op_get_batch,
   async_op_put,
   async_op_put_batch,
@@ -15041,6 +15043,19 @@ struct MDBX_async_op {
       MDBX_dbi dbi;
       MDBX_val *data;
     } get;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_dbi dbi;
+      MDBX_val *key;
+      MDBX_val *data;
+      size_t *values_count;
+    } get_ex;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_dbi dbi;
+      MDBX_val *key;
+      MDBX_val *data;
+    } get_equal_or_great;
     struct {
       const MDBX_txn *txn;
       MDBX_dbi dbi;
@@ -15205,6 +15220,28 @@ static int async_op_execute(MDBX_async_op *op) {
     const int rc = mdbx_get(op->args.get.txn, op->args.get.dbi, &op->key, &data);
     if (op->args.get.data)
       *op->args.get.data = data;
+    return rc;
+  }
+  case async_op_get_ex: {
+    MDBX_val key = op->key;
+    MDBX_val data = {nullptr, 0};
+    const int rc = mdbx_get_ex(op->args.get_ex.txn, op->args.get_ex.dbi, &key, &data,
+                               op->args.get_ex.values_count);
+    if (rc == MDBX_SUCCESS) {
+      *op->args.get_ex.key = key;
+      *op->args.get_ex.data = data;
+    }
+    return rc;
+  }
+  case async_op_get_equal_or_great: {
+    MDBX_val key = op->key;
+    MDBX_val data = op->data;
+    const int rc = mdbx_get_equal_or_great(op->args.get_equal_or_great.txn, op->args.get_equal_or_great.dbi, &key,
+                                           &data);
+    if (rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE) {
+      *op->args.get_equal_or_great.key = key;
+      *op->args.get_equal_or_great.data = data;
+    }
     return rc;
   }
   case async_op_get_batch:
@@ -15819,6 +15856,57 @@ int mdbx_async_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const M
     op->args.get.txn = txn;
     op->args.get.dbi = dbi;
     op->args.get.data = data;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_get_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key, MDBX_val *data,
+                      size_t *values_count, MDBX_async_op **out) {
+  if (unlikely(!txn || !key || !data))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_get_ex);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, key);
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.get_ex.txn = txn;
+    op->args.get_ex.dbi = dbi;
+    op->args.get_ex.key = key;
+    op->args.get_ex.data = data;
+    op->args.get_ex.values_count = values_count;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_get_equal_or_great(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key,
+                                  MDBX_val *data, MDBX_async_op **out) {
+  if (unlikely(!txn || !key || !data))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_get_equal_or_great);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, key);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = async_copy_val(&op->data, &op->data_copy, op->data_inline, MDBX_ASYNC_INLINE_BYTES, data);
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.get_equal_or_great.txn = txn;
+    op->args.get_equal_or_great.dbi = dbi;
+    op->args.get_equal_or_great.key = key;
+    op->args.get_equal_or_great.data = data;
     rc = async_op_enqueue(async, op, out);
   }
   if (unlikely(rc != MDBX_SUCCESS)) {

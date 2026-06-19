@@ -213,6 +213,44 @@ int main(void) {
     CHECK(expect_value(&get_values[i], keys[i], __FILE__, __LINE__));
   }
 
+  MDBX_val get_ex_key = key_values[5];
+  MDBX_val get_ex_data = val(NULL, 0);
+  size_t values_count = 0;
+  CHECK(mdbx_async_get_ex(async, txn, dbi, &get_ex_key, &get_ex_data, &values_count, &op));
+  CHECK_OP(op);
+  REQUIRE(values_count == 1, "unexpected get_ex value count");
+  REQUIRE(get_ex_key.iov_len == sizeof(uint64_t), "unexpected get_ex key size");
+  uint64_t get_ex_actual_key = 0;
+  memcpy(&get_ex_actual_key, get_ex_key.iov_base, sizeof(get_ex_actual_key));
+  REQUIRE(get_ex_actual_key == 5, "unexpected get_ex key");
+  CHECK(expect_value(&get_ex_data, get_ex_actual_key, __FILE__, __LINE__));
+
+  uint64_t lower_key_data = 6;
+  MDBX_val lower_key = val(&lower_key_data, sizeof(lower_key_data));
+  MDBX_val lower_data = val(NULL, 0);
+  CHECK(mdbx_async_get_equal_or_great(async, txn, dbi, &lower_key, &lower_data, &op));
+  CHECK_OP(op);
+  REQUIRE(lower_key.iov_len == sizeof(uint64_t), "unexpected equal-or-great key size");
+  uint64_t lower_actual_key = 0;
+  memcpy(&lower_actual_key, lower_key.iov_base, sizeof(lower_actual_key));
+  REQUIRE(lower_actual_key == lower_key_data, "unexpected equal-or-great key");
+  CHECK(expect_value(&lower_data, lower_actual_key, __FILE__, __LINE__));
+
+  uint8_t greater_probe_bytes[sizeof(uint64_t) + 1];
+  memcpy(greater_probe_bytes, key_values[6].iov_base, sizeof(uint64_t));
+  greater_probe_bytes[sizeof(uint64_t)] = 0;
+  MDBX_val greater_probe_key = val(greater_probe_bytes, sizeof(greater_probe_bytes));
+  MDBX_val greater_probe_data = val(NULL, 0);
+  int greater_probe_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_get_equal_or_great(async, txn, dbi, &greater_probe_key, &greater_probe_data, &op));
+  CHECK(wait_result("mdbx_async_get_equal_or_great greater", &op, &greater_probe_result, __FILE__, __LINE__));
+  REQUIRE(greater_probe_result == MDBX_RESULT_TRUE, "equal-or-great probe did not report greater key");
+  REQUIRE(greater_probe_key.iov_len == sizeof(uint64_t), "unexpected greater equal-or-great key size");
+  uint64_t greater_actual_key = 0;
+  memcpy(&greater_actual_key, greater_probe_key.iov_base, sizeof(greater_actual_key));
+  REQUIRE(greater_actual_key == 7, "unexpected greater equal-or-great key");
+  CHECK(expect_value(&greater_probe_data, greater_actual_key, __FILE__, __LINE__));
+
   for (unsigned i = 0; i < ITEM_COUNT; ++i)
     get_values[i] = val(NULL, 0);
   CHECK(mdbx_async_get_batch(async, txn, dbi, key_values, get_values, op_results, ITEM_COUNT, &op));

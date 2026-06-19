@@ -4681,6 +4681,27 @@ LIBMDBX_API int mdbx_async_dbi_open(MDBX_async *async, MDBX_txn *txn, const char
 LIBMDBX_API int mdbx_async_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
                                MDBX_val *data, MDBX_async_op **op);
 
+/** \brief Asynchronously get an item and optional duplicate count from a table.
+ * \ingroup c_async
+ * \details The input key bytes are copied during submission. The `key` and
+ *          `data` descriptor objects must remain valid until completion and are
+ *          updated with the actual key/value pair on success. Returned value
+ *          lifetime follows \ref mdbx_get_ex() after operation completion.
+ * \see mdbx_get_ex() */
+LIBMDBX_API int mdbx_async_get_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key,
+                                  MDBX_val *data, size_t *values_count, MDBX_async_op **op);
+
+/** \brief Asynchronously get an equal-or-greater item from a table.
+ * \ingroup c_async
+ * \details The input key/data bytes are copied during submission. The `key` and
+ *          `data` descriptor objects must remain valid until completion and are
+ *          updated with the actual lower-bound key/value pair on success.
+ *          Returned value lifetime follows \ref mdbx_get_equal_or_great() after
+ *          operation completion.
+ * \see mdbx_get_equal_or_great() */
+LIBMDBX_API int mdbx_async_get_equal_or_great(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key,
+                                              MDBX_val *data, MDBX_async_op **op);
+
 /** \brief Asynchronously get a batch of items from a table.
  * \ingroup c_async
  * \details The `keys`, key bytes, `data`, and `results` arrays must remain
