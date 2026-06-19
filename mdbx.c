@@ -15125,6 +15125,7 @@ enum mdbx_async_opcode {
   async_op_cursor_renew,
   async_op_cursor_get,
   async_op_cursor_get_loop,
+  async_op_cursor_get_loop_from,
   async_op_cursor_scan,
   async_op_cursor_scan_from,
   async_op_cursor_get_batch,
@@ -15692,6 +15693,9 @@ struct MDBX_async_op {
       MDBX_cursor_get_loop_func func;
       void *context;
       size_t *completed;
+      MDBX_val *from_key;
+      MDBX_val *from_value;
+      bool has_from_value;
     } cursor_get_loop;
     struct {
       MDBX_cursor *cursor;
@@ -16115,15 +16119,21 @@ static int async_cursor_get_loop_execute(MDBX_async_op *op) {
   if (completed)
     *completed = 0;
 
+  MDBX_val start_key = op->key;
+  MDBX_val start_data = op->data;
   for (size_t i = 0; i < count; ++i) {
-    MDBX_val key = {nullptr, 0};
-    MDBX_val data = {nullptr, 0};
+    MDBX_val key = (i == 0 && op->args.cursor_get_loop.from_key) ? start_key : (MDBX_val){nullptr, 0};
+    MDBX_val data = (i == 0 && op->args.cursor_get_loop.has_from_value) ? start_data : (MDBX_val){nullptr, 0};
     const MDBX_cursor_op cursor_op = i ? op->args.cursor_get_loop.turn_op : op->args.cursor_get_loop.start_op;
     int rc = mdbx_cursor_get(op->args.cursor_get_loop.cursor, &key, &data, cursor_op);
     if (unlikely(rc == MDBX_NOTFOUND))
       return MDBX_RESULT_TRUE;
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
+    if (op->args.cursor_get_loop.from_key)
+      *op->args.cursor_get_loop.from_key = key;
+    if (op->args.cursor_get_loop.has_from_value)
+      *op->args.cursor_get_loop.from_value = data;
     if (op->args.cursor_get_loop.func) {
       rc = op->args.cursor_get_loop.func(op->args.cursor_get_loop.context, i, &key, &data);
       if (unlikely(rc != MDBX_SUCCESS))
@@ -16804,6 +16814,7 @@ static int async_op_execute(MDBX_async_op *op) {
     return rc;
   }
   case async_op_cursor_get_loop:
+  case async_op_cursor_get_loop_from:
     return async_cursor_get_loop_execute(op);
   case async_op_cursor_scan:
     return mdbx_cursor_scan(op->args.cursor_scan.cursor, op->args.cursor_scan.predicate,
@@ -20040,8 +20051,47 @@ int mdbx_async_cursor_get_loop(MDBX_async *async, MDBX_cursor *cursor, size_t co
   op->args.cursor_get_loop.func = func;
   op->args.cursor_get_loop.context = context;
   op->args.cursor_get_loop.completed = completed;
+  op->args.cursor_get_loop.from_key = nullptr;
+  op->args.cursor_get_loop.from_value = nullptr;
+  op->args.cursor_get_loop.has_from_value = false;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_cursor_get_loop_from(MDBX_async *async, MDBX_cursor *cursor, size_t count,
+                                    MDBX_cursor_op from_op, MDBX_val *from_key, MDBX_val *from_value,
+                                    MDBX_cursor_op turn_op, MDBX_cursor_get_loop_func func, void *context,
+                                    size_t *completed, MDBX_async_op **out) {
+  if (unlikely(!cursor || !count || !from_key))
+    return LOG_IFERR(MDBX_EINVAL);
+  if (completed)
+    *completed = 0;
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_get_loop_from);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, from_key);
+  if (likely(rc == MDBX_SUCCESS) && from_value)
+    rc = async_copy_val(&op->data, &op->data_copy, op->data_inline, MDBX_ASYNC_INLINE_BYTES, from_value);
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.cursor_get_loop.cursor = cursor;
+    op->args.cursor_get_loop.count = count;
+    op->args.cursor_get_loop.start_op = from_op;
+    op->args.cursor_get_loop.turn_op = turn_op;
+    op->args.cursor_get_loop.func = func;
+    op->args.cursor_get_loop.context = context;
+    op->args.cursor_get_loop.completed = completed;
+    op->args.cursor_get_loop.from_key = from_key;
+    op->args.cursor_get_loop.from_value = from_value;
+    op->args.cursor_get_loop.has_from_value = from_value != nullptr;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
     op->signature = 0;
     osal_free(op);
   }

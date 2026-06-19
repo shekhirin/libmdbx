@@ -2159,6 +2159,24 @@ int main(void) {
   REQUIRE(cursor_get_loop_completed == ITEM_COUNT, "unexpected async cursor get loop count");
   REQUIRE(cursor_get_loop_probe.calls == ITEM_COUNT, "async cursor get loop probe mismatch");
 
+  uint64_t cursor_loop_from_key_data = 18;
+  MDBX_val cursor_loop_from_key = val(&cursor_loop_from_key_data, sizeof(cursor_loop_from_key_data));
+  MDBX_val cursor_loop_from_data = val(NULL, 0);
+  struct cursor_get_loop_probe cursor_get_loop_from_probe = {0};
+  size_t cursor_get_loop_from_completed = 0;
+  CHECK(mdbx_async_cursor_get_loop_from(async, cursor, 4, MDBX_SET_LOWERBOUND,
+                                        &cursor_loop_from_key, &cursor_loop_from_data, MDBX_NEXT,
+                                        cursor_get_loop_probe_func, &cursor_get_loop_from_probe,
+                                        &cursor_get_loop_from_completed, &op));
+  CHECK_OP(op);
+  REQUIRE(cursor_get_loop_from_completed == 4, "unexpected async cursor get loop-from count");
+  REQUIRE(cursor_get_loop_from_probe.calls == 4, "async cursor get loop-from probe mismatch");
+  REQUIRE(cursor_loop_from_key.iov_len == sizeof(uint64_t), "unexpected cursor get loop-from key size");
+  uint64_t cursor_loop_from_actual_key = 0;
+  memcpy(&cursor_loop_from_actual_key, cursor_loop_from_key.iov_base, sizeof(cursor_loop_from_actual_key));
+  REQUIRE(cursor_loop_from_actual_key == cursor_loop_from_key_data + 3, "unexpected cursor get loop-from key");
+  CHECK(expect_value(&cursor_loop_from_data, cursor_loop_from_actual_key, __FILE__, __LINE__));
+
   struct scan_probe scan_probe = {12, 0};
   int scan_result = MDBX_SUCCESS;
   CHECK(mdbx_async_cursor_scan(async, cursor, scan_probe_func, &scan_probe, MDBX_FIRST, MDBX_NEXT, NULL, &op));

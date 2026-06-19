@@ -5781,6 +5781,29 @@ LIBMDBX_API int mdbx_async_cursor_get_loop(MDBX_async *async, MDBX_cursor *curso
                                            MDBX_cursor_get_loop_func func, void *context, size_t *completed,
                                            MDBX_async_op **op);
 
+/** \brief Asynchronously get several items through a cursor starting from a key/value pair.
+ * \ingroup c_async
+ * \details This is a count-limited positioned variant of
+ *          \ref mdbx_async_cursor_get_loop(). The submitted `from_key` and
+ *          optional `from_value` bytes are copied during submission and used
+ *          only for the initial `from_op` positioning call. The caller
+ *          descriptor objects must remain valid until completion. On each
+ *          successful fetch, `from_key` and, when supplied, `from_value` are
+ *          updated to the fetched key/value pair, so after successful
+ *          completion they describe the last consumed item.
+ *
+ *          If end-of-data is reached before `count` items, the operation
+ *          result is \ref MDBX_RESULT_TRUE and `completed`, when non-NULL,
+ *          contains the number of successfully consumed items.
+ *
+ * \see mdbx_async_cursor_get_loop()
+ * \see mdbx_cursor_get() */
+LIBMDBX_API int mdbx_async_cursor_get_loop_from(MDBX_async *async, MDBX_cursor *cursor, size_t count,
+                                                MDBX_cursor_op from_op, MDBX_val *from_key,
+                                                MDBX_val *from_value, MDBX_cursor_op turn_op,
+                                                MDBX_cursor_get_loop_func func, void *context,
+                                                size_t *completed, MDBX_async_op **op);
+
 /** \brief Asynchronously get multiple key/value pairs through a cursor.
  * \ingroup c_async
  * \details The `count` output and `pairs` array must remain valid until the
