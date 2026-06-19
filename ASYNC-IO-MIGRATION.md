@@ -125,8 +125,10 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   gone from the accepted metadata flow. Metadata selection now uses refreshed
   env-owned shadow pages, and meta writes use logical slot offsets plus
   explicit `dxb_write()`/`dxb_write_pages()` calls.
-- `dxb_setup()` reads candidate meta pages with `pread()` before open and now
-  always initializes accepted environments through the explicit storage path
+- `env_open()` now creates the storage-owned write/io queue before
+  `dxb_setup()`, so startup meta reads, initial meta writes, file-size setup,
+  and setup-time advice can use the async-capable backend when one was
+  requested. Accepted environments initialize through the explicit storage path
   without calling `osal_mmap()` for the data file. The temporary
   `MDBX_COMPAT_DATA_MMAP=1` comparison backend has been removed from data-file
   setup; `MDBX_WRITEMAP` remains rejected before backend selection can preserve
@@ -15264,6 +15266,29 @@ passed, and both normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration
 CTest suites passed 15/15. The paired `make -f GNUmakefile
 mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.146`
 batch, `1.161` crud, `0.793` iterate, `1.037` get, and `1.076` delete.
+
+A later startup-queue checkpoint moved `env_open()` write/io queue creation
+ahead of `dxb_setup()` after lock-file setup and mode negotiation. This lets the
+forced Linux `io_uring` backend cover initial `dxb_read_header()`,
+new-database meta triplet writes, setup sizing, setup metadata refresh, and
+setup-time readahead/discard operations instead of falling back to direct
+`pread()`/`pwrite()`/`fallocate()`/`posix_fadvise()` before the queue exists.
+The existing `env_close()` ordering already destroys the queue before closing
+DXB descriptors, so normal open-failure cleanup unwinds the earlier queue
+lifecycle. An fd-decoded forced smoke trace showed `io_uring_setup()` before
+`dxb_read_header()`/`dxb_setup()`, `139780` `io_uring` setup/enter syscalls, and
+the remaining direct migration-file syscalls limited to lock-file setup, path
+stat probes, `ftruncate()` fallbacks, and copy-target finalization writes.
+Verification passed `git diff --check`, the Ninja build (`cmake --build
+@cmake-ninja-build`), normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` migration
+CTest entries passed 9/9, the ASAN build (`cmake --build @cmake-asan-build`)
+passed, normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused
+`migration_smoke` CTest entries passed 6/6 with
+`LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.135` batch, `1.169` crud, `0.947` iterate, `0.980`
+get, and `1.080` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.

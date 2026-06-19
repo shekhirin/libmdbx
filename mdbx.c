@@ -27204,7 +27204,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   VERBOSE("current boot-id %" PRIx64 "-%" PRIx64 " (%savailable)", globals.bootid.x, globals.bootid.y,
           (globals.bootid.x | globals.bootid.y) ? "" : "not-");
 
-  /* calculate readahead hint before mmap with zero redundant pages */
+  /* calculate readahead hint before explicit storage setup with zero redundant pages */
   const bool readahead =
       !(env->flags & MDBX_NORDAHEAD) && mdbx_is_readahead_reasonable(allocated_bytes, 0) == MDBX_RESULT_TRUE;
 
@@ -28396,6 +28396,18 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
     }
   }
 
+  const bool readonly = (env->flags & MDBX_RDONLY) != 0;
+  dxb_write_queue_submit_io_t queue_submit;
+  rc = dxb_storage_make_write_queue_submit_io(readonly, true, &queue_submit);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = dxb_storage_write_queue_submit_io_validate(&queue_submit);
+  dxb_queue_result_t queue_result =
+      likely(rc == MDBX_SUCCESS) ? dxb_storage_submit_create_write_queue(storage, &queue_submit)
+                                 : dxb_queue_submitted_error(rc, readonly);
+  rc = queue_result.err;
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
   env_clear_incore_cache(env);
   const int dxb_rc = dxb_setup(env, lck_rc, mode);
   if (MDBX_IS_ERROR(dxb_rc))
@@ -28441,15 +28453,7 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
     }
   }
 
-  const bool readonly = (env->flags & MDBX_RDONLY) != 0;
-  dxb_write_queue_submit_io_t queue_submit;
-  rc = dxb_storage_make_write_queue_submit_io(readonly, true, &queue_submit);
-  if (likely(rc == MDBX_SUCCESS))
-    rc = dxb_storage_write_queue_submit_io_validate(&queue_submit);
-  dxb_queue_result_t queue_result =
-      likely(rc == MDBX_SUCCESS) ? dxb_storage_submit_create_write_queue(storage, &queue_submit)
-                                 : dxb_queue_submitted_error(rc, readonly);
-  return queue_result.err;
+  return MDBX_SUCCESS;
 }
 
 __cold int env_close(MDBX_env *env, bool resurrect_after_fork) {
