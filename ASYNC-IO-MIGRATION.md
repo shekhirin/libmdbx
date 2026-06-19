@@ -13053,6 +13053,26 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.099` batch, `1.137` crud, `0.997` iterate,
 `0.980` get, and `1.074` delete.
 
+A later killed-page write submit-boundary cleanup removed the one-call
+`page_kill_submit_write()` and `page_kill_submit_writev()` helpers from
+`mdbx.c`. `page_kill()` and `page_kill_writev()` now revalidate their
+killed-page write descriptors and submit the nested `dxb_write_submit_io_t` or
+`dxb_writev_submit_io_t` directly through `dxb_storage_submit_write_data()` and
+`dxb_storage_submit_writev_data()`. This preserves the existing ignored-error
+best-effort killed-page write behavior while avoiding a second internal submit
+wrapper around explicit data-file writes. Verification passed `git diff
+--check`, source scans proving `page_kill_submit_write()` and
+`page_kill_submit_writev()` are absent from `mdbx.c` and the public/internal
+headers, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.086`
+batch, `1.142` crud, `0.898` iterate, `1.059` get, and `1.076` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

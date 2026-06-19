@@ -47325,20 +47325,6 @@ static inline int page_kill_writev_submit_io_validate(const dxb_page_kill_writev
   return MDBX_SUCCESS;
 }
 
-static dxb_write_result_t page_kill_submit_write(const dxb_page_kill_write_submit_io_t *io) {
-  int rc = page_kill_write_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
-  return dxb_storage_submit_write_data(io->storage, &io->write);
-}
-
-static dxb_write_result_t page_kill_submit_writev(const dxb_page_kill_writev_submit_io_t *io) {
-  int rc = page_kill_writev_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
-  return dxb_storage_submit_writev_data(io->storage, &io->writev);
-}
-
 static void page_kill_writev(dxb_storage_t *storage, pgno_t *pgno, struct iovec *iov, size_t n) {
   if (unlikely(n == 0))
     return;
@@ -47346,8 +47332,9 @@ static void page_kill_writev(dxb_storage_t *storage, pgno_t *pgno, struct iovec 
   dxb_page_io_t killed_pages;
   if (likely(dxb_storage_page_io(storage, *pgno, n, &killed_pages) == MDBX_SUCCESS)) {
     dxb_page_kill_writev_submit_io_t killed_submit;
-    if (likely(page_kill_make_writev_submit_io(storage, &killed_pages, iov, n, &killed_submit) == MDBX_SUCCESS))
-      (void)page_kill_submit_writev(&killed_submit);
+    if (likely(page_kill_make_writev_submit_io(storage, &killed_pages, iov, n, &killed_submit) == MDBX_SUCCESS &&
+               page_kill_writev_submit_io_validate(&killed_submit) == MDBX_SUCCESS))
+      (void)dxb_storage_submit_writev_data(killed_submit.storage, &killed_submit.writev);
     *pgno = killed_pages.end_pgno;
   }
 }
@@ -47363,8 +47350,9 @@ __cold static void page_kill(MDBX_txn *txn, page_t *mp, pgno_t pgno, size_t npag
       memset(mp, -1, killed_pages.bytes);
       mp->pgno = pgno;
       dxb_page_kill_write_submit_io_t killed_submit;
-      if (likely(page_kill_make_write_submit_io(storage, &killed_pages, mp, &killed_submit) == MDBX_SUCCESS))
-        (void)page_kill_submit_write(&killed_submit);
+      if (likely(page_kill_make_write_submit_io(storage, &killed_pages, mp, &killed_submit) == MDBX_SUCCESS &&
+                 page_kill_write_submit_io_validate(&killed_submit) == MDBX_SUCCESS))
+        (void)dxb_storage_submit_write_data(killed_submit.storage, &killed_submit.write);
     }
   } else {
     dxb_page_io_t aux_page;
