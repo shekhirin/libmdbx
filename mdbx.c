@@ -312,30 +312,6 @@ typedef struct dxb_cursor_page_get_submit_io {
   uint16_t ill;
 } dxb_cursor_page_get_submit_io_t;
 
-typedef struct dxb_compacting_branch_child_copy_submit_io {
-  MDBX_cursor *cursor;
-  page_t **source;
-  page_t *source_page;
-  page_t *copy_page;
-  page_ref_t *source_ref;
-  page_ref_t captured_ref;
-  intptr_t previous_top;
-  intptr_t next_top;
-  indx_t ki;
-} dxb_compacting_branch_child_copy_submit_io_t;
-
-typedef struct dxb_page_touch_redirect_submit_io {
-  MDBX_txn *txn;
-  MDBX_cursor *cursor;
-  const page_t *old_page;
-  page_t *new_page;
-  page_ref_t new_ref;
-  intptr_t slot;
-  size_t dbi;
-  int16_t top_and_flags;
-  bool inner;
-} dxb_page_touch_redirect_submit_io_t;
-
 typedef struct dxb_cache_materialize_io {
   dxb_data_read_io_t data;
 } dxb_cache_materialize_io_t;
@@ -6366,92 +6342,55 @@ MDBX_MAYBE_UNUSED static inline void cursor_inner_refresh(const MDBX_cursor *mc,
     cursor_stack_set_synthetic(&mc->subcur->cursor, 0, node_data(node));
 }
 
-static inline int page_touch_make_redirect_submit_io(MDBX_txn *txn, MDBX_cursor *mc, const page_t *old_page,
-                                                     page_t *new_page, page_ref_t new_ref,
-                                                     dxb_page_touch_redirect_submit_io_t *io) {
-  if (unlikely(!txn || !mc || !old_page || !new_page || !io || mc->txn != txn || mc->top < 0 ||
-               mc->top >= CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-  if (unlikely(mc->pg[mc->top] != old_page))
-    return MDBX_EINVAL;
-  if (unlikely(new_ref.page != new_page || new_ref.cache || (new_ref.flags & PAGE_REF_CACHE)))
-    return MDBX_EINVAL;
-
-  io->txn = txn;
-  io->cursor = mc;
-  io->old_page = old_page;
-  io->new_page = new_page;
-  io->new_ref = new_ref;
-  io->slot = mc->top;
-  io->dbi = cursor_dbi(mc);
-  io->top_and_flags = mc->top_and_flags;
-  io->inner = (mc->flags & z_inner) != 0;
-  return MDBX_SUCCESS;
-}
-
-static inline int page_touch_redirect_submit_io_validate(const dxb_page_touch_redirect_submit_io_t *io) {
-  if (unlikely(!io || !io->txn || !io->cursor || !io->old_page || !io->new_page || io->slot < 0 ||
-               io->slot >= CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-
-  MDBX_cursor *const mc = io->cursor;
-  if (unlikely(mc->txn != io->txn || mc->top_and_flags != io->top_and_flags ||
-               mc->pg[io->slot] != io->old_page || cursor_dbi(mc) != io->dbi ||
-               ((mc->flags & z_inner) != 0) != io->inner))
-    return MDBX_EINVAL;
-  if (unlikely(io->new_ref.page != io->new_page || io->new_ref.cache || (io->new_ref.flags & PAGE_REF_CACHE)))
-    return MDBX_EINVAL;
-
-  dxb_page_touch_redirect_submit_io_t checked;
-  int err = page_touch_make_redirect_submit_io(io->txn, mc, io->old_page, io->new_page, io->new_ref, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.txn != io->txn || checked.cursor != io->cursor || checked.old_page != io->old_page ||
-               checked.new_page != io->new_page || checked.slot != io->slot || checked.dbi != io->dbi ||
-               checked.top_and_flags != io->top_and_flags || checked.inner != io->inner ||
-               !page_ref_equal(&checked.new_ref, &io->new_ref)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 static inline int __must_check_result page_touch_redirect_cursors(MDBX_txn *txn, MDBX_cursor *mc,
                                                                   const page_t *old_page, page_t *new_page,
                                                                   page_ref_t new_ref) {
-  dxb_page_touch_redirect_submit_io_t submit;
-  int err = page_touch_make_redirect_submit_io(txn, mc, old_page, new_page, new_ref, &submit);
+  int err = MDBX_SUCCESS;
+  if (unlikely(!txn || !mc || !old_page || !new_page || mc->txn != txn || mc->top < 0 ||
+               mc->top >= CURSOR_STACK_SIZE))
+    err = MDBX_EINVAL;
+  else if (unlikely(mc->pg[mc->top] != old_page))
+    err = MDBX_EINVAL;
+  else if (unlikely(new_ref.page != new_page || new_ref.cache || (new_ref.flags & PAGE_REF_CACHE)))
+    err = MDBX_EINVAL;
   cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = page_touch_redirect_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      MDBX_cursor *const cursor = submit.cursor;
-      MDBX_txn *const submitted_txn = submit.txn;
-      const intptr_t slot = submit.slot;
-      page_t *const np = submit.new_page;
-      cursor_stack_set(cursor, slot, np, submit.new_ref);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  const intptr_t slot = mc->top;
+  const size_t dbi = cursor_dbi(mc);
+  const int16_t top_and_flags = mc->top_and_flags;
+  const bool inner = (mc->flags & z_inner) != 0;
+  if (unlikely(mc->txn != txn || mc->top_and_flags != top_and_flags || mc->pg[slot] != old_page ||
+               cursor_dbi(mc) != dbi || ((mc->flags & z_inner) != 0) != inner))
+    err = MDBX_EINVAL;
+  cASSERT0(mc, err == MDBX_SUCCESS);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  cursor_stack_set(mc, slot, new_page, new_ref);
 #ifdef MDBX_EVENBUG20260405_FIX
-      if (is_leaf(np) && inner_pointed(cursor))
-        cursor_inner_refresh(cursor, np, cursor->ki[slot]);
+  if (is_leaf(new_page) && inner_pointed(mc))
+    cursor_inner_refresh(mc, new_page, mc->ki[slot]);
 #endif /* MDBX_EVENBUG20260405_FIX */
 
-      MDBX_cursor *m2 = submitted_txn->cursors[submit.dbi];
-      if (submit.inner) {
-        for (; m2; m2 = m2->next) {
-          MDBX_cursor *m3 = &m2->subcur->cursor;
-          if (m3->top < slot)
-            continue;
-          if (m3->pg[slot] == submit.old_page)
-            cursor_stack_set(m3, slot, np, submit.new_ref);
-        }
-      } else {
-        for (; m2; m2 = m2->next) {
-          if (m2->top < slot)
-            continue;
-          if (m2->pg[slot] == submit.old_page) {
-            cursor_stack_set(m2, slot, np, submit.new_ref);
-            if (is_leaf(np) && inner_pointed(m2))
-              cursor_inner_refresh(m2, np, m2->ki[slot]);
-          }
-        }
+  MDBX_cursor *m2 = txn->cursors[dbi];
+  if (inner) {
+    for (; m2; m2 = m2->next) {
+      MDBX_cursor *m3 = &m2->subcur->cursor;
+      if (m3->top < slot)
+        continue;
+      if (m3->pg[slot] == old_page)
+        cursor_stack_set(m3, slot, new_page, new_ref);
+    }
+  } else {
+    for (; m2; m2 = m2->next) {
+      if (m2->top < slot)
+        continue;
+      if (m2->pg[slot] == old_page) {
+        cursor_stack_set(m2, slot, new_page, new_ref);
+        if (is_leaf(new_page) && inner_pointed(m2))
+          cursor_inner_refresh(m2, new_page, m2->ki[slot]);
       }
     }
   }
@@ -7388,75 +7327,37 @@ static inline int page_touch(MDBX_cursor *mc) {
 MDBX_INTERNAL void page_copy(page_t *const dst, const page_t *const src, const size_t size);
 MDBX_INTERNAL pgr_t __must_check_result page_unspill(MDBX_txn *const txn, const page_t *const mp);
 
-static inline int compacting_make_branch_child_copy_submit_io(
-    MDBX_cursor *mc, page_t **source, page_ref_t *source_ref, page_t *copy_page, intptr_t next_top, indx_t ki,
-    dxb_compacting_branch_child_copy_submit_io_t *io) {
-  if (unlikely(!mc || !source || !*source || !source_ref || !copy_page || !io || mc->top < 0 ||
-               next_top < 0 || next_top >= CURSOR_STACK_SIZE || next_top != mc->top + 1))
-    return MDBX_EINVAL;
-  if (unlikely(!is_branch(*source)))
-    return MDBX_EINVAL;
-  if (unlikely(source_ref->page != nullptr && source_ref->page != *source))
-    return MDBX_EINVAL;
-  if (unlikely(mc->pg[next_top] != copy_page))
-    return MDBX_EINVAL;
-
-  io->cursor = mc;
-  io->source = source;
-  io->source_page = *source;
-  io->copy_page = copy_page;
-  io->source_ref = source_ref;
-  io->captured_ref = *source_ref;
-  io->previous_top = mc->top;
-  io->next_top = next_top;
-  io->ki = ki;
-  return MDBX_SUCCESS;
-}
-
-static inline int
-compacting_branch_child_copy_submit_io_validate(const dxb_compacting_branch_child_copy_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->source || !io->source_page || !io->copy_page || !io->source_ref ||
-               io->previous_top < 0 || io->next_top < 0 || io->next_top >= CURSOR_STACK_SIZE ||
-               io->next_top != io->previous_top + 1))
-    return MDBX_EINVAL;
-  if (unlikely(io->cursor->top != io->previous_top || *io->source != io->source_page ||
-               io->cursor->pg[io->next_top] != io->copy_page))
-    return MDBX_EINVAL;
-  if (unlikely(!is_branch(io->source_page)))
-    return MDBX_EINVAL;
-  if (unlikely(!page_ref_equal(io->source_ref, &io->captured_ref)))
-    return MDBX_EINVAL;
-  if (unlikely(io->captured_ref.page != nullptr && io->captured_ref.page != io->source_page))
-    return MDBX_EINVAL;
-
-  dxb_compacting_branch_child_copy_submit_io_t checked;
-  int err = compacting_make_branch_child_copy_submit_io(io->cursor, io->source, io->source_ref, io->copy_page,
-                                                        io->next_top, io->ki, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.source != io->source ||
-               checked.source_page != io->source_page || checked.copy_page != io->copy_page ||
-               checked.source_ref != io->source_ref || checked.previous_top != io->previous_top ||
-               checked.next_top != io->next_top || checked.ki != io->ki ||
-               !page_ref_equal(&checked.captured_ref, &io->captured_ref)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 static inline int __must_check_result compacting_branch_child_copy(MDBX_cursor *mc, page_t **source,
                                                                    page_ref_t *source_ref, page_t *copy_page,
                                                                    intptr_t next_top, indx_t ki) {
-  dxb_compacting_branch_child_copy_submit_io_t submit;
-  int err = compacting_make_branch_child_copy_submit_io(mc, source, source_ref, copy_page, next_top, ki, &submit);
+  int err = MDBX_SUCCESS;
+  if (unlikely(!mc || !source || !*source || !source_ref || !copy_page || mc->top < 0 ||
+               next_top < 0 || next_top >= CURSOR_STACK_SIZE || next_top != mc->top + 1))
+    err = MDBX_EINVAL;
+  else if (unlikely(!is_branch(*source)))
+    err = MDBX_EINVAL;
+  else if (unlikely(source_ref->page != nullptr && source_ref->page != *source))
+    err = MDBX_EINVAL;
+  else if (unlikely(mc->pg[next_top] != copy_page))
+    err = MDBX_EINVAL;
   cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS))
-    err = compacting_branch_child_copy_submit_io_validate(&submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  page_t *const source_page = *source;
+  const page_ref_t captured_ref = *source_ref;
+  const intptr_t previous_top = mc->top;
+  if (unlikely(mc->top != previous_top || *source != source_page || mc->pg[next_top] != copy_page ||
+               !is_branch(source_page) || !page_ref_equal(source_ref, &captured_ref) ||
+               (captured_ref.page != nullptr && captured_ref.page != source_page)))
+    err = MDBX_EINVAL;
+  cASSERT0(mc, err == MDBX_SUCCESS);
   if (likely(err == MDBX_SUCCESS)) {
-    page_copy(submit.copy_page, submit.source_page, submit.cursor->txn->env->ps);
-    err = cursor_push(submit.cursor, submit.copy_page, submit.ki);
+    page_copy(copy_page, source_page, mc->txn->env->ps);
+    err = cursor_push(mc, copy_page, ki);
     if (likely(err == MDBX_SUCCESS))
-      *submit.source = submit.copy_page;
-    cursor_ref_release(submit.cursor, submit.source_ref);
+      *source = copy_page;
+    cursor_ref_release(mc, source_ref);
   }
   cASSERT0(mc, err == MDBX_SUCCESS || err == MDBX_CURSOR_FULL);
   return err;
