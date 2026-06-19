@@ -1856,3 +1856,65 @@ Additional extended GET many-submit checkpoint:
 - conclusion: this slice extends the independent-handle many-submit surface
   across the GET family; it is primarily API symmetry and submission-overhead
   coverage, not a new storage-backend performance step
+
+Additional GET many-submit benchmark split checkpoint:
+
+- split `mdbx_async_api_bench` so the original per-operation
+  `mdbx_async_get()` submission path is measured separately from the
+  `mdbx_async_get_many()` submission path
+- the benchmark now reports `async many parallel get`,
+  `async threaded many get`, `async-many/blocking par`, and
+  `async-thread-many/par` beside the existing single-submit, batch, callback,
+  and loop labels
+- this makes the many-submit API's submission-overhead effect visible without
+  changing the public API or the blocking baseline
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed with GET-path ratios
+  async/blocking-parallel 0.805, async-many/blocking-parallel 1.457,
+  async-thread/blocking-parallel 1.467,
+  async-thread-many/blocking-parallel 1.511,
+  async-thread-batch/blocking-parallel 1.492,
+  async-batch/blocking-parallel 1.539,
+  async-batch-callback/blocking-parallel 1.518,
+  async-loop/blocking-parallel 1.546, and
+  async-thread-loop/blocking-parallel 1.543
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- default benchmark spot check passed with ratios
+  async/blocking-parallel 1.091, async-many/blocking-parallel 1.075,
+  async-thread/blocking-parallel 1.014,
+  async-thread-many/blocking-parallel 1.009,
+  async-thread-batch/blocking-parallel 1.074,
+  async-batch/blocking-parallel 1.055,
+  async-batch-callback/blocking-parallel 1.091,
+  async-loop/blocking-parallel 1.078, and
+  async-thread-loop/blocking-parallel 1.058
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check showed
+  many-submit above single-submit for both comparable GET shapes:
+  async/blocking-parallel 1.015, async-many/blocking-parallel 1.060,
+  async-thread/blocking-parallel 0.859,
+  async-thread-many/blocking-parallel 0.903,
+  async-thread-batch/blocking-parallel 0.932,
+  async-batch/blocking-parallel 0.980,
+  async-batch-callback/blocking-parallel 1.014,
+  async-loop/blocking-parallel 1.014, and
+  async-thread-loop/blocking-parallel 0.938
+- larger default `MDBX_ASYNC_BENCH_OPS=1000000` sample passed with all reported
+  GET paths above blocking-parallel, including async-many/blocking-parallel
+  1.146 and async-thread-many/blocking-parallel 1.116
+- larger forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=1000000` sample stayed
+  mixed: async/blocking-parallel 1.050, async-many/blocking-parallel 1.010,
+  async-thread/blocking-parallel 1.026,
+  async-thread-many/blocking-parallel 0.978,
+  async-thread-batch/blocking-parallel 1.016,
+  async-batch/blocking-parallel 0.910,
+  async-batch-callback/blocking-parallel 0.965,
+  async-loop/blocking-parallel 1.070, and
+  async-thread-loop/blocking-parallel 1.090
+- conclusion: the benchmark can now distinguish single-submit GET windows from
+  many-submit GET windows; current samples confirm that `mdbx_async_get_many()`
+  can reduce submission overhead, while forced no-map/tiny-cache remains noisy

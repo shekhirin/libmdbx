@@ -85,6 +85,7 @@ struct async_thread_worker {
   size_t window;
   int rc;
   bool batch;
+  bool many;
 };
 
 struct async_thread_loop_worker {
@@ -530,7 +531,7 @@ static void async_worker_destroy(struct async_worker *worker) {
 }
 
 static int async_get_window_loop(struct async_worker *worker, MDBX_dbi dbi, size_t items, size_t ops, size_t offset,
-                                 size_t window) {
+                                 size_t window, bool many) {
   size_t issued = 0;
   while (issued < ops) {
     worker->pending = 0;
@@ -543,10 +544,20 @@ static int async_get_window_loop(struct async_worker *worker, MDBX_dbi dbi, size
       issued += 1;
     }
 
-    int rc = mdbx_async_get_many(worker->async, worker->txn, dbi, worker->key_vals, worker->data,
-                                 worker->pending, worker->ops);
-    if (rc != MDBX_SUCCESS)
-      return rc;
+    int rc = MDBX_SUCCESS;
+    if (many) {
+      rc = mdbx_async_get_many(worker->async, worker->txn, dbi, worker->key_vals, worker->data,
+                               worker->pending, worker->ops);
+      if (rc != MDBX_SUCCESS)
+        return rc;
+    } else {
+      for (size_t slot = 0; slot < worker->pending; ++slot) {
+        rc = mdbx_async_get(worker->async, worker->txn, dbi, &worker->key_vals[slot], &worker->data[slot],
+                            &worker->ops[slot]);
+        if (rc != MDBX_SUCCESS)
+          return rc;
+      }
+    }
     rc = mdbx_async_wait_release_all(worker->ops, worker->pending, worker->results);
     if (rc != MDBX_SUCCESS)
       return rc;
@@ -599,8 +610,8 @@ static int async_get_batch_window_loop(struct async_worker *worker, MDBX_dbi dbi
   return MDBX_SUCCESS;
 }
 
-static double async_parallel_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops, size_t workers_count,
-                                 size_t window) {
+static double async_parallel_get_impl(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops,
+                                      size_t workers_count, size_t window, bool many) {
   struct async_worker *workers = calloc(workers_count, sizeof(*workers));
   if (!workers)
     return -1.0;
@@ -625,11 +636,18 @@ static double async_parallel_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size
         worker->data[slot] = val(NULL, 0);
         issued += 1;
       }
-      if (worker->pending) {
+      if (worker->pending && many) {
         rc = mdbx_async_get_many(worker->async, worker->txn, dbi, worker->key_vals, worker->data,
                                  worker->pending, worker->ops);
         if (rc != MDBX_SUCCESS)
           goto bailout;
+      } else {
+        for (size_t slot = 0; slot < worker->pending; ++slot) {
+          rc = mdbx_async_get(worker->async, worker->txn, dbi, &worker->key_vals[slot],
+                              &worker->data[slot], &worker->ops[slot]);
+          if (rc != MDBX_SUCCESS)
+            goto bailout;
+        }
       }
     }
 
@@ -672,13 +690,23 @@ bailout:
   return -1.0;
 }
 
+static double async_parallel_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops, size_t workers_count,
+                                 size_t window) {
+  return async_parallel_get_impl(env, dbi, items, ops, workers_count, window, false);
+}
+
+static double async_many_parallel_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops,
+                                      size_t workers_count, size_t window) {
+  return async_parallel_get_impl(env, dbi, items, ops, workers_count, window, true);
+}
+
 static void *async_thread_worker_main(void *arg) {
   struct async_thread_worker *const worker = (struct async_thread_worker *)arg;
   worker->rc = worker->batch
                    ? async_get_batch_window_loop(&worker->worker, worker->dbi, worker->items, worker->ops,
                                                  worker->offset, worker->window)
                    : async_get_window_loop(&worker->worker, worker->dbi, worker->items, worker->ops,
-                                           worker->offset, worker->window);
+                                           worker->offset, worker->window, worker->many);
   if (worker->rc != MDBX_SUCCESS) {
     for (size_t slot = 0; slot < worker->worker.pending; ++slot) {
       if (worker->worker.ops[slot])
@@ -690,7 +718,7 @@ static void *async_thread_worker_main(void *arg) {
 }
 
 static double async_threaded_get_impl(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops, size_t workers_count,
-                                      size_t window, bool batch) {
+                                      size_t window, bool batch, bool many) {
   pthread_t *threads = calloc(workers_count, sizeof(*threads));
   struct async_thread_worker *workers = calloc(workers_count, sizeof(*workers));
   if (!threads || !workers) {
@@ -714,6 +742,7 @@ static double async_threaded_get_impl(MDBX_env *env, MDBX_dbi dbi, size_t items,
     workers[i].offset = offset;
     workers[i].window = window;
     workers[i].batch = batch;
+    workers[i].many = many;
     offset += workers[i].ops;
     initialized_count = i + 1;
     if (async_worker_init(env, &workers[i].worker, dbi, window) != MDBX_SUCCESS) {
@@ -752,12 +781,17 @@ bailout:
 
 static double async_threaded_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops, size_t workers_count,
                                  size_t window) {
-  return async_threaded_get_impl(env, dbi, items, ops, workers_count, window, false);
+  return async_threaded_get_impl(env, dbi, items, ops, workers_count, window, false, false);
+}
+
+static double async_threaded_many_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops,
+                                      size_t workers_count, size_t window) {
+  return async_threaded_get_impl(env, dbi, items, ops, workers_count, window, false, true);
 }
 
 static double async_threaded_batch_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops, size_t workers_count,
                                        size_t window) {
-  return async_threaded_get_impl(env, dbi, items, ops, workers_count, window, true);
+  return async_threaded_get_impl(env, dbi, items, ops, workers_count, window, true, false);
 }
 
 static void *async_thread_loop_worker_main(void *arg) {
@@ -1262,7 +1296,9 @@ int main(void) {
   const double blocking_serial = blocking_serial_get(env, dbi, items, ops);
   const double blocking_parallel = blocking_parallel_get(env, dbi, items, ops, workers);
   const double async_parallel = async_parallel_get(env, dbi, items, ops, workers, window);
+  const double async_many_parallel = async_many_parallel_get(env, dbi, items, ops, workers, window);
   const double async_threaded_parallel = async_threaded_get(env, dbi, items, ops, workers, window);
+  const double async_threaded_many_parallel = async_threaded_many_get(env, dbi, items, ops, workers, window);
   const double async_threaded_batch_parallel = async_threaded_batch_get(env, dbi, items, ops, workers, window);
   const double async_batch_parallel = async_batch_parallel_get(env, dbi, items, ops, workers, window);
   const double async_batch_callback_parallel =
@@ -1279,7 +1315,9 @@ int main(void) {
   print_rate("blocking serial get", blocking_serial);
   print_rate("blocking parallel get", blocking_parallel);
   print_rate("async parallel get", async_parallel);
+  print_rate("async many parallel get", async_many_parallel);
   print_rate("async threaded get", async_threaded_parallel);
+  print_rate("async threaded many get", async_threaded_many_parallel);
   print_rate("async threaded batch get", async_threaded_batch_parallel);
   print_rate("async batch parallel get", async_batch_parallel);
   print_rate("async batch callback get", async_batch_callback_parallel);
@@ -1291,8 +1329,12 @@ int main(void) {
   print_rate("async cursor loop", async_loop_cursor_parallel);
   if (blocking_parallel > 0.0 && async_parallel > 0.0)
     printf("%-28s %8.3f\n", "async/blocking parallel", async_parallel / blocking_parallel);
+  if (blocking_parallel > 0.0 && async_many_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-many/blocking par", async_many_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_threaded_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread/blocking par", async_threaded_parallel / blocking_parallel);
+  if (blocking_parallel > 0.0 && async_threaded_many_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-many/par", async_threaded_many_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_threaded_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-batch/par", async_threaded_batch_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_batch_parallel > 0.0)
@@ -1305,8 +1347,12 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-thread-loop/par", async_threaded_loop_parallel / blocking_parallel);
   if (blocking_serial > 0.0 && async_parallel > 0.0)
     printf("%-28s %8.3f\n", "async/blocking serial", async_parallel / blocking_serial);
+  if (blocking_serial > 0.0 && async_many_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-many/blocking ser", async_many_parallel / blocking_serial);
   if (blocking_serial > 0.0 && async_threaded_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread/blocking ser", async_threaded_parallel / blocking_serial);
+  if (blocking_serial > 0.0 && async_threaded_many_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-many/ser", async_threaded_many_parallel / blocking_serial);
   if (blocking_serial > 0.0 && async_threaded_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-batch/ser", async_threaded_batch_parallel / blocking_serial);
   if (blocking_serial > 0.0 && async_batch_parallel > 0.0)
