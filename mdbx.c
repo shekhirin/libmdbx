@@ -390,13 +390,6 @@ typedef struct dxb_cursor_validate_branch_child_submit_io {
   bool expect_leaf;
 } dxb_cursor_validate_branch_child_submit_io_t;
 
-typedef struct dxb_cursor_push_pgr_submit_io {
-  MDBX_cursor *cursor;
-  pgr_t pgr;
-  intptr_t previous_top;
-  indx_t ki;
-} dxb_cursor_push_pgr_submit_io_t;
-
 typedef struct dxb_cursor_branch_child_push_submit_io {
   MDBX_cursor *cursor;
   page_t *parent;
@@ -6539,61 +6532,32 @@ static inline void cursor_stack_set_pgr_consume(MDBX_cursor *mc, intptr_t i, pgr
   cASSERT0(mc, err == MDBX_SUCCESS);
 }
 
-static inline int cursor_make_push_pgr_submit_io(MDBX_cursor *mc, const pgr_t *pgr, indx_t ki,
-                                                 dxb_cursor_push_pgr_submit_io_t *io) {
-  if (unlikely(!mc || !pgr || !io || pgr->err != MDBX_SUCCESS || !pgr->page))
+MDBX_MAYBE_UNUSED static inline int __must_check_result cursor_push_pgr_checked(MDBX_cursor *mc, const pgr_t *pgr,
+                                                                                indx_t ki) {
+  if (unlikely(!mc || !pgr || pgr->err != MDBX_SUCCESS || !pgr->page))
     return MDBX_EINVAL;
   if (unlikely(pgr->ref.page != nullptr && pgr->ref.page != pgr->page))
     return MDBX_EINVAL;
 
-  io->cursor = mc;
-  io->pgr = *pgr;
-  io->previous_top = mc->top;
-  io->ki = ki;
-  return MDBX_SUCCESS;
-}
+  TRACE("pushing page %" PRIaPGNO " on db %d cursor %p", pgr->page->pgno, cursor_dbi_dbg(mc),
+        __Wpedantic_format_voidptr(mc));
+  if (unlikely(mc->top >= CURSOR_STACK_SIZE - 1)) {
+    be_poor(mc);
+    mc->txn->flags |= MDBX_TXN_ERROR;
+    return MDBX_CURSOR_FULL;
+  }
 
-static inline int cursor_push_pgr_submit_io_validate(const dxb_cursor_push_pgr_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || io->pgr.err != MDBX_SUCCESS || !io->pgr.page))
-    return MDBX_EINVAL;
-  if (unlikely(io->pgr.ref.page != nullptr && io->pgr.ref.page != io->pgr.page))
-    return MDBX_EINVAL;
-  if (unlikely(io->cursor->top != io->previous_top))
-    return MDBX_EINVAL;
-
-  dxb_cursor_push_pgr_submit_io_t checked;
-  int err = cursor_make_push_pgr_submit_io(io->cursor, &io->pgr, io->ki, &checked);
+  const intptr_t next_top = mc->top + 1;
+  int err = cursor_stack_set_pgr_checked(mc, next_top, pgr);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  if (unlikely(checked.cursor != io->cursor || checked.pgr.page != io->pgr.page ||
-               checked.pgr.err != io->pgr.err || checked.previous_top != io->previous_top ||
-               checked.ki != io->ki || !page_ref_equal(&checked.pgr.ref, &io->pgr.ref)))
-    return MDBX_EINVAL;
+  mc->top = next_top;
+  mc->ki[next_top] = ki;
   return MDBX_SUCCESS;
 }
 
 MDBX_MAYBE_UNUSED static inline int __must_check_result cursor_push_pgr(MDBX_cursor *mc, const pgr_t *pgr, indx_t ki) {
-  dxb_cursor_push_pgr_submit_io_t submit;
-  int err = cursor_make_push_pgr_submit_io(mc, pgr, ki, &submit);
-  cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_push_pgr_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      MDBX_cursor *const cursor = submit.cursor;
-      page_t *const page = submit.pgr.page;
-      TRACE("pushing page %" PRIaPGNO " on db %d cursor %p", page->pgno, cursor_dbi_dbg(cursor),
-            __Wpedantic_format_voidptr(cursor));
-      if (unlikely(cursor->top >= CURSOR_STACK_SIZE - 1)) {
-        be_poor(cursor);
-        cursor->txn->flags |= MDBX_TXN_ERROR;
-        err = MDBX_CURSOR_FULL;
-      } else {
-        cursor->top += 1;
-        cursor_stack_set_pgr(cursor, cursor->top, &submit.pgr);
-        cursor->ki[cursor->top] = submit.ki;
-      }
-    }
-  }
+  int err = cursor_push_pgr_checked(mc, pgr, ki);
   cASSERT0(mc, err == MDBX_SUCCESS || err == MDBX_CURSOR_FULL);
   return err;
 }
@@ -6610,7 +6574,7 @@ MDBX_MAYBE_UNUSED static inline int __must_check_result cursor_push_pgr_consume_
   if (unlikely(mc->top != previous_top))
     return MDBX_EINVAL;
 
-  int err = cursor_push_pgr(mc, &captured, ki);
+  int err = cursor_push_pgr_checked(mc, &captured, ki);
   pgr_release(mc, pgr);
   return err;
 }
