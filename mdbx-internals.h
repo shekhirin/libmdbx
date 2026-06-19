@@ -1876,6 +1876,7 @@ MDBX_INTERNAL int osal_ioring_fstat(osal_ioring_t *ior, mdbx_filehandle_t fd, st
 MDBX_INTERNAL int osal_ioring_check_fs_rdonly(osal_ioring_t *ior, mdbx_filehandle_t fd,
                                               const pathchar_t *pathname, int err);
 MDBX_INTERNAL int osal_ioring_check_fs_incore(osal_ioring_t *ior, mdbx_filehandle_t fd);
+MDBX_INTERNAL int osal_ioring_check_fs_local(osal_ioring_t *ior, mdbx_filehandle_t fd, int flags);
 
 enum osal_openfile_purpose {
   MDBX_OPEN_DXB_READ,

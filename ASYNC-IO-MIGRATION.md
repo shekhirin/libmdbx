@@ -15406,6 +15406,23 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.124` batch, `1.159` crud, `0.942` iterate, `1.029`
 get, and `1.072` delete.
 
+A later copy-local-filesystem probe checkpoint routed the non-compacting copy
+destination lock/local-fs fallback check through
+`osal_ioring_check_fs_local()`. There is no Linux `io_uring` statvfs/statfs
+primitive for this probe either, so the OSAL wrapper currently falls back to
+`osal_check_fs_local()`, but the copy path no longer reaches that raw probe
+directly. The remaining direct `osal_check_fs_local()` call is in `osal_mmap()`
+for lock-file mmap setup. Verification passed `git diff --check`, the Ninja
+build (`cmake --build @cmake-ninja-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed 9/9, the ASAN
+build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.116` batch, `1.147` crud, `0.993` iterate, `0.978`
+get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -8901,7 +8901,7 @@ __cold static int copy2pathname(MDBX_txn *txn, const pathchar_t *dest_path, MDBX
       /* avoid call osal_check_fs_local() on success */
       (!err_fcntl && !err_flock && MDBX_CHECKING < 1) ? MDBX_SUCCESS :
 #if !defined(__ANDROID_API__) || __ANDROID_API__ >= 24
-                                                      osal_check_fs_local(newfd, 0);
+                                                      osal_ioring_check_fs_local(copy_ioring(txn->env), newfd, 0);
 #else
                                                       MDBX_ENOSYS;
 #endif
@@ -38215,6 +38215,11 @@ int osal_ioring_check_fs_rdonly(osal_ioring_t *ior, mdbx_filehandle_t fd,
                                 const pathchar_t *pathname, int err) {
   (void)ior;
   return osal_check_fs_rdonly(fd, pathname, err);
+}
+
+int osal_ioring_check_fs_local(osal_ioring_t *ior, mdbx_filehandle_t fd, int flags) {
+  (void)ior;
+  return osal_check_fs_local(fd, flags);
 }
 
 #if MDBX_USE_COPYFILERANGE
