@@ -1910,7 +1910,11 @@ MDBX_INTERNAL pathchar_t *osal_fileext(const pathchar_t *pathname, size_t len);
 MDBX_INTERNAL int osal_fileexists(const pathchar_t *pathname);
 MDBX_INTERNAL int osal_openfile(const enum osal_openfile_purpose purpose, const MDBX_env *env,
                                 const pathchar_t *pathname, mdbx_filehandle_t *fd, mdbx_mode_t unix_mode_bits);
+MDBX_INTERNAL int osal_ioring_openfile(osal_ioring_t *ior, const enum osal_openfile_purpose purpose,
+                                       const MDBX_env *env, const pathchar_t *pathname,
+                                       mdbx_filehandle_t *fd, mdbx_mode_t unix_mode_bits);
 MDBX_INTERNAL int osal_closefile(mdbx_filehandle_t fd);
+MDBX_INTERNAL int osal_ioring_closefile(osal_ioring_t *ior, mdbx_filehandle_t fd);
 MDBX_INTERNAL int osal_removefile(const pathchar_t *pathname);
 MDBX_INTERNAL int osal_removedirectory(const pathchar_t *pathname);
 MDBX_INTERNAL int osal_is_pipe(mdbx_filehandle_t fd);

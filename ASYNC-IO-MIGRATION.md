@@ -15476,6 +15476,25 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.137` batch, `1.159` crud, `1.274` iterate, `0.989`
 get, and `1.082` delete.
 
+A later lifecycle-boundary checkpoint added `osal_ioring_openfile()` and
+`osal_ioring_closefile()`, routing data-storage, copy-target, and env-delete
+open/close call sites through the queue boundary. Open still falls back to the
+existing `osal_openfile()` semantics because storage-owned queues are not
+available before the first descriptor exists, while Linux close now submits
+`IORING_OP_CLOSE` on a ready ring and falls back to `osal_closefile()` for
+unsupported rings/platforms. A source scan above the OSAL implementation now
+leaves direct open/close calls only in the intentional lock-file lifecycle code.
+Verification passed `git diff --check`, the Ninja build
+(`cmake --build @cmake-ninja-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed 9/9, the ASAN
+build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.147` batch, `1.160` crud, `1.305` iterate, `0.956`
+get, and `1.082` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
