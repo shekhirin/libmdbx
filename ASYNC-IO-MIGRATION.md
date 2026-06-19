@@ -15290,6 +15290,30 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.135` batch, `1.169` crud, `0.947` iterate, `0.980`
 get, and `1.080` delete.
 
+A later copy-destination checkpoint routed regular-file copy output writes
+through the source environment's storage queue. The non-pipe copy paths now use
+offset-based `osal_ioring_pwrite()` for the initial unusable-meta stub, portable
+copy fallback chunks, compacting-copy writer-thread chunks, and final meta-page
+rewrite. Regular copy destination sizing and final syncs now use
+`osal_ioring_fsetsize()` and `osal_ioring_fsync()` through the same queue.
+Pipe destinations still use stream writes where offsets are not available. A
+forced smoke trace including `write`, `pwrite64`, sync, fallocate, sendfile,
+splice, and copy-file-range syscalls showed `140011` io_uring setup/enter
+syscalls and zero direct regular copy data-file write/sync/extend syscalls after
+excluding the copied environment lock files. Verification passed
+`git diff --check`, the Ninja build (`cmake --build @cmake-ninja-build`), normal
+and `MDBX_EXPLICIT_IO_BACKEND=io_uring` focused `migration_tool_roundtrip`
+entries passed 3/3, normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` focused
+`migration_smoke` entries passed 6/6, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed 9/9, the ASAN
+build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.134` batch, `1.152` crud, `1.046` iterate, `0.992`
+get, and `1.093` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

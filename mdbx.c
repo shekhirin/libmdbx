@@ -7999,9 +7999,25 @@ typedef struct compacting_context {
    * to fail the copy.  Not mutex-protected, expects atomic int. */
   volatile int error;
   mdbx_filehandle_t fd;
+  uint64_t write_offset;
+  bool write_with_offset;
 } ctx_t;
 
 __cold static int compacting_walk_tree(ctx_t *ctx, tree_t *tree);
+
+static inline osal_ioring_t *copy_ioring(MDBX_env *env) { return (osal_ioring_t *)&env->dxb_storage.ioring; }
+
+static int copy_pwrite(MDBX_env *env, mdbx_filehandle_t fd, const void *buffer, size_t bytes, uint64_t offset) {
+  return bytes ? osal_ioring_pwrite(copy_ioring(env), fd, buffer, bytes, offset) : MDBX_SUCCESS;
+}
+
+static int copy_fsetsize(MDBX_env *env, mdbx_filehandle_t fd, uint64_t bytes) {
+  return osal_ioring_fsetsize(copy_ioring(env), fd, bytes);
+}
+
+static int copy_fsync(MDBX_env *env, mdbx_filehandle_t fd, enum osal_syncmode_bits mode_bits) {
+  return osal_ioring_fsync(copy_ioring(env), fd, mode_bits);
+}
 
 /* Dedicated writer thread for compacting copy. */
 __cold static THREAD_RESULT THREAD_CALL compacting_write_thread(void *arg) {
@@ -8032,7 +8048,8 @@ __cold static THREAD_RESULT THREAD_CALL compacting_write_thread(void *arg) {
     ctx->write_len[toggle] = 0;
     uint8_t *ptr = ctx->write_buf[toggle];
     if (!ctx->error) {
-      int err = osal_write(ctx->fd, ptr, wsize);
+      int err = ctx->write_with_offset ? copy_pwrite(ctx->env, ctx->fd, ptr, wsize, ctx->write_offset)
+                                       : osal_write(ctx->fd, ptr, wsize);
       if (err != MDBX_SUCCESS) {
 #if defined(EPIPE) && !(defined(_WIN32) || defined(_WIN64))
         if (err == EPIPE) {
@@ -8044,6 +8061,13 @@ __cold static THREAD_RESULT THREAD_CALL compacting_write_thread(void *arg) {
 #endif /* EPIPE */
         ctx->error = err;
         goto bailout;
+      }
+      if (ctx->write_with_offset) {
+        if (unlikely(wsize > UINT64_MAX - ctx->write_offset)) {
+          ctx->error = MDBX_EINVAL;
+          goto bailout;
+        }
+        ctx->write_offset += wsize;
       }
     }
     ctx->tail += 1;
@@ -8461,6 +8485,8 @@ __cold static int copy_with_compacting(MDBX_env *env, MDBX_txn *txn, mdbx_fileha
     ctx.fd = fd;
     ctx.txn = txn;
     ctx.flags = flags;
+    ctx.write_offset = meta_bytes;
+    ctx.write_with_offset = !dest_is_pipe;
 
     osal_thread_t thread;
     int thread_err = osal_thread_create(&thread, compacting_write_thread, &ctx);
@@ -8527,7 +8553,7 @@ __cold static int copy_with_compacting(MDBX_env *env, MDBX_txn *txn, mdbx_fileha
       return rc;
     const size_t whole_size = whole_pages.bytes;
     if (!dest_is_pipe)
-      return osal_fsetsize(fd, whole_size);
+      return copy_fsetsize(env, fd, whole_size);
 
     dxb_page_io_t used_pages;
     rc = dxb_storage_page_prefix_io(storage, meta->geometry.first_unallocated, &used_pages);
@@ -8719,14 +8745,17 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
       if (unlikely(rc != MDBX_SUCCESS))
         break;
     }
-    rc = osal_write(fd, data_buffer + export_read.payload_offset, export_read.export.source.request.bytes);
-    offset += export_read.export.source.request.bytes;
+    const size_t payload_bytes = export_read.export.source.request.bytes;
+    rc = dest_is_pipe ? osal_write(fd, data_buffer + export_read.payload_offset, payload_bytes)
+                      : copy_pwrite(env, fd, data_buffer + export_read.payload_offset, payload_bytes, offset);
+    if (likely(rc == MDBX_SUCCESS))
+      offset += payload_bytes;
   }
 
   /* Extend file if required */
   if (likely(rc == MDBX_SUCCESS) && whole_size != used_size) {
     if (!dest_is_pipe)
-      rc = osal_fsetsize(fd, whole_size);
+      rc = copy_fsetsize(env, fd, whole_size);
     else {
       memset(data_buffer, 0, (size_t)MDBX_ENVCOPY_WRITEBUF);
       for (offset = used_size; rc == MDBX_SUCCESS && offset < whole_size;) {
@@ -8792,7 +8821,7 @@ __cold static int copy2fd(MDBX_txn *txn, mdbx_filehandle_t fd, MDBX_copy_flags_t
     /* Firstly write a stub to meta-pages.
      * Now we sure to incomplete copy will not be used. */
     memset(buffer, -1, meta_bytes);
-    rc = osal_write(fd, buffer, meta_bytes);
+    rc = copy_pwrite(env, fd, buffer, meta_bytes, 0);
   }
 
   if (likely(rc == MDBX_SUCCESS))
@@ -8815,14 +8844,14 @@ __cold static int copy2fd(MDBX_txn *txn, mdbx_filehandle_t fd, MDBX_copy_flags_t
 
   if (!dest_is_pipe) {
     if (likely(rc == MDBX_SUCCESS) && (flags & MDBX_CP_DONT_FLUSH) == 0)
-      rc = osal_fsync(fd, MDBX_SYNC_DATA | MDBX_SYNC_SIZE);
+      rc = copy_fsync(env, fd, MDBX_SYNC_DATA | MDBX_SYNC_SIZE);
 
     /* Write actual meta */
     if (likely(rc == MDBX_SUCCESS))
-      rc = osal_pwrite(fd, buffer, meta_bytes, 0);
+      rc = copy_pwrite(env, fd, buffer, meta_bytes, 0);
 
     if (likely(rc == MDBX_SUCCESS) && (flags & MDBX_CP_DONT_FLUSH) == 0)
-      rc = osal_fsync(fd, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
+      rc = copy_fsync(env, fd, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
   }
 
   osal_memalign_free(buffer);
