@@ -14273,6 +14273,30 @@ migration CTest suite including API checks and tool roundtrips, the ASAN build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.114`
 batch, `1.131` crud, `0.991` iterate, `1.007` get, and `1.068` delete.
 
+A later coherency descriptor cleanup removed
+`dxb_coherency_root_read_submit_io_t`,
+`coherency_make_root_read_submit_io()`,
+`coherency_root_read_submit_io_validate()`,
+`dxb_coherency_filesize_fetch_submit_io_t`,
+`coherency_make_filesize_fetch_submit_io()`, and
+`coherency_filesize_fetch_submit_io_validate()` from `mdbx.c`.
+`coherency_probe_root_txnid()` now reuses the validated root-page data-read
+descriptor to build and validate the existing storage `dxb_read_submit_io_t`
+directly before submitting through `dxb_storage_submit_read_data()`.
+`coherency_fetch_head()` now builds, validates, and submits the storage
+filesize-fetch descriptor directly when the current file view is too small for
+the selected snapshot. Verification passed `git diff --check`, a source scan
+proving the removed coherency descriptor helpers are absent from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including API checks and tool
+roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`.
+The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
+of `1.121` batch, `1.164` crud, `1.015` iterate, `0.999` get, and `1.065`
+delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

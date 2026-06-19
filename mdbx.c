@@ -18638,95 +18638,6 @@ static inline int coherency_root_probe_read_io_validate(const dxb_coherency_root
   return MDBX_SUCCESS;
 }
 
-typedef struct dxb_coherency_root_read_submit_io {
-  const dxb_storage_t *storage;
-  pgno_t root_pgno;
-  dxb_data_read_io_t root_read;
-  dxb_read_submit_io_t read;
-  void *buffer;
-  size_t buffer_bytes;
-} dxb_coherency_root_read_submit_io_t;
-
-static inline int coherency_make_root_read_submit_io(const dxb_storage_t *storage, pgno_t root_pgno, void *buffer,
-                                                     size_t buffer_bytes,
-                                                     dxb_coherency_root_read_submit_io_t *io) {
-  if (unlikely(!storage || !buffer || !io))
-    return MDBX_EINVAL;
-  if (unlikely(buffer_bytes < dxb_storage_pagesize(storage)))
-    return MDBX_EINVAL;
-
-  dxb_page_io_t root_page;
-  int rc = dxb_storage_page_io(storage, root_pgno, 1, &root_page);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_data_read_io_t root_read;
-  rc = dxb_storage_make_data_read_io(storage, &root_page, &root_read);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(root_read.bytes.bytes > buffer_bytes))
-    return MDBX_EINVAL;
-
-  dxb_read_submit_io_t read;
-  rc = dxb_storage_make_read_submit_io(storage, &root_read, buffer, &read);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->storage = storage;
-  io->root_pgno = root_pgno;
-  io->root_read = root_read;
-  io->read = read;
-  io->buffer = buffer;
-  io->buffer_bytes = buffer_bytes;
-  return MDBX_SUCCESS;
-}
-
-static inline int coherency_root_read_submit_io_validate(const dxb_coherency_root_read_submit_io_t *io) {
-  if (unlikely(!io || !io->storage || !io->buffer))
-    return MDBX_EINVAL;
-  if (unlikely(io->buffer_bytes < dxb_storage_pagesize(io->storage) || io->read.buffer != io->buffer ||
-               io->read.data.bytes.bytes > io->buffer_bytes))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_data_read_io_validate(io->storage, &io->root_read);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_read_submit_io_validate(io->storage, &io->read);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io->root_read.pages.pgno != io->root_pgno || io->root_read.pages.npages != 1 ||
-               io->read.data.pages.pgno != io->root_read.pages.pgno ||
-               io->read.data.pages.end_pgno != io->root_read.pages.end_pgno ||
-               io->read.data.pages.npages != io->root_read.pages.npages ||
-               io->read.data.pages.offset != io->root_read.pages.offset ||
-               io->read.data.pages.bytes != io->root_read.pages.bytes ||
-               io->read.data.bytes.offset != io->root_read.bytes.offset ||
-               io->read.data.bytes.bytes != io->root_read.bytes.bytes))
-    return MDBX_EINVAL;
-
-  dxb_coherency_root_read_submit_io_t checked;
-  rc = coherency_make_root_read_submit_io(io->storage, io->root_pgno, io->buffer, io->buffer_bytes, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.storage != io->storage || checked.root_pgno != io->root_pgno ||
-               checked.buffer != io->buffer || checked.buffer_bytes != io->buffer_bytes ||
-               checked.root_read.pages.pgno != io->root_read.pages.pgno ||
-               checked.root_read.pages.end_pgno != io->root_read.pages.end_pgno ||
-               checked.root_read.pages.npages != io->root_read.pages.npages ||
-               checked.root_read.pages.offset != io->root_read.pages.offset ||
-               checked.root_read.pages.bytes != io->root_read.pages.bytes ||
-               checked.root_read.bytes.offset != io->root_read.bytes.offset ||
-               checked.root_read.bytes.bytes != io->root_read.bytes.bytes ||
-               checked.read.data.pages.pgno != io->read.data.pages.pgno ||
-               checked.read.data.pages.end_pgno != io->read.data.pages.end_pgno ||
-               checked.read.data.pages.npages != io->read.data.pages.npages ||
-               checked.read.data.pages.offset != io->read.data.pages.offset ||
-               checked.read.data.pages.bytes != io->read.data.pages.bytes ||
-               checked.read.data.bytes.offset != io->read.data.bytes.offset ||
-               checked.read.data.bytes.bytes != io->read.data.bytes.bytes || checked.read.buffer != io->read.buffer))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, const txnid_t meta_txnid,
                                        const pgno_t root_pgno, const pgno_t last_pgno, const bool report,
                                        coherency_root_probe_t *probe) {
@@ -18753,12 +18664,15 @@ static bool coherency_probe_root_txnid(const MDBX_env *env, const char *name, co
     void *root_buffer = nullptr;
     err = osal_memalign_alloc(globals.sys_pagesize, root_buffer_bytes, &root_buffer);
     if (likely(err == MDBX_SUCCESS)) {
-      dxb_coherency_root_read_submit_io_t submit;
-      err = coherency_make_root_read_submit_io(storage, root_pgno, root_buffer, root_buffer_bytes, &submit);
+      dxb_read_submit_io_t read;
+      if (unlikely(root_probe.root_read.bytes.bytes > root_buffer_bytes))
+        err = MDBX_EINVAL;
       if (likely(err == MDBX_SUCCESS))
-        err = coherency_root_read_submit_io_validate(&submit);
+        err = dxb_storage_make_read_submit_io(storage, &root_probe.root_read, root_buffer, &read);
       if (likely(err == MDBX_SUCCESS))
-        err = dxb_storage_submit_read_data(submit.storage, &submit.read).err;
+        err = dxb_storage_read_submit_io_validate(storage, &read);
+      if (likely(err == MDBX_SUCCESS))
+        err = dxb_storage_submit_read_data(storage, &read).err;
       if (likely(err == MDBX_SUCCESS))
         probe->txnid = ((page_t *)root_buffer)->txnid;
       osal_memalign_free(root_buffer);
@@ -18877,47 +18791,6 @@ __cold int coherency_timeout(uint64_t *timestamp, intptr_t pgno, const MDBX_env 
   return MDBX_RESULT_TRUE;
 }
 
-typedef struct dxb_coherency_filesize_fetch_submit_io {
-  MDBX_env *env;
-  dxb_storage_t *storage;
-  dxb_filesize_submit_io_t submit;
-} dxb_coherency_filesize_fetch_submit_io_t;
-
-static inline int coherency_make_filesize_fetch_submit_io(MDBX_env *env,
-                                                          dxb_coherency_filesize_fetch_submit_io_t *io) {
-  if (unlikely(!env || !io))
-    return MDBX_EINVAL;
-
-  dxb_filesize_submit_io_t submit;
-  int err = dxb_storage_make_filesize_fetch_submit_io(&submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  io->env = env;
-  io->storage = &env->dxb_storage;
-  io->submit = submit;
-  return MDBX_SUCCESS;
-}
-
-static inline int coherency_filesize_fetch_submit_io_validate(
-    const dxb_coherency_filesize_fetch_submit_io_t *io) {
-  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage))
-    return MDBX_EINVAL;
-
-  int err = dxb_storage_filesize_fetch_submit_io_validate(&io->submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  dxb_coherency_filesize_fetch_submit_io_t checked;
-  err = coherency_make_filesize_fetch_submit_io(io->env, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  return likely(checked.env == io->env && checked.storage == io->storage &&
-                checked.submit.target == io->submit.target && checked.submit.set == io->submit.set)
-             ? MDBX_SUCCESS
-             : MDBX_EINVAL;
-}
-
 /* check with timeout as the workaround
  * for https://libmdbx.dqdkfa.ru/dead-github/issues/269 */
 __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *timestamp) {
@@ -18940,14 +18813,14 @@ __hot int coherency_fetch_head(MDBX_txn *txn, const meta_ptr_t head, uint64_t *t
     return err;
   const uint64_t current_size = dxb_storage_current_size(storage);
   if (unlikely(required_bytes.offset > current_size || required_bytes.bytes > current_size - required_bytes.offset)) {
-    dxb_coherency_filesize_fetch_submit_io_t filesize_submit;
-    err = coherency_make_filesize_fetch_submit_io(txn->env, &filesize_submit);
+    dxb_filesize_submit_io_t filesize_fetch;
+    err = dxb_storage_make_filesize_fetch_submit_io(&filesize_fetch);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = coherency_filesize_fetch_submit_io_validate(&filesize_submit);
+    err = dxb_storage_filesize_fetch_submit_io_validate(&filesize_fetch);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_storage_submit_fetch_filesize(filesize_submit.storage, &filesize_submit.submit).err;
+    err = dxb_storage_submit_fetch_filesize(storage, &filesize_fetch).err;
     if (unlikely(err != MDBX_SUCCESS))
       return err;
   }
