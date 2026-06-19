@@ -41885,16 +41885,12 @@ dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued
 
 static int dxb_data_write_subrange_io(const dxb_data_write_io_t *base, size_t offset, size_t bytes,
                                       dxb_data_write_io_t *io) {
-  int rc = dxb_data_write_io_validate_queued(base, base->bytes.bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
   const size_t pagesize = base->pages.bytes / base->pages.npages;
   if (unlikely(pagesize == 0 || offset % pagesize != 0 || bytes % pagesize != 0))
     return MDBX_EINVAL;
 
   dxb_byte_io_t subrange;
-  rc = dxb_storage_byte_subrange_io(&base->bytes, offset, bytes, &subrange);
+  int rc = dxb_storage_byte_subrange_io(&base->bytes, offset, bytes, &subrange);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
@@ -47003,8 +46999,6 @@ static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_data_write_io_t *q
     dxb_cache_invalidate_io_t invalidate;
     if (likely(err == MDBX_SUCCESS))
       err = dxb_storage_make_cache_invalidate_io(storage, &queued->pages, false, &invalidate);
-    if (likely(err == MDBX_SUCCESS))
-      err = dxb_storage_cache_invalidate_io_validate(storage, &invalidate);
     if (unlikely(err == MDBX_SUCCESS &&
                  (!iov_page_io_equal(&queued->pages, &invalidate.pages) || invalidate.include_reusable)))
       err = MDBX_EINVAL;
