@@ -13031,6 +13031,28 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.093` batch, `1.144` crud, `0.999` iterate,
 `1.020` get, and `1.061` delete.
 
+A later dirty-write IOV adapter submit-boundary cleanup removed the one-call
+`iov_submit_queue_prepare()`, `iov_submit_queue_reset()`,
+`iov_submit_queue_walk()`, `iov_submit_write()`, and `iov_submit_page()`
+helpers from `mdbx.c`. `iov_init()`, `iov_complete()`, `iov_write()`, and
+`iov_page()` now revalidate their IOV-specific queue descriptors and submit the
+nested storage queue descriptors directly through the `dxb_storage_submit_*`
+queue entry points. This preserves validation failures as unsubmitted queue
+results, keeps `ctx->err` propagation intact, and leaves dirty-page write queue
+operations closer to the explicit storage queue boundary future async backends
+will replace. Verification passed `git diff --check`, source scans proving the
+removed `iov_submit_*` helpers are absent from `mdbx.c` and the
+public/internal headers, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.099` batch, `1.137` crud, `0.997` iterate,
+`0.980` get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
