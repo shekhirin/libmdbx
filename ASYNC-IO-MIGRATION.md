@@ -82,7 +82,8 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   `MDBX_cursor` also has a `value_ref` for the latest returned
   non-stack value, and `node_read_bigdata()` now retains overflow-page refs
   there so future cached large-value pages can outlive the local `pgr_t`. Local
-  `pgr_t` ownership now has explicit release/consume helpers, and short-lived
+  `pgr_t` ownership now has explicit release/consume helpers, cursor value
+  refs are set/released directly without local submit descriptors, and short-lived
   page results are released after they are retained by cursor/value stacks or
   after transient validation/copy/retire use. This now covers tree descent,
   sibling movement, root setup/collapse, compacting, defrag, overflow

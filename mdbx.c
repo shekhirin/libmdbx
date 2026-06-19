@@ -526,17 +526,6 @@ typedef struct dxb_cursor_pop_keep_ref_restore_submit_io {
   intptr_t restored_top;
 } dxb_cursor_pop_keep_ref_restore_submit_io_t;
 
-typedef struct dxb_cursor_value_set_submit_io {
-  MDBX_cursor *cursor;
-  pgr_t pgr;
-} dxb_cursor_value_set_submit_io_t;
-
-typedef struct dxb_cursor_value_release_submit_io {
-  MDBX_cursor *cursor;
-  page_t *page;
-  page_ref_t ref;
-} dxb_cursor_value_release_submit_io_t;
-
 typedef struct dxb_bigdata_read_submit_io {
   MDBX_cursor *cursor;
   MDBX_val *data;
@@ -6084,88 +6073,24 @@ static inline void pgr_release(const MDBX_cursor *mc, pgr_t *pgr) {
   }
 }
 
-static inline int cursor_make_value_release_submit_io(MDBX_cursor *mc, dxb_cursor_value_release_submit_io_t *io) {
-  if (unlikely(!mc || !io))
-    return MDBX_EINVAL;
-
-  io->cursor = mc;
-  io->ref = mc->value_ref;
-  io->page = io->ref.page;
-  return MDBX_SUCCESS;
-}
-
-static inline int cursor_value_release_submit_io_validate(const dxb_cursor_value_release_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || io->ref.page != io->page))
-    return MDBX_EINVAL;
-  if (unlikely(!page_ref_equal(&io->cursor->value_ref, &io->ref)))
-    return MDBX_EINVAL;
-
-  dxb_cursor_value_release_submit_io_t checked;
-  int err = cursor_make_value_release_submit_io(io->cursor, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.page != io->page ||
-               !page_ref_equal(&checked.ref, &io->ref)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 static inline void cursor_value_release(MDBX_cursor *mc) {
-  dxb_cursor_value_release_submit_io_t submit;
-  int err = cursor_make_value_release_submit_io(mc, &submit);
-  cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_value_release_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      page_ref_t old = submit.ref;
-      mc->value_ref = page_ref_empty();
-      cursor_ref_release(mc, &old);
-    }
-    cASSERT0(mc, err == MDBX_SUCCESS);
+  cASSERT0(mc, mc != nullptr);
+  if (likely(mc)) {
+    page_ref_t old = mc->value_ref;
+    mc->value_ref = page_ref_empty();
+    cursor_ref_release(mc, &old);
   }
 }
 
-static inline int cursor_make_value_set_submit_io(MDBX_cursor *mc, const pgr_t *pgr,
-                                                  dxb_cursor_value_set_submit_io_t *io) {
-  if (unlikely(!mc || !pgr || !io || pgr->err != MDBX_SUCCESS))
-    return MDBX_EINVAL;
-  if (unlikely(pgr->ref.page != nullptr && pgr->ref.page != pgr->page))
-    return MDBX_EINVAL;
-
-  io->cursor = mc;
-  io->pgr = *pgr;
-  return MDBX_SUCCESS;
-}
-
-static inline int cursor_value_set_submit_io_validate(const dxb_cursor_value_set_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || io->pgr.err != MDBX_SUCCESS))
-    return MDBX_EINVAL;
-  if (unlikely(io->pgr.ref.page != nullptr && io->pgr.ref.page != io->pgr.page))
-    return MDBX_EINVAL;
-
-  dxb_cursor_value_set_submit_io_t checked;
-  int err = cursor_make_value_set_submit_io(io->cursor, &io->pgr, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.pgr.page != io->pgr.page ||
-               checked.pgr.err != io->pgr.err || !page_ref_equal(&checked.pgr.ref, &io->pgr.ref)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 static inline void cursor_value_set(MDBX_cursor *mc, const pgr_t *pgr) {
-  dxb_cursor_value_set_submit_io_t submit;
-  int err = cursor_make_value_set_submit_io(mc, pgr, &submit);
-  cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_value_set_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      page_ref_t ref = cursor_ref_retain(mc, submit.pgr.ref);
-      page_ref_t old = mc->value_ref;
-      mc->value_ref = ref;
-      cursor_ref_release(mc, &old);
-    }
-    cASSERT0(mc, err == MDBX_SUCCESS);
+  const bool valid =
+      mc && pgr && pgr->err == MDBX_SUCCESS && (pgr->ref.page == nullptr || pgr->ref.page == pgr->page);
+  cASSERT0(mc, valid);
+  if (likely(valid)) {
+    page_ref_t ref = cursor_ref_retain(mc, pgr->ref);
+    page_ref_t old = mc->value_ref;
+    mc->value_ref = ref;
+    cursor_ref_release(mc, &old);
   }
 }
 
