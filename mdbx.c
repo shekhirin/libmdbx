@@ -16054,9 +16054,12 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_dbi_stat:
     return mdbx_dbi_stat(op->args.dbi_stat.txn, op->args.dbi_stat.dbi, op->args.dbi_stat.stat,
                          op->args.dbi_stat.bytes);
-  case async_op_dbi_flags_ex:
+  case async_op_dbi_flags_ex: {
+    unsigned ignored_state = 0;
     return mdbx_dbi_flags_ex(op->args.dbi_flags_ex.txn, op->args.dbi_flags_ex.dbi,
-                             op->args.dbi_flags_ex.flags, op->args.dbi_flags_ex.state);
+                             op->args.dbi_flags_ex.flags,
+                             op->args.dbi_flags_ex.state ? op->args.dbi_flags_ex.state : &ignored_state);
+  }
   case async_op_dbi_dupsort_depthmask:
     return mdbx_dbi_dupsort_depthmask(op->args.dbi_dupsort_depthmask.txn,
                                       op->args.dbi_dupsort_depthmask.dbi, op->args.dbi_dupsort_depthmask.mask);
@@ -16763,6 +16766,10 @@ int mdbx_async_env_stat_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_stat *st
   return LOG_IFERR(rc);
 }
 
+int mdbx_async_env_stat(MDBX_async *async, MDBX_stat *stat, size_t bytes, MDBX_async_op **out) {
+  return mdbx_async_env_stat_ex(async, nullptr, stat, bytes, out);
+}
+
 int mdbx_async_env_info_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_envinfo *info, size_t bytes,
                            MDBX_async_op **out) {
   if (unlikely(!info))
@@ -16782,6 +16789,10 @@ int mdbx_async_env_info_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_envinfo 
   return LOG_IFERR(rc);
 }
 
+int mdbx_async_env_info(MDBX_async *async, MDBX_envinfo *info, size_t bytes, MDBX_async_op **out) {
+  return mdbx_async_env_info_ex(async, nullptr, info, bytes, out);
+}
+
 int mdbx_async_env_sync_ex(MDBX_async *async, bool force, bool nonblock, MDBX_async_op **out) {
   MDBX_async_op *op = nullptr;
   int rc = async_op_alloc(async, &op, async_op_env_sync);
@@ -16795,6 +16806,14 @@ int mdbx_async_env_sync_ex(MDBX_async *async, bool force, bool nonblock, MDBX_as
     osal_free(op);
   }
   return LOG_IFERR(rc);
+}
+
+int mdbx_async_env_sync(MDBX_async *async, MDBX_async_op **out) {
+  return mdbx_async_env_sync_ex(async, true, false, out);
+}
+
+int mdbx_async_env_sync_poll(MDBX_async *async, MDBX_async_op **out) {
+  return mdbx_async_env_sync_ex(async, false, true, out);
 }
 
 int mdbx_async_env_warmup(MDBX_async *async, const MDBX_txn *txn, MDBX_warmup_flags_t flags,
@@ -17284,6 +17303,10 @@ static int async_env_get_size_submit(MDBX_async *async, MDBX_db_flags_t flags, i
 
 int mdbx_async_env_get_maxkeysize_ex(MDBX_async *async, MDBX_db_flags_t flags, int *size, MDBX_async_op **out) {
   return async_env_get_size_submit(async, flags, size, async_op_env_get_maxkeysize, out);
+}
+
+int mdbx_async_env_get_maxkeysize(MDBX_async *async, int *size, MDBX_async_op **out) {
+  return mdbx_async_env_get_maxkeysize_ex(async, MDBX_DUPSORT, size, out);
 }
 
 int mdbx_async_env_get_maxvalsize_ex(MDBX_async *async, MDBX_db_flags_t flags, int *size, MDBX_async_op **out) {
@@ -18011,7 +18034,7 @@ int mdbx_async_dbi_stat(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MD
 
 int mdbx_async_dbi_flags_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, unsigned *flags, unsigned *state,
                             MDBX_async_op **out) {
-  if (unlikely(!txn || !flags || !state))
+  if (unlikely(!txn || !flags))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
   int rc = async_op_alloc(async, &op, async_op_dbi_flags_ex);
@@ -18027,6 +18050,11 @@ int mdbx_async_dbi_flags_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi
     osal_free(op);
   }
   return LOG_IFERR(rc);
+}
+
+int mdbx_async_dbi_flags(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, unsigned *flags,
+                         MDBX_async_op **out) {
+  return mdbx_async_dbi_flags_ex(async, txn, dbi, flags, nullptr, out);
 }
 
 int mdbx_async_dbi_dupsort_depthmask(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, uint32_t *mask,

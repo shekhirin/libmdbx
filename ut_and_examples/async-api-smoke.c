@@ -544,8 +544,12 @@ int main(void) {
   CHECK_OP(op);
 
   int env_operation_result = MDBX_SUCCESS;
-  CHECK(mdbx_async_env_sync_ex(async, false, true, &op));
-  CHECK(wait_result("mdbx_async_env_sync_ex", &op, &env_operation_result, __FILE__, __LINE__));
+  CHECK(mdbx_async_env_sync_poll(async, &op));
+  CHECK(wait_result("mdbx_async_env_sync_poll", &op, &env_operation_result, __FILE__, __LINE__));
+  REQUIRE(env_operation_result == MDBX_SUCCESS || env_operation_result == MDBX_RESULT_TRUE,
+          "unexpected async environment sync-poll result");
+  CHECK(mdbx_async_env_sync(async, &op));
+  CHECK(wait_result("mdbx_async_env_sync", &op, &env_operation_result, __FILE__, __LINE__));
   REQUIRE(env_operation_result == MDBX_SUCCESS || env_operation_result == MDBX_RESULT_TRUE,
           "unexpected async environment sync result");
   CHECK(mdbx_async_env_warmup(async, NULL, MDBX_warmup_default, 0, &op));
@@ -926,6 +930,10 @@ int main(void) {
   CHECK(mdbx_async_dbi_flags_ex(async, txn, dbi, &dbi_flags, &dbi_state, &op));
   CHECK_OP(op);
   REQUIRE((dbi_flags & MDBX_DUPSORT) == 0, "unexpected async dbi dupsort flag");
+  dbi_flags = UINT_MAX;
+  CHECK(mdbx_async_dbi_flags(async, txn, dbi, &dbi_flags, &op));
+  CHECK_OP(op);
+  REQUIRE((dbi_flags & MDBX_DUPSORT) == 0, "unexpected async dbi shortcut dupsort flag");
 
   uint32_t depthmask = UINT32_MAX;
   int depthmask_result = MDBX_SUCCESS;

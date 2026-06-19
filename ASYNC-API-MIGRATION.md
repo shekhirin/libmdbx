@@ -958,3 +958,23 @@ Additional named environment option checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.066, async-batch/blocking-parallel ratio 1.079, and async-cursor/blocking-parallel ratio 0.647
+
+Additional compatibility alias checkpoint:
+
+- added async compatibility wrappers for the environment stat/info/sync
+  shortcuts: `mdbx_async_env_stat()`, `mdbx_async_env_info()`,
+  `mdbx_async_env_sync()`, `mdbx_async_env_sync_poll()`, and the deprecated
+  `mdbx_async_env_get_maxkeysize()`
+- added `mdbx_async_dbi_flags()` as the shortcut counterpart to
+  `mdbx_dbi_flags()`; the shared async DBI flags worker now discards DBI state
+  into a worker-local slot when callers do not provide a state output
+- smoke coverage now exercises async sync shortcut/poll aliases and the
+  state-discarding `mdbx_async_dbi_flags()` path
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.072, async-batch/blocking-parallel ratio 1.071, and async-cursor/blocking-parallel ratio 0.638

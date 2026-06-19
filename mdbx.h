@@ -4728,16 +4728,38 @@ LIBMDBX_API int mdbx_async_op_release_all(MDBX_async_op *ops[], size_t count);
 LIBMDBX_API int mdbx_async_env_stat_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_stat *stat, size_t bytes,
                                        MDBX_async_op **op);
 
+/** \brief Asynchronously get environment statistics.
+ * \ingroup c_async
+ * \deprecated Please use mdbx_async_env_stat_ex() instead. */
+MDBX_DEPRECATED LIBMDBX_API int mdbx_async_env_stat(MDBX_async *async, MDBX_stat *stat, size_t bytes,
+                                                    MDBX_async_op **op);
+
 /** \brief Asynchronously get environment information.
  * \ingroup c_async
  * \see mdbx_env_info_ex() */
 LIBMDBX_API int mdbx_async_env_info_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_envinfo *info, size_t bytes,
                                        MDBX_async_op **op);
 
+/** \brief Asynchronously get environment information.
+ * \ingroup c_async
+ * \deprecated Please use mdbx_async_env_info_ex() instead. */
+MDBX_DEPRECATED LIBMDBX_API int mdbx_async_env_info(MDBX_async *async, MDBX_envinfo *info, size_t bytes,
+                                                    MDBX_async_op **op);
+
 /** \brief Asynchronously sync the environment bound to an executor.
  * \ingroup c_async
  * \see mdbx_env_sync_ex() */
 LIBMDBX_API int mdbx_async_env_sync_ex(MDBX_async *async, bool force, bool nonblock, MDBX_async_op **op);
+
+/** \brief Asynchronously sync the environment bound to an executor.
+ * \ingroup c_async
+ * \see mdbx_env_sync() */
+LIBMDBX_API int mdbx_async_env_sync(MDBX_async *async, MDBX_async_op **op);
+
+/** \brief Asynchronously poll environment sync thresholds.
+ * \ingroup c_async
+ * \see mdbx_env_sync_poll() */
+LIBMDBX_API int mdbx_async_env_sync_poll(MDBX_async *async, MDBX_async_op **op);
 
 /** \brief Asynchronously warm up the environment bound to an executor.
  * \ingroup c_async
@@ -4875,6 +4897,11 @@ LIBMDBX_API int mdbx_async_env_get_userctx(MDBX_async *async, void **context, MD
  * \see mdbx_env_get_maxkeysize_ex() */
 LIBMDBX_API int mdbx_async_env_get_maxkeysize_ex(MDBX_async *async, MDBX_db_flags_t flags, int *size,
                                                 MDBX_async_op **op);
+
+/** \brief Asynchronously get the maximum key size for the environment.
+ * \ingroup c_async
+ * \deprecated Please use mdbx_async_env_get_maxkeysize_ex() instead. */
+MDBX_DEPRECATED LIBMDBX_API int mdbx_async_env_get_maxkeysize(MDBX_async *async, int *size, MDBX_async_op **op);
 
 /** \brief Asynchronously get the maximum value size for the environment.
  * \ingroup c_async
@@ -5050,6 +5077,13 @@ LIBMDBX_API int mdbx_async_dbi_stat(MDBX_async *async, const MDBX_txn *txn, MDBX
  * \see mdbx_dbi_flags_ex() */
 LIBMDBX_API int mdbx_async_dbi_flags_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, unsigned *flags,
                                         unsigned *state, MDBX_async_op **op);
+
+/** \brief Asynchronously retrieve DBI flags.
+ * \ingroup c_async
+ * \details The `flags` output must remain valid until completion.
+ * \see mdbx_dbi_flags() */
+LIBMDBX_API int mdbx_async_dbi_flags(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, unsigned *flags,
+                                     MDBX_async_op **op);
 
 /** \brief Asynchronously retrieve dupsort depth-mask information for a table.
  * \ingroup c_async
