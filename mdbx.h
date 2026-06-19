@@ -4673,8 +4673,8 @@ LIBMDBX_API int mdbx_async_create(MDBX_env *env, MDBX_async_flags_t flags, MDBX_
  *
  * If `drain` is true, the function waits until queued and running operations
  * complete. In all cases every submitted operation handle must be released with
- * \ref mdbx_async_op_release() or \ref mdbx_async_op_release_all() before the
- * executor can be destroyed.
+ * \ref mdbx_async_op_release(), \ref mdbx_async_op_release_all(), or
+ * \ref mdbx_async_wait_release_all() before the executor can be destroyed.
  *
  * \returns \ref MDBX_BUSY if operations are pending, running, or unreleased. */
 LIBMDBX_API int mdbx_async_destroy(MDBX_async *async, bool drain);
@@ -4691,7 +4691,9 @@ MDBX_NOTHROW_PURE_FUNCTION LIBMDBX_API MDBX_env *mdbx_async_env(const MDBX_async
  *                 \ref mdbx_async_wait_all(), or observed by
  *                 \ref mdbx_async_poll(), then released by
  *                 \ref mdbx_async_op_release() or
- *                 \ref mdbx_async_op_release_all(). */
+ *                 \ref mdbx_async_op_release_all(). Alternatively, batches can
+ *                 be completed and released with
+ *                 \ref mdbx_async_wait_release_all(). */
 LIBMDBX_API int mdbx_async_submit(MDBX_async *async, MDBX_async_func func, void *context, MDBX_async_op **op);
 
 /** \brief Poll an async operation for completion.
@@ -4714,6 +4716,18 @@ LIBMDBX_API int mdbx_async_wait(MDBX_async_op *op, int *result);
  *
  * \returns \ref MDBX_SUCCESS on batch completion. */
 LIBMDBX_API int mdbx_async_wait_all(MDBX_async_op *const ops[], size_t count, int results[]);
+
+/** \brief Wait for and release a batch of async operations.
+ * \ingroup c_async
+ *
+ * This combines \ref mdbx_async_wait_all() and \ref mdbx_async_op_release_all()
+ * in one call. All operation handles must belong to the same executor and must
+ * be unique within the array. If `results` is non-NULL, one operation result is
+ * stored per handle before the handles are released. On success each released
+ * slot in `ops` is set to NULL.
+ *
+ * \returns \ref MDBX_SUCCESS on batch completion and release. */
+LIBMDBX_API int mdbx_async_wait_release_all(MDBX_async_op *ops[], size_t count, int results[]);
 
 /** \brief Release a completed async operation handle.
  * \ingroup c_async

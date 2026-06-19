@@ -503,10 +503,7 @@ static double async_parallel_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size
 
     for (size_t i = 0; i < workers_count; ++i) {
       struct async_worker *const worker = &workers[i];
-      rc = mdbx_async_wait_all(worker->ops, worker->pending, worker->results);
-      if (rc != MDBX_SUCCESS)
-        goto bailout;
-      rc = mdbx_async_op_release_all(worker->ops, worker->pending);
+      rc = mdbx_async_wait_release_all(worker->ops, worker->pending, worker->results);
       if (rc != MDBX_SUCCESS)
         goto bailout;
       for (size_t slot = 0; slot < worker->pending; ++slot) {

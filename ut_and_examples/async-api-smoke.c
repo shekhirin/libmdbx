@@ -293,12 +293,9 @@ static int wait_many_result(const char *expr, MDBX_async_op **ops, size_t count,
   if (count && (!ops || !operation_results))
     return fail_msg("missing async operation batch", file, line);
 
-  int rc = mdbx_async_wait_all(ops, count, operation_results);
+  int rc = mdbx_async_wait_release_all(ops, count, operation_results);
   if (rc != MDBX_SUCCESS)
     return fail_rc(expr, rc, file, line);
-  rc = mdbx_async_op_release_all(ops, count);
-  if (rc != MDBX_SUCCESS)
-    return fail_rc("mdbx_async_op_release_all", rc, file, line);
   return MDBX_SUCCESS;
 }
 
