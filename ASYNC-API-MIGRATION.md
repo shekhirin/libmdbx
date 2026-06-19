@@ -3000,3 +3000,29 @@ Additional cursor range-delete benchmark checkpoint:
 - conclusion: the existing async cursor range-delete API now has benchmark
   coverage, and the reduced sample shows the async wrapper path above the
   blocking range-delete measurement for this range workload.
+
+Additional cursor bunch-delete benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` with blocking and async cursor
+  bunch-delete measurements using `mdbx_cursor_bunch_delete()` and
+  `mdbx_async_cursor_bunch_delete()` with `MDBX_DELETE_AFTER_INCLUDING`.
+- the benchmark positions the cursor before timing and normalizes throughput by
+  the returned affected-item count. This keeps the benchmark aligned with the
+  bunch-delete API contract instead of assuming a fixed affected count for all
+  actions and build configurations.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking cursor bunch delete
+  150.091 Mops/s, async cursor bunch delete 81.125 Mops/s, and
+  async-cursor-bunch/block 0.541.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the existing async cursor bunch-delete API now has benchmark
+  coverage. This reduced sample shows the async wrapper below blocking for this
+  single-operation bunch-delete case, which gives a concrete follow-up target
+  for cursor mutation overhead work.
