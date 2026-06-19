@@ -25,6 +25,10 @@ struct reader_probe {
   unsigned calls;
 };
 
+struct gc_probe {
+  unsigned calls;
+};
+
 struct preserve_probe {
   unsigned calls;
 };
@@ -131,6 +135,18 @@ static int hsr_probe_func(const MDBX_env *env, const MDBX_txn *txn, mdbx_pid_t p
   (void)space;
   (void)retry;
   return -1;
+}
+
+static int gc_probe_func(void *ctx, const MDBX_txn *txn, uint64_t span_txnid, size_t span_pgno, size_t span_length,
+                         bool span_is_reclaimable) {
+  (void)span_txnid;
+  (void)span_pgno;
+  (void)span_is_reclaimable;
+  struct gc_probe *const probe = (struct gc_probe *)ctx;
+  if (!probe || !txn || !span_length)
+    return MDBX_EINVAL;
+  probe->calls += 1;
+  return MDBX_RESULT_FALSE;
 }
 
 static int preserve_probe_func(void *context, MDBX_val *target, const void *src, size_t bytes) {
@@ -765,6 +781,17 @@ int main(void) {
   CHECK_OP(op);
   REQUIRE(txn_info.txn_id != 0, "async txn info returned empty transaction id");
   REQUIRE(txn_info.txn_space_limit_hard >= txn_info.txn_space_used, "async txn info returned inconsistent geometry");
+
+  MDBX_gc_info_t gc_info;
+  struct gc_probe gc_probe = {0};
+  memset(&gc_info, 0, sizeof(gc_info));
+  CHECK(mdbx_async_gc_info(async, txn, &gc_info, sizeof(gc_info), gc_probe_func, &gc_probe, &op));
+  CHECK(wait_result("mdbx_async_gc_info", &op, &env_operation_result, __FILE__, __LINE__));
+  REQUIRE(env_operation_result == MDBX_SUCCESS || env_operation_result == MDBX_NOTFOUND,
+          "unexpected async GC info result");
+  REQUIRE(gc_info.pages_total > 0 && gc_info.pages_backed > 0 && gc_info.pages_allocated > 0,
+          "async GC info returned empty geometry");
+  REQUIRE(gc_info.pages_total >= gc_info.pages_allocated, "async GC info returned inconsistent allocation");
 
   CHECK(mdbx_async_txn_park(async, txn, false, &op));
   CHECK_OP(op);

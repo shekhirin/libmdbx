@@ -15035,6 +15035,7 @@ enum mdbx_async_opcode {
   async_op_txn_copy2pathnameW,
 #endif /* Windows */
   async_op_txn_copy2fd,
+  async_op_gc_info,
   async_op_dbi_open,
   async_op_dbi_rename,
   async_op_dbi_stat,
@@ -15167,6 +15168,13 @@ struct MDBX_async_op {
       MDBX_copy_flags_t flags;
       mdbx_filehandle_t fd;
     } copy;
+    struct {
+      MDBX_txn *txn;
+      MDBX_gc_info_t *info;
+      size_t bytes;
+      MDBX_gc_iter_func iter_func;
+      void *iter_ctx;
+    } gc_info;
     struct {
       MDBX_option_t option;
       uint64_t value;
@@ -15861,6 +15869,9 @@ static int async_op_execute(MDBX_async_op *op) {
 #endif /* Windows */
   case async_op_txn_copy2fd:
     return mdbx_txn_copy2fd(op->args.copy.txn, op->args.copy.fd, op->args.copy.flags);
+  case async_op_gc_info:
+    return mdbx_gc_info(op->args.gc_info.txn, op->args.gc_info.info, op->args.gc_info.bytes,
+                        op->args.gc_info.iter_func, op->args.gc_info.iter_ctx);
   case async_op_dbi_open:
     return mdbx_dbi_open2(op->args.dbi_open.txn, &op->key, op->args.dbi_open.flags, op->args.dbi_open.dbi);
   case async_op_dbi_rename:
@@ -17398,6 +17409,27 @@ int mdbx_async_txn_copy2fd(MDBX_async *async, MDBX_txn *txn, mdbx_filehandle_t f
   op->args.copy.txn = txn;
   op->args.copy.fd = fd;
   op->args.copy.flags = flags;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_gc_info(MDBX_async *async, MDBX_txn *txn, MDBX_gc_info_t *info, size_t bytes,
+                       MDBX_gc_iter_func iter_func, void *iter_ctx, MDBX_async_op **out) {
+  if (unlikely(!txn || !info))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_gc_info);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.gc_info.txn = txn;
+  op->args.gc_info.info = info;
+  op->args.gc_info.bytes = bytes;
+  op->args.gc_info.iter_func = iter_func;
+  op->args.gc_info.iter_ctx = iter_ctx;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;

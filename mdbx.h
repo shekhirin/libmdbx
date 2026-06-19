@@ -8322,6 +8322,15 @@ typedef struct MDBX_gc_info {
 LIBMDBX_API int mdbx_gc_info(MDBX_txn *txn, MDBX_gc_info_t *info, size_t bytes, MDBX_gc_iter_func iter_func,
                              void *iter_ctx);
 
+/** \brief Asynchronously provide Garbage Collection and page usage information.
+ * \ingroup c_async
+ * \details The output structure and optional iterator callback/context must
+ *          remain valid until completion. The iterator callback runs on the
+ *          async executor worker thread.
+ * \see mdbx_gc_info() */
+LIBMDBX_API int mdbx_async_gc_info(MDBX_async *async, MDBX_txn *txn, MDBX_gc_info_t *info, size_t bytes,
+                                   MDBX_gc_iter_func iter_func, void *iter_ctx, MDBX_async_op **op);
+
 /** \brief The returned reasons for stopping database defragmentation.
  * \details Any number of individual values could be OR'ed together while while returning actual set of reasons.
  * \ingroup c_extra
