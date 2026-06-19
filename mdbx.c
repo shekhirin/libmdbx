@@ -322,11 +322,6 @@ typedef struct dxb_page_get_with_ref_submit_io {
   bool retain_ref;
 } dxb_page_get_with_ref_submit_io_t;
 
-typedef struct dxb_cursor_ref_retain_submit_io {
-  const MDBX_cursor *cursor;
-  page_ref_t ref;
-} dxb_cursor_ref_retain_submit_io_t;
-
 typedef struct dxb_cursor_top_ref_retain_submit_io {
   MDBX_cursor *cursor;
   page_t *page;
@@ -335,12 +330,6 @@ typedef struct dxb_cursor_top_ref_retain_submit_io {
   indx_t ki;
   uint16_t tree_height;
 } dxb_cursor_top_ref_retain_submit_io_t;
-
-typedef struct dxb_cursor_ref_release_submit_io {
-  const MDBX_cursor *cursor;
-  page_ref_t *ref;
-  page_ref_t captured;
-} dxb_cursor_ref_release_submit_io_t;
 
 typedef struct dxb_cursor_rebalance_refs_release_submit_io {
   MDBX_cursor *cursor;
@@ -5853,20 +5842,9 @@ static inline bool page_ref_equal(const page_ref_t *a, const page_ref_t *b) {
          a->flags == b->flags;
 }
 
-static inline int cursor_make_ref_retain_submit_io(const MDBX_cursor *mc, page_ref_t ref,
-                                                   dxb_cursor_ref_retain_submit_io_t *io) {
-  if (unlikely(!io))
+static inline int cursor_ref_retainable(const page_ref_t *ref) {
+  if (unlikely(!ref))
     return MDBX_EINVAL;
-
-  io->cursor = mc;
-  io->ref = ref.page ? ref : page_ref_empty();
-  return MDBX_SUCCESS;
-}
-
-static inline int cursor_ref_retain_submit_io_validate(const dxb_cursor_ref_retain_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-  const page_ref_t *const ref = &io->ref;
   if (ref->page) {
     if (unlikely(!ref->npages && ref->flags != PAGE_REF_NONE))
       return MDBX_EINVAL;
@@ -5877,50 +5855,44 @@ static inline int cursor_ref_retain_submit_io_validate(const dxb_cursor_ref_reta
     } else if (unlikely(ref->flags & PAGE_REF_CACHE))
       return MDBX_EINVAL;
   }
-
-  dxb_cursor_ref_retain_submit_io_t checked;
-  int err = cursor_make_ref_retain_submit_io(io->cursor, io->ref, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || !page_ref_equal(&checked.ref, &io->ref)))
-    return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
 
+static inline int cursor_ref_retain_checked(const MDBX_cursor *mc, page_ref_t ref, page_ref_t *retained) {
+  if (unlikely(!retained))
+    return MDBX_EINVAL;
+
+  *retained = page_ref_empty();
+  page_ref_t candidate = ref.page ? ref : page_ref_empty();
+  int err = cursor_ref_retainable(&candidate);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  if (candidate.page != nullptr) {
+    if (candidate.cache) {
+      dxb_cache_ref_submit_io_t cache_submit;
+      err = dxb_storage_make_cache_ref_submit_io(&candidate, mc, true, &cache_submit);
+      dxb_cache_result_t retain =
+          likely(err == MDBX_SUCCESS) ? dxb_storage_submit_retain_cached_ref(candidate.cache->storage, &cache_submit)
+                                      : dxb_cache_error(err);
+      if (unlikely(retain.err != MDBX_SUCCESS || !retain.submitted || !retain.completed))
+        err = retain.err == MDBX_SUCCESS ? MDBX_EIO : retain.err;
+    } else if (unlikely(candidate.flags & PAGE_REF_CACHE))
+      err = MDBX_EINVAL;
+  }
+  if (likely(err == MDBX_SUCCESS))
+    *retained = candidate;
+  return err;
+}
+
 static inline page_ref_t cursor_ref_retain(const MDBX_cursor *mc, page_ref_t ref) {
-  dxb_cursor_ref_retain_submit_io_t submit;
-  int err = cursor_make_ref_retain_submit_io(mc, ref, &submit);
+  page_ref_t retained;
+  int err = cursor_ref_retain_checked(mc, ref, &retained);
   if (mc)
     cASSERT0(mc, err == MDBX_SUCCESS);
   else
     ASSERT(err == MDBX_SUCCESS);
-
-  page_ref_t retained = page_ref_empty();
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_ref_retain_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      retained = submit.ref;
-      if (retained.page != nullptr) {
-        if (retained.cache) {
-          dxb_cache_ref_submit_io_t cache_submit;
-          err = dxb_storage_make_cache_ref_submit_io(&retained, submit.cursor, true, &cache_submit);
-          dxb_cache_result_t retain =
-              likely(err == MDBX_SUCCESS) ? dxb_storage_submit_retain_cached_ref(retained.cache->storage, &cache_submit)
-                                          : dxb_cache_error(err);
-          if (unlikely(retain.err != MDBX_SUCCESS || !retain.submitted || !retain.completed))
-            err = retain.err == MDBX_SUCCESS ? MDBX_EIO : retain.err;
-        } else if (unlikely(retained.flags & PAGE_REF_CACHE))
-          err = MDBX_EINVAL;
-      }
-    }
-    if (unlikely(err != MDBX_SUCCESS))
-      retained = page_ref_empty();
-    if (mc)
-      cASSERT0(mc, err == MDBX_SUCCESS);
-    else
-      ASSERT(err == MDBX_SUCCESS);
-  }
-  return retained;
+  return likely(err == MDBX_SUCCESS) ? retained : page_ref_empty();
 }
 
 static inline int cursor_make_top_ref_retain_submit_io(MDBX_cursor *mc,
@@ -5967,62 +5939,33 @@ static inline int cursor_top_ref_retain_submit_io_validate(const dxb_cursor_top_
   return MDBX_SUCCESS;
 }
 
-static inline int cursor_make_ref_release_submit_io(const MDBX_cursor *mc, page_ref_t *ref,
-                                                    dxb_cursor_ref_release_submit_io_t *io) {
-  if (unlikely(!ref || !io))
+static inline int cursor_ref_release_checked(const MDBX_cursor *mc, page_ref_t *ref) {
+  if (unlikely(!ref))
     return MDBX_EINVAL;
 
-  io->cursor = mc;
-  io->ref = ref;
-  io->captured = *ref;
-  return MDBX_SUCCESS;
-}
+  int err = MDBX_SUCCESS;
+  if (ref->cache) {
+    dxb_cache_ref_submit_io_t cache_submit;
+    err = dxb_storage_make_cache_ref_submit_io(ref, mc, false, &cache_submit);
+    dxb_cache_result_t release =
+        likely(err == MDBX_SUCCESS) ? dxb_storage_submit_release_cached_ref(ref->cache->storage, &cache_submit)
+                                    : dxb_cache_error(err);
+    if (unlikely(release.err != MDBX_SUCCESS || !release.submitted || !release.completed))
+      err = release.err == MDBX_SUCCESS ? MDBX_EIO : release.err;
+  } else if (unlikely(ref->flags & PAGE_REF_CACHE))
+    err = MDBX_EINVAL;
 
-static inline int cursor_ref_release_submit_io_validate(const dxb_cursor_ref_release_submit_io_t *io) {
-  if (unlikely(!io || !io->ref))
-    return MDBX_EINVAL;
-  if (unlikely(!page_ref_equal(io->ref, &io->captured)))
-    return MDBX_EINVAL;
-
-  dxb_cursor_ref_release_submit_io_t checked;
-  int err = cursor_make_ref_release_submit_io(io->cursor, io->ref, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.ref != io->ref ||
-               !page_ref_equal(&checked.captured, &io->captured)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
+  if (likely(err == MDBX_SUCCESS))
+    *ref = page_ref_empty();
+  return err;
 }
 
 static inline void cursor_ref_release(const MDBX_cursor *mc, page_ref_t *ref) {
-  dxb_cursor_ref_release_submit_io_t submit;
-  int err = cursor_make_ref_release_submit_io(mc, ref, &submit);
+  int err = cursor_ref_release_checked(mc, ref);
   if (mc)
     cASSERT0(mc, err == MDBX_SUCCESS);
   else
     ASSERT(err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_ref_release_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      page_ref_t *const target = submit.ref;
-      if (target->cache) {
-        dxb_cache_ref_submit_io_t cache_submit;
-        err = dxb_storage_make_cache_ref_submit_io(target, submit.cursor, false, &cache_submit);
-        dxb_cache_result_t release =
-            likely(err == MDBX_SUCCESS) ? dxb_storage_submit_release_cached_ref(target->cache->storage, &cache_submit)
-                                        : dxb_cache_error(err);
-        if (unlikely(release.err != MDBX_SUCCESS || !release.submitted || !release.completed))
-          err = release.err == MDBX_SUCCESS ? MDBX_EIO : release.err;
-      } else if (unlikely(target->flags & PAGE_REF_CACHE))
-        err = MDBX_EINVAL;
-      if (likely(err == MDBX_SUCCESS))
-        *target = page_ref_empty();
-    }
-    if (mc)
-      cASSERT0(mc, err == MDBX_SUCCESS);
-    else
-      ASSERT(err == MDBX_SUCCESS);
-  }
 }
 
 static inline int pgr_make_release_submit_io(const MDBX_cursor *mc, pgr_t *pgr, dxb_pgr_release_submit_io_t *io) {
@@ -6450,27 +6393,7 @@ static void txn_retained_refs_release(MDBX_txn *txn) {
     if (likely(err == MDBX_SUCCESS)) {
       MDBX_txn *const submitted_txn = submit.txn;
       for (size_t i = 0; i < submit.retained_refs_count; ++i) {
-        dxb_cursor_ref_release_submit_io_t release;
-        err = cursor_make_ref_release_submit_io(nullptr, &submitted_txn->retained_refs[i], &release);
-        if (unlikely(err != MDBX_SUCCESS))
-          break;
-        err = cursor_ref_release_submit_io_validate(&release);
-        if (likely(err == MDBX_SUCCESS)) {
-          page_ref_t *const target = release.ref;
-          if (target->cache) {
-            dxb_cache_ref_submit_io_t cache_submit;
-            err = dxb_storage_make_cache_ref_submit_io(target, release.cursor, false, &cache_submit);
-            dxb_cache_result_t cache_release =
-                likely(err == MDBX_SUCCESS)
-                    ? dxb_storage_submit_release_cached_ref(target->cache->storage, &cache_submit)
-                    : dxb_cache_error(err);
-            if (unlikely(cache_release.err != MDBX_SUCCESS || !cache_release.submitted || !cache_release.completed))
-              err = cache_release.err == MDBX_SUCCESS ? MDBX_EIO : cache_release.err;
-          } else if (unlikely(target->flags & PAGE_REF_CACHE))
-            err = MDBX_EINVAL;
-          if (likely(err == MDBX_SUCCESS))
-            *target = page_ref_empty();
-        }
+        err = cursor_ref_release_checked(nullptr, &submitted_txn->retained_refs[i]);
         if (unlikely(err != MDBX_SUCCESS))
           break;
       }
@@ -51439,29 +51362,8 @@ static int page_merge(MDBX_cursor *csrc, MDBX_cursor *cdst) {
     return rc;
   page_ref_t top_ref = page_ref_empty();
   rc = cursor_top_ref_retain_submit_io_validate(&top_submit);
-  if (likely(rc == MDBX_SUCCESS)) {
-    dxb_cursor_ref_retain_submit_io_t retain_submit;
-    rc = cursor_make_ref_retain_submit_io(top_submit.cursor, top_submit.ref, &retain_submit);
-    if (likely(rc == MDBX_SUCCESS))
-      rc = cursor_ref_retain_submit_io_validate(&retain_submit);
-    if (likely(rc == MDBX_SUCCESS)) {
-      top_ref = retain_submit.ref;
-      if (top_ref.page != nullptr) {
-        if (top_ref.cache) {
-          dxb_cache_ref_submit_io_t cache_submit;
-          rc = dxb_storage_make_cache_ref_submit_io(&top_ref, retain_submit.cursor, true, &cache_submit);
-          dxb_cache_result_t retain =
-              likely(rc == MDBX_SUCCESS) ? dxb_storage_submit_retain_cached_ref(top_ref.cache->storage, &cache_submit)
-                                         : dxb_cache_error(rc);
-          if (unlikely(retain.err != MDBX_SUCCESS || !retain.submitted || !retain.completed))
-            rc = retain.err == MDBX_SUCCESS ? MDBX_EIO : retain.err;
-        } else if (unlikely(top_ref.flags & PAGE_REF_CACHE))
-          rc = MDBX_EINVAL;
-      }
-    }
-    if (unlikely(rc != MDBX_SUCCESS))
-      top_ref = page_ref_empty();
-  }
+  if (likely(rc == MDBX_SUCCESS))
+    rc = cursor_ref_retain_checked(top_submit.cursor, top_submit.ref, &top_ref);
   cASSERT0(cdst, rc == MDBX_SUCCESS);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
