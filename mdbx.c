@@ -10838,7 +10838,7 @@ __cold int mdbx_env_deleteW(const wchar_t *pathname, MDBX_env_delete_mode_t mode
     if (err == MDBX_SUCCESS && !(dummy_env->flags & MDBX_NOSUBDIR) &&
         (/* pathname != "." */ pathname[0] != '.' || pathname[1] != 0) &&
         (/* pathname != ".." */ pathname[0] != '.' || pathname[1] != '.' || pathname[2] != 0)) {
-      err = osal_removedirectory(pathname);
+      err = osal_ioring_removedirectory(&dummy_env->dxb_storage.ioring, pathname);
       if (err == MDBX_SUCCESS)
         rc = MDBX_SUCCESS;
       else if (err == MDBX_ENOFILE)
@@ -38769,6 +38769,20 @@ int osal_removedirectory(const pathchar_t *pathname) {
 #else
   return rmdir(pathname) ? errno : MDBX_SUCCESS;
 #endif
+}
+
+int osal_ioring_removedirectory(osal_ioring_t *ior, const pathchar_t *pathname) {
+#if MDBX_HAVE_LINUX_IO_URING && !defined(_WIN32) && !defined(_WIN64) && defined(AT_REMOVEDIR)
+  if (likely(ior && ior->backend == osal_ioring_backend_linux_uring &&
+             osal_ioring_linux_uring_ready(ior))) {
+    const int err = osal_ioring_linux_uring_unlinkat(ior, pathname, AT_REMOVEDIR);
+    if (likely(err == MDBX_SUCCESS || (err != MDBX_EINVAL && err != MDBX_ENOSYS && err != EOPNOTSUPP)))
+      return err;
+  }
+#else
+  (void)ior;
+#endif /* MDBX_HAVE_LINUX_IO_URING && !Windows && AT_REMOVEDIR */
+  return osal_removedirectory(pathname);
 }
 
 int osal_fileexists(const pathchar_t *pathname) {

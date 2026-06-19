@@ -15531,6 +15531,21 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.125` batch, `1.170` crud, `1.058` iterate, `1.011`
 get, and `1.079` delete.
 
+A later directory-remove checkpoint added `osal_ioring_removedirectory()` and
+routed env-delete directory cleanup through the OSAL I/O boundary. On Linux,
+ready queues submit the existing `UNLINKAT` helper with `AT_REMOVEDIR`; non-ready
+queues, unsupported platforms, and the usual env-delete path outside an active
+environment queue fall back to `osal_removedirectory()`. Verification passed
+`git diff --check`, the Ninja build (`cmake --build @cmake-ninja-build`),
+normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed
+9/9, the ASAN build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.118` batch, `1.160` crud, `0.859` iterate, `0.847`
+get, and `1.062` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
