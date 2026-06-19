@@ -2974,3 +2974,29 @@ Additional async cursor-put batch API checkpoint:
 - conclusion: cursor writes now have a batched async API. The reduced benchmark
   shows the batch form nearly reaches blocking cursor-put throughput and
   improves throughput by 55.6% versus per-item async cursor puts.
+
+Additional cursor range-delete benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` with blocking and async cursor
+  range-delete measurements using `mdbx_cursor_delete_range()` and
+  `mdbx_async_cursor_delete_range()`.
+- the benchmark positions the end cursor before timing and uses the public
+  `begin == NULL` contract to delete from the first item through the positioned
+  end cursor. This measures the range-delete operation itself rather than the
+  setup scan used to choose the endpoint.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking cursor range delete
+  33.923 Mops/s, async cursor range delete 50.039 Mops/s, and
+  async-cursor-range/block 1.475.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the existing async cursor range-delete API now has benchmark
+  coverage, and the reduced sample shows the async wrapper path above the
+  blocking range-delete measurement for this range workload.

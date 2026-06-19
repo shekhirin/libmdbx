@@ -936,6 +936,116 @@ bailout:
   return (rc == MDBX_SUCCESS) ? rate : -1.0;
 }
 
+static double blocking_cursor_range_delete(MDBX_env *env, MDBX_dbi dbi, size_t ops) {
+  MDBX_txn *txn = NULL;
+  MDBX_cursor *end = NULL;
+  int rc = MDBX_SUCCESS;
+  double rate = -1.0;
+
+  if (!ops)
+    return -1.0;
+  rc = mdbx_txn_begin(env, NULL, 0, &txn);
+  if (rc != MDBX_SUCCESS)
+    return -1.0;
+  CHECK(mdbx_cursor_open(txn, dbi, &end));
+
+  MDBX_val key = val(NULL, 0);
+  MDBX_val data = val(NULL, 0);
+  CHECK(mdbx_cursor_get(end, &key, &data, MDBX_FIRST));
+  for (size_t i = 1; i < ops; ++i) {
+    key = val(NULL, 0);
+    data = val(NULL, 0);
+    CHECK(mdbx_cursor_get(end, &key, &data, MDBX_NEXT));
+  }
+
+  uint64_t affected = 0;
+  const uint64_t start = monotime_ns();
+  CHECK(mdbx_cursor_delete_range(NULL, end, true, &affected));
+  const uint64_t finish = monotime_ns();
+  if (affected != ops) {
+    rc = fail_msg("unexpected blocking cursor range delete count", __FILE__, __LINE__);
+    goto bailout;
+  }
+  mdbx_cursor_close(end);
+  end = NULL;
+  CHECK(mdbx_txn_commit(txn));
+  txn = NULL;
+  if (finish > start)
+    rate = (double)affected * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (end)
+    mdbx_cursor_close(end);
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  return (rc == MDBX_SUCCESS) ? rate : -1.0;
+}
+
+static double async_cursor_range_delete(MDBX_env *env, MDBX_dbi dbi, size_t ops) {
+  MDBX_async *async = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_cursor *end = NULL;
+  MDBX_async_op *op = NULL;
+  int rc = MDBX_SUCCESS;
+  double rate = -1.0;
+
+  if (!ops)
+    return -1.0;
+  CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  CHECK(mdbx_async_cursor_open(async, txn, dbi, &end, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+
+  MDBX_val key = val(NULL, 0);
+  MDBX_val data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, end, &key, &data, MDBX_FIRST, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  for (size_t i = 1; i < ops; ++i) {
+    key = val(NULL, 0);
+    data = val(NULL, 0);
+    CHECK(mdbx_async_cursor_get(async, end, &key, &data, MDBX_NEXT, &op));
+    CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  }
+
+  uint64_t affected = 0;
+  int operation_rc = MDBX_SUCCESS;
+  const uint64_t start = monotime_ns();
+  CHECK(mdbx_async_cursor_delete_range(async, NULL, end, true, &affected, &op));
+  CHECK(wait_success(&op, &operation_rc, __FILE__, __LINE__));
+  const uint64_t finish = monotime_ns();
+  if (operation_rc != MDBX_SUCCESS) {
+    rc = fail_rc("mdbx_async_cursor_delete_range", operation_rc, __FILE__, __LINE__);
+    goto bailout;
+  }
+  if (affected != ops) {
+    rc = fail_msg("unexpected async cursor range delete count", __FILE__, __LINE__);
+    goto bailout;
+  }
+  CHECK(mdbx_async_cursor_close(async, end, &op));
+  end = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  txn = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  if (finish > start)
+    rate = (double)affected * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  if (end && async) {
+    MDBX_async_op *close_op = NULL;
+    if (mdbx_async_cursor_close(async, end, &close_op) == MDBX_SUCCESS)
+      (void)wait_success(&close_op, NULL, __FILE__, __LINE__);
+  }
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  if (async)
+    (void)mdbx_async_destroy(async, true);
+  return (rc == MDBX_SUCCESS) ? rate : -1.0;
+}
+
 static double blocking_replace(MDBX_env *env, MDBX_dbi dbi, size_t ops) {
   MDBX_txn *txn = NULL;
   int rc = mdbx_txn_begin(env, NULL, 0, &txn);
@@ -2123,6 +2233,10 @@ int main(void) {
   const double async_del = async_window_delete(env, dbi, delete_ops, window);
   CHECK(seed_database(env, &dbi, items));
   const double async_del_batch = async_batch_delete(env, dbi, delete_ops, write_batch);
+  CHECK(seed_database(env, &dbi, items));
+  const double blocking_cursor_range_del = blocking_cursor_range_delete(env, dbi, delete_ops);
+  CHECK(seed_database(env, &dbi, items));
+  const double async_cursor_range_del = async_cursor_range_delete(env, dbi, delete_ops);
   print_rate("blocking serial get", blocking_serial);
   print_rate("blocking parallel get", blocking_parallel);
   print_rate("async parallel get", async_parallel);
@@ -2150,6 +2264,8 @@ int main(void) {
   print_rate("blocking delete", blocking_del);
   print_rate("async delete", async_del);
   print_rate("async batch delete", async_del_batch);
+  print_rate("blocking cursor range del", blocking_cursor_range_del);
+  print_rate("async cursor range del", async_cursor_range_del);
   if (blocking_parallel > 0.0 && async_parallel > 0.0)
     printf("%-28s %8.3f\n", "async/blocking parallel", async_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_many_parallel > 0.0)
@@ -2221,6 +2337,8 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-del-batch/blocking", async_del_batch / blocking_del);
   if (async_del > 0.0 && async_del_batch > 0.0)
     printf("%-28s %8.3f\n", "async-del-batch/async-del", async_del_batch / async_del);
+  if (blocking_cursor_range_del > 0.0 && async_cursor_range_del > 0.0)
+    printf("%-28s %8.3f\n", "async-cursor-range/block", async_cursor_range_del / blocking_cursor_range_del);
 
   CHECK(mdbx_env_close(env));
   env = NULL;
