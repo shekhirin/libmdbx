@@ -4895,6 +4895,37 @@ LIBMDBX_API int mdbx_async_del_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi 
 LIBMDBX_API int mdbx_async_cursor_open(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, MDBX_cursor **cursor,
                                        MDBX_async_op **op);
 
+/** \brief Asynchronously create an unbound cursor.
+ * \ingroup c_async
+ * \details The `cursor` output must remain valid until completion.
+ * \see mdbx_cursor_create() */
+LIBMDBX_API int mdbx_async_cursor_create(MDBX_async *async, void *context, MDBX_cursor **cursor,
+                                         MDBX_async_op **op);
+
+/** \brief Asynchronously set application cursor context.
+ * \ingroup c_async
+ * \see mdbx_cursor_set_userctx() */
+LIBMDBX_API int mdbx_async_cursor_set_userctx(MDBX_async *async, MDBX_cursor *cursor, void *context,
+                                              MDBX_async_op **op);
+
+/** \brief Asynchronously get application cursor context.
+ * \ingroup c_async
+ * \details The `context` output must remain valid until completion.
+ * \see mdbx_cursor_get_userctx() */
+LIBMDBX_API int mdbx_async_cursor_get_userctx(MDBX_async *async, const MDBX_cursor *cursor, void **context,
+                                              MDBX_async_op **op);
+
+/** \brief Asynchronously bind a cursor to a transaction and table.
+ * \ingroup c_async
+ * \see mdbx_cursor_bind() */
+LIBMDBX_API int mdbx_async_cursor_bind(MDBX_async *async, MDBX_txn *txn, MDBX_cursor *cursor, MDBX_dbi dbi,
+                                       MDBX_async_op **op);
+
+/** \brief Asynchronously unbind a cursor from its transaction.
+ * \ingroup c_async
+ * \see mdbx_cursor_unbind() */
+LIBMDBX_API int mdbx_async_cursor_unbind(MDBX_async *async, MDBX_cursor *cursor, MDBX_async_op **op);
+
 /** \brief Asynchronously reset a cursor.
  * \ingroup c_async
  * \see mdbx_cursor_reset() */
@@ -4937,6 +4968,32 @@ LIBMDBX_API int mdbx_async_cursor_count(MDBX_async *async, const MDBX_cursor *cu
  * \see mdbx_cursor_count_ex() */
 LIBMDBX_API int mdbx_async_cursor_count_ex(MDBX_async *async, const MDBX_cursor *cursor, size_t *count,
                                            MDBX_stat *stat, size_t bytes, MDBX_async_op **op);
+
+/** \brief Asynchronously return the cursor's table handle.
+ * \ingroup c_async
+ * \details The `dbi` output must remain valid until completion.
+ * \see mdbx_cursor_dbi() */
+LIBMDBX_API int mdbx_async_cursor_dbi(MDBX_async *async, const MDBX_cursor *cursor, MDBX_dbi *dbi,
+                                      MDBX_async_op **op);
+
+/** \brief Asynchronously copy cursor position and state.
+ * \ingroup c_async
+ * \see mdbx_cursor_copy() */
+LIBMDBX_API int mdbx_async_cursor_copy(MDBX_async *async, const MDBX_cursor *src, MDBX_cursor *dest,
+                                       MDBX_async_op **op);
+
+/** \brief Asynchronously compare cursor positions.
+ * \ingroup c_async
+ * \details The `comparison` output must remain valid until completion and
+ *          receives the signed \ref mdbx_cursor_compare() result.
+ * \see mdbx_cursor_compare() */
+LIBMDBX_API int mdbx_async_cursor_compare(MDBX_async *async, const MDBX_cursor *left, const MDBX_cursor *right,
+                                          bool ignore_multival, int *comparison, MDBX_async_op **op);
+
+/** \brief Asynchronously disable key-order checking for a cursor.
+ * \ingroup c_async
+ * \see mdbx_cursor_ignord() */
+LIBMDBX_API int mdbx_async_cursor_ignord(MDBX_async *async, MDBX_cursor *cursor, MDBX_async_op **op);
 
 /** \brief Asynchronously determine whether the cursor is at EOF.
  * \ingroup c_async
@@ -5056,6 +5113,13 @@ LIBMDBX_API int mdbx_async_cursor_bunch_delete(MDBX_async *async, MDBX_cursor *c
  * \ingroup c_async
  * \see mdbx_cursor_close2() */
 LIBMDBX_API int mdbx_async_cursor_close(MDBX_async *async, MDBX_cursor *cursor, MDBX_async_op **op);
+
+/** \brief Asynchronously unbind or close all cursors of a transaction.
+ * \ingroup c_async
+ * \details The optional `count` output must remain valid until completion.
+ * \see mdbx_txn_release_all_cursors_ex() */
+LIBMDBX_API int mdbx_async_txn_release_all_cursors(MDBX_async *async, const MDBX_txn *txn, bool unbind,
+                                                   size_t *count, MDBX_async_op **op);
 
 /** \brief Marks transaction as broken to prevent further operations.
  * \ingroup c_transactions

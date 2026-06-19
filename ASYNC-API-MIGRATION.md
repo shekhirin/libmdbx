@@ -642,3 +642,25 @@ Additional canary and estimate checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.071, async-batch/blocking-parallel ratio 1.075, and async-cursor/blocking-parallel ratio 1.755
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional cursor utility checkpoint:
+
+- added async wrappers for unbound cursor creation, cursor user context
+  set/get, bind/unbind, DBI lookup, cursor copy, cursor compare, disabling
+  cursor order checks for tool use, and bulk transaction cursor release
+- direct-return cursor helpers (`mdbx_cursor_get_userctx()`,
+  `mdbx_cursor_dbi()`, and `mdbx_cursor_compare()`) store their return values
+  in caller-provided outputs while the async operation result reports wrapper
+  completion
+- smoke coverage now creates an unbound cursor, verifies user context
+  round-tripping, binds and reads through it, copies and compares cursor
+  positions, unbinds/closes reusable cursors, and releases the final bound
+  cursor through `mdbx_async_txn_release_all_cursors()`
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.037, async-batch/blocking-parallel ratio 1.046, and async-cursor/blocking-parallel ratio 0.982
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
