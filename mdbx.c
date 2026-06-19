@@ -4619,22 +4619,15 @@ MDBX_INTERNAL dxb_init_result_t dxb_storage_init(dxb_storage_t *storage);
 MDBX_INTERNAL dxb_init_result_t dxb_storage_submit_init(dxb_storage_t *storage, const dxb_init_submit_io_t *io);
 MDBX_INTERNAL dxb_state_result_t dxb_storage_reset(dxb_storage_t *storage, bool env_active);
 MDBX_INTERNAL dxb_state_result_t dxb_storage_submit_reset(dxb_storage_t *storage, const dxb_reset_submit_io_t *io);
-MDBX_INTERNAL dxb_open_result_t dxb_storage_open_data(dxb_storage_t *storage, const MDBX_env *env,
-                                                      const pathchar_t *pathname,
-                                                      enum osal_openfile_purpose purpose, mdbx_mode_t mode_bits);
 MDBX_INTERNAL dxb_open_result_t dxb_storage_submit_open_data(dxb_storage_t *storage,
                                                              const dxb_open_submit_io_t *io);
 #if defined(_WIN32) || defined(_WIN64)
 MDBX_INTERNAL void dxb_storage_mark_overlapped_closed(dxb_storage_t *storage);
-MDBX_INTERNAL dxb_open_result_t dxb_storage_open_overlapped(dxb_storage_t *storage, const MDBX_env *env,
-                                                            const pathchar_t *pathname);
 MDBX_INTERNAL dxb_open_result_t dxb_storage_submit_open_overlapped(dxb_storage_t *storage,
                                                                    const dxb_open_submit_io_t *io);
 MDBX_INTERNAL dxb_park_result_t dxb_storage_submit_park_overlapped(const dxb_storage_t *storage,
                                                                    const dxb_park_submit_io_t *io);
 #endif /* Windows */
-MDBX_INTERNAL dxb_open_result_t dxb_storage_open_dsync(dxb_storage_t *storage, const MDBX_env *env,
-                                                       const pathchar_t *pathname, bool meta_sync);
 MDBX_INTERNAL dxb_open_result_t dxb_storage_submit_open_dsync(dxb_storage_t *storage,
                                                               const dxb_open_submit_io_t *io);
 MDBX_INTERNAL dxb_park_result_t dxb_storage_submit_park_data(const dxb_storage_t *storage,
@@ -28209,38 +28202,28 @@ static inline dxb_open_result_t dxb_open_from_rc(const dxb_storage_t *storage, i
   return likely(err == MDBX_SUCCESS) ? dxb_open_completed(storage) : dxb_open_submitted_error(storage, err);
 }
 
-dxb_open_result_t dxb_storage_open_data(dxb_storage_t *storage, const MDBX_env *env, const pathchar_t *pathname,
-                                        enum osal_openfile_purpose purpose, mdbx_mode_t mode_bits) {
-  const int rc = osal_openfile(purpose, env, pathname, &storage->data_fd, mode_bits);
-  if (likely(rc == MDBX_SUCCESS))
-    storage->meta_fd = storage->data_fd;
-  return dxb_open_from_rc(storage, rc);
-}
-
 dxb_open_result_t dxb_storage_submit_open_data(dxb_storage_t *storage, const dxb_open_submit_io_t *io) {
   int rc = dxb_storage_open_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_open_result(storage, rc, false, false);
   if (unlikely(io->purpose != MDBX_OPEN_DXB_READ && io->purpose != MDBX_OPEN_DXB_LAZY))
     return dxb_open_result(storage, MDBX_EINVAL, false, false);
-  return dxb_storage_open_data(storage, io->env, io->pathname, io->purpose, io->mode_bits);
-}
-
-#if defined(_WIN32) || defined(_WIN64)
-dxb_open_result_t dxb_storage_open_overlapped(dxb_storage_t *storage, const MDBX_env *env,
-                                              const pathchar_t *pathname) {
-  eASSERT0(env, storage->ioring.overlapped_fd == 0);
-  const int rc = osal_openfile(MDBX_OPEN_DXB_OVERLAPPED, env, pathname, &storage->ioring.overlapped_fd, 0);
+  rc = osal_openfile(io->purpose, io->env, io->pathname, &storage->data_fd, io->mode_bits);
+  if (likely(rc == MDBX_SUCCESS))
+    storage->meta_fd = storage->data_fd;
   return dxb_open_from_rc(storage, rc);
 }
 
+#if defined(_WIN32) || defined(_WIN64)
 dxb_open_result_t dxb_storage_submit_open_overlapped(dxb_storage_t *storage, const dxb_open_submit_io_t *io) {
   int rc = dxb_storage_open_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_open_result(storage, rc, false, false);
   if (unlikely(io->purpose != MDBX_OPEN_DXB_OVERLAPPED || io->mode_bits != 0 || io->meta_sync))
     return dxb_open_result(storage, MDBX_EINVAL, false, false);
-  return dxb_storage_open_overlapped(storage, io->env, io->pathname);
+  eASSERT0(io->env, storage->ioring.overlapped_fd == 0);
+  rc = osal_openfile(MDBX_OPEN_DXB_OVERLAPPED, io->env, io->pathname, &storage->ioring.overlapped_fd, 0);
+  return dxb_open_from_rc(storage, rc);
 }
 
 dxb_park_result_t dxb_storage_submit_park_overlapped(const dxb_storage_t *storage, const dxb_park_submit_io_t *io) {
@@ -28257,24 +28240,19 @@ dxb_park_result_t dxb_storage_submit_park_overlapped(const dxb_storage_t *storag
 }
 #endif /* Windows */
 
-dxb_open_result_t dxb_storage_open_dsync(dxb_storage_t *storage, const MDBX_env *env, const pathchar_t *pathname,
-                                         bool meta_sync) {
-  eASSERT0(env, storage->dsync_fd == INVALID_HANDLE_VALUE);
-  const int rc = osal_openfile(MDBX_OPEN_DXB_DSYNC, env, pathname, &storage->dsync_fd, 0);
-  if (unlikely(MDBX_IS_ERROR(rc)))
-    return dxb_open_submitted_error(storage, rc);
-  if (storage->dsync_fd != INVALID_HANDLE_VALUE && meta_sync)
-    storage->meta_fd = storage->dsync_fd;
-  return dxb_open_from_rc(storage, rc);
-}
-
 dxb_open_result_t dxb_storage_submit_open_dsync(dxb_storage_t *storage, const dxb_open_submit_io_t *io) {
   int rc = dxb_storage_open_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_open_result(storage, rc, false, false);
   if (unlikely(io->purpose != MDBX_OPEN_DXB_DSYNC || io->mode_bits != 0))
     return dxb_open_result(storage, MDBX_EINVAL, false, false);
-  return dxb_storage_open_dsync(storage, io->env, io->pathname, io->meta_sync);
+  eASSERT0(io->env, storage->dsync_fd == INVALID_HANDLE_VALUE);
+  rc = osal_openfile(MDBX_OPEN_DXB_DSYNC, io->env, io->pathname, &storage->dsync_fd, 0);
+  if (unlikely(MDBX_IS_ERROR(rc)))
+    return dxb_open_submitted_error(storage, rc);
+  if (storage->dsync_fd != INVALID_HANDLE_VALUE && io->meta_sync)
+    storage->meta_fd = storage->dsync_fd;
+  return dxb_open_from_rc(storage, rc);
 }
 
 dxb_park_result_t dxb_storage_submit_park_data(const dxb_storage_t *storage, const dxb_park_submit_io_t *io) {
