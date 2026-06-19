@@ -1863,6 +1863,8 @@ MDBX_INTERNAL int osal_ioring_fsync(osal_ioring_t *ior, mdbx_filehandle_t fd,
                                     const enum osal_syncmode_bits mode_bits);
 MDBX_INTERNAL int osal_ioring_fadvise(osal_ioring_t *ior, mdbx_filehandle_t fd, uint64_t offset,
                                       uint64_t bytes, int advice);
+MDBX_INTERNAL int osal_ioring_rdadvise(osal_ioring_t *ior, mdbx_filehandle_t fd, uint64_t offset, uint64_t bytes);
+MDBX_INTERNAL int osal_ioring_rdahead(osal_ioring_t *ior, mdbx_filehandle_t fd, bool enable);
 MDBX_INTERNAL int osal_fsetsize(mdbx_filehandle_t fd, const uint64_t length);
 MDBX_INTERNAL int osal_ioring_fsetsize(osal_ioring_t *ior, mdbx_filehandle_t fd, const uint64_t length);
 MDBX_INTERNAL int osal_fseek(mdbx_filehandle_t fd, uint64_t pos);

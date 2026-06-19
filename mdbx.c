@@ -25641,20 +25641,14 @@ static dxb_range_result_t dxb_storage_submit_advise_io(const dxb_storage_t *stor
   if (range->bytes == 0)
     return dxb_range_noop_completed();
 
-#if defined(F_RDADVISE)
   if (advice->advice == dxb_advice_willneed) {
-    if (unlikely(range->offset > (uint64_t)OFF_T_MAX))
-      return dxb_range_error(MDBX_EINVAL);
-    struct radvisory hint;
-    hint.ra_offset = (off_t)range->offset;
-    hint.ra_count =
-        unlikely(range->bytes > INT_MAX && sizeof(range->bytes) > sizeof(hint.ra_count)) ? INT_MAX
-                                                                                          : (int)range->bytes;
-    (void)/* Ignore ENOTTY for DB on the ram-disk and so on */ fcntl(dxb_storage_data_fd(storage), F_RDADVISE,
-                                                                    &hint);
-    return dxb_range_completed(range->bytes);
+    rc = osal_ioring_rdadvise((osal_ioring_t *)&storage->ioring, dxb_storage_data_fd(storage), range->offset,
+                              range->bytes);
+    if (likely(rc == MDBX_SUCCESS))
+      return dxb_range_completed(range->bytes);
+    if (unlikely(rc != MDBX_ENOSYS))
+      return dxb_range_submitted_error(rc);
   }
-#endif /* F_RDADVISE */
 #if defined(POSIX_FADV_NORMAL) || defined(POSIX_FADV_WILLNEED) || defined(POSIX_FADV_RANDOM)
   int hint;
   switch (advice->advice) {
@@ -25782,14 +25776,10 @@ static inline dxb_readahead_result_t dxb_readahead_completed(bool enabled) {
 static dxb_readahead_result_t dxb_storage_submit_readahead(const dxb_storage_t *storage, bool enable) {
   if (unlikely(!storage))
     return dxb_readahead_result(MDBX_EINVAL, false, false, false, false);
-#if defined(F_RDAHEAD)
-  if (unlikely(fcntl(dxb_storage_data_fd(storage), F_RDAHEAD, enable) == -1))
-    return dxb_readahead_submitted_error(errno, enable);
-  return dxb_readahead_completed(enable);
-#else
-  (void)storage;
-  return dxb_readahead_noop_completed(enable);
-#endif /* F_RDAHEAD */
+  const int rc = osal_ioring_rdahead((osal_ioring_t *)&storage->ioring, dxb_storage_data_fd(storage), enable);
+  if (likely(rc == MDBX_SUCCESS))
+    return dxb_readahead_completed(enable);
+  return rc == MDBX_ENOSYS ? dxb_readahead_noop_completed(enable) : dxb_readahead_submitted_error(rc, enable);
 }
 
 static int dxb_fault_inject(const char *operation);
@@ -38112,6 +38102,35 @@ int osal_ioring_fadvise(osal_ioring_t *ior, mdbx_filehandle_t fd, uint64_t offse
   (void)advice;
   return MDBX_ENOSYS;
 #endif /* POSIX_FADV_* */
+}
+
+int osal_ioring_rdadvise(osal_ioring_t *ior, mdbx_filehandle_t fd, uint64_t offset, uint64_t bytes) {
+  (void)ior;
+#if defined(F_RDADVISE)
+  if (unlikely(offset > (uint64_t)OFF_T_MAX))
+    return MDBX_EINVAL;
+  struct radvisory hint;
+  hint.ra_offset = (off_t)offset;
+  hint.ra_count = unlikely(bytes > INT_MAX && sizeof(bytes) > sizeof(hint.ra_count)) ? INT_MAX : (int)bytes;
+  (void)/* Ignore ENOTTY for DB on the ram-disk and so on */ fcntl(fd, F_RDADVISE, &hint);
+  return MDBX_SUCCESS;
+#else
+  (void)fd;
+  (void)offset;
+  (void)bytes;
+  return MDBX_ENOSYS;
+#endif /* F_RDADVISE */
+}
+
+int osal_ioring_rdahead(osal_ioring_t *ior, mdbx_filehandle_t fd, bool enable) {
+  (void)ior;
+#if defined(F_RDAHEAD)
+  return likely(fcntl(fd, F_RDAHEAD, enable) != -1) ? MDBX_SUCCESS : errno;
+#else
+  (void)fd;
+  (void)enable;
+  return MDBX_ENOSYS;
+#endif /* F_RDAHEAD */
 }
 
 int osal_ioring_filesize(osal_ioring_t *ior, mdbx_filehandle_t fd, uint64_t *length) {

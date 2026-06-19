@@ -15314,6 +15314,24 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.134` batch, `1.152` crud, `1.046` iterate, `0.992`
 get, and `1.093` delete.
 
+A later OSAL-advice checkpoint moved the platform-specific
+`F_RDADVISE`/`F_RDAHEAD` data-file controls out of the storage submitters and
+behind `osal_ioring_rdadvise()` / `osal_ioring_rdahead()`. The submitters now
+call OSAL wrappers and preserve the old `F_RDAHEAD`/noop result mapping and
+`F_RDADVISE` fallback to `posix_fadvise()` when the platform operation is not
+available. A source scan now shows no `fcntl(dxb_storage_data_fd(...))`
+matches; the remaining `F_RDADVISE` and `F_RDAHEAD` references live only in the
+OSAL wrapper area. Verification passed `git diff --check`, the Ninja build
+(`cmake --build @cmake-ninja-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed 9/9, the ASAN
+build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.126` batch, `1.178` crud, `0.759` iterate, `1.053`
+get, and `1.084` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
