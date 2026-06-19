@@ -387,18 +387,6 @@ typedef struct dxb_discard_io {
   enum dxb_discard_mode mode;
 } dxb_discard_io_t;
 
-typedef struct dxb_discard_cache_invalidate_submit_io {
-  dxb_discard_io_t discard;
-  dxb_cache_invalidate_io_t invalidate;
-  dxb_cache_invalidate_submit_io_t submit;
-} dxb_discard_cache_invalidate_submit_io_t;
-
-typedef struct dxb_discard_submit_io {
-  dxb_discard_io_t discard;
-  bool has_invalidate;
-  dxb_discard_cache_invalidate_submit_io_t invalidate;
-} dxb_discard_submit_io_t;
-
 typedef struct dxb_cache_ref_submit_io {
   page_ref_t *ref;
   const MDBX_cursor *cursor;
@@ -3286,80 +3274,6 @@ static inline int dxb_storage_discard_io_validate(const dxb_storage_t *storage, 
                checked.range.page_bytes.offset != io->range.page_bytes.offset ||
                checked.range.page_bytes.bytes != io->range.page_bytes.bytes ||
                checked.mode != io->mode))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline bool dxb_discard_cache_invalidate_mode(enum dxb_discard_mode mode);
-static inline int dxb_storage_make_discard_cache_invalidate_submit_io(
-    const dxb_storage_t *storage, const dxb_discard_io_t *discard,
-    dxb_discard_cache_invalidate_submit_io_t *io);
-
-static inline int dxb_storage_make_discard_submit_io(const dxb_storage_t *storage, const dxb_discard_io_t *discard,
-                                                     dxb_discard_submit_io_t *io) {
-  if (unlikely(!discard || !io))
-    return MDBX_EINVAL;
-  int rc = dxb_storage_discard_io_validate(storage, discard);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->discard = *discard;
-  io->has_invalidate = dxb_discard_cache_invalidate_mode(discard->mode);
-  if (io->has_invalidate) {
-    rc = dxb_storage_make_discard_cache_invalidate_submit_io(storage, discard, &io->invalidate);
-    if (unlikely(rc != MDBX_SUCCESS))
-      return rc;
-  } else
-    memset(&io->invalidate, 0, sizeof(io->invalidate));
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_discard_submit_io_validate(const dxb_storage_t *storage,
-                                                         const dxb_discard_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-  dxb_discard_submit_io_t checked;
-  int rc = dxb_storage_make_discard_submit_io(storage, &io->discard, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.discard.range.request.offset != io->discard.range.request.offset ||
-               checked.discard.range.request.bytes != io->discard.range.request.bytes ||
-               checked.discard.range.pages.pgno != io->discard.range.pages.pgno ||
-               checked.discard.range.pages.end_pgno != io->discard.range.pages.end_pgno ||
-               checked.discard.range.pages.npages != io->discard.range.pages.npages ||
-               checked.discard.range.pages.offset != io->discard.range.pages.offset ||
-               checked.discard.range.pages.bytes != io->discard.range.pages.bytes ||
-               checked.discard.range.page_bytes.offset != io->discard.range.page_bytes.offset ||
-               checked.discard.range.page_bytes.bytes != io->discard.range.page_bytes.bytes ||
-               checked.discard.mode != io->discard.mode ||
-               checked.has_invalidate != io->has_invalidate ||
-               checked.invalidate.discard.range.request.offset != io->invalidate.discard.range.request.offset ||
-               checked.invalidate.discard.range.request.bytes != io->invalidate.discard.range.request.bytes ||
-               checked.invalidate.discard.range.pages.pgno != io->invalidate.discard.range.pages.pgno ||
-               checked.invalidate.discard.range.pages.end_pgno != io->invalidate.discard.range.pages.end_pgno ||
-               checked.invalidate.discard.range.pages.npages != io->invalidate.discard.range.pages.npages ||
-               checked.invalidate.discard.range.pages.offset != io->invalidate.discard.range.pages.offset ||
-               checked.invalidate.discard.range.pages.bytes != io->invalidate.discard.range.pages.bytes ||
-               checked.invalidate.discard.range.page_bytes.offset !=
-                   io->invalidate.discard.range.page_bytes.offset ||
-               checked.invalidate.discard.range.page_bytes.bytes !=
-                   io->invalidate.discard.range.page_bytes.bytes ||
-               checked.invalidate.discard.mode != io->invalidate.discard.mode ||
-               checked.invalidate.invalidate.pages.pgno != io->invalidate.invalidate.pages.pgno ||
-               checked.invalidate.invalidate.pages.end_pgno != io->invalidate.invalidate.pages.end_pgno ||
-               checked.invalidate.invalidate.pages.npages != io->invalidate.invalidate.pages.npages ||
-               checked.invalidate.invalidate.pages.offset != io->invalidate.invalidate.pages.offset ||
-               checked.invalidate.invalidate.pages.bytes != io->invalidate.invalidate.pages.bytes ||
-               checked.invalidate.invalidate.include_reusable != io->invalidate.invalidate.include_reusable ||
-               checked.invalidate.submit.invalidate.pages.pgno != io->invalidate.submit.invalidate.pages.pgno ||
-               checked.invalidate.submit.invalidate.pages.end_pgno !=
-                   io->invalidate.submit.invalidate.pages.end_pgno ||
-               checked.invalidate.submit.invalidate.pages.npages !=
-                   io->invalidate.submit.invalidate.pages.npages ||
-               checked.invalidate.submit.invalidate.pages.offset != io->invalidate.submit.invalidate.pages.offset ||
-               checked.invalidate.submit.invalidate.pages.bytes != io->invalidate.submit.invalidate.pages.bytes ||
-               checked.invalidate.submit.invalidate.include_reusable !=
-                   io->invalidate.submit.invalidate.include_reusable))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -25979,104 +25893,11 @@ static dxb_range_result_t dxb_storage_submit_advise_io(const dxb_storage_t *stor
 #endif /* POSIX_FADV_* */
 }
 
-static inline bool dxb_discard_cache_invalidate_page_io_equal(const dxb_page_io_t *a, const dxb_page_io_t *b) {
-  return a->pgno == b->pgno && a->end_pgno == b->end_pgno && a->npages == b->npages &&
-         a->offset == b->offset && a->bytes == b->bytes;
-}
-
-static inline bool dxb_discard_cache_invalidate_byte_io_equal(const dxb_byte_io_t *a, const dxb_byte_io_t *b) {
-  return a->offset == b->offset && a->bytes == b->bytes;
-}
-
-static inline bool dxb_discard_cache_invalidate_coverage_io_equal(const dxb_page_coverage_io_t *a,
-                                                                  const dxb_page_coverage_io_t *b) {
-  return dxb_discard_cache_invalidate_byte_io_equal(&a->request, &b->request) &&
-         dxb_discard_cache_invalidate_page_io_equal(&a->pages, &b->pages) &&
-         dxb_discard_cache_invalidate_byte_io_equal(&a->page_bytes, &b->page_bytes);
-}
-
-static inline bool dxb_discard_cache_invalidate_discard_io_equal(const dxb_discard_io_t *a,
-                                                                 const dxb_discard_io_t *b) {
-  return dxb_discard_cache_invalidate_coverage_io_equal(&a->range, &b->range) && a->mode == b->mode;
-}
-
-static inline bool dxb_discard_cache_invalidate_io_equal(const dxb_cache_invalidate_io_t *a,
-                                                         const dxb_cache_invalidate_io_t *b) {
-  return dxb_discard_cache_invalidate_page_io_equal(&a->pages, &b->pages) &&
-         a->include_reusable == b->include_reusable;
-}
-
-static inline bool dxb_discard_cache_invalidate_mode(enum dxb_discard_mode mode) {
-  return mode == dxb_discard_remove || mode == dxb_discard_remove_or_clean;
-}
-
-static inline int dxb_storage_make_discard_cache_invalidate_submit_io(
-    const dxb_storage_t *storage, const dxb_discard_io_t *discard,
-    dxb_discard_cache_invalidate_submit_io_t *io) {
-  if (unlikely(!storage || !discard || !io))
-    return MDBX_EINVAL;
-
+static dxb_range_result_t dxb_storage_submit_discard_io(dxb_storage_t *storage, const dxb_discard_io_t *discard) {
   int rc = dxb_storage_discard_io_validate(storage, discard);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(!dxb_discard_cache_invalidate_mode(discard->mode)))
-    return MDBX_EINVAL;
-
-  dxb_cache_invalidate_io_t invalidate;
-  rc = dxb_storage_make_cache_invalidate_io(storage, &discard->range.pages, true, &invalidate);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_cache_invalidate_submit_io_t submit;
-  rc = dxb_storage_make_cache_invalidate_submit_io(storage, &invalidate, &submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->discard = *discard;
-  io->invalidate = invalidate;
-  io->submit = submit;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_discard_cache_invalidate_submit_io_validate(
-    const dxb_storage_t *storage, const dxb_discard_cache_invalidate_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_discard_io_validate(storage, &io->discard);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_cache_invalidate_io_validate(storage, &io->invalidate);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_cache_invalidate_submit_io_validate(storage, &io->submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(!dxb_discard_cache_invalidate_mode(io->discard.mode) ||
-               !dxb_discard_cache_invalidate_page_io_equal(&io->discard.range.pages, &io->invalidate.pages) ||
-               !io->invalidate.include_reusable ||
-               !dxb_discard_cache_invalidate_io_equal(&io->invalidate, &io->submit.invalidate)))
-    return MDBX_EINVAL;
-
-  dxb_discard_cache_invalidate_submit_io_t checked;
-  rc = dxb_storage_make_discard_cache_invalidate_submit_io(storage, &io->discard, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(!dxb_discard_cache_invalidate_discard_io_equal(&checked.discard, &io->discard) ||
-               !dxb_discard_cache_invalidate_io_equal(&checked.invalidate, &io->invalidate) ||
-               !dxb_discard_cache_invalidate_io_equal(&checked.submit.invalidate, &io->submit.invalidate)))
-    return MDBX_EINVAL;
-
-  return MDBX_SUCCESS;
-}
-
-static dxb_range_result_t dxb_storage_submit_discard_io(dxb_storage_t *storage,
-                                                        const dxb_discard_submit_io_t *io) {
-  int rc = dxb_storage_discard_submit_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_range_error(rc);
 
-  const dxb_discard_io_t *const discard = &io->discard;
   const dxb_byte_io_t *const range = &discard->range.request;
   if (range->bytes == 0)
     return dxb_range_noop_completed();
@@ -26087,9 +25908,25 @@ static dxb_range_result_t dxb_storage_submit_discard_io(dxb_storage_t *storage,
   case dxb_discard_remove: {
     rc = MDBX_RESULT_TRUE;
     if (rc == MDBX_SUCCESS) {
-      rc = dxb_storage_discard_cache_invalidate_submit_io_validate(storage, &io->invalidate);
+      dxb_cache_invalidate_io_t invalidate;
+      rc = dxb_storage_make_cache_invalidate_io(storage, &discard->range.pages, true, &invalidate);
       if (rc == MDBX_SUCCESS)
-        rc = dxb_storage_submit_invalidate_cached_io(storage, &io->invalidate.submit).err;
+        rc = dxb_storage_cache_invalidate_io_validate(storage, &invalidate);
+      if (rc == MDBX_SUCCESS) {
+        if (unlikely(!invalidate.include_reusable || invalidate.pages.pgno != discard->range.pages.pgno ||
+                     invalidate.pages.end_pgno != discard->range.pages.end_pgno ||
+                     invalidate.pages.npages != discard->range.pages.npages ||
+                     invalidate.pages.offset != discard->range.pages.offset ||
+                     invalidate.pages.bytes != discard->range.pages.bytes))
+          rc = MDBX_EINVAL;
+      }
+      dxb_cache_invalidate_submit_io_t submit;
+      if (rc == MDBX_SUCCESS)
+        rc = dxb_storage_make_cache_invalidate_submit_io(storage, &invalidate, &submit);
+      if (rc == MDBX_SUCCESS)
+        rc = dxb_storage_cache_invalidate_submit_io_validate(storage, &submit);
+      if (rc == MDBX_SUCCESS)
+        rc = dxb_storage_submit_invalidate_cached_io(storage, &submit).err;
     }
     if (rc == MDBX_SUCCESS)
       return dxb_range_completed(range->bytes);
@@ -26098,9 +25935,25 @@ static dxb_range_result_t dxb_storage_submit_discard_io(dxb_storage_t *storage,
   case dxb_discard_remove_or_clean: {
     rc = MDBX_RESULT_TRUE;
     if (rc == MDBX_SUCCESS) {
-      rc = dxb_storage_discard_cache_invalidate_submit_io_validate(storage, &io->invalidate);
+      dxb_cache_invalidate_io_t invalidate;
+      rc = dxb_storage_make_cache_invalidate_io(storage, &discard->range.pages, true, &invalidate);
       if (rc == MDBX_SUCCESS)
-        rc = dxb_storage_submit_invalidate_cached_io(storage, &io->invalidate.submit).err;
+        rc = dxb_storage_cache_invalidate_io_validate(storage, &invalidate);
+      if (rc == MDBX_SUCCESS) {
+        if (unlikely(!invalidate.include_reusable || invalidate.pages.pgno != discard->range.pages.pgno ||
+                     invalidate.pages.end_pgno != discard->range.pages.end_pgno ||
+                     invalidate.pages.npages != discard->range.pages.npages ||
+                     invalidate.pages.offset != discard->range.pages.offset ||
+                     invalidate.pages.bytes != discard->range.pages.bytes))
+          rc = MDBX_EINVAL;
+      }
+      dxb_cache_invalidate_submit_io_t submit;
+      if (rc == MDBX_SUCCESS)
+        rc = dxb_storage_make_cache_invalidate_submit_io(storage, &invalidate, &submit);
+      if (rc == MDBX_SUCCESS)
+        rc = dxb_storage_cache_invalidate_submit_io_validate(storage, &submit);
+      if (rc == MDBX_SUCCESS)
+        rc = dxb_storage_submit_invalidate_cached_io(storage, &submit).err;
     }
     if (rc != MDBX_RESULT_TRUE)
       return rc == MDBX_SUCCESS ? dxb_range_completed(range->bytes) : dxb_range_error(rc);
@@ -27403,13 +27256,8 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
       rc = dxb_storage_make_discard_io(storage, &discard_bytes, dxb_discard_clean, &discard);
     if (likely(rc == MDBX_SUCCESS))
       rc = dxb_storage_discard_io_validate(storage, &discard);
-    dxb_discard_submit_io_t discard_submit;
     if (likely(rc == MDBX_SUCCESS))
-      rc = dxb_storage_make_discard_submit_io(storage, &discard, &discard_submit);
-    if (likely(rc == MDBX_SUCCESS))
-      rc = dxb_storage_discard_submit_io_validate(storage, &discard_submit);
-    if (likely(rc == MDBX_SUCCESS))
-      rc = dxb_storage_submit_discard_io(storage, &discard_submit).err;
+      rc = dxb_storage_submit_discard_io(storage, &discard).err;
     if (unlikely(MDBX_IS_ERROR(rc))) {
       ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "resize", "DONTNEED", size_bytes, prev_size - size_bytes, rc);
       goto bailout;
@@ -28136,12 +27984,7 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
       if (likely(err == MDBX_SUCCESS))
         err = dxb_storage_discard_io_validate(storage, &discard);
       if (likely(err == MDBX_SUCCESS)) {
-        dxb_discard_submit_io_t discard_submit;
-        err = dxb_storage_make_discard_submit_io(storage, &discard, &discard_submit);
-        if (likely(err == MDBX_SUCCESS))
-          err = dxb_storage_discard_submit_io_validate(storage, &discard_submit);
-        if (likely(err == MDBX_SUCCESS))
-          err = dxb_storage_submit_discard_io(storage, &discard_submit).err;
+        err = dxb_storage_submit_discard_io(storage, &discard).err;
       }
     }
     if (unlikely(MDBX_IS_ERROR(err)))
@@ -28224,13 +28067,8 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
             err = dxb_storage_make_discard_io(storage, &discard_bytes, dxb_discard_clean, &discard);
           if (likely(err == MDBX_SUCCESS))
             err = dxb_storage_discard_io_validate(storage, &discard);
-          dxb_discard_submit_io_t discard_submit;
           if (likely(err == MDBX_SUCCESS))
-            err = dxb_storage_make_discard_submit_io(storage, &discard, &discard_submit);
-          if (likely(err == MDBX_SUCCESS))
-            err = dxb_storage_discard_submit_io_validate(storage, &discard_submit);
-          if (likely(err == MDBX_SUCCESS))
-            err = dxb_storage_submit_discard_io(storage, &discard_submit).err;
+            err = dxb_storage_submit_discard_io(storage, &discard).err;
           if (unlikely(MDBX_IS_ERROR(err))) {
             ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "shrink", "DONTNEED", discard_edge_bytes,
                   prev_discarded_bytes - discard_edge_bytes, err);
