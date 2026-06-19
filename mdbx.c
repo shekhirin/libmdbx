@@ -4906,14 +4906,19 @@ static inline int node_read_submit_io_validate(const dxb_node_read_submit_io_t *
   return MDBX_SUCCESS;
 }
 
-static inline int node_submit_read(const dxb_node_read_submit_io_t *io) {
-  int err = node_read_submit_io_validate(io);
+static inline int __must_check_result node_read(MDBX_cursor *mc, const node_t *node, MDBX_val *data,
+                                                const page_t *mp) {
+  dxb_node_read_submit_io_t submit;
+  int err = node_make_read_submit_io(mc, node, data, mp, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  err = node_read_submit_io_validate(&submit);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  io->data->iov_len = io->bytes;
-  io->data->iov_base = io->node_data;
-  if (likely(!io->bigdata)) {
+  data->iov_len = submit.bytes;
+  data->iov_base = submit.node_data;
+  if (likely(!submit.bigdata)) {
 #if 0
     /* This is an example of a code that checks out-of-bounds by an incorrect/bad/crafted node.
      * Such checks look useful, but they are unreasonable really:
@@ -4933,26 +4938,17 @@ static inline int node_submit_read(const dxb_node_read_submit_io_t *io) {
      *  - https://sourcecraft.dev/dqdkfa/libmdbx/issues/290
      *  - https://github.com/Mithril-mine/libmdbx/pull/306
      */
-    const char *data_end = ptr_disp(io->data->iov_base, io->data->iov_len);
-    const char *page_tail = (const char *)((intptr_t)io->source | /* Using the OR operation to get the tail of a real
-                                                                     page in case here is a dupsort nested sub-page
-                                                                     even. */
-                                           (intptr_t)(io->cursor->txn->env->ps - 1));
+    const char *data_end = ptr_disp(data->iov_base, data->iov_len);
+    const char *page_tail = (const char *)((intptr_t)submit.source | /* Using the OR operation to get the tail of a real
+                                                                        page in case here is a dupsort nested sub-page
+                                                                        even. */
+                                           (intptr_t)(submit.cursor->txn->env->ps - 1));
     if (!MDBX_DISABLE_VALIDATION && unlikely(data_end > page_tail))
-      return bad_page(io->source, "node-data (size %zu bytes) beyond the end of page", io->data->iov_len);
+      return bad_page(submit.source, "node-data (size %zu bytes) beyond the end of page", data->iov_len);
 #endif /* code example */
     return MDBX_SUCCESS;
   }
-  return node_read_bigdata(io->cursor, io->node, io->data, io->source);
-}
-
-static inline int __must_check_result node_read(MDBX_cursor *mc, const node_t *node, MDBX_val *data,
-                                                const page_t *mp) {
-  dxb_node_read_submit_io_t submit;
-  int err = node_make_read_submit_io(mc, node, data, mp, &submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  return node_submit_read(&submit);
+  return node_read_bigdata(submit.cursor, submit.node, data, submit.source);
 }
 
 /*----------------------------------------------------------------------------*/
@@ -8698,27 +8694,23 @@ static inline int page_get_with_ref_submit_io_validate(const dxb_page_get_with_r
   return MDBX_SUCCESS;
 }
 
-static inline int page_submit_get_with_ref(const dxb_page_get_with_ref_submit_io_t *io) {
-  int err = page_get_with_ref_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  pgr_t ret = page_submit_cursor_get(&io->get);
-  *io->page = ret.page;
-  if (io->retain_ref)
-    *io->ref = ret.ref;
-  else
-    pgr_release(io->cursor, &ret);
-  return ret.err;
-}
-
 static inline int __must_check_result page_get_with_ref(const MDBX_cursor *mc, const pgno_t pgno, page_t **mp,
                                                         page_ref_t *ref, const txnid_t front) {
   dxb_page_get_with_ref_submit_io_t submit;
   int err = page_make_get_with_ref_submit_io(mc, pgno, mp, ref, front, &submit);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  return page_submit_get_with_ref(&submit);
+  err = page_get_with_ref_submit_io_validate(&submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  pgr_t ret = page_submit_cursor_get(&submit.get);
+  *mp = ret.page;
+  if (submit.retain_ref)
+    *ref = ret.ref;
+  else
+    pgr_release(submit.cursor, &ret);
+  return ret.err;
 }
 
 static inline int __must_check_result page_get(const MDBX_cursor *mc, const pgno_t pgno, page_t **mp,
@@ -8771,28 +8763,22 @@ static inline int cursor_stack_page_get_submit_io_validate(const dxb_cursor_stac
   return MDBX_SUCCESS;
 }
 
-static inline int cursor_submit_stack_page_get(const dxb_cursor_stack_page_get_submit_io_t *io) {
-  int err = cursor_stack_page_get_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  pgr_t pgr = page_submit_cursor_get(&io->get);
-  err = pgr.err;
-  if (unlikely(err != MDBX_SUCCESS)) {
-    pgr_release(io->cursor, &pgr);
-    return err;
-  }
-
-  cursor_stack_set_pgr_consume(io->cursor, io->slot, &pgr);
-  return MDBX_SUCCESS;
-}
-
 static inline int cursor_stack_page_get(MDBX_cursor *mc, intptr_t slot, pgno_t pgno, txnid_t front) {
   dxb_cursor_stack_page_get_submit_io_t submit;
   int err = cursor_make_stack_page_get_submit_io(mc, slot, pgno, front, &submit);
   cASSERT0(mc, err == MDBX_SUCCESS);
   if (likely(err == MDBX_SUCCESS))
-    err = cursor_submit_stack_page_get(&submit);
+    err = cursor_stack_page_get_submit_io_validate(&submit);
+  if (likely(err == MDBX_SUCCESS)) {
+    pgr_t pgr = page_submit_cursor_get(&submit.get);
+    err = pgr.err;
+    if (unlikely(err != MDBX_SUCCESS)) {
+      pgr_release(submit.cursor, &pgr);
+      return err;
+    }
+
+    cursor_stack_set_pgr_consume(submit.cursor, submit.slot, &pgr);
+  }
   return err;
 }
 
@@ -8870,38 +8856,32 @@ cursor_validate_branch_child_submit_io_validate(const dxb_cursor_validate_branch
   return MDBX_SUCCESS;
 }
 
-static inline int cursor_submit_validate_branch_child(const dxb_cursor_validate_branch_child_submit_io_t *io) {
-  int err = cursor_validate_branch_child_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  pgr_t child = page_submit_cursor_get(&io->get);
-  err = child.err;
-  cASSERT0(io->cursor, err == MDBX_SUCCESS);
-  if (unlikely(err != MDBX_SUCCESS)) {
-    pgr_release(io->cursor, &child);
-    return err;
-  }
-
-  const bool leaf = is_leaf(child.page) ? true : false;
-  cASSERT0(io->cursor, leaf == io->expect_leaf);
-  if (unlikely(leaf != io->expect_leaf)) {
-    pgr_release(io->cursor, &child);
-    return MDBX_CURSOR_FULL;
-  }
-
-  err = page_check(io->cursor, child.page);
-  pgr_release(io->cursor, &child);
-  return err;
-}
-
 static inline int cursor_validate_branch_child(const MDBX_cursor *mc, intptr_t parent_slot, size_t parent_ki,
                                                bool expect_leaf) {
   dxb_cursor_validate_branch_child_submit_io_t submit;
   int err = cursor_make_validate_branch_child_submit_io(mc, parent_slot, parent_ki, expect_leaf, &submit);
   cASSERT0(mc, err == MDBX_SUCCESS);
   if (likely(err == MDBX_SUCCESS))
-    err = cursor_submit_validate_branch_child(&submit);
+    err = cursor_validate_branch_child_submit_io_validate(&submit);
+  if (likely(err == MDBX_SUCCESS)) {
+    pgr_t child = page_submit_cursor_get(&submit.get);
+    err = child.err;
+    cASSERT0(submit.cursor, err == MDBX_SUCCESS);
+    if (unlikely(err != MDBX_SUCCESS)) {
+      pgr_release(submit.cursor, &child);
+      return err;
+    }
+
+    const bool leaf = is_leaf(child.page) ? true : false;
+    cASSERT0(submit.cursor, leaf == submit.expect_leaf);
+    if (unlikely(leaf != submit.expect_leaf)) {
+      pgr_release(submit.cursor, &child);
+      return MDBX_CURSOR_FULL;
+    }
+
+    err = page_check(submit.cursor, child.page);
+    pgr_release(submit.cursor, &child);
+  }
   return err;
 }
 
@@ -9000,19 +8980,6 @@ compacting_branch_child_copy_submit_io_validate(const dxb_compacting_branch_chil
   return MDBX_SUCCESS;
 }
 
-static inline int compacting_submit_branch_child_copy(const dxb_compacting_branch_child_copy_submit_io_t *io) {
-  int err = compacting_branch_child_copy_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  page_copy(io->copy_page, io->source_page, io->cursor->txn->env->ps);
-  err = cursor_push(io->cursor, io->copy_page, io->ki);
-  if (likely(err == MDBX_SUCCESS))
-    *io->source = io->copy_page;
-  cursor_ref_release(io->cursor, io->source_ref);
-  return err;
-}
-
 static inline int __must_check_result compacting_branch_child_copy(MDBX_cursor *mc, page_t **source,
                                                                    page_ref_t *source_ref, page_t *copy_page,
                                                                    intptr_t next_top, indx_t ki) {
@@ -9020,7 +8987,14 @@ static inline int __must_check_result compacting_branch_child_copy(MDBX_cursor *
   int err = compacting_make_branch_child_copy_submit_io(mc, source, source_ref, copy_page, next_top, ki, &submit);
   cASSERT0(mc, err == MDBX_SUCCESS);
   if (likely(err == MDBX_SUCCESS))
-    err = compacting_submit_branch_child_copy(&submit);
+    err = compacting_branch_child_copy_submit_io_validate(&submit);
+  if (likely(err == MDBX_SUCCESS)) {
+    page_copy(submit.copy_page, submit.source_page, submit.cursor->txn->env->ps);
+    err = cursor_push(submit.cursor, submit.copy_page, submit.ki);
+    if (likely(err == MDBX_SUCCESS))
+      *submit.source = submit.copy_page;
+    cursor_ref_release(submit.cursor, submit.source_ref);
+  }
   cASSERT0(mc, err == MDBX_SUCCESS || err == MDBX_CURSOR_FULL);
   return err;
 }

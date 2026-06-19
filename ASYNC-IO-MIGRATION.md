@@ -13481,6 +13481,28 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.094` batch, `1.154` crud, `1.151` iterate,
 `0.967` get, and `1.077` delete.
 
+A later node/cursor page-submit cleanup removed the one-call
+`node_submit_read()`, `page_submit_get_with_ref()`,
+`cursor_submit_stack_page_get()`, `cursor_submit_validate_branch_child()`, and
+`compacting_submit_branch_child_copy()` helpers from `mdbx.c`. Inline node
+reads, page-get-with-ref, cursor stack page fetches, branch-child validation,
+and compacting-copy branch-child setup now validate their prepared descriptors
+at the local caller, then perform the same direct page/value operation. This
+keeps cursor stack and value lifetime decisions next to the page-cache fetch or
+ref transfer that owns them, leaving fewer helper-local submit layers for a
+future async backend to replace. Verification passed `git diff --check`, source
+scans proving the removed node/cursor submit helpers are absent from `mdbx.c`
+and the public/internal headers, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.106` batch, `1.147` crud, `0.841` iterate,
+`1.086` get, and `1.072` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
