@@ -4939,6 +4939,15 @@ LIBMDBX_API int mdbx_async_cursor_distance(MDBX_async *async, const MDBX_cursor 
 LIBMDBX_API int mdbx_async_cursor_scroll(MDBX_async *async, MDBX_cursor *cursor, intptr_t amount, unsigned deepness,
                                          MDBX_async_op **op);
 
+/** \brief Asynchronously distribute cursors over a range for parallel scanning.
+ * \ingroup c_async
+ * \details The `array` storage and every cursor it references must remain valid
+ *          until completion.
+ * \see mdbx_cursor_distribute() */
+LIBMDBX_API int mdbx_async_cursor_distribute(MDBX_async *async, const MDBX_cursor *first, const MDBX_cursor *last,
+                                             MDBX_cursor **array, intptr_t count, unsigned deepness,
+                                             MDBX_async_op **op);
+
 /** \brief Asynchronously store an item through a cursor.
  * \ingroup c_async
  * \details Key and data bytes are copied during submission. The initial async

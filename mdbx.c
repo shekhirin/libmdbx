@@ -15005,6 +15005,7 @@ enum mdbx_async_opcode {
   async_op_cursor_state,
   async_op_cursor_distance,
   async_op_cursor_scroll,
+  async_op_cursor_distribute,
   async_op_cursor_put,
   async_op_cursor_del,
   async_op_cursor_delete_range,
@@ -15216,6 +15217,13 @@ struct MDBX_async_op {
       intptr_t amount;
       unsigned deepness;
     } cursor_scroll;
+    struct {
+      const MDBX_cursor *first;
+      const MDBX_cursor *last;
+      MDBX_cursor **array;
+      intptr_t count;
+      unsigned deepness;
+    } cursor_distribute;
     struct {
       MDBX_cursor *cursor;
       MDBX_val *data;
@@ -15495,6 +15503,10 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_cursor_scroll:
     return mdbx_cursor_scroll(op->args.cursor_scroll.cursor, op->args.cursor_scroll.amount,
                               op->args.cursor_scroll.deepness);
+  case async_op_cursor_distribute:
+    return mdbx_cursor_distribute(op->args.cursor_distribute.first, op->args.cursor_distribute.last,
+                                  op->args.cursor_distribute.array, op->args.cursor_distribute.count,
+                                  op->args.cursor_distribute.deepness);
   case async_op_cursor_put: {
     MDBX_val data = op->data;
     const int rc = mdbx_cursor_put(op->args.cursor_put.cursor, &op->key, &data, op->args.cursor_put.flags);
@@ -16621,6 +16633,27 @@ int mdbx_async_cursor_scroll(MDBX_async *async, MDBX_cursor *cursor, intptr_t am
   op->args.cursor_scroll.cursor = cursor;
   op->args.cursor_scroll.amount = amount;
   op->args.cursor_scroll.deepness = deepness;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return rc;
+}
+
+int mdbx_async_cursor_distribute(MDBX_async *async, const MDBX_cursor *first, const MDBX_cursor *last,
+                                 MDBX_cursor **array, intptr_t count, unsigned deepness, MDBX_async_op **out) {
+  if (unlikely((!first && !last) || !array || count < 1))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_distribute);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cursor_distribute.first = first;
+  op->args.cursor_distribute.last = last;
+  op->args.cursor_distribute.array = array;
+  op->args.cursor_distribute.count = count;
+  op->args.cursor_distribute.deepness = deepness;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;

@@ -474,6 +474,31 @@ int main(void) {
   CHECK_OP(op);
   REQUIRE(cursor_distance == (intptr_t)ITEM_COUNT - 1, "unexpected async cursor distance");
 
+  MDBX_cursor *distribution[3] = {NULL, NULL, NULL};
+  const size_t distribution_count = sizeof(distribution) / sizeof(distribution[0]);
+  for (size_t i = 0; i < distribution_count; ++i) {
+    CHECK(mdbx_async_cursor_open(async, txn, dbi, &distribution[i], &op));
+    CHECK_OP(op);
+    REQUIRE(distribution[i] != NULL, "distribution cursor was not returned");
+  }
+  CHECK(mdbx_async_cursor_distribute(async, cursor, cursor2, distribution, (intptr_t)distribution_count, 42, &op));
+  CHECK_OP(op);
+  for (size_t i = 0; i < distribution_count; ++i) {
+    MDBX_val distributed_key = val(NULL, 0);
+    MDBX_val distributed_data = val(NULL, 0);
+    CHECK(mdbx_async_cursor_get(async, distribution[i], &distributed_key, &distributed_data, MDBX_GET_CURRENT, &op));
+    CHECK_OP(op);
+    REQUIRE(distributed_key.iov_len == sizeof(uint64_t), "unexpected distributed cursor key size");
+    uint64_t actual_key = 0;
+    memcpy(&actual_key, distributed_key.iov_base, sizeof(actual_key));
+    REQUIRE(actual_key == (uint64_t)((i + 1) * (ITEM_COUNT - 1) / distribution_count),
+            "unexpected distributed cursor key");
+    CHECK(expect_value(&distributed_data, actual_key, __FILE__, __LINE__));
+    CHECK(mdbx_async_cursor_close(async, distribution[i], &op));
+    CHECK_OP(op);
+    distribution[i] = NULL;
+  }
+
   CHECK(mdbx_async_cursor_scroll(async, cursor, 5, 42, &op));
   CHECK_OP(op);
   cursor_key = val(NULL, 0);
