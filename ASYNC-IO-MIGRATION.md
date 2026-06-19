@@ -15368,6 +15368,26 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.110` batch, `1.166` crud, `1.027` iterate, `0.992`
 get, and `1.080` delete.
 
+A later filesystem-incore checkpoint routed the storage-level
+`dxb_storage_submit_check_incore()` probe through
+`osal_ioring_check_fs_incore()` and caches the resulting true/false/unsupported
+state on the opened `dxb_storage_t`. There is no Linux `io_uring` statfs opcode
+in the local headers, so the OSAL wrapper currently falls back to
+`osal_check_fs_incore()`, but the storage submitter no longer reaches that raw
+probe directly and repeated checks on one opened data handle complete from the
+cached storage state. A source scan shows direct `osal_check_fs_incore()` calls
+only in the OSAL wrapper and the non-queue `osal_fsetsize()` fallback.
+Verification passed `git diff --check`, the Ninja build (`cmake --build
+@cmake-ninja-build`), normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` migration
+CTest entries passed 9/9, the ASAN build (`cmake --build @cmake-asan-build`)
+passed, normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused
+`migration_smoke` CTest entries passed 6/6 with
+`LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.123` batch, `1.154` crud, `1.043` iterate, `1.050`
+get, and `1.074` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

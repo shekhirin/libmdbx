@@ -1672,7 +1672,9 @@ typedef struct dxb_storage {
   page_cache_t page_cache;
   size_t page_cache_limit;
   osal_fastmutex_t page_cache_lock;
+  int fs_incore_result;
   bool page_cache_lock_initialized;
+  bool fs_incore_result_cached;
   uint8_t pagesize_ln;
   uint64_t filesize;
   size_t current;
@@ -24499,6 +24501,8 @@ dxb_state_result_t dxb_storage_submit_reset(dxb_storage_t *storage, const dxb_re
   storage->meta_fd = INVALID_HANDLE_VALUE;
   storage->dsync_fd = INVALID_HANDLE_VALUE;
   storage->pagesize_ln = 0;
+  storage->fs_incore_result = MDBX_SUCCESS;
+  storage->fs_incore_result_cached = false;
   storage->filesize = 0;
   storage->current = 0;
   storage->limit = 0;
@@ -24567,6 +24571,8 @@ dxb_open_result_t dxb_storage_submit_open_data(dxb_storage_t *storage, const dxb
     return dxb_open_result(storage, rc, false, false);
   if (unlikely(io->purpose != MDBX_OPEN_DXB_READ && io->purpose != MDBX_OPEN_DXB_LAZY))
     return dxb_open_result(storage, MDBX_EINVAL, false, false);
+  storage->fs_incore_result = MDBX_SUCCESS;
+  storage->fs_incore_result_cached = false;
   rc = osal_openfile(io->purpose, io->env, io->pathname, &storage->data_fd, io->mode_bits);
   if (likely(rc == MDBX_SUCCESS))
     storage->meta_fd = storage->data_fd;
@@ -25488,14 +25494,25 @@ static inline dxb_incore_result_t dxb_incore_completed(bool incore) {
   return dxb_incore_result(MDBX_SUCCESS, incore, true, true);
 }
 
-static inline dxb_incore_result_t dxb_storage_submit_check_incore(const dxb_storage_t *storage) {
+static inline dxb_incore_result_t dxb_incore_cached(bool incore) {
+  return dxb_incore_result(MDBX_SUCCESS, incore, false, true);
+}
+
+static inline dxb_incore_result_t dxb_storage_submit_check_incore(dxb_storage_t *storage) {
   if (unlikely(!storage))
     return dxb_incore_result(MDBX_EINVAL, false, false, false);
-  int rc = osal_check_fs_incore(dxb_storage_data_fd(storage));
+  const bool cached = storage->fs_incore_result_cached;
+  int rc = cached ? storage->fs_incore_result
+                  : osal_ioring_check_fs_incore(&storage->ioring, dxb_storage_data_fd(storage));
+  if (!cached &&
+      (rc == MDBX_RESULT_TRUE || rc == MDBX_RESULT_FALSE || rc == MDBX_ENOSYS)) {
+    storage->fs_incore_result = rc;
+    storage->fs_incore_result_cached = true;
+  }
   if (rc == MDBX_RESULT_TRUE)
-    return dxb_incore_completed(true);
+    return cached ? dxb_incore_cached(true) : dxb_incore_completed(true);
   if (likely(rc == MDBX_SUCCESS))
-    return dxb_incore_completed(false);
+    return cached ? dxb_incore_cached(false) : dxb_incore_completed(false);
   return (rc == MDBX_ENOSYS) ? dxb_incore_unavailable(rc) : dxb_incore_submitted_error(rc);
 }
 
@@ -38186,6 +38203,11 @@ int osal_ioring_fstat(osal_ioring_t *ior, mdbx_filehandle_t fd, struct stat *st)
   return unlikely(fstat(fd, st)) ? errno : MDBX_SUCCESS;
 }
 #endif /* !Windows */
+
+int osal_ioring_check_fs_incore(osal_ioring_t *ior, mdbx_filehandle_t fd) {
+  (void)ior;
+  return osal_check_fs_incore(fd);
+}
 
 #if MDBX_USE_COPYFILERANGE
 static ssize_t osal_ioring_copy_file_range(osal_ioring_t *ior, mdbx_filehandle_t in_fd, off_t *in_offset,
