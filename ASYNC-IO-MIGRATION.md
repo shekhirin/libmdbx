@@ -14948,6 +14948,27 @@ including API checks and tool roundtrips, the ASAN build (`cmake --build
 passed with forced/default ratios of `1.125` batch, `1.180` crud, `1.005`
 iterate, `0.983` get, and `1.087` delete.
 
+A later queued-write backend cleanup introduced an internal
+`osal_ioring_backend_t` for the explicit write queue. Each queue now records
+whether it is using the synchronous backend, the existing Windows overlapped
+backend, or the reserved Linux `io_uring` backend, and queued-write results
+carry the backend plus an `async_backend` capability bit. POSIX writes still
+use the existing synchronous `pwrite`/`pwritev` behavior, but that drain is now
+isolated in `osal_ioring_write_sync()` and selected by an explicit backend
+switch in `osal_ioring_write()`. The Linux `io_uring` case is intentionally
+reserved and returns `MDBX_ENOSYS` until submission/completion is implemented
+and verified, which keeps transaction semantics unchanged while localizing the
+next async backend work to OSAL queue submission. Verification passed
+`git diff --check`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks
+and tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and
+the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.109` batch, `1.142` crud, `0.849`
+iterate, `1.066` get, and `1.076` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

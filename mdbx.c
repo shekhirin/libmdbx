@@ -24991,7 +24991,7 @@ static inline dxb_queue_write_result_t dxb_queue_write_result(int err, enum dxb_
                                                              size_t payload_bytes, bool submitted,
                                                              bool completed) {
   const dxb_queue_write_result_t result = {err, channel, wops, used_slots, write_items,
-                                           payload_bytes, submitted, completed};
+                                           payload_bytes, osal_ioring_backend_unset, false, submitted, completed};
   return result;
 }
 
@@ -25401,6 +25401,8 @@ static inline dxb_queue_write_result_t dxb_storage_write_queued(dxb_storage_t *s
   dxb_queue_write_result_t result =
       dxb_queue_write_result(write.err, io.channel, write.wops, write.used_slots, write.write_items,
                              write.payload_bytes, true, write.err == MDBX_SUCCESS);
+  result.backend = write.backend;
+  result.async_backend = write.async_backend;
   if (likely(result.err == MDBX_SUCCESS) &&
       unlikely(result.write_items != io.write_items || result.used_slots != io.used_slots ||
                result.payload_bytes != io.payload_bytes)) {
@@ -36236,10 +36238,13 @@ int osal_ioring_create(osal_ioring_t *ior
 #endif /* Windows */
 ) {
   memset(ior, 0, sizeof(osal_ioring_t));
+  ior->backend = osal_ioring_backend_sync;
 
 #if defined(_WIN32) || defined(_WIN64)
   ior->overlapped_fd = overlapped_fd;
-  ior->direct = enable_direct && overlapped_fd;
+  if (overlapped_fd && overlapped_fd != INVALID_HANDLE_VALUE)
+    ior->backend = osal_ioring_backend_windows_overlapped;
+  ior->direct = enable_direct && overlapped_fd && overlapped_fd != INVALID_HANDLE_VALUE;
   ior->pagesize = globals.sys_pagesize;
   ior->pagesize_ln2 = globals.sys_pagesize_ln2;
   ior->async_done = ior_get_event(ior);
@@ -36253,6 +36258,10 @@ int osal_ioring_create(osal_ioring_t *ior
 
   ior->boundary = ptr_disp(ior->pool, ior->allocated);
   return MDBX_SUCCESS;
+}
+
+static inline bool osal_ioring_backend_is_async(osal_ioring_backend_t backend) {
+  return backend == osal_ioring_backend_windows_overlapped || backend == osal_ioring_backend_linux_uring;
 }
 
 static inline uint64_t ior_offset(const ior_item_t *item) {
@@ -36694,10 +36703,58 @@ static ior_item_t *osal_ioring_previous_item(const osal_ioring_t *ior, const ior
   ASSERT(item == target);
   return previous;
 }
+
+static void osal_ioring_write_sync(osal_ioring_t *ior, const dxb_queued_write_io_t *io,
+                                   osal_ioring_write_result_t *r) {
+  STATIC_ASSERT_MSG(sizeof(off_t) >= sizeof(size_t), "libmdbx requires 64-bit file I/O on 64-bit systems");
+
+  const enum dxb_fault_write_order write_order = dxb_fault_write_order();
+  if (unlikely(write_order == dxb_fault_write_order_reverse)) {
+    for (ior_item_t *item = ior->last; item;) {
+      const osal_ioring_write_item_io_t item_io = osal_ioring_make_write_item_io(r, item, io);
+      (void)osal_ioring_write_item(&item_io);
+      if (unlikely(r->err != MDBX_SUCCESS) || item == ior->pool)
+        break;
+      item = osal_ioring_previous_item(ior, item);
+    }
+  } else if (unlikely(write_order == dxb_fault_write_order_outside_in)) {
+    ior_item_t *left = ior->pool;
+    ior_item_t *right = ior->last;
+    while (left <= right) {
+      const osal_ioring_write_item_io_t right_io = osal_ioring_make_write_item_io(r, right, io);
+      (void)osal_ioring_write_item(&right_io);
+      if (unlikely(r->err != MDBX_SUCCESS) || right == left)
+        break;
+
+      ior_item_t *const previous_right = osal_ioring_previous_item(ior, right);
+      const osal_ioring_write_item_io_t left_io = osal_ioring_make_write_item_io(r, left, io);
+      const size_t left_sgvcnt = osal_ioring_write_item(&left_io);
+      if (unlikely(r->err != MDBX_SUCCESS) || previous_right == left)
+        break;
+
+      left = ior_next(left, left_sgvcnt);
+      right = previous_right;
+    }
+  } else {
+    for (ior_item_t *item = ior->pool; item <= ior->last;) {
+      const osal_ioring_write_item_io_t item_io = osal_ioring_make_write_item_io(r, item, io);
+      const size_t sgvcnt = osal_ioring_write_item(&item_io);
+      item = ior_next(item, sgvcnt);
+      if (unlikely(r->err != MDBX_SUCCESS))
+        break;
+    }
+  }
+}
 #endif /* !Windows */
 
 osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, const dxb_queued_write_io_t *io) {
-  osal_ioring_write_result_t r = {MDBX_SUCCESS, 0, 0, 0, 0};
+  osal_ioring_write_result_t r = {MDBX_SUCCESS, 0, 0, 0, 0, osal_ioring_backend_unset, false};
+  if (unlikely(!ior)) {
+    r.err = MDBX_EINVAL;
+    return r;
+  }
+  r.backend = ior->backend;
+  r.async_backend = osal_ioring_backend_is_async(ior->backend);
   r.err = dxb_queued_write_io_validate(io);
   if (unlikely(r.err != MDBX_SUCCESS))
     return r;
@@ -36913,49 +36970,21 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, const dxb_queue
   ASSERT(ior->async_waiting == ior->async_completed);
 
 #else
-  STATIC_ASSERT_MSG(sizeof(off_t) >= sizeof(size_t), "libmdbx requires 64-bit file I/O on 64-bit systems");
-
-  const enum dxb_fault_write_order write_order = dxb_fault_write_order();
-  if (unlikely(write_order == dxb_fault_write_order_reverse)) {
-    for (ior_item_t *item = ior->last; item;) {
-      const osal_ioring_write_item_io_t item_io = osal_ioring_make_write_item_io(&r, item, io);
-      (void)osal_ioring_write_item(&item_io);
-      if (unlikely(r.err != MDBX_SUCCESS) || item == ior->pool)
-        break;
-      item = osal_ioring_previous_item(ior, item);
-    }
-  } else if (unlikely(write_order == dxb_fault_write_order_outside_in)) {
-    ior_item_t *left = ior->pool;
-    ior_item_t *right = ior->last;
-    while (left <= right) {
-      const osal_ioring_write_item_io_t right_io = osal_ioring_make_write_item_io(&r, right, io);
-      (void)osal_ioring_write_item(&right_io);
-      if (unlikely(r.err != MDBX_SUCCESS) || right == left)
-        break;
-
-      ior_item_t *const previous_right = osal_ioring_previous_item(ior, right);
-      const osal_ioring_write_item_io_t left_io = osal_ioring_make_write_item_io(&r, left, io);
-      const size_t left_sgvcnt = osal_ioring_write_item(&left_io);
-      if (unlikely(r.err != MDBX_SUCCESS) || previous_right == left)
-        break;
-
-      left = ior_next(left, left_sgvcnt);
-      right = previous_right;
-    }
-  } else {
-    for (ior_item_t *item = ior->pool; item <= ior->last;) {
-      const osal_ioring_write_item_io_t item_io = osal_ioring_make_write_item_io(&r, item, io);
-      const size_t sgvcnt = osal_ioring_write_item(&item_io);
-      item = ior_next(item, sgvcnt);
-      if (unlikely(r.err != MDBX_SUCCESS))
-        break;
-    }
+  switch (ior->backend) {
+  case osal_ioring_backend_sync:
+    osal_ioring_write_sync(ior, io, &r);
+    break;
+  case osal_ioring_backend_linux_uring:
+    /* Reserved for the Linux async backend. Keep the synchronous backend as the
+     * only POSIX backend until io_uring submission/completion is verified. */
+    r.err = MDBX_ENOSYS;
+    break;
+  case osal_ioring_backend_unset:
+  case osal_ioring_backend_windows_overlapped:
+  default:
+    r.err = MDBX_EINVAL;
+    break;
   }
-
-  // TODO: io_uring_prep_write(sqe, fd, ...);
-  // TODO: io_uring_submit(&ring)
-  // TODO: err = io_uring_wait_cqe(&ring, &cqe);
-  // TODO: io_uring_cqe_seen(&ring, cqe);
 
 #endif /* !Windows */
   if (likely(r.err == MDBX_SUCCESS)) {

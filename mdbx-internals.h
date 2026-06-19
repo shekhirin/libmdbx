@@ -1467,6 +1467,13 @@ typedef struct dxb_queue_op_result {
   bool completed;
 } dxb_queue_op_result_t;
 
+typedef enum osal_ioring_backend {
+  osal_ioring_backend_unset = 0,
+  osal_ioring_backend_sync,
+  osal_ioring_backend_windows_overlapped,
+  osal_ioring_backend_linux_uring
+} osal_ioring_backend_t;
+
 typedef struct dxb_queue_write_result {
   int err;
   enum dxb_io_channel channel;
@@ -1474,6 +1481,8 @@ typedef struct dxb_queue_write_result {
   unsigned used_slots;
   unsigned write_items;
   size_t payload_bytes;
+  osal_ioring_backend_t backend;
+  bool async_backend;
   bool submitted;
   bool completed;
 } dxb_queue_write_result_t;
@@ -1614,6 +1623,7 @@ typedef struct ior_item {
 typedef struct osal_ioring {
   unsigned slots_left;
   unsigned allocated;
+  osal_ioring_backend_t backend;
 #if defined(_WIN32) || defined(_WIN64)
 #define IOR_STATE_LOCKED 1
   HANDLE overlapped_fd;
@@ -1680,6 +1690,8 @@ typedef struct osal_ioring_write_result {
   unsigned write_items;
   unsigned used_slots;
   size_t payload_bytes;
+  osal_ioring_backend_t backend;
+  bool async_backend;
 } osal_ioring_write_result_t;
 MDBX_INTERNAL osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior,
                                                            const dxb_queued_write_io_t *io);
