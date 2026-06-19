@@ -368,13 +368,6 @@ typedef struct dxb_page_touch_redirect_submit_io {
   bool inner;
 } dxb_page_touch_redirect_submit_io_t;
 
-typedef struct dxb_cursor_stack_set_synthetic_submit_io {
-  MDBX_cursor *cursor;
-  page_t *page;
-  page_ref_t ref;
-  intptr_t slot;
-} dxb_cursor_stack_set_synthetic_submit_io_t;
-
 typedef struct dxb_cursor_stack_copy_submit_io {
   MDBX_cursor *dst;
   const MDBX_cursor *src;
@@ -6610,47 +6603,13 @@ static inline void cursor_stack_set_ref_consume(MDBX_cursor *mc, intptr_t i, pag
   cASSERT0(mc, err == MDBX_SUCCESS);
 }
 
-static inline int cursor_make_stack_set_synthetic_submit_io(MDBX_cursor *mc, intptr_t i, page_t *mp,
-                                                            dxb_cursor_stack_set_synthetic_submit_io_t *io) {
-  if (unlikely(!mc || !io || i < 0 || i >= CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-
-  io->cursor = mc;
-  io->page = mp;
-  io->ref = page_ref_synthetic(mp);
-  io->slot = i;
-  return MDBX_SUCCESS;
-}
-
-static inline int
-cursor_stack_set_synthetic_submit_io_validate(const dxb_cursor_stack_set_synthetic_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || io->slot < 0 || io->slot >= CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-
-  const page_ref_t expected = page_ref_synthetic(io->page);
-  if (unlikely(!page_ref_equal(&io->ref, &expected)))
-    return MDBX_EINVAL;
-
-  dxb_cursor_stack_set_synthetic_submit_io_t checked;
-  int err = cursor_make_stack_set_synthetic_submit_io(io->cursor, io->slot, io->page, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.slot != io->slot ||
-               !page_ref_equal(&checked.ref, &io->ref)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
+static inline int cursor_stack_set_synthetic_checked(MDBX_cursor *mc, intptr_t i, page_t *mp) {
+  return cursor_stack_set_checked(mc, i, mp, page_ref_synthetic(mp));
 }
 
 static inline void cursor_stack_set_synthetic(MDBX_cursor *mc, intptr_t i, page_t *mp) {
-  dxb_cursor_stack_set_synthetic_submit_io_t submit;
-  int err = cursor_make_stack_set_synthetic_submit_io(mc, i, mp, &submit);
+  int err = cursor_stack_set_synthetic_checked(mc, i, mp);
   cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_stack_set_synthetic_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS))
-      cursor_stack_set(submit.cursor, submit.slot, submit.page, submit.ref);
-    cASSERT0(mc, err == MDBX_SUCCESS);
-  }
 }
 
 static inline int cursor_make_stack_copy_submit_io(MDBX_cursor *dst, intptr_t di, const MDBX_cursor *src, intptr_t si,
