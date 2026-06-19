@@ -11969,17 +11969,18 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.117` batch, `1.137` crud, `1.152` iterate,
 `0.972` get, and `1.074` delete.
 
-A later fetched-filesize bookkeeping cleanup removed the hidden
-`dxb_storage_note_filesize()` helper from the C source.
-`dxb_filesize_note_submit_io_t` now carries the fetched filesize and either the
-cached-filesize state submit descriptor or the derived size-state submit
-descriptor, depending on whether storage already has a configured limit.
-`dxb_storage_submit_fetch_filesize()` now builds that note descriptor after the
-disk filesize read completes and submits it through
-`dxb_storage_submit_note_filesize()`, preserving current/limit/filesize
-bookkeeping while making the post-fetch cached-state update a named completion
-submission. Verification passed `git diff --check`, source scans proving
-`dxb_storage_note_filesize()` is absent from `mdbx.c` and covering
+An earlier fetched-filesize bookkeeping cleanup removed the hidden
+`dxb_storage_note_filesize()` helper from the C source and introduced a
+temporary `dxb_filesize_note_submit_io_t` payload carrying the fetched filesize
+and either the cached-filesize state submit descriptor or the derived
+size-state submit descriptor, depending on whether storage already had a
+configured limit. At that checkpoint, `dxb_storage_submit_fetch_filesize()`
+built that note descriptor after the disk filesize read completed and submitted
+it through `dxb_storage_submit_note_filesize()`, preserving
+current/limit/filesize bookkeeping while making the post-fetch cached-state
+update a named completion submission. Verification passed `git diff --check`,
+source scans proving `dxb_storage_note_filesize()` was absent from `mdbx.c` and
+covering
 `dxb_filesize_note_submit_io_t`,
 `dxb_storage_make_note_filesize_submit_io()`,
 `dxb_storage_note_filesize_submit_io_validate()`,
@@ -12858,6 +12859,29 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.107`
 batch, `1.147` crud, `0.945` iterate, `1.036` get, and `1.070` delete.
+
+A later fetched-filesize direct-state cleanup removed the one-use
+`dxb_filesize_note_submit_io_t`,
+`dxb_storage_make_note_filesize_submit_io()`,
+`dxb_storage_note_filesize_submit_io_validate()`, and
+`dxb_storage_submit_note_filesize()` layer from `mdbx.c`.
+`dxb_storage_submit_fetch_filesize()` now validates its payload and storage
+target, reads the disk filesize, then directly builds and submits either a
+`dxb_size_state_submit_io_t` when a limit is configured or a
+`dxb_filesize_state_submit_io_t` before returning the filesize result. This
+preserves current/limit/filesize bookkeeping while removing the extra synthetic
+completion submission between the OS filesize fetch and the explicit storage
+state submitters. Verification passed `git diff --check`, source scans proving
+the removed fetched-filesize note-submit helpers are absent from `mdbx.c` and
+the public/internal headers, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused `migration_smoke`
+CTest entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.113`
+batch, `1.131` crud, `1.019` iterate, `0.992` get, and `1.075` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
