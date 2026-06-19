@@ -14512,6 +14512,29 @@ migration CTest suite including API checks and tool roundtrips, the ASAN build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.131`
 batch, `1.140` crud, `0.978` iterate, `1.006` get, and `1.061` delete.
 
+A later sync metadata descriptor cleanup removed
+`dxb_sync_meta_payload_write_submit_io_t`,
+`dxb_sync_make_meta_payload_write_submit_io()`,
+`dxb_sync_meta_payload_write_submit_io_validate()`,
+`dxb_meta_sync_submit_io_t`, `dxb_meta_make_sync_submit_io()`,
+`dxb_meta_sync_submit_io_validate()`,
+`dxb_data_prefix_sync_submit_io_t`,
+`dxb_data_make_prefix_sync_submit_io()`, and
+`dxb_data_prefix_sync_submit_io_validate()` from `mdbx.c`. Commit-time data
+prefix syncs, meta payload writes and undo writes, meta-page syncs,
+pre-lock data presyncs, steady-meta wiping, explicit `meta_sync()`, and
+metadata override syncs now build, validate, and submit storage descriptors
+directly. Verification passed `git diff --check`, a source scan proving the
+removed sync/meta helpers are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.108`
+batch, `1.128` crud, `0.946` iterate, `1.001` get, and `1.060` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
