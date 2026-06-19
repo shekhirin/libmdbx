@@ -14869,6 +14869,27 @@ the six focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.129` batch, `1.163` crud, `0.827`
 iterate, `1.058` get, and `1.069` delete.
 
+A later incore-probe cleanup removed `dxb_incore_submit_io_t`,
+`dxb_storage_make_incore_submit_io()`, and
+`dxb_storage_incore_submit_io_validate()` from `mdbx.c`. The open-time
+data-file residency probe now calls `dxb_storage_submit_check_incore()`
+directly after `dxb_setup()`. The submitter validates the storage pointer
+itself, then preserves the existing `osal_check_fs_incore()` result mapping
+for in-core, available-but-not-in-core, unavailable, and submitted-error
+cases. This keeps the remaining mincore-style compatibility probe at a direct
+storage boundary instead of carrying a one-bit request wrapper. Verification
+passed `git diff --check`, a source scan proving the removed incore submit
+helpers and old two-argument incore submit call are absent from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including API checks and tool
+roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.117` batch, `1.152` crud, `1.017`
+iterate, `0.767` get, and `1.084` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

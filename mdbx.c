@@ -135,10 +135,6 @@ typedef struct dxb_resize_size_submit_io {
   dxb_size_state_submit_io_t target_size_state;
 } dxb_resize_size_submit_io_t;
 
-typedef struct dxb_incore_submit_io {
-  bool probe;
-} dxb_incore_submit_io_t;
-
 typedef struct dxb_readonly_submit_io {
   const pathchar_t *pathname;
   int source_err;
@@ -2015,19 +2011,6 @@ static inline int dxb_storage_resize_size_submit_io_validate(const dxb_resize_si
                 checked.target_size_state.filesize == io->target_size_state.filesize)
              ? MDBX_SUCCESS
              : MDBX_EINVAL;
-}
-
-static inline int dxb_storage_make_incore_submit_io(dxb_incore_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-  io->probe = true;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_incore_submit_io_validate(const dxb_incore_submit_io_t *io) {
-  if (unlikely(!io || !io->probe))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
 }
 
 static inline int dxb_storage_make_readonly_submit_io(const pathchar_t *pathname, int source_err,
@@ -25582,12 +25565,10 @@ static inline dxb_incore_result_t dxb_incore_completed(bool incore) {
   return dxb_incore_result(MDBX_SUCCESS, incore, true, true);
 }
 
-static inline dxb_incore_result_t dxb_storage_submit_check_incore(const dxb_storage_t *storage,
-                                                                  const dxb_incore_submit_io_t *io) {
-  int rc = dxb_storage_incore_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_incore_result(rc, false, false, false);
-  rc = osal_check_fs_incore(dxb_storage_data_fd(storage));
+static inline dxb_incore_result_t dxb_storage_submit_check_incore(const dxb_storage_t *storage) {
+  if (unlikely(!storage))
+    return dxb_incore_result(MDBX_EINVAL, false, false, false);
+  int rc = osal_check_fs_incore(dxb_storage_data_fd(storage));
   if (rc == MDBX_RESULT_TRUE)
     return dxb_incore_completed(true);
   if (likely(rc == MDBX_SUCCESS))
@@ -28525,14 +28506,7 @@ __cold int env_open(MDBX_env *env, mdbx_mode_t mode) {
   if (MDBX_IS_ERROR(dxb_rc))
     return dxb_rc;
 
-  dxb_incore_submit_io_t incore_submit;
-  rc = dxb_storage_make_incore_submit_io(&incore_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_incore_submit_io_validate(&incore_submit);
-  dxb_incore_result_t incore_result =
-      likely(rc == MDBX_SUCCESS) ? dxb_storage_submit_check_incore(storage, &incore_submit)
-                                 : dxb_incore_result(rc, false, false, false);
+  dxb_incore_result_t incore_result = dxb_storage_submit_check_incore(storage);
   rc = incore_result.err;
   env->incore = incore_result.incore;
   if (env->incore) {
