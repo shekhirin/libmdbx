@@ -13399,6 +13399,30 @@ and the six focused ASAN `migration_smoke` entries with
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.092`
 batch, `1.148` crud, `1.208` iterate, `0.959` get, and `1.078` delete.
 
+A later transient maintenance I/O submit-boundary cleanup removed the one-call
+`meta_shadow_refresh_read()`, `warmup_force_read_chunk()`,
+`copy_asis_read_portable_chunk()`, `coherency_submit_root_probe_read()`,
+`coherency_submit_root_read()`, `coherency_submit_filesize_fetch()`,
+`defrag_submit_page_read()`, `defrag_submit_page_write()`, and
+`defrag_submit_extent_copy()` helpers from `mdbx.c`. Meta shadow refresh,
+forced warmup reads, portable environment-copy chunks, coherency root/file-size
+probes, and defrag read/write/copy paths now validate their prepared
+descriptors at the local caller, then submit directly through storage. The
+descriptor builders and validators remain, preserving the explicit request
+shape a later async backend can queue while removing another helper-local
+submission layer. Verification passed `git diff --check`, source scans proving
+the removed maintenance submit helpers are absent from `mdbx.c` and the
+public/internal headers, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN `migration_smoke`
+entries with `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment.
+The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
+of `1.095` batch, `1.131` crud, `1.102` iterate, `0.930` get, and `1.068`
+delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
