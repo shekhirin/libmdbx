@@ -3612,3 +3612,40 @@ Additional async cursor-get-loop API checkpoint:
   territory in the reduced benchmark without changing the existing blocking API.
   Direct one-operation-per-cursor-move async cursor get remains useful for API
   completeness but is the wrong performance shape for dense iteration.
+
+Additional threaded cursor-get-loop benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` with a threaded
+  `mdbx_async_cursor_get_loop()` benchmark. Each application pthread owns its
+  own async executor, read transaction, and cursor, then submits cursor get-loop
+  chunks until its assigned cursor-pair target is consumed.
+- this does not add public API surface; it measures the cursor get-loop helper
+  under the same multi-application-thread shape already used for point
+  `mdbx_async_get_loop()`.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking cursor get
+  83.269 Mops/s, parallel cursor get 89.510 Mops/s, async cursor get
+  1.379 Mops/s, async cursor get loop 73.025 Mops/s, async threaded cursor get
+  loop 109.420 Mops/s, async cursor batch 82.722 Mops/s, and async cursor loop
+  102.598 Mops/s. Ratios were async-cursor-get/par 0.015,
+  async-cursor-get-loop/par 0.816, async-thread-cget-loop/par 1.222,
+  async-thread-cget-loop/ser 1.314, async-thread-cget-loop/get 79.329, and
+  async-thread-cget-loop/loop 1.498.
+- direct comparison with the previous cursor-get-loop checkpoint: the
+  single-submitter cursor get-loop moved 62.610 -> 73.025 Mops/s, while the new
+  threaded cursor get-loop measured 109.420 Mops/s. The direct
+  one-operation-per-cursor-move path remained far slower at 1.379 Mops/s.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=188 async-covered=132 async-only=56 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: cursor GET-loop now has benchmark evidence in both submission
+  shapes. The threaded shape is the one that best matches the goal of parallel
+  read-heavy async callers and, in this reduced run, beats blocking
+  pthread-parallel cursor get by 22.2%.
