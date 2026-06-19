@@ -1345,3 +1345,50 @@ Additional batch wait-release checkpoint:
 - the combined wait-release API reduces public-call and lock surface for
   parallel GET windows, but the local benchmark sample remained noisy and did
   not prove a stable per-operation GET throughput improvement
+
+Additional threaded GET benchmark checkpoint:
+
+- added `async threaded get` and `async threaded batch get` paths to
+  `mdbx_async_api_bench`; these use multiple application pthreads, each with
+  its own async executor and read transaction, so submission itself now happens
+  concurrently instead of from one benchmark thread
+- the per-operation threaded path submits windows of `mdbx_async_get()` calls
+  and uses `mdbx_async_wait_release_all()` for each window; the batch threaded
+  path submits one `mdbx_async_get_batch()` operation per window
+- this benchmark slice is measurement coverage for the updated goal of parallel
+  GET operations from multiple threads; it does not add new public API surface
+- compared with the pre-async ioarena baseline at the top of this log, the
+  explicit `io_uring` backend still remains below the earlier mapped/no-map
+  lazy-mode numbers for ioarena GET throughput, so the async API work has not
+  yet recovered end-to-end storage-backend performance there
+- within the public async benchmark, the original first async read sample was
+  async/blocking-parallel 1.139 by submitting many GETs through the async API
+  from one benchmark thread; current threaded samples show that concurrent
+  submission does not automatically improve the per-operation GET path
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- three clean default `mdbx_async_api_bench` samples passed; GET-path average
+  ratios were async/blocking-parallel 0.954, async-thread/blocking-parallel
+  0.900, async-thread-batch/blocking-parallel 1.036,
+  async-batch/blocking-parallel 0.993, and
+  async-batch-callback/blocking-parallel 1.072
+- three forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` samples passed;
+  GET-path average ratios were async/blocking-parallel 0.992,
+  async-thread/blocking-parallel 0.926,
+  async-thread-batch/blocking-parallel 0.952,
+  async-batch/blocking-parallel 0.999, and
+  async-batch-callback/blocking-parallel 0.961
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed; small ASAN ratios were async/blocking-parallel 1.142,
+  async-thread/blocking-parallel 0.891,
+  async-thread-batch/blocking-parallel 1.234,
+  async-batch/blocking-parallel 1.232, and
+  async-batch-callback/blocking-parallel 1.028
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- conclusion: the threaded single-op async GET path is slower on average; the
+  threaded batch GET path can reach parity or better in default samples but is
+  not stable in forced no-map/tiny-cache samples, so this is benchmark coverage
+  and diagnosis rather than a final throughput success
