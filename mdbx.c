@@ -381,18 +381,6 @@ typedef struct dxb_cursor_branch_child_push_submit_io {
   bool child_ki_last;
 } dxb_cursor_branch_child_push_submit_io_t;
 
-typedef struct dxb_bigdata_read_submit_io {
-  MDBX_cursor *cursor;
-  MDBX_val *data;
-  const node_t *node;
-  const page_t *source;
-  pgno_t large_pgno;
-  txnid_t front;
-  dxb_cursor_page_get_submit_io_t get;
-  size_t bytes;
-  unsigned npages;
-} dxb_bigdata_read_submit_io_t;
-
 typedef struct dxb_node_read_submit_io {
   MDBX_cursor *cursor;
   MDBX_val *data;
@@ -40099,9 +40087,8 @@ __hot void node_del(MDBX_cursor *mc, size_t ksize) {
   }
 }
 
-static inline int node_make_bigdata_read_submit_io(MDBX_cursor *mc, const node_t *node, MDBX_val *data,
-                                                   const page_t *mp, dxb_bigdata_read_submit_io_t *io) {
-  if (unlikely(!mc || !mc->txn || !node || !data || !mp || !io))
+__noinline int node_read_bigdata(MDBX_cursor *mc, const node_t *node, MDBX_val *data, const page_t *mp) {
+  if (unlikely(!mc || !mc->txn || !node || !data || !mp))
     return MDBX_EINVAL;
 
   cASSERT0(mc, node_flags(node) == N_BIG && data->iov_len == node_ds(node));
@@ -40111,64 +40098,21 @@ static inline int node_make_bigdata_read_submit_io(MDBX_cursor *mc, const node_t
   const pgno_t large_pgno = node_largedata_pgno(node);
   const txnid_t front = mp->txnid;
   const size_t bytes = data->iov_len;
+  const unsigned npages = largechunk_npages(mc->txn->env, bytes);
   dxb_cursor_page_get_submit_io_t get;
   int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_BRANCH | P_LEAF | P_DUPFIX, large_pgno, front, &get);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  io->cursor = mc;
-  io->data = data;
-  io->node = node;
-  io->source = mp;
-  io->large_pgno = get.get.request.pgno;
-  io->front = get.get.front;
-  io->get = get;
-  io->bytes = bytes;
-  io->npages = largechunk_npages(mc->txn->env, bytes);
-  return MDBX_SUCCESS;
-}
 
-static inline int node_bigdata_read_submit_io_validate(const dxb_bigdata_read_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->data || !io->node || !io->source))
-    return MDBX_EINVAL;
-
-  dxb_bigdata_read_submit_io_t checked;
-  int err = node_make_bigdata_read_submit_io(io->cursor, io->node, io->data, io->source, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.data != io->data ||
-               checked.node != io->node || checked.source != io->source ||
-               checked.large_pgno != io->large_pgno || checked.front != io->front ||
-               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
-               checked.get.get.request.pgno != io->get.get.request.pgno ||
-               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
-               checked.get.get.request.npages != io->get.get.request.npages ||
-               checked.get.get.request.offset != io->get.get.request.offset ||
-               checked.get.get.request.bytes != io->get.get.request.bytes ||
-               checked.get.get.front != io->get.get.front ||
-               checked.get.get.track_private != io->get.get.track_private ||
-               checked.bytes != io->bytes || checked.npages != io->npages))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-__noinline int node_read_bigdata(MDBX_cursor *mc, const node_t *node, MDBX_val *data, const page_t *mp) {
-  dxb_bigdata_read_submit_io_t submit;
-  int err = node_make_bigdata_read_submit_io(mc, node, data, mp, &submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  err = node_bigdata_read_submit_io_validate(&submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  pgr_t lp = page_submit_cursor_get(&submit.get);
+  pgr_t lp = page_submit_cursor_get(&get);
   if (unlikely((lp.err != MDBX_SUCCESS))) {
-    DEBUG("read large/overflow page %" PRIaPGNO " failed", submit.large_pgno);
+    DEBUG("read large/overflow page %" PRIaPGNO " failed", large_pgno);
     return lp.err;
   }
 
   cASSERT0(mc, page_type(lp.page) == P_LARGE);
-  if (!MDBX_DISABLE_VALIDATION && unlikely(lp.page->pages < submit.npages)) {
-    err = bad_page(lp.page, "too less n-pages %u for bigdata-node (%zu bytes)", lp.page->pages, submit.bytes);
+  if (!MDBX_DISABLE_VALIDATION && unlikely(lp.page->pages < npages)) {
+    err = bad_page(lp.page, "too less n-pages %u for bigdata-node (%zu bytes)", lp.page->pages, bytes);
     pgr_release(mc, &lp);
     return err;
   }
@@ -43775,91 +43719,22 @@ MDBX_CONST_FUNCTION static clc_t value_clc(const MDBX_cursor *mc) {
   }
 }
 
-typedef struct dxb_page_check_bigdata_page_get_submit_io {
-  const MDBX_cursor *cursor;
-  const page_t *source;
-  const node_t *node;
-  size_t node_index;
-  pgno_t large_pgno;
-  txnid_t front;
-  dxb_cursor_page_get_submit_io_t get;
-  size_t bytes;
-  uint8_t checking;
-} dxb_page_check_bigdata_page_get_submit_io_t;
-
-static inline int page_check_make_bigdata_page_get_submit_io(const MDBX_cursor *mc, const page_t *source,
-                                                             size_t node_index,
-                                                             dxb_page_check_bigdata_page_get_submit_io_t *io) {
-  if (unlikely(!mc || !mc->txn || !source || !io || (mc->checking & z_retiring) != 0))
-    return MDBX_EINVAL;
+static inline pgr_t page_check_bigdata_page_get(const MDBX_cursor *mc, const page_t *source, size_t node_index) {
+  if (unlikely(!mc || !mc->txn || !source || (mc->checking & z_retiring) != 0))
+    return pgr_error(MDBX_EINVAL);
   if (unlikely(!is_leaf(source) || node_index >= page_numkeys(source)))
-    return MDBX_EINVAL;
+    return pgr_error(MDBX_EINVAL);
 
   const node_t *const node = page_node(source, node_index);
   if (unlikely(node_flags(node) != N_BIG))
-    return MDBX_EINVAL;
-  const pgno_t large_pgno = node_largedata_pgno(node);
-  const txnid_t front = source->txnid;
+    return pgr_error(MDBX_EINVAL);
+
   dxb_cursor_page_get_submit_io_t get;
-  int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_BRANCH | P_LEAF | P_DUPFIX, large_pgno, front, &get);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  io->cursor = mc;
-  io->source = source;
-  io->node = node;
-  io->node_index = node_index;
-  io->large_pgno = get.get.request.pgno;
-  io->front = get.get.front;
-  io->get = get;
-  io->bytes = node_ds(node);
-  io->checking = mc->checking;
-  return MDBX_SUCCESS;
-}
-
-static inline int
-page_check_bigdata_page_get_submit_io_validate(const dxb_page_check_bigdata_page_get_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->cursor->txn || !io->source || !io->node))
-    return MDBX_EINVAL;
-  if (unlikely(io->cursor->checking != io->checking || (io->checking & z_retiring) != 0))
-    return MDBX_EINVAL;
-  if (unlikely(!is_leaf(io->source) || io->node_index >= page_numkeys(io->source)))
-    return MDBX_EINVAL;
-
-  const node_t *const node = page_node(io->source, io->node_index);
-  if (unlikely(node != io->node || node_flags(node) != N_BIG || node_largedata_pgno(node) != io->large_pgno ||
-               io->source->txnid != io->front || node_ds(node) != io->bytes))
-    return MDBX_EINVAL;
-
-  dxb_page_check_bigdata_page_get_submit_io_t checked;
-  int err = page_check_make_bigdata_page_get_submit_io(io->cursor, io->source, io->node_index, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.source != io->source || checked.node != io->node ||
-               checked.node_index != io->node_index || checked.large_pgno != io->large_pgno ||
-               checked.front != io->front ||
-               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
-               checked.get.get.request.pgno != io->get.get.request.pgno ||
-               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
-               checked.get.get.request.npages != io->get.get.request.npages ||
-               checked.get.get.request.offset != io->get.get.request.offset ||
-               checked.get.get.request.bytes != io->get.get.request.bytes ||
-               checked.get.get.front != io->get.get.front ||
-               checked.get.get.track_private != io->get.get.track_private ||
-               checked.bytes != io->bytes || checked.checking != io->checking))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline pgr_t page_check_bigdata_page_get(const MDBX_cursor *mc, const page_t *source, size_t node_index) {
-  dxb_page_check_bigdata_page_get_submit_io_t submit;
-  int err = page_check_make_bigdata_page_get_submit_io(mc, source, node_index, &submit);
+  int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_BRANCH | P_LEAF | P_DUPFIX,
+                                           node_largedata_pgno(node), source->txnid, &get);
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  err = page_check_bigdata_page_get_submit_io_validate(&submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-  return page_submit_cursor_get(&submit.get);
+  return page_submit_cursor_get(&get);
 }
 
 __cold int page_check(const MDBX_cursor *const mc, const page_t *const mp) {

@@ -13865,6 +13865,28 @@ the ASAN build (`cmake --build @cmake-asan-build`), and the six focused ASAN
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.097`
 batch, `1.149` crud, `1.151` iterate, `1.057` get, and `1.083` delete.
 
+A later overflow bigdata page-get descriptor cleanup removed
+`dxb_bigdata_read_submit_io_t`, `node_make_bigdata_read_submit_io()`,
+`node_bigdata_read_submit_io_validate()`,
+`dxb_page_check_bigdata_page_get_submit_io_t`,
+`page_check_make_bigdata_page_get_submit_io()`, and
+`page_check_bigdata_page_get_submit_io_validate()` from `mdbx.c`.
+`node_read_bigdata()` and `page_check_bigdata_page_get()` now validate their
+local node/page preconditions, build the existing checked cursor page-get
+request directly with `page_make_cursor_get_submit_io()`, and submit it through
+`page_submit_cursor_get()`. This keeps overflow value reads and validation on
+the async-facing page-get boundary without descriptor wrappers for immediate
+local handoff. Verification passed `git diff --check`, a source scan proving
+the removed overflow bigdata descriptor helpers are absent from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including API checks and tool roundtrips,
+the ASAN build (`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.143`
+batch, `1.161` crud, `0.800` iterate, `1.098` get, and `1.085` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
