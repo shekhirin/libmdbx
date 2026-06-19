@@ -75,6 +75,14 @@ struct get_loop_probe {
   size_t results;
 };
 
+struct cache_loop_probe {
+  uint64_t key;
+  uint64_t offset;
+  size_t keys;
+  size_t results;
+  size_t hits;
+};
+
 struct get_ex_loop_probe {
   uint64_t key;
   size_t keys;
@@ -417,6 +425,36 @@ static int get_loop_result_func(void *context, size_t index, const MDBX_val *key
   memcpy(&actual_value, data->iov_base, sizeof(actual_value));
   if (actual_value != expected_value((uint64_t)index))
     return MDBX_PROBLEM;
+  probe->results += 1;
+  return MDBX_SUCCESS;
+}
+
+static int cache_loop_key_func(void *context, size_t index, MDBX_val *key) {
+  struct cache_loop_probe *const probe = (struct cache_loop_probe *)context;
+  if (!probe || !key || index >= ITEM_COUNT)
+    return MDBX_PROBLEM;
+  probe->key = probe->offset + (uint64_t)index;
+  *key = val(&probe->key, sizeof(probe->key));
+  probe->keys += 1;
+  return MDBX_SUCCESS;
+}
+
+static int cache_loop_result_func(void *context, size_t index, const MDBX_val *key, const MDBX_val *data,
+                                  MDBX_cache_result_t result) {
+  struct cache_loop_probe *const probe = (struct cache_loop_probe *)context;
+  if (!probe || !key || !data || result.errcode != MDBX_SUCCESS || index >= ITEM_COUNT)
+    return MDBX_PROBLEM;
+  if (key->iov_len != sizeof(uint64_t) || data->iov_len != sizeof(uint64_t))
+    return MDBX_PROBLEM;
+  uint64_t actual_key = UINT64_MAX;
+  uint64_t actual_value = 0;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  memcpy(&actual_value, data->iov_base, sizeof(actual_value));
+  const uint64_t expected_key = probe->offset + (uint64_t)index;
+  if (actual_key != expected_key || actual_value != expected_value(expected_key))
+    return MDBX_PROBLEM;
+  if (result.status == MDBX_CACHE_HIT)
+    probe->hits += 1;
   probe->results += 1;
   return MDBX_SUCCESS;
 }
@@ -1934,6 +1972,30 @@ int main(void) {
             "unexpected async single-thread cache get many result");
     CHECK(expect_value(&cache_many_data[i], keys[i + 2], __FILE__, __LINE__));
   }
+
+  for (unsigned i = 0; i < 4; ++i)
+    mdbx_cache_init(&cache_many_entries[i]);
+  struct cache_loop_probe cache_loop_probe = {0, 2, 0, 0, 0};
+  size_t cache_loop_completed = 0;
+  CHECK(mdbx_async_cache_get_loop(async, txn, dbi, 4, cache_loop_key_func, cache_many_entries,
+                                  cache_loop_result_func, &cache_loop_probe, &cache_loop_completed, &op));
+  CHECK_OP(op);
+  REQUIRE(cache_loop_completed == 4, "unexpected async cache loop completion count");
+  REQUIRE(cache_loop_probe.keys == 4 && cache_loop_probe.results == 4,
+          "async cache loop did not process all items");
+
+  cache_loop_probe.key = 0;
+  cache_loop_probe.keys = 0;
+  cache_loop_probe.results = 0;
+  cache_loop_probe.hits = 0;
+  cache_loop_completed = 0;
+  CHECK(mdbx_async_cache_get_SingleThreaded_loop(async, txn, dbi, 4, cache_loop_key_func, cache_many_entries,
+                                                 cache_loop_result_func, &cache_loop_probe,
+                                                 &cache_loop_completed, &op));
+  CHECK_OP(op);
+  REQUIRE(cache_loop_completed == 4, "unexpected async single-thread cache loop completion count");
+  REQUIRE(cache_loop_probe.keys == 4 && cache_loop_probe.results == 4 && cache_loop_probe.hits == 4,
+          "async single-thread cache loop did not hit all items");
 
   CHECK(mdbx_async_txn_copy2pathname(async, txn, copy_txn_path, MDBX_CP_COMPACT | MDBX_CP_DONT_FLUSH, &op));
   CHECK_OP(op);

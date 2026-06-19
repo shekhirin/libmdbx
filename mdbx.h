@@ -6980,6 +6980,36 @@ LIBMDBX_API int mdbx_async_cache_get_many(MDBX_async *async, const MDBX_txn *txn
                                           MDBX_cache_result_t results[], size_t count,
                                           MDBX_async_op *ops[]);
 
+/** \brief Callback that consumes one cache-get loop result.
+ * \ingroup c_async
+ * \details The callback runs on the executor worker thread after one
+ *          \ref mdbx_cache_get() or \ref mdbx_cache_get_SingleThreaded() call.
+ *          Returned values follow normal cache-get lifetime rules. Returning a
+ *          non-success result stops the loop and becomes the async operation
+ *          result. */
+typedef int (*MDBX_cache_get_loop_result_func)(void *context, size_t index, const MDBX_val *key,
+                                               const MDBX_val *data,
+                                               MDBX_cache_result_t result) MDBX_CXX17_NOEXCEPT;
+
+/** \brief Asynchronously run a worker-side loop of cache-get operations.
+ * \ingroup c_async
+ * \details This submits one async operation that invokes `key_func` for each
+ *          index, calls \ref mdbx_cache_get() with `entries[index]`, and then
+ *          invokes `result_func` when it is non-NULL. If no result callback is
+ *          supplied, the first non-success cache `errcode` stops the loop and
+ *          becomes the async operation result. `entries` must contain at least
+ *          `count` initialized cache entries and remain valid until operation
+ *          completion.
+ * \see mdbx_cache_get()
+ * \see mdbx_async_cache_get_many()
+ * \see MDBX_get_loop_key_func
+ * \see MDBX_cache_get_loop_result_func */
+LIBMDBX_API int mdbx_async_cache_get_loop(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                          size_t count, MDBX_get_loop_key_func key_func,
+                                          volatile MDBX_cache_entry_t entries[],
+                                          MDBX_cache_get_loop_result_func result_func,
+                                          void *context, size_t *completed, MDBX_async_op **op);
+
 /** \brief Gets items from a table using cache within single-thread cases only.
  * \ingroup c_crud
  * \details The essence of this "caching" is using a cached information to check as quickly as possible whether the data
@@ -7035,6 +7065,27 @@ LIBMDBX_API int mdbx_async_cache_get_SingleThreaded_many(MDBX_async *async, cons
                                                          MDBX_val data[], MDBX_cache_entry_t entries[],
                                                          MDBX_cache_result_t results[], size_t count,
                                                          MDBX_async_op *ops[]);
+
+/** \brief Asynchronously run a worker-side loop of single-threaded cache-get operations.
+ * \ingroup c_async
+ * \details This submits one async operation that invokes `key_func` for each
+ *          index, calls \ref mdbx_cache_get_SingleThreaded() with
+ *          `entries[index]`, and then invokes `result_func` when it is
+ *          non-NULL. If no result callback is supplied, the first non-success
+ *          cache `errcode` stops the loop and becomes the async operation
+ *          result. Each cache entry must be used only by the executor worker
+ *          while the operation is pending.
+ * \see mdbx_cache_get_SingleThreaded()
+ * \see mdbx_async_cache_get_SingleThreaded_many()
+ * \see MDBX_get_loop_key_func
+ * \see MDBX_cache_get_loop_result_func */
+LIBMDBX_API int mdbx_async_cache_get_SingleThreaded_loop(MDBX_async *async, const MDBX_txn *txn,
+                                                         MDBX_dbi dbi, size_t count,
+                                                         MDBX_get_loop_key_func key_func,
+                                                         MDBX_cache_entry_t entries[],
+                                                         MDBX_cache_get_loop_result_func result_func,
+                                                         void *context, size_t *completed,
+                                                         MDBX_async_op **op);
 
 /** \brief Store items into a table.
  * \ingroup c_crud
