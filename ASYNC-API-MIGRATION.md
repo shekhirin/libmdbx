@@ -3896,3 +3896,55 @@ Additional positioned cursor batch-loop checkpoint:
   API that uses the faster cursor batch primitive. This improves the positioned
   count-limited read story and gives the benchmark another parallel-heavy async
   path above blocking pthread scan_from.
+
+Additional positioned lower-bound result handling checkpoint:
+
+- fixed the worker-side positioned cursor helpers so an initial
+  `MDBX_SET_LOWERBOUND` positioning result of `MDBX_RESULT_TRUE` is accepted as
+  a successful greater-key position for `mdbx_async_cursor_get_loop_from()` and
+  `mdbx_async_cursor_get_batches_from()`.
+- smoke coverage now submits non-exact lower-bound keys between existing
+  integer keys for both positioned helpers and verifies that the operation
+  consumes data, updates the output key/value descriptors, and returns a key
+  greater than the submitted seed.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking parallel get
+  961.233 Kops/s, async parallel get 1.093 Mops/s, async get loop
+  1.111 Mops/s, async threaded get loop 1.103 Mops/s, parallel cursor
+  scan_from 81.626 Mops/s, async cursor scan_from 91.770 Mops/s, async
+  threaded cursor scan_from 128.774 Mops/s, async cursor get loop_from
+  55.102 Mops/s, async threaded cursor get loop_from 129.621 Mops/s, async
+  cursor loop_from 101.288 Mops/s, and async threaded cursor loop_from
+  136.849 Mops/s.
+- current ratios were async/blocking-parallel 1.137, async-loop/blocking-parallel
+  1.156, async-thread-loop/blocking-parallel 1.147,
+  async-cget-loop-from/par 0.675, async-thread-cget-from/par 1.588,
+  async-cursor-loop-from/par 1.241, async-thread-cur-from/par 1.677,
+  async-thread-cur-from/loop 1.351, and async-thread-cur-from/scan 1.063.
+- comparison with the previous positioned cursor batch-loop checkpoint: the
+  current run has a stronger blocking parallel cursor scan_from baseline
+  (67.688 -> 81.626 Mops/s), while async cursor loop_from is effectively stable
+  (99.517 -> 101.288 Mops/s) and async threaded cursor loop_from is also stable
+  within run noise (138.483 -> 136.849 Mops/s). The batch-loop-from helper
+  therefore still remains above the current blocking pthread scan_from baseline
+  and slightly above the predicate async threaded scan_from path in this sample.
+- comparison with the pre-async ioarena baseline at the top of this log remains
+  unchanged in kind: those numbers measure storage-level lazy-mode phases, not
+  this public async API microbenchmark. The latest public API benchmark
+  continues to show several parallel-heavy async paths above the blocking
+  pthread baselines, but it does not by itself close or remeasure the separate
+  storage/ioarena performance gap.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=190 async-covered=132 async-only=58 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the lower-bound correctness fix does not change the benchmark
+  story materially. Count-limited positioned cursor reads remain useful when
+  batched on the worker, and the threaded batch-loop-from helper is still the
+  best positioned count-limited shape in the current public API benchmark.

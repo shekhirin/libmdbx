@@ -16102,7 +16102,7 @@ static int async_cursor_get_batches_execute(MDBX_async_op *op) {
       osal_free(pairs);
       return MDBX_RESULT_TRUE;
     }
-    if (unlikely(rc != MDBX_SUCCESS)) {
+    if (unlikely(rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE)) {
       osal_free(pairs);
       return rc;
     }
@@ -16157,7 +16157,8 @@ static int async_cursor_get_loop_execute(MDBX_async_op *op) {
     int rc = mdbx_cursor_get(op->args.cursor_get_loop.cursor, &key, &data, cursor_op);
     if (unlikely(rc == MDBX_NOTFOUND))
       return MDBX_RESULT_TRUE;
-    if (unlikely(rc != MDBX_SUCCESS))
+    if (unlikely(rc != MDBX_SUCCESS &&
+                 !(rc == MDBX_RESULT_TRUE && i == 0 && op->args.cursor_get_loop.from_key)))
       return rc;
     if (op->args.cursor_get_loop.from_key)
       *op->args.cursor_get_loop.from_key = key;

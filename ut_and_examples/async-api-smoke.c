@@ -2168,6 +2168,31 @@ int main(void) {
           "unexpected cursor batch loop-from key");
   CHECK(expect_value(&batch_from_data, batch_from_actual_key, __FILE__, __LINE__));
 
+  uint64_t batch_lowerbound_seed = 18;
+  uint8_t batch_lowerbound_bytes[sizeof(batch_lowerbound_seed) + 1];
+  memcpy(batch_lowerbound_bytes, &batch_lowerbound_seed, sizeof(batch_lowerbound_seed));
+  batch_lowerbound_bytes[sizeof(batch_lowerbound_seed)] = 0;
+  MDBX_val batch_lowerbound_key = val(batch_lowerbound_bytes, sizeof(batch_lowerbound_bytes));
+  MDBX_val batch_lowerbound_data = val(NULL, 0);
+  struct batch_probe batch_lowerbound_probe = {0, 0};
+  size_t batch_lowerbound_pairs = 0;
+  CHECK(mdbx_async_cursor_get_batches_from(async, cursor, 1, 2, MDBX_SET_LOWERBOUND,
+                                           &batch_lowerbound_key, &batch_lowerbound_data,
+                                           batch_probe_func, &batch_lowerbound_probe,
+                                           &batch_lowerbound_pairs, &op));
+  CHECK_OP(op);
+  REQUIRE(batch_lowerbound_pairs >= 1, "async cursor batch lower-bound consumed too few pairs");
+  REQUIRE(batch_lowerbound_probe.pairs == batch_lowerbound_pairs,
+          "async cursor batch lower-bound probe mismatch");
+  REQUIRE(batch_lowerbound_key.iov_len == sizeof(uint64_t),
+          "unexpected cursor batch lower-bound key size");
+  uint64_t batch_lowerbound_actual_key = 0;
+  memcpy(&batch_lowerbound_actual_key, batch_lowerbound_key.iov_base, sizeof(batch_lowerbound_actual_key));
+  REQUIRE(batch_lowerbound_actual_key > batch_lowerbound_seed &&
+              batch_lowerbound_actual_key < ITEM_COUNT,
+          "unexpected cursor batch lower-bound key");
+  CHECK(expect_value(&batch_lowerbound_data, batch_lowerbound_actual_key, __FILE__, __LINE__));
+
   struct cursor_get_loop_probe cursor_get_loop_probe = {0};
   size_t cursor_get_loop_completed = 0;
   CHECK(mdbx_async_cursor_get_loop(async, cursor, ITEM_COUNT, MDBX_FIRST, MDBX_NEXT,
@@ -2194,6 +2219,30 @@ int main(void) {
   memcpy(&cursor_loop_from_actual_key, cursor_loop_from_key.iov_base, sizeof(cursor_loop_from_actual_key));
   REQUIRE(cursor_loop_from_actual_key == cursor_loop_from_key_data + 3, "unexpected cursor get loop-from key");
   CHECK(expect_value(&cursor_loop_from_data, cursor_loop_from_actual_key, __FILE__, __LINE__));
+
+  uint64_t cursor_lowerbound_seed = 18;
+  uint8_t cursor_lowerbound_bytes[sizeof(cursor_lowerbound_seed) + 1];
+  memcpy(cursor_lowerbound_bytes, &cursor_lowerbound_seed, sizeof(cursor_lowerbound_seed));
+  cursor_lowerbound_bytes[sizeof(cursor_lowerbound_seed)] = 0;
+  MDBX_val cursor_lowerbound_key = val(cursor_lowerbound_bytes, sizeof(cursor_lowerbound_bytes));
+  MDBX_val cursor_lowerbound_data = val(NULL, 0);
+  struct cursor_get_loop_probe cursor_lowerbound_probe = {0};
+  size_t cursor_lowerbound_completed = 0;
+  CHECK(mdbx_async_cursor_get_loop_from(async, cursor, 1, MDBX_SET_LOWERBOUND,
+                                        &cursor_lowerbound_key, &cursor_lowerbound_data, MDBX_NEXT,
+                                        cursor_get_loop_probe_func, &cursor_lowerbound_probe,
+                                        &cursor_lowerbound_completed, &op));
+  CHECK_OP(op);
+  REQUIRE(cursor_lowerbound_completed == 1, "unexpected async cursor lower-bound count");
+  REQUIRE(cursor_lowerbound_probe.calls == 1, "async cursor lower-bound probe mismatch");
+  REQUIRE(cursor_lowerbound_key.iov_len == sizeof(uint64_t),
+          "unexpected cursor lower-bound key size");
+  uint64_t cursor_lowerbound_actual_key = 0;
+  memcpy(&cursor_lowerbound_actual_key, cursor_lowerbound_key.iov_base, sizeof(cursor_lowerbound_actual_key));
+  REQUIRE(cursor_lowerbound_actual_key > cursor_lowerbound_seed &&
+              cursor_lowerbound_actual_key < ITEM_COUNT,
+          "unexpected cursor lower-bound key");
+  CHECK(expect_value(&cursor_lowerbound_data, cursor_lowerbound_actual_key, __FILE__, __LINE__));
 
   struct scan_probe scan_probe = {12, 0};
   int scan_result = MDBX_SUCCESS;

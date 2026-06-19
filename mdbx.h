@@ -5791,6 +5791,8 @@ LIBMDBX_API int mdbx_async_cursor_get_loop(MDBX_async *async, MDBX_cursor *curso
  *          successful fetch, `from_key` and, when supplied, `from_value` are
  *          updated to the fetched key/value pair, so after successful
  *          completion they describe the last consumed item.
+ *          \ref MDBX_RESULT_TRUE from the initial positioning call, such as a
+ *          greater lower-bound match, is treated as a successful first item.
  *
  *          If end-of-data is reached before `count` items, the operation
  *          result is \ref MDBX_RESULT_TRUE and `completed`, when non-NULL,
@@ -5849,6 +5851,8 @@ LIBMDBX_API int mdbx_async_cursor_get_batches(MDBX_async *async, MDBX_cursor *cu
  *          descriptor objects must remain valid until completion. As batches
  *          are consumed, `from_key` and, when supplied, `from_value` are
  *          updated to the last consumed key/value pair.
+ *          \ref MDBX_RESULT_TRUE from the initial positioning call, such as a
+ *          greater lower-bound match, is treated as a successful position.
  *
  *          `func`, when non-NULL, is called once per internal batch on the
  *          executor worker thread. Its `pairs` descriptors are reused by the
