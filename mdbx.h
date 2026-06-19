@@ -2128,6 +2128,16 @@ LIBMDBX_API const char *mdbx_strerror_r_ANSI2OEM(int errnum, char *buf, size_t b
  * \returns a non-zero error value on failure and 0 on success. */
 LIBMDBX_API int mdbx_env_create(MDBX_env **penv);
 
+/** \brief Asynchronously create an MDBX environment instance.
+ * \ingroup c_async
+ * \details The output pointer must remain valid until completion. This
+ *          operation must be submitted to an unbound executor and binds the
+ *          executor to the created environment on success. The returned
+ *          environment handle may then be configured with pre-open async
+ *          environment wrappers before \ref mdbx_async_env_open().
+ * \see mdbx_env_create() */
+LIBMDBX_API int mdbx_async_env_create(MDBX_async *async, MDBX_env **penv, MDBX_async_op **op);
+
 /** \brief MDBX environment extra runtime options.
  * \ingroup c_settings
  * \see mdbx_env_set_option() \see mdbx_env_get_option() */
@@ -2551,8 +2561,10 @@ LIBMDBX_API int mdbx_env_open(MDBX_env *env, const char *pathname, MDBX_env_flag
 /** \brief Asynchronously open an MDBX environment.
  * \ingroup c_async
  * \details The pathname is copied during submission. The environment handle
- *          must remain valid until completion. This operation must be submitted
- *          to an unbound executor and binds the executor to `env` on success.
+ *          must remain valid until completion. This operation may be submitted
+ *          to an unbound executor, or to an executor already bound to the same
+ *          environment by \ref mdbx_async_env_create(). It binds the executor
+ *          to `env` on success.
  * \see mdbx_env_open() */
 LIBMDBX_API int mdbx_async_env_open(MDBX_async *async, MDBX_env *env, const char *pathname, MDBX_env_flags_t flags,
                                     mdbx_mode_t mode, MDBX_async_op **op);
@@ -7958,7 +7970,9 @@ LIBMDBX_API int mdbx_env_open_for_recovery(MDBX_env *env, const char *pathname, 
  * \ingroup c_async
  * \details The pathname is copied during submission. The environment handle
  *          must remain valid until completion. This operation may be submitted
- *          to an unbound executor and binds the executor to `env` on success.
+ *          to an unbound executor, or to an executor already bound to the same
+ *          environment by \ref mdbx_async_env_create(). It binds the executor
+ *          to `env` on success.
  * \see mdbx_env_open_for_recovery() */
 LIBMDBX_API int mdbx_async_env_open_for_recovery(MDBX_async *async, MDBX_env *env, const char *pathname,
                                                  unsigned target_meta, bool writeable, MDBX_async_op **op);

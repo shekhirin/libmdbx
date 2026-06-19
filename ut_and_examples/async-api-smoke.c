@@ -318,7 +318,11 @@ static int exercise_async_preopen_recovery(const char *path, const char *file, i
     goto bailout;
   REQUIRE(snapinfo.mi_dxb_pagesize > 0 && snapinfo.mi_geo.current > 0, "async preopen snapinfo returned empty data");
 
-  CHECK(mdbx_env_create(&recovery_env));
+  CHECK(mdbx_async_env_create(preopen_async, &recovery_env, &recovery_op));
+  rc = wait_success("mdbx_async_env_create recovery", &recovery_op, file, line);
+  if (rc != MDBX_SUCCESS)
+    goto bailout;
+  REQUIRE(mdbx_async_env(preopen_async) == recovery_env, "async recovery env create did not bind the executor");
   CHECK(mdbx_async_env_open_for_recovery(preopen_async, recovery_env, path, 0, true, &recovery_op));
   rc = wait_success("mdbx_async_env_open_for_recovery", &recovery_op, file, line);
   if (rc != MDBX_SUCCESS)
@@ -423,8 +427,11 @@ int main(void) {
 
   CHECK(mdbx_async_create(NULL, MDBX_ASYNC_DEFAULTS, &async));
   REQUIRE(mdbx_async_env(async) == NULL, "new unbound async executor returned an environment");
-  CHECK(mdbx_env_create(&env));
-  CHECK(mdbx_env_set_maxdbs(env, 12));
+  CHECK(mdbx_async_env_create(async, &env, &op));
+  CHECK_OP(op);
+  REQUIRE(mdbx_async_env(async) == env, "async env create did not bind the executor");
+  CHECK(mdbx_async_env_set_option(async, MDBX_opt_max_db, 12, &op));
+  CHECK_OP(op);
   CHECK(mdbx_async_env_open(async, env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM, 0664, &op));
   CHECK_OP(op);
   REQUIRE(mdbx_async_env(async) == env, "async executor returned wrong environment");
