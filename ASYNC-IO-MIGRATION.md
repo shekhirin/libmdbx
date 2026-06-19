@@ -14369,6 +14369,40 @@ including API checks and tool roundtrips, the ASAN build (`cmake --build
 passed with forced/default ratios of `1.090` batch, `1.128` crud, `1.274`
 iterate, `0.941` get, and `1.074` delete.
 
+A later environment open/close submit cleanup removed
+`dxb_env_primary_open_submit_io_t`,
+`env_make_primary_open_submit_io()`,
+`env_primary_open_submit_io_validate()`, `dxb_env_dsync_open_submit_io_t`,
+`env_make_dsync_open_submit_io()`, `env_dsync_open_submit_io_validate()`,
+`dxb_env_data_park_submit_io_t`, `env_make_data_park_submit_io()`,
+`env_data_park_submit_io_validate()`, `dxb_env_mode_stat_submit_io_t`,
+`env_make_mode_stat_submit_io()`, `env_mode_stat_submit_io_validate()`,
+`dxb_env_incore_submit_io_t`, `env_make_incore_submit_io()`,
+`env_incore_submit_io_validate()`,
+`dxb_env_write_queue_create_submit_io_t`,
+`env_make_write_queue_create_submit_io()`,
+`env_write_queue_create_submit_io_validate()`,
+`dxb_env_write_queue_destroy_submit_io_t`,
+`env_make_write_queue_destroy_submit_io()`,
+`env_write_queue_destroy_submit_io_validate()`,
+`dxb_env_data_close_submit_io_t`, `env_make_data_close_submit_io()`, and
+`env_data_close_submit_io_validate()` from `mdbx.c`. `env_open()` now builds,
+validates, and submits the primary data-file open, data/dsync parking,
+close-time mode stat pickup, dsync data-file open, incore probe, and write
+queue creation descriptors directly. `env_close()` and `lck_destroy()` now use
+direct storage descriptors for write queue destruction and data-file close.
+Verification passed `git diff --check`, a source scan proving the removed
+environment open/close descriptor helpers are absent from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including API checks and tool
+roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`.
+The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
+of `1.129` batch, `1.146` crud, `1.285` iterate, `0.949` get, and `1.057`
+delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
