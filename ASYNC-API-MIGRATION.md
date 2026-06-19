@@ -1633,3 +1633,58 @@ Benchmark comparison checkpoint:
   pthread-parallel GET path when work is coalesced into worker-side loop
   operations, but the explicit-I/O storage backend has not recovered the
   pre-migration ioarena throughput baseline yet
+
+Additional async executor queue-drain checkpoint:
+
+- changed the async executor worker so it detaches the currently queued FIFO
+  segment under the condition-pair lock, then executes that local segment in
+  order instead of re-locking the shared queue to pop every operation
+- each completed operation is still marked under the condition-pair lock, so
+  `mdbx_async_poll()`, `mdbx_async_wait()`, and sequence-based
+  `mdbx_async_wait_all()` semantics remain unchanged
+- `async->active` remains true while the detached segment is running; new
+  submissions enqueue normally and are picked up on the next worker loop without
+  an unnecessary wakeup
+- this targets the per-operation async GET/window paths by removing one shared
+  queue pop per already-submitted operation; it does not change the storage
+  backend or make explicit I/O faster by itself
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench mdbx_async_api_audit`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench mdbx_async_api_audit`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed with GET-path ratios
+  async/blocking-parallel 1.293, async-thread/blocking-parallel 1.320,
+  async-thread-batch/blocking-parallel 1.428,
+  async-batch/blocking-parallel 1.393,
+  async-batch-callback/blocking-parallel 1.386,
+  async-loop/blocking-parallel 1.405, and
+  async-thread-loop/blocking-parallel 1.396
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- default `mdbx_async_api_bench` spot check passed with GET-path ratios
+  async/blocking-parallel 1.130, async-thread/blocking-parallel 1.068,
+  async-thread-batch/blocking-parallel 1.013,
+  async-batch/blocking-parallel 1.138,
+  async-batch-callback/blocking-parallel 1.109,
+  async-loop/blocking-parallel 1.132, and
+  async-thread-loop/blocking-parallel 1.149
+- default `MDBX_ASYNC_BENCH_OPS=1000000` sample passed with GET-path ratios
+  async/blocking-parallel 1.024, async-thread/blocking-parallel 0.884,
+  async-thread-batch/blocking-parallel 1.019,
+  async-batch/blocking-parallel 1.064,
+  async-batch-callback/blocking-parallel 1.061,
+  async-loop/blocking-parallel 1.068, and
+  async-thread-loop/blocking-parallel 1.065
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=1000000` sample remained mixed:
+  async/blocking-parallel 0.943, async-thread/blocking-parallel 0.914,
+  async-thread-batch/blocking-parallel 1.011,
+  async-batch/blocking-parallel 0.993,
+  async-batch-callback/blocking-parallel 0.986,
+  async-loop/blocking-parallel 1.065, and
+  async-thread-loop/blocking-parallel 0.979
+- conclusion: queue detaching reduces executor overhead for queued windows and
+  keeps the coarse GET paths above blocking-parallel parity in the default
+  benchmark samples, but the small per-operation threaded path and forced
+  no-map/tiny-cache samples are still noisy; the next performance work should
+  continue moving hot parallel read workloads toward coarse worker-side
+  operations or address the explicit-I/O storage backend gap directly

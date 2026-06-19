@@ -16621,23 +16621,36 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
     if (!async->head && async->stop)
       break;
 
-    MDBX_async_op *const op = async->head;
-    async->head = op->next;
-    if (!async->head)
-      async->tail = nullptr;
+    MDBX_async_op *op = async->head;
+    async->head = nullptr;
+    async->tail = nullptr;
     async->active = true;
-    op->next = nullptr;
 
     osal_condpair_unlock(&async->condpair);
-    const int result = async_op_execute(op);
-    osal_condpair_lock(&async->condpair);
 
-    op->result = result;
-    op->done = true;
-    async->completed_seq = op->seq;
-    async->active = false;
-    if (async->waiters)
-      osal_condpair_signal(&async->condpair, false);
+    for (;;) {
+      MDBX_async_op *const next = op->next;
+      op->next = nullptr;
+      const int result = async_op_execute(op);
+
+      rc = osal_condpair_lock(&async->condpair);
+      if (unlikely(rc != MDBX_SUCCESS))
+        return (THREAD_RESULT)0;
+      op->result = result;
+      op->done = true;
+      async->completed_seq = op->seq;
+      if (!next) {
+        async->active = false;
+        if (async->waiters)
+          osal_condpair_signal(&async->condpair, false);
+        break;
+      }
+      if (async->waiters)
+        osal_condpair_signal(&async->condpair, false);
+      osal_condpair_unlock(&async->condpair);
+
+      op = next;
+    }
   }
 
   osal_condpair_unlock(&async->condpair);
