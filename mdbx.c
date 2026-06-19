@@ -30316,68 +30316,21 @@ static inline int dxb_storage_make_dirty_write_queue_io(const dxb_storage_t *sto
   return MDBX_SUCCESS;
 }
 
-static inline int dxb_storage_dirty_write_queue_io_validate(const dxb_storage_t *storage,
-                                                            const dxb_dirty_write_queue_io_t *io) {
-  if (unlikely(!io))
+static inline int dxb_storage_make_validated_dirty_write_queue_submit_io(
+    const dxb_dirty_write_queue_io_t *queue, dxb_dirty_write_queue_submit_io_t *io) {
+  if (unlikely(!io || !queue))
     return MDBX_EINVAL;
-
-  dxb_dirty_write_queue_io_t checked;
-  int rc = dxb_storage_make_dirty_write_queue_io(storage, io->channel, io->items, io->data.pages.npages, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.channel != io->channel || checked.items != io->items ||
-               checked.reserve_bytes != io->reserve_bytes ||
-               checked.data.pages.pgno != io->data.pages.pgno ||
-               checked.data.pages.end_pgno != io->data.pages.end_pgno ||
-               checked.data.pages.npages != io->data.pages.npages ||
-               checked.data.pages.offset != io->data.pages.offset ||
-               checked.data.pages.bytes != io->data.pages.bytes ||
-               checked.data.bytes.offset != io->data.bytes.offset ||
-               checked.data.bytes.bytes != io->data.bytes.bytes))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_make_dirty_write_queue_submit_io(
-    const dxb_storage_t *storage, const dxb_dirty_write_queue_io_t *queue,
-    dxb_dirty_write_queue_submit_io_t *io) {
-  if (unlikely(!storage || !io || !queue))
-    return MDBX_EINVAL;
-  int rc = dxb_storage_dirty_write_queue_io_validate(storage, queue);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
   io->queue = *queue;
   return MDBX_SUCCESS;
 }
 
-static inline int dxb_storage_dirty_write_queue_submit_io_validate(
-    const dxb_storage_t *storage, const dxb_dirty_write_queue_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-  dxb_dirty_write_queue_submit_io_t checked;
-  int rc = dxb_storage_make_dirty_write_queue_submit_io(storage, &io->queue, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.queue.channel != io->queue.channel || checked.queue.items != io->queue.items ||
-               checked.queue.reserve_bytes != io->queue.reserve_bytes ||
-               checked.queue.data.pages.pgno != io->queue.data.pages.pgno ||
-               checked.queue.data.pages.end_pgno != io->queue.data.pages.end_pgno ||
-               checked.queue.data.pages.npages != io->queue.data.pages.npages ||
-               checked.queue.data.pages.offset != io->queue.data.pages.offset ||
-               checked.queue.data.pages.bytes != io->queue.data.pages.bytes ||
-               checked.queue.data.bytes.offset != io->queue.data.bytes.offset ||
-               checked.queue.data.bytes.bytes != io->queue.data.bytes.bytes))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline dxb_queue_op_result_t dxb_storage_submit_prepare_write_queue(
+static inline dxb_queue_op_result_t dxb_storage_submit_prepare_validated_write_queue(
     dxb_storage_t *storage, const dxb_dirty_write_queue_submit_io_t *io) {
   if (unlikely(!storage))
     return dxb_queue_op_result(MDBX_EINVAL, nullptr, false, false, false, false, false);
-  int rc = dxb_storage_dirty_write_queue_submit_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_queue_op_result(rc, dxb_storage_write_queue_const(storage), false, false, false, false, false);
+  if (unlikely(!io))
+    return dxb_queue_op_result(MDBX_EINVAL, dxb_storage_write_queue_const(storage), false, false, false, false,
+                               false);
   return osal_ioring_prepare(dxb_storage_write_queue(storage), &io->queue);
 }
 
@@ -41937,6 +41890,11 @@ static int dxb_data_write_subrange_io(const dxb_data_write_io_t *base, size_t of
 
 static void osal_ioring_walk_write_io(const dxb_dirty_write_walk_io_t *walk_io,
                                       const dxb_data_write_io_t *base, size_t offset, size_t bytes, void *data) {
+  if (likely(offset == 0 && bytes == base->bytes.bytes)) {
+    walk_io->callback(walk_io->ctx, base, data);
+    return;
+  }
+
   dxb_data_write_io_t request;
   const int err = dxb_data_write_subrange_io(base, offset, bytes, &request);
   if (unlikely(err != MDBX_SUCCESS)) {
@@ -46980,16 +46938,12 @@ int iov_init(MDBX_txn *const txn, iov_ctx_t *ctx, size_t items, size_t npages, e
   ctx->err = dxb_storage_make_dirty_write_queue_io(ctx->storage, channel, items, npages, &queue);
   if (unlikely(ctx->err != MDBX_SUCCESS))
     return ctx->err;
-  ctx->err = dxb_storage_dirty_write_queue_io_validate(ctx->storage, &queue);
-  if (unlikely(ctx->err != MDBX_SUCCESS))
-    return ctx->err;
   dxb_dirty_write_queue_submit_io_t queue_submit;
-  ctx->err = dxb_storage_make_dirty_write_queue_submit_io(ctx->storage, &queue, &queue_submit);
+  ctx->err = dxb_storage_make_validated_dirty_write_queue_submit_io(&queue, &queue_submit);
   if (unlikely(ctx->err != MDBX_SUCCESS))
     return ctx->err;
-  ctx->err = dxb_storage_dirty_write_queue_submit_io_validate(ctx->storage, &queue_submit);
   if (likely(ctx->err == MDBX_SUCCESS))
-    ctx->err = dxb_storage_submit_prepare_write_queue(ctx->storage, &queue_submit).err;
+    ctx->err = dxb_storage_submit_prepare_validated_write_queue(ctx->storage, &queue_submit).err;
   if (likely(ctx->err == MDBX_SUCCESS)) {
     iov_invalidate_range_reset(ctx);
 #if MDBX_NEED_WRITTEN_RANGE
