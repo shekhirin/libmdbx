@@ -895,3 +895,23 @@ Additional pre-open checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.062, async-batch/blocking-parallel ratio 1.084, and async-cursor/blocking-parallel ratio 1.045
+
+Additional environment lifecycle checkpoint:
+
+- added async wrappers for regular environment open, close, and delete
+- `mdbx_async_env_open()` runs on an unbound executor and binds that executor to
+  the opened environment on success; `mdbx_async_env_close_ex()` unbinds the
+  executor when the environment handle is destroyed
+- async recovery-open now follows the same binding rule, allowing the queued
+  recovery turn to run on the same executor after recovery-open completes
+- smoke coverage now opens the main environment asynchronously, closes it
+  asynchronously, deletes it asynchronously, and verifies binding/unbinding
+  transitions for both regular and recovery-open environments
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.068, async-batch/blocking-parallel ratio 1.067, and async-cursor/blocking-parallel ratio 1.756

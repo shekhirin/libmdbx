@@ -2548,11 +2548,26 @@ LIBMDBX_API int mdbx_env_get_option(const MDBX_env *env, const MDBX_option_t opt
  */
 LIBMDBX_API int mdbx_env_open(MDBX_env *env, const char *pathname, MDBX_env_flags_t flags, mdbx_mode_t mode);
 
+/** \brief Asynchronously open an MDBX environment.
+ * \ingroup c_async
+ * \details The pathname is copied during submission. The environment handle
+ *          must remain valid until completion. This operation must be submitted
+ *          to an unbound executor and binds the executor to `env` on success.
+ * \see mdbx_env_open() */
+LIBMDBX_API int mdbx_async_env_open(MDBX_async *async, MDBX_env *env, const char *pathname, MDBX_env_flags_t flags,
+                                    mdbx_mode_t mode, MDBX_async_op **op);
+
 #if defined(_WIN32) || defined(_WIN64) || defined(DOXYGEN)
 /** \copydoc mdbx_env_open()
  * \note Available only on Windows.
  * \see mdbx_env_open() */
 LIBMDBX_API int mdbx_env_openW(MDBX_env *env, const wchar_t *pathname, MDBX_env_flags_t flags, mdbx_mode_t mode);
+/** \copydoc mdbx_async_env_open()
+ * \ingroup c_async
+ * \note Available only on Windows.
+ * \see mdbx_env_openW() */
+LIBMDBX_API int mdbx_async_env_openW(MDBX_async *async, MDBX_env *env, const wchar_t *pathname, MDBX_env_flags_t flags,
+                                     mdbx_mode_t mode, MDBX_async_op **op);
 #define mdbx_env_openT(env, pathname, flags, mode) mdbx_env_openW(env, pathname, flags, mode)
 #else
 #define mdbx_env_openT(env, pathname, flags, mode) mdbx_env_open(env, pathname, flags, mode)
@@ -2597,12 +2612,26 @@ typedef enum MDBX_env_delete_mode {
  *                            so no deletion was performed. */
 LIBMDBX_API int mdbx_env_delete(const char *pathname, MDBX_env_delete_mode_t mode);
 
+/** \brief Asynchronously delete environment files.
+ * \ingroup c_async
+ * \details The pathname is copied during submission. This operation may be
+ *          submitted to an unbound executor.
+ * \see mdbx_env_delete() */
+LIBMDBX_API int mdbx_async_env_delete(MDBX_async *async, const char *pathname, MDBX_env_delete_mode_t mode,
+                                      MDBX_async_op **op);
+
 #if defined(_WIN32) || defined(_WIN64) || defined(DOXYGEN)
 /** \copydoc mdbx_env_delete()
  * \ingroup c_extra
  * \note Available only on Windows.
  * \see mdbx_env_delete() */
 LIBMDBX_API int mdbx_env_deleteW(const wchar_t *pathname, MDBX_env_delete_mode_t mode);
+/** \copydoc mdbx_async_env_delete()
+ * \ingroup c_async
+ * \note Available only on Windows.
+ * \see mdbx_env_deleteW() */
+LIBMDBX_API int mdbx_async_env_deleteW(MDBX_async *async, const wchar_t *pathname, MDBX_env_delete_mode_t mode,
+                                       MDBX_async_op **op);
 #define mdbx_env_deleteT(pathname, mode) mdbx_env_deleteW(pathname, mode)
 #else
 #define mdbx_env_deleteT(pathname, mode) mdbx_env_delete(pathname, mode)
@@ -3151,10 +3180,24 @@ LIBMDBX_INLINE_API(int, mdbx_env_get_syncperiod, (const MDBX_env *env, unsigned 
  *                     to a storage medium/disk. */
 LIBMDBX_API int mdbx_env_close_ex(MDBX_env *env, bool dont_sync);
 
+/** \brief Asynchronously close the environment bound to an executor.
+ * \ingroup c_async
+ * \details On success, or on any error except \ref MDBX_BUSY, the executor is
+ *          no longer bound to the environment.
+ * \see mdbx_env_close_ex() */
+LIBMDBX_API int mdbx_async_env_close_ex(MDBX_async *async, bool dont_sync, MDBX_async_op **op);
+
 /** \brief The shortcut to calling \ref mdbx_env_close_ex() with
  * the `dont_sync=false` argument.
  * \ingroup c_opening */
 LIBMDBX_INLINE_API(int, mdbx_env_close, (MDBX_env * env)) { return mdbx_env_close_ex(env, false); }
+
+/** \brief The shortcut to calling \ref mdbx_async_env_close_ex() with
+ * the `dont_sync=false` argument.
+ * \ingroup c_async */
+LIBMDBX_INLINE_API(int, mdbx_async_env_close, (MDBX_async * async, MDBX_async_op **op)) {
+  return mdbx_async_env_close_ex(async, false, op);
+}
 
 #if defined(DOXYGEN) || !(defined(_WIN32) || defined(_WIN64))
 /** \brief Restores an instance of the environment in a child process after forking the parent process using `fork()`
@@ -7915,7 +7958,7 @@ LIBMDBX_API int mdbx_env_open_for_recovery(MDBX_env *env, const char *pathname, 
  * \ingroup c_async
  * \details The pathname is copied during submission. The environment handle
  *          must remain valid until completion. This operation may be submitted
- *          to an unbound executor.
+ *          to an unbound executor and binds the executor to `env` on success.
  * \see mdbx_env_open_for_recovery() */
 LIBMDBX_API int mdbx_async_env_open_for_recovery(MDBX_async *async, MDBX_env *env, const char *pathname,
                                                  unsigned target_meta, bool writeable, MDBX_async_op **op);

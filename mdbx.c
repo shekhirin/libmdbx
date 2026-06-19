@@ -14980,12 +14980,17 @@ enum mdbx_async_opcode {
   async_op_env_sync,
   async_op_env_warmup,
   async_op_preopen_snapinfo,
+  async_op_env_open,
+  async_op_env_delete,
   async_op_env_copy,
 #if defined(_WIN32) || defined(_WIN64)
   async_op_preopen_snapinfoW,
+  async_op_env_openW,
+  async_op_env_deleteW,
   async_op_env_copyW,
 #endif /* Windows */
   async_op_env_copy2fd,
+  async_op_env_close,
   async_op_env_set_option,
   async_op_env_get_option,
   async_op_env_set_flags,
@@ -15177,10 +15182,21 @@ struct MDBX_async_op {
       size_t bytes;
     } preopen_snapinfo;
     struct {
+      MDBX_env *env;
+      MDBX_env_flags_t flags;
+      mdbx_mode_t mode;
+    } env_open;
+    struct {
+      MDBX_env_delete_mode_t mode;
+    } env_delete;
+    struct {
       MDBX_txn *txn;
       MDBX_copy_flags_t flags;
       mdbx_filehandle_t fd;
     } copy;
+    struct {
+      bool dont_sync;
+    } env_close;
     struct {
       MDBX_txn *txn;
       MDBX_gc_info_t *info;
@@ -15773,17 +15789,48 @@ static int async_op_execute(MDBX_async_op *op) {
                            op->args.env_warmup.timeout_seconds_16dot16);
   case async_op_preopen_snapinfo:
     return mdbx_preopen_snapinfo(op->name_copy, op->args.preopen_snapinfo.info, op->args.preopen_snapinfo.bytes);
+  case async_op_env_open: {
+    if (unlikely(op->async->env))
+      return MDBX_EPERM;
+    const int rc = mdbx_env_open(op->args.env_open.env, op->name_copy, op->args.env_open.flags,
+                                 op->args.env_open.mode);
+    if (likely(rc == MDBX_SUCCESS))
+      op->async->env = op->args.env_open.env;
+    return rc;
+  }
+  case async_op_env_delete:
+    return mdbx_env_delete(op->name_copy, op->args.env_delete.mode);
   case async_op_env_copy:
     return mdbx_env_copy(op->async->env, op->name_copy, op->args.copy.flags);
 #if defined(_WIN32) || defined(_WIN64)
   case async_op_preopen_snapinfoW:
     return mdbx_preopen_snapinfoW((const wchar_t *)op->name_copy, op->args.preopen_snapinfo.info,
                                   op->args.preopen_snapinfo.bytes);
+  case async_op_env_openW: {
+    if (unlikely(op->async->env))
+      return MDBX_EPERM;
+    const int rc = mdbx_env_openW(op->args.env_open.env, (const wchar_t *)op->name_copy, op->args.env_open.flags,
+                                  op->args.env_open.mode);
+    if (likely(rc == MDBX_SUCCESS))
+      op->async->env = op->args.env_open.env;
+    return rc;
+  }
+  case async_op_env_deleteW:
+    return mdbx_env_deleteW((const wchar_t *)op->name_copy, op->args.env_delete.mode);
   case async_op_env_copyW:
     return mdbx_env_copyW(op->async->env, (const wchar_t *)op->name_copy, op->args.copy.flags);
 #endif /* Windows */
   case async_op_env_copy2fd:
     return mdbx_env_copy2fd(op->async->env, op->args.copy.fd, op->args.copy.flags);
+  case async_op_env_close: {
+    MDBX_env *const env = op->async->env;
+    if (unlikely(!env))
+      return MDBX_EINVAL;
+    const int rc = mdbx_env_close_ex(env, op->args.env_close.dont_sync);
+    if (rc != MDBX_BUSY)
+      op->async->env = nullptr;
+    return rc;
+  }
   case async_op_env_set_option:
     return mdbx_env_set_option(op->async->env, op->args.env_option.option, op->args.env_option.value);
   case async_op_env_get_option:
@@ -15839,14 +15886,28 @@ static int async_op_execute(MDBX_async_op *op) {
                         op->args.env_chk.flags, op->args.env_chk.verbosity,
                         op->args.env_chk.timeout_seconds_16dot16);
   case async_op_env_open_for_recovery:
-    return mdbx_env_open_for_recovery(op->args.env_open_for_recovery.env, op->name_copy,
-                                      op->args.env_open_for_recovery.target_meta,
-                                      op->args.env_open_for_recovery.writeable);
+    if (unlikely(op->async->env))
+      return MDBX_EPERM;
+    {
+      const int rc = mdbx_env_open_for_recovery(op->args.env_open_for_recovery.env, op->name_copy,
+                                                op->args.env_open_for_recovery.target_meta,
+                                                op->args.env_open_for_recovery.writeable);
+      if (likely(rc == MDBX_SUCCESS))
+        op->async->env = op->args.env_open_for_recovery.env;
+      return rc;
+    }
 #if defined(_WIN32) || defined(_WIN64)
   case async_op_env_open_for_recoveryW:
-    return mdbx_env_open_for_recoveryW(op->args.env_open_for_recovery.env, (const wchar_t *)op->name_copy,
-                                       op->args.env_open_for_recovery.target_meta,
-                                       op->args.env_open_for_recovery.writeable);
+    if (unlikely(op->async->env))
+      return MDBX_EPERM;
+    {
+      const int rc = mdbx_env_open_for_recoveryW(op->args.env_open_for_recovery.env, (const wchar_t *)op->name_copy,
+                                                 op->args.env_open_for_recovery.target_meta,
+                                                 op->args.env_open_for_recovery.writeable);
+      if (likely(rc == MDBX_SUCCESS))
+        op->async->env = op->args.env_open_for_recovery.env;
+      return rc;
+    }
 #endif /* Windows */
   case async_op_env_turn_for_recovery:
     return mdbx_env_turn_for_recovery(op->async->env, op->args.env_turn_for_recovery.target_meta);
@@ -16744,6 +16805,81 @@ int mdbx_async_preopen_snapinfoW(MDBX_async *async, const wchar_t *pathname, MDB
 }
 #endif /* Windows */
 
+static int async_env_open_path_submit(MDBX_async *async, MDBX_env *env, const void *pathname, MDBX_env_flags_t flags,
+                                      mdbx_mode_t mode, enum mdbx_async_opcode opcode, MDBX_async_op **out) {
+  if (unlikely(!env))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, opcode);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+#if defined(_WIN32) || defined(_WIN64)
+  rc = (opcode == async_op_env_openW) ? async_copy_wpath(op, (const wchar_t *)pathname)
+                                      : async_copy_path(op, (const char *)pathname);
+#else
+  rc = async_copy_path(op, (const char *)pathname);
+#endif /* Windows */
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.env_open.env = env;
+    op->args.env_open.flags = flags;
+    op->args.env_open.mode = mode;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_env_open(MDBX_async *async, MDBX_env *env, const char *pathname, MDBX_env_flags_t flags,
+                        mdbx_mode_t mode, MDBX_async_op **out) {
+  return async_env_open_path_submit(async, env, pathname, flags, mode, async_op_env_open, out);
+}
+
+#if defined(_WIN32) || defined(_WIN64)
+int mdbx_async_env_openW(MDBX_async *async, MDBX_env *env, const wchar_t *pathname, MDBX_env_flags_t flags,
+                         mdbx_mode_t mode, MDBX_async_op **out) {
+  return async_env_open_path_submit(async, env, pathname, flags, mode, async_op_env_openW, out);
+}
+#endif /* Windows */
+
+static int async_env_delete_path_submit(MDBX_async *async, const void *pathname, MDBX_env_delete_mode_t mode,
+                                        enum mdbx_async_opcode opcode, MDBX_async_op **out) {
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, opcode);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+#if defined(_WIN32) || defined(_WIN64)
+  rc = (opcode == async_op_env_deleteW) ? async_copy_wpath(op, (const wchar_t *)pathname)
+                                        : async_copy_path(op, (const char *)pathname);
+#else
+  rc = async_copy_path(op, (const char *)pathname);
+#endif /* Windows */
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.env_delete.mode = mode;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_env_delete(MDBX_async *async, const char *pathname, MDBX_env_delete_mode_t mode, MDBX_async_op **out) {
+  return async_env_delete_path_submit(async, pathname, mode, async_op_env_delete, out);
+}
+
+#if defined(_WIN32) || defined(_WIN64)
+int mdbx_async_env_deleteW(MDBX_async *async, const wchar_t *pathname, MDBX_env_delete_mode_t mode,
+                           MDBX_async_op **out) {
+  return async_env_delete_path_submit(async, pathname, mode, async_op_env_deleteW, out);
+}
+#endif /* Windows */
+
 static int async_env_copy_path_submit(MDBX_async *async, const void *dest, MDBX_copy_flags_t flags,
                                       enum mdbx_async_opcode opcode, MDBX_async_op **out) {
   MDBX_async_op *op = nullptr;
@@ -16785,6 +16921,20 @@ int mdbx_async_env_copy2fd(MDBX_async *async, mdbx_filehandle_t fd, MDBX_copy_fl
     return LOG_IFERR(rc);
   op->args.copy.fd = fd;
   op->args.copy.flags = flags;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_env_close_ex(MDBX_async *async, bool dont_sync, MDBX_async_op **out) {
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_env_close);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.env_close.dont_sync = dont_sync;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;

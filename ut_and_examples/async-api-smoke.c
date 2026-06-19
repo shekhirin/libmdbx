@@ -304,9 +304,9 @@ bailout:
 static int exercise_async_preopen_recovery(const char *path, const char *file, int line) {
   MDBX_env *recovery_env = NULL;
   MDBX_async *preopen_async = NULL;
-  MDBX_async *recovery_async = NULL;
   MDBX_async_op *recovery_op = NULL;
   MDBX_envinfo snapinfo;
+  int close_result = MDBX_SUCCESS;
   int rc = MDBX_SUCCESS;
 
   memset(&snapinfo, 0, sizeof(snapinfo));
@@ -323,17 +323,21 @@ static int exercise_async_preopen_recovery(const char *path, const char *file, i
   rc = wait_success("mdbx_async_env_open_for_recovery", &recovery_op, file, line);
   if (rc != MDBX_SUCCESS)
     goto bailout;
-  CHECK(mdbx_async_destroy(preopen_async, true));
-  preopen_async = NULL;
+  REQUIRE(mdbx_async_env(preopen_async) == recovery_env, "async recovery-open did not bind the executor");
 
-  CHECK(mdbx_async_create(recovery_env, MDBX_ASYNC_DEFAULTS, &recovery_async));
-  CHECK(mdbx_async_env_turn_for_recovery(recovery_async, 0, &recovery_op));
+  CHECK(mdbx_async_env_turn_for_recovery(preopen_async, 0, &recovery_op));
   rc = wait_success("mdbx_async_env_turn_for_recovery", &recovery_op, file, line);
   if (rc != MDBX_SUCCESS)
     goto bailout;
-  CHECK(mdbx_async_destroy(recovery_async, true));
-  recovery_async = NULL;
-  CHECK(mdbx_env_close(recovery_env));
+
+  CHECK(mdbx_async_env_close_ex(preopen_async, true, &recovery_op));
+  CHECK(wait_result("mdbx_async_env_close_ex recovery", &recovery_op, &close_result, file, line));
+  if (close_result != MDBX_BUSY)
+    recovery_env = NULL;
+  REQUIRE(close_result == MDBX_SUCCESS, "unexpected async recovery environment close result");
+  REQUIRE(mdbx_async_env(preopen_async) == NULL, "async recovery close did not unbind the executor");
+  CHECK(mdbx_async_destroy(preopen_async, true));
+  preopen_async = NULL;
   recovery_env = NULL;
   return MDBX_SUCCESS;
 
@@ -345,8 +349,6 @@ bailout:
   }
   if (preopen_async)
     (void)mdbx_async_destroy(preopen_async, true);
-  if (recovery_async)
-    (void)mdbx_async_destroy(recovery_async, true);
   if (recovery_env)
     (void)mdbx_env_close(recovery_env);
   return rc ? rc : fail_msg("async preopen recovery failed", file, line);
@@ -403,6 +405,7 @@ int main(void) {
   MDBX_val get_values[ITEM_COUNT];
   MDBX_async_op *ops[ITEM_COUNT];
   int op_results[ITEM_COUNT];
+  int close_result = MDBX_SUCCESS;
   int rc = MDBX_SUCCESS;
 
   memset(ops, 0, sizeof(ops));
@@ -418,10 +421,12 @@ int main(void) {
   (void)mdbx_env_delete(copy_env_path, MDBX_ENV_JUST_DELETE);
   (void)mdbx_env_delete(copy_txn_path, MDBX_ENV_JUST_DELETE);
 
+  CHECK(mdbx_async_create(NULL, MDBX_ASYNC_DEFAULTS, &async));
+  REQUIRE(mdbx_async_env(async) == NULL, "new unbound async executor returned an environment");
   CHECK(mdbx_env_create(&env));
   CHECK(mdbx_env_set_maxdbs(env, 12));
-  CHECK(mdbx_env_open(env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM, 0664));
-  CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_env_open(async, env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM, 0664, &op));
+  CHECK_OP(op);
   REQUIRE(mdbx_async_env(async) == env, "async executor returned wrong environment");
 
   struct async_probe probe = {0};
@@ -1443,17 +1448,20 @@ int main(void) {
   REQUIRE(chk_context.internal == NULL && chk_context.txn == NULL, "async environment check left context active");
   REQUIRE(chk_context.result.total_problems == 0, "async environment check reported problems");
 
-  CHECK(mdbx_async_destroy(async, true));
-  async = NULL;
-  CHECK(mdbx_env_close(env));
-  env = NULL;
+  CHECK(mdbx_async_env_close_ex(async, false, &op));
+  CHECK(wait_result("mdbx_async_env_close_ex", &op, &close_result, __FILE__, __LINE__));
+  if (close_result != MDBX_BUSY)
+    env = NULL;
+  REQUIRE(close_result == MDBX_SUCCESS, "unexpected async environment close result");
+  REQUIRE(mdbx_async_env(async) == NULL, "async environment close did not unbind the executor");
   CHECK(exercise_async_preopen_recovery(path, __FILE__, __LINE__));
 
-  rc = mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
-  if (rc == MDBX_RESULT_TRUE)
-    rc = MDBX_SUCCESS;
-  if (rc != MDBX_SUCCESS)
-    rc = fail_rc("mdbx_env_delete cleanup", rc, __FILE__, __LINE__);
+  CHECK(mdbx_async_env_delete(async, path, MDBX_ENV_JUST_DELETE, &op));
+  CHECK(wait_result("mdbx_async_env_delete cleanup", &op, &env_operation_result, __FILE__, __LINE__));
+  REQUIRE(env_operation_result == MDBX_SUCCESS || env_operation_result == MDBX_RESULT_TRUE,
+          "unexpected async environment delete result");
+  CHECK(mdbx_async_destroy(async, true));
+  async = NULL;
   int cleanup_rc = mdbx_env_delete(copy_env_path, MDBX_ENV_JUST_DELETE);
   if (rc == MDBX_SUCCESS && cleanup_rc != MDBX_SUCCESS && cleanup_rc != MDBX_RESULT_TRUE)
     rc = fail_rc("mdbx_env_delete copy-env cleanup", cleanup_rc, __FILE__, __LINE__);
