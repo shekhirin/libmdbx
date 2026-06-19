@@ -13778,6 +13778,25 @@ migration CTest suite including API checks and tool roundtrips, the ASAN build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.127`
 batch, `1.130` crud, `0.899` iterate, `1.063` get, and `1.049` delete.
 
+A later cursor pop submit-boundary cleanup removed `dxb_cursor_pop_submit_io_t`,
+`dxb_cursor_pop_keep_ref_submit_io_t`,
+`dxb_cursor_pop_keep_ref_restore_submit_io_t`, and their make/validate helpers
+from `mdbx.c`. `cursor_pop()`, `cursor_pop_keep_ref()`, and
+`cursor_restore_pop_keep_ref()` now use direct checked helpers that validate the
+current top slot, release or preserve the page ref according to the caller's
+ownership path, and mutate `top` locally. This keeps sibling navigation and
+rebalance stack unwinding in the cursor helper layer without descriptor objects
+around in-memory stack edits. Verification passed `git diff --check`, a source
+scan proving the removed pop submit helpers and descriptor types are absent from
+`mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`.
+The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios of
+`1.096` batch, `1.136` crud, `0.947` iterate, `0.979` get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

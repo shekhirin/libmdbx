@@ -403,28 +403,6 @@ typedef struct dxb_cursor_branch_child_push_submit_io {
   bool child_ki_last;
 } dxb_cursor_branch_child_push_submit_io_t;
 
-typedef struct dxb_cursor_pop_submit_io {
-  MDBX_cursor *cursor;
-  page_t *page;
-  page_ref_t ref;
-  intptr_t top;
-} dxb_cursor_pop_submit_io_t;
-
-typedef struct dxb_cursor_pop_keep_ref_submit_io {
-  MDBX_cursor *cursor;
-  page_t *page;
-  page_ref_t ref;
-  intptr_t top;
-} dxb_cursor_pop_keep_ref_submit_io_t;
-
-typedef struct dxb_cursor_pop_keep_ref_restore_submit_io {
-  MDBX_cursor *cursor;
-  page_t *page;
-  page_ref_t ref;
-  intptr_t previous_top;
-  intptr_t restored_top;
-} dxb_cursor_pop_keep_ref_restore_submit_io_t;
-
 typedef struct dxb_bigdata_read_submit_io {
   MDBX_cursor *cursor;
   MDBX_val *data;
@@ -6591,141 +6569,58 @@ MDBX_MAYBE_UNUSED static inline int __must_check_result cursor_push(MDBX_cursor 
   return cursor_push_pgr(mc, &pgr, ki);
 }
 
-static inline int cursor_make_pop_submit_io(MDBX_cursor *mc, dxb_cursor_pop_submit_io_t *io) {
-  if (unlikely(!mc || !io || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE || !mc->pg[mc->top]))
+static inline int cursor_pop_checked(MDBX_cursor *mc) {
+  if (unlikely(!mc || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE || !mc->pg[mc->top]))
+    return MDBX_EINVAL;
+  if (unlikely(mc->pgref[mc->top].page != nullptr && mc->pgref[mc->top].page != mc->pg[mc->top]))
     return MDBX_EINVAL;
 
-  io->cursor = mc;
-  io->page = mc->pg[mc->top];
-  io->ref = mc->pgref[mc->top];
-  io->top = mc->top;
-  return MDBX_SUCCESS;
-}
-
-static inline int cursor_pop_submit_io_validate(const dxb_cursor_pop_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->page || io->top < 0 || io->top >= CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-  if (unlikely(io->cursor->top != io->top || io->cursor->pg[io->top] != io->page ||
-               !page_ref_equal(&io->cursor->pgref[io->top], &io->ref)))
-    return MDBX_EINVAL;
-
-  dxb_cursor_pop_submit_io_t checked;
-  int err = cursor_make_pop_submit_io(io->cursor, &checked);
+  TRACE("popped page %" PRIaPGNO " off db %d cursor %p", mc->pg[mc->top]->pgno, cursor_dbi_dbg(mc),
+        __Wpedantic_format_voidptr(mc));
+  cursor_value_release(mc);
+  int err = cursor_ref_release_checked(mc, &mc->pgref[mc->top]);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.top != io->top ||
-               !page_ref_equal(&checked.ref, &io->ref)))
-    return MDBX_EINVAL;
+  mc->top -= 1;
   return MDBX_SUCCESS;
 }
 
 MDBX_MAYBE_UNUSED static inline void cursor_pop(MDBX_cursor *mc) {
-  dxb_cursor_pop_submit_io_t submit;
-  int err = cursor_make_pop_submit_io(mc, &submit);
+  int err = cursor_pop_checked(mc);
   cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_pop_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      MDBX_cursor *const cursor = submit.cursor;
-      TRACE("popped page %" PRIaPGNO " off db %d cursor %p", submit.page->pgno, cursor_dbi_dbg(cursor),
-            __Wpedantic_format_voidptr(cursor));
-      cursor_value_release(cursor);
-      cursor_ref_release(cursor, &cursor->pgref[cursor->top]);
-      cursor->top -= 1;
-    }
-    cASSERT0(mc, err == MDBX_SUCCESS);
-  }
 }
 
-static inline int cursor_make_pop_keep_ref_submit_io(MDBX_cursor *mc, dxb_cursor_pop_keep_ref_submit_io_t *io) {
-  if (unlikely(!mc || !io || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE || !mc->pg[mc->top]))
+static inline int cursor_pop_keep_ref_checked(MDBX_cursor *mc) {
+  if (unlikely(!mc || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE || !mc->pg[mc->top]))
+    return MDBX_EINVAL;
+  if (unlikely(mc->pgref[mc->top].page != nullptr && mc->pgref[mc->top].page != mc->pg[mc->top]))
     return MDBX_EINVAL;
 
-  io->cursor = mc;
-  io->page = mc->pg[mc->top];
-  io->ref = mc->pgref[mc->top];
-  io->top = mc->top;
-  return MDBX_SUCCESS;
-}
-
-static inline int cursor_pop_keep_ref_submit_io_validate(const dxb_cursor_pop_keep_ref_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->page || io->top < 0 || io->top >= CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-  if (unlikely(io->cursor->top != io->top || io->cursor->pg[io->top] != io->page ||
-               !page_ref_equal(&io->cursor->pgref[io->top], &io->ref)))
-    return MDBX_EINVAL;
-
-  dxb_cursor_pop_keep_ref_submit_io_t checked;
-  int err = cursor_make_pop_keep_ref_submit_io(io->cursor, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.top != io->top ||
-               !page_ref_equal(&checked.ref, &io->ref)))
-    return MDBX_EINVAL;
+  TRACE("temporarily popped page %" PRIaPGNO " off db %d cursor %p", mc->pg[mc->top]->pgno, cursor_dbi_dbg(mc),
+        __Wpedantic_format_voidptr(mc));
+  cursor_value_release(mc);
+  mc->top -= 1;
   return MDBX_SUCCESS;
 }
 
 static inline void cursor_pop_keep_ref(MDBX_cursor *mc) {
-  dxb_cursor_pop_keep_ref_submit_io_t submit;
-  int err = cursor_make_pop_keep_ref_submit_io(mc, &submit);
+  int err = cursor_pop_keep_ref_checked(mc);
   cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_pop_keep_ref_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      MDBX_cursor *const cursor = submit.cursor;
-      TRACE("temporarily popped page %" PRIaPGNO " off db %d cursor %p", submit.page->pgno, cursor_dbi_dbg(cursor),
-            __Wpedantic_format_voidptr(cursor));
-      cursor_value_release(cursor);
-      cursor->top -= 1;
-    }
-    cASSERT0(mc, err == MDBX_SUCCESS);
-  }
 }
 
-static inline int
-cursor_make_pop_keep_ref_restore_submit_io(MDBX_cursor *mc, dxb_cursor_pop_keep_ref_restore_submit_io_t *io) {
-  if (unlikely(!mc || !io || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE - 1 || !mc->pg[mc->top + 1]))
+static inline int cursor_restore_pop_keep_ref_checked(MDBX_cursor *mc) {
+  if (unlikely(!mc || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE - 1 || !mc->pg[mc->top + 1]))
+    return MDBX_EINVAL;
+  if (unlikely(mc->pgref[mc->top + 1].page != nullptr && mc->pgref[mc->top + 1].page != mc->pg[mc->top + 1]))
     return MDBX_EINVAL;
 
-  io->cursor = mc;
-  io->previous_top = mc->top;
-  io->restored_top = mc->top + 1;
-  io->page = mc->pg[io->restored_top];
-  io->ref = mc->pgref[io->restored_top];
-  return MDBX_SUCCESS;
-}
-
-static inline int
-cursor_pop_keep_ref_restore_submit_io_validate(const dxb_cursor_pop_keep_ref_restore_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->page || io->previous_top < 0 ||
-               io->previous_top >= CURSOR_STACK_SIZE - 1 || io->restored_top != io->previous_top + 1 ||
-               io->restored_top >= CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-  if (unlikely(io->cursor->top != io->previous_top || io->cursor->pg[io->restored_top] != io->page ||
-               !page_ref_equal(&io->cursor->pgref[io->restored_top], &io->ref)))
-    return MDBX_EINVAL;
-
-  dxb_cursor_pop_keep_ref_restore_submit_io_t checked;
-  int err = cursor_make_pop_keep_ref_restore_submit_io(io->cursor, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.page != io->page ||
-               checked.previous_top != io->previous_top || checked.restored_top != io->restored_top ||
-               !page_ref_equal(&checked.ref, &io->ref)))
-    return MDBX_EINVAL;
+  mc->top += 1;
   return MDBX_SUCCESS;
 }
 
 static inline void cursor_restore_pop_keep_ref(MDBX_cursor *mc) {
-  dxb_cursor_pop_keep_ref_restore_submit_io_t submit;
-  int err = cursor_make_pop_keep_ref_restore_submit_io(mc, &submit);
+  int err = cursor_restore_pop_keep_ref_checked(mc);
   cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_pop_keep_ref_restore_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS))
-      submit.cursor->top = (int8_t)submit.restored_top;
-    cASSERT0(mc, err == MDBX_SUCCESS);
-  }
 }
 
 MDBX_NOTHROW_PURE_FUNCTION static inline bool check_leaf_type(const MDBX_cursor *mc, const page_t *mp) {
