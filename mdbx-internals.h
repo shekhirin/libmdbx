@@ -1872,6 +1872,10 @@ MDBX_INTERNAL int osal_filesize(mdbx_filehandle_t fd, uint64_t *length);
 MDBX_INTERNAL int osal_ioring_filesize(osal_ioring_t *ior, mdbx_filehandle_t fd, uint64_t *length);
 #if !defined(_WIN32) && !defined(_WIN64)
 MDBX_INTERNAL int osal_ioring_fstat(osal_ioring_t *ior, mdbx_filehandle_t fd, struct stat *st);
+MDBX_INTERNAL int osal_ioring_lock_op(osal_ioring_t *ior, mdbx_filehandle_t fd, int cmd, int lck, uint64_t offset,
+                                      uint64_t bytes);
+MDBX_INTERNAL int osal_ioring_setlk_with3retries(osal_ioring_t *ior, mdbx_filehandle_t fd, int lck,
+                                                 uint64_t offset, uint64_t bytes);
 #endif /* !Windows */
 MDBX_INTERNAL int osal_ioring_check_fs_rdonly(osal_ioring_t *ior, mdbx_filehandle_t fd,
                                               const pathchar_t *pathname, int err);

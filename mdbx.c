@@ -32310,7 +32310,8 @@ static dxb_lock_result_t dxb_storage_submit_lock_op(const dxb_storage_t *storage
                            io ? &io->range : nullptr, false, io ? io->with_retries : false);
   if (unlikely(io->with_retries))
     return dxb_lock_result(MDBX_EINVAL, io->cmd, io->lck, &io->range, false, true);
-  rc = lck_op(dxb_storage_data_fd(storage), io->cmd, io->lck, (off_t)io->range.offset, (off_t)io->range.bytes);
+  rc = osal_ioring_lock_op((osal_ioring_t *)&storage->ioring, dxb_storage_data_fd(storage), io->cmd, io->lck,
+                           io->range.offset, io->range.bytes);
   return dxb_lock_result(rc, io->cmd, io->lck, &io->range, true, false);
 }
 
@@ -32322,8 +32323,8 @@ static dxb_lock_result_t dxb_storage_submit_setlk_with3retries(const dxb_storage
                            io ? &io->range : nullptr, false, io ? io->with_retries : true);
   if (unlikely(!io->with_retries || io->cmd != op_setlk))
     return dxb_lock_result(MDBX_EINVAL, io->cmd, io->lck, &io->range, false, io->with_retries);
-  rc = lck_setlk_with3retries(dxb_storage_data_fd(storage), io->lck, (off_t)io->range.offset,
-                              (off_t)io->range.bytes);
+  rc = osal_ioring_setlk_with3retries((osal_ioring_t *)&storage->ioring, dxb_storage_data_fd(storage), io->lck,
+                                      io->range.offset, io->range.bytes);
   return dxb_lock_result(rc, op_setlk, io->lck, &io->range, true, true);
 }
 
@@ -38203,6 +38204,22 @@ int osal_ioring_fstat(osal_ioring_t *ior, mdbx_filehandle_t fd, struct stat *st)
   (void)ior;
 #endif /* MDBX_HAVE_LINUX_IO_URING && AT_EMPTY_PATH && STATX_BASIC_STATS */
   return unlikely(fstat(fd, st)) ? errno : MDBX_SUCCESS;
+}
+
+int osal_ioring_lock_op(osal_ioring_t *ior, mdbx_filehandle_t fd, int cmd, int lck, uint64_t offset,
+                        uint64_t bytes) {
+  (void)ior;
+  if (unlikely(offset > (uint64_t)OFF_T_MAX || bytes > (uint64_t)OFF_T_MAX))
+    return MDBX_EINVAL;
+  return lck_op(fd, cmd, lck, (off_t)offset, (off_t)bytes);
+}
+
+int osal_ioring_setlk_with3retries(osal_ioring_t *ior, mdbx_filehandle_t fd, int lck, uint64_t offset,
+                                   uint64_t bytes) {
+  (void)ior;
+  if (unlikely(offset > (uint64_t)OFF_T_MAX || bytes > (uint64_t)OFF_T_MAX))
+    return MDBX_EINVAL;
+  return lck_setlk_with3retries(fd, lck, (off_t)offset, (off_t)bytes);
 }
 #endif /* !Windows */
 

@@ -15423,6 +15423,23 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.116` batch, `1.147` crud, `0.993` iterate, `0.978`
 get, and `1.073` delete.
 
+A later POSIX data-lock checkpoint routed `dxb_storage_submit_lock_op()` and
+`dxb_storage_submit_setlk_with3retries()` through `osal_ioring_lock_op()` and
+`osal_ioring_setlk_with3retries()`. POSIX byte-range locks still execute with
+`fcntl()` because there is no `io_uring` lock opcode, but data-file lock
+submission now crosses the same OSAL I/O boundary as the other descriptor
+operations. Direct `lck_op()` / `lck_setlk_with3retries()` use remains for the
+lock-file coordination paths and inside the OSAL wrappers. Verification passed
+`git diff --check`, the Ninja build (`cmake --build @cmake-ninja-build`),
+normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed
+9/9, the ASAN build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.127` batch, `1.169` crud, `1.269` iterate, `0.917`
+get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
