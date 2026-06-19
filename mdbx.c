@@ -32437,14 +32437,6 @@ dxb_sync_meta_payload_write_submit_io_validate(const dxb_sync_meta_payload_write
   return MDBX_SUCCESS;
 }
 
-static dxb_write_result_t dxb_sync_submit_meta_payload_write(
-    const dxb_sync_meta_payload_write_submit_io_t *io) {
-  int rc = dxb_sync_meta_payload_write_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
-  return dxb_storage_submit_write_meta(io->storage, &io->submit);
-}
-
 typedef struct dxb_meta_sync_submit_io {
   const MDBX_env *env;
   const dxb_storage_t *storage;
@@ -32973,8 +32965,9 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
   rc = dxb_sync_make_meta_payload_write_submit_io(env, target_number, 0, sizeof(meta_t), pending, &target_submit);
   if (unlikely(rc != MDBX_SUCCESS))
     goto fail;
-  dxb_write_result_t target_result = dxb_sync_submit_meta_payload_write(&target_submit);
-  rc = target_result.err;
+  rc = dxb_sync_meta_payload_write_submit_io_validate(&target_submit);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = dxb_storage_submit_write_meta(target_submit.storage, &target_submit.submit).err;
   if (unlikely(rc != MDBX_SUCCESS)) {
   undo:
     DEBUG("%s", "write failed, disk error?");
@@ -32982,8 +32975,9 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
      * Try write some old data back, to prevent it from being used. */
     dxb_sync_meta_payload_write_submit_io_t undo_submit;
     if (dxb_sync_make_meta_payload_write_submit_io(env, target_number, 0, sizeof(meta_t), &undo_meta,
-                                                   &undo_submit) == MDBX_SUCCESS)
-      (void)dxb_sync_submit_meta_payload_write(&undo_submit);
+                                                   &undo_submit) == MDBX_SUCCESS &&
+        dxb_sync_meta_payload_write_submit_io_validate(&undo_submit) == MDBX_SUCCESS)
+      (void)dxb_storage_submit_write_meta(undo_submit.storage, &undo_submit.submit);
     goto fail;
   }
   /* sync meta-pages */
@@ -40387,14 +40381,6 @@ meta_unsteady_sign_write_submit_io_validate(const dxb_meta_unsteady_sign_write_s
   return MDBX_SUCCESS;
 }
 
-static dxb_write_result_t
-meta_unsteady_submit_sign_write(const dxb_meta_unsteady_sign_write_submit_io_t *io) {
-  int rc = meta_unsteady_sign_write_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
-  return dxb_storage_submit_write_meta(io->storage, &io->submit);
-}
-
 static int meta_unsteady(MDBX_env *env, dxb_storage_t *const storage, const txnid_t inclusive_upto,
                          const pgno_t pgno) {
   eASSERT0(env, (env->flags & MDBX_WRITEMAP) == 0);
@@ -40413,8 +40399,9 @@ static int meta_unsteady(MDBX_env *env, dxb_storage_t *const storage, const txni
   int err = meta_unsteady_make_sign_write_submit_io(env, storage, pgno, txnid, ptr, &wipe_submit);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  dxb_write_result_t wipe_result = meta_unsteady_submit_sign_write(&wipe_submit);
-  err = wipe_result.err;
+  err = meta_unsteady_sign_write_submit_io_validate(&wipe_submit);
+  if (likely(err == MDBX_SUCCESS))
+    err = dxb_storage_submit_write_meta(wipe_submit.storage, &wipe_submit.submit).err;
   if (likely(err == MDBX_SUCCESS)) {
     meta_shadow_copy_write(env, &wipe_submit.write, ptr);
     return MDBX_RESULT_TRUE;
@@ -40631,14 +40618,6 @@ meta_override_page_write_submit_io_validate(const dxb_meta_override_page_write_s
   return MDBX_SUCCESS;
 }
 
-static dxb_write_result_t
-meta_override_submit_page_write(const dxb_meta_override_page_write_submit_io_t *io) {
-  int rc = meta_override_page_write_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_error(rc);
-  return dxb_storage_submit_write_meta(io->storage, &io->submit);
-}
-
 __cold int __must_check_result meta_override(MDBX_env *env, size_t target, txnid_t txnid, const meta_t *shape) {
   dxb_storage_t *const storage = &env->dxb_storage;
   page_t *const page = env->page_auxbuf;
@@ -40709,8 +40688,9 @@ __cold int __must_check_result meta_override(MDBX_env *env, size_t target, txnid
   rc = meta_override_make_page_write_submit_io(env, target_number, txnid, page, &target_submit);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  dxb_write_result_t target_result = meta_override_submit_page_write(&target_submit);
-  rc = target_result.err;
+  rc = meta_override_page_write_submit_io_validate(&target_submit);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = dxb_storage_submit_write_meta(target_submit.storage, &target_submit.submit).err;
   if (rc == MDBX_SUCCESS && dxb_storage_meta_write_uses_data_sync(storage)) {
     dxb_note_fsync_pgop(env, MDBX_SYNC_DATA | MDBX_SYNC_IODQ);
     dxb_meta_sync_submit_io_t sync_submit;
