@@ -461,6 +461,39 @@ int main(void) {
   CHECK(wait_result("mdbx_async_cursor_on_last_dup", &op, &cursor_state, __FILE__, __LINE__));
   REQUIRE(cursor_state == MDBX_RESULT_TRUE, "cursor not on last dup");
 
+  CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor2, &op));
+  CHECK_OP(op);
+  REQUIRE(cursor2 != NULL, "second read cursor was not returned");
+  MDBX_val cursor2_key = val(NULL, 0);
+  MDBX_val cursor2_data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, cursor2, &cursor2_key, &cursor2_data, MDBX_LAST, &op));
+  CHECK_OP(op);
+
+  intptr_t cursor_distance = 0;
+  CHECK(mdbx_async_cursor_distance(async, cursor, cursor2, &cursor_distance, 42, &op));
+  CHECK_OP(op);
+  REQUIRE(cursor_distance == (intptr_t)ITEM_COUNT - 1, "unexpected async cursor distance");
+
+  CHECK(mdbx_async_cursor_scroll(async, cursor, 5, 42, &op));
+  CHECK_OP(op);
+  cursor_key = val(NULL, 0);
+  cursor_data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, cursor, &cursor_key, &cursor_data, MDBX_GET_CURRENT, &op));
+  CHECK_OP(op);
+  REQUIRE(cursor_key.iov_len == sizeof(uint64_t), "unexpected scrolled cursor key size");
+  uint64_t scrolled_key = 0;
+  memcpy(&scrolled_key, cursor_key.iov_base, sizeof(scrolled_key));
+  REQUIRE(scrolled_key == 5, "async cursor scroll landed on wrong key");
+  CHECK(expect_value(&cursor_data, scrolled_key, __FILE__, __LINE__));
+
+  cursor_distance = 0;
+  CHECK(mdbx_async_cursor_distance(async, cursor, cursor2, &cursor_distance, 42, &op));
+  CHECK_OP(op);
+  REQUIRE(cursor_distance == (intptr_t)ITEM_COUNT - 6, "unexpected async cursor distance after scroll");
+  CHECK(mdbx_async_cursor_close(async, cursor2, &op));
+  CHECK_OP(op);
+  cursor2 = NULL;
+
   CHECK(mdbx_async_cursor_get(async, cursor, &cursor_key, &cursor_data, MDBX_LAST, &op));
   CHECK_OP(op);
   CHECK(mdbx_async_cursor_on_first(async, cursor, &op));

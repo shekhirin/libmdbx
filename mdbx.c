@@ -15003,6 +15003,8 @@ enum mdbx_async_opcode {
   async_op_cursor_get_batch,
   async_op_cursor_count,
   async_op_cursor_state,
+  async_op_cursor_distance,
+  async_op_cursor_scroll,
   async_op_cursor_put,
   async_op_cursor_del,
   async_op_cursor_delete_range,
@@ -15203,6 +15205,17 @@ struct MDBX_async_op {
       const MDBX_cursor *cursor;
       enum mdbx_async_cursor_state state;
     } cursor_state;
+    struct {
+      const MDBX_cursor *first;
+      const MDBX_cursor *last;
+      intptr_t *distance;
+      unsigned deepness;
+    } cursor_distance;
+    struct {
+      MDBX_cursor *cursor;
+      intptr_t amount;
+      unsigned deepness;
+    } cursor_scroll;
     struct {
       MDBX_cursor *cursor;
       MDBX_val *data;
@@ -15476,6 +15489,12 @@ static int async_op_execute(MDBX_async_op *op) {
       return mdbx_cursor_on_last_dup(op->args.cursor_state.cursor);
     }
     return MDBX_PROBLEM;
+  case async_op_cursor_distance:
+    return mdbx_cursor_distance(op->args.cursor_distance.first, op->args.cursor_distance.last,
+                                op->args.cursor_distance.distance, op->args.cursor_distance.deepness);
+  case async_op_cursor_scroll:
+    return mdbx_cursor_scroll(op->args.cursor_scroll.cursor, op->args.cursor_scroll.amount,
+                              op->args.cursor_scroll.deepness);
   case async_op_cursor_put: {
     MDBX_val data = op->data;
     const int rc = mdbx_cursor_put(op->args.cursor_put.cursor, &op->key, &data, op->args.cursor_put.flags);
@@ -16569,6 +16588,45 @@ int mdbx_async_cursor_on_last(MDBX_async *async, const MDBX_cursor *cursor, MDBX
 
 int mdbx_async_cursor_on_last_dup(MDBX_async *async, const MDBX_cursor *cursor, MDBX_async_op **out) {
   return async_cursor_state_submit(async, cursor, async_cursor_state_on_last_dup, out);
+}
+
+int mdbx_async_cursor_distance(MDBX_async *async, const MDBX_cursor *first, const MDBX_cursor *last,
+                               intptr_t *distance, unsigned deepness, MDBX_async_op **out) {
+  if (unlikely((!first && !last) || !distance))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_distance);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cursor_distance.first = first;
+  op->args.cursor_distance.last = last;
+  op->args.cursor_distance.distance = distance;
+  op->args.cursor_distance.deepness = deepness;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return rc;
+}
+
+int mdbx_async_cursor_scroll(MDBX_async *async, MDBX_cursor *cursor, intptr_t amount, unsigned deepness,
+                             MDBX_async_op **out) {
+  if (unlikely(!cursor))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_scroll);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cursor_scroll.cursor = cursor;
+  op->args.cursor_scroll.amount = amount;
+  op->args.cursor_scroll.deepness = deepness;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return rc;
 }
 
 int mdbx_async_cursor_put(MDBX_async *async, MDBX_cursor *cursor, const MDBX_val *key, MDBX_val *data,

@@ -4924,6 +4924,21 @@ LIBMDBX_API int mdbx_async_cursor_on_last(MDBX_async *async, const MDBX_cursor *
  * \see mdbx_cursor_on_last_dup() */
 LIBMDBX_API int mdbx_async_cursor_on_last_dup(MDBX_async *async, const MDBX_cursor *cursor, MDBX_async_op **op);
 
+/** \brief Asynchronously measure the distance between two cursor positions.
+ * \ingroup c_async
+ * \details The `distance` output must remain valid until completion. Either
+ *          `first` or `last` may be NULL, but not both, matching
+ *          \ref mdbx_cursor_distance().
+ * \see mdbx_cursor_distance() */
+LIBMDBX_API int mdbx_async_cursor_distance(MDBX_async *async, const MDBX_cursor *first, const MDBX_cursor *last,
+                                           intptr_t *distance, unsigned deepness, MDBX_async_op **op);
+
+/** \brief Asynchronously move a positioned cursor by a signed distance.
+ * \ingroup c_async
+ * \see mdbx_cursor_scroll() */
+LIBMDBX_API int mdbx_async_cursor_scroll(MDBX_async *async, MDBX_cursor *cursor, intptr_t amount, unsigned deepness,
+                                         MDBX_async_op **op);
+
 /** \brief Asynchronously store an item through a cursor.
  * \ingroup c_async
  * \details Key and data bytes are copied during submission. The initial async
