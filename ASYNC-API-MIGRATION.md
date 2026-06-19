@@ -3156,3 +3156,33 @@ Additional extended GET worker-loop benchmark checkpoint:
   blocking-parallel GET sample here, but full goal completion remains open
   because write-heavy end-to-end migration benchmarks still trail the old
   baseline in prior logged runs.
+
+Additional cursor-delete benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` with blocking
+  `mdbx_cursor_del()` and async `mdbx_async_cursor_del()` measurements. The
+  benchmark positions a cursor at the first record, deletes the current record
+  with `MDBX_CURRENT`, and uses the documented post-delete `MDBX_GET_CURRENT`
+  cursor contract to continue over the next effective record.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking cursor delete
+  4.002 Mops/s, async cursor delete 158.862 Kops/s,
+  async-cursor-del/block 0.040, and async-cursor-del/async-del 0.107.
+- this is intentionally a sequential cursor-mutation shape. It shows the
+  current per-step executor round trip is expensive for basic cursor deletion,
+  unlike the coarser cursor range-delete and bunch-delete APIs that perform
+  more work per submitted async operation.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=179 async-covered=132 async-only=47 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: basic cursor deletion now has direct benchmark coverage. The
+  result highlights another concrete optimization/API-design target for
+  cursor-heavy write workloads: callers need coarser submitted cursor mutation
+  shapes, or the per-operation cursor executor path needs lower latency.
