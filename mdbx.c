@@ -48752,79 +48752,21 @@ intptr_t tree_diff_level(const MDBX_cursor *left, const MDBX_cursor *right) {
   return MDBX_RESULT_TRUE;
 }
 
-typedef struct dxb_tree_cutoff_page_get_submit_io {
-  MDBX_cursor *cursor;
-  MDBX_txn *txn;
-  tree_t *tree;
-  pgno_t pgno;
-  txnid_t front;
-  dxb_cursor_page_get_submit_io_t get;
-  size_t deep;
-  intptr_t top;
-  uint8_t checking;
-  bool whole_tree;
-} dxb_tree_cutoff_page_get_submit_io_t;
+static inline pgr_t tree_cutoff_page_get(MDBX_cursor *mc, pgno_t pgno, txnid_t front) {
+  if (unlikely(!mc || !mc->txn || !mc->tree || pgno == P_INVALID))
+    return pgr_error(MDBX_EINVAL);
 
-static inline int tree_cutoff_make_page_get_submit_io(MDBX_cursor *mc, pgno_t pgno, size_t deep, txnid_t front,
-                                                      bool whole_tree, dxb_tree_cutoff_page_get_submit_io_t *io) {
-  if (unlikely(!mc || !mc->txn || !mc->tree || !io || pgno == P_INVALID))
-    return MDBX_EINVAL;
-
+  MDBX_txn *const txn = mc->txn;
+  tree_t *const tree = mc->tree;
+  const intptr_t top = mc->top;
+  const uint8_t checking = mc->checking;
   dxb_cursor_page_get_submit_io_t get;
   int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_LARGE, pgno, front, &get);
   if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  io->cursor = mc;
-  io->txn = mc->txn;
-  io->tree = mc->tree;
-  io->pgno = get.get.request.pgno;
-  io->front = get.get.front;
-  io->get = get;
-  io->deep = deep;
-  io->top = mc->top;
-  io->checking = mc->checking;
-  io->whole_tree = whole_tree;
-  return MDBX_SUCCESS;
-}
-
-static inline int tree_cutoff_page_get_submit_io_validate(const dxb_tree_cutoff_page_get_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->txn || !io->tree || io->pgno == P_INVALID))
-    return MDBX_EINVAL;
-  if (unlikely(io->cursor->txn != io->txn || io->cursor->tree != io->tree || io->cursor->top != io->top ||
-               io->cursor->checking != io->checking))
-    return MDBX_EINVAL;
-
-  dxb_tree_cutoff_page_get_submit_io_t checked;
-  int err =
-      tree_cutoff_make_page_get_submit_io(io->cursor, io->pgno, io->deep, io->front, io->whole_tree, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.txn != io->txn || checked.tree != io->tree ||
-               checked.pgno != io->pgno || checked.front != io->front ||
-               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
-               checked.get.get.request.pgno != io->get.get.request.pgno ||
-               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
-               checked.get.get.request.npages != io->get.get.request.npages ||
-               checked.get.get.request.offset != io->get.get.request.offset ||
-               checked.get.get.request.bytes != io->get.get.request.bytes ||
-               checked.get.get.front != io->get.get.front ||
-               checked.get.get.track_private != io->get.get.track_private ||
-               checked.deep != io->deep ||
-               checked.top != io->top || checked.checking != io->checking || checked.whole_tree != io->whole_tree))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline pgr_t tree_cutoff_page_get(MDBX_cursor *mc, pgno_t pgno, size_t deep, txnid_t front, bool whole_tree) {
-  dxb_tree_cutoff_page_get_submit_io_t submit;
-  int err = tree_cutoff_make_page_get_submit_io(mc, pgno, deep, front, whole_tree, &submit);
-  if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  err = tree_cutoff_page_get_submit_io_validate(&submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-  return page_submit_cursor_get(&submit.get);
+  if (unlikely(mc->txn != txn || mc->tree != tree || mc->top != top || mc->checking != checking))
+    return pgr_error(MDBX_EINVAL);
+  return page_submit_cursor_get(&get);
 }
 
 int tree_cutoff_twig(MDBX_cursor *mc, const pgno_t pgno, size_t deep, txnid_t parent_txnid, const bool whole_tree) {
@@ -48839,7 +48781,7 @@ int tree_cutoff_twig(MDBX_cursor *mc, const pgno_t pgno, size_t deep, txnid_t pa
   }
 
   int err;
-  pgr_t pgr = tree_cutoff_page_get(mc, pgno, deep, parent_txnid, whole_tree);
+  pgr_t pgr = tree_cutoff_page_get(mc, pgno, parent_txnid);
 #define TREE_CUTOFF_RETURN(result)                                                                                    \
   do {                                                                                                                \
     pgr_release(mc, &pgr);                                                                                            \
