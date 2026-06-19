@@ -25618,7 +25618,9 @@ static dxb_readonly_result_t dxb_storage_submit_check_readonly(const dxb_storage
   int rc = dxb_storage_readonly_submit_io_validate(io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_readonly_result(rc, io ? io->source_err : 0, false, false);
-  return dxb_readonly_from_probe(osal_check_fs_rdonly(dxb_storage_data_fd(storage), io->pathname, io->source_err),
+  return dxb_readonly_from_probe(osal_ioring_check_fs_rdonly((osal_ioring_t *)&storage->ioring,
+                                                             dxb_storage_data_fd(storage),
+                                                             io->pathname, io->source_err),
                                  io->source_err);
 }
 
@@ -38207,6 +38209,12 @@ int osal_ioring_fstat(osal_ioring_t *ior, mdbx_filehandle_t fd, struct stat *st)
 int osal_ioring_check_fs_incore(osal_ioring_t *ior, mdbx_filehandle_t fd) {
   (void)ior;
   return osal_check_fs_incore(fd);
+}
+
+int osal_ioring_check_fs_rdonly(osal_ioring_t *ior, mdbx_filehandle_t fd,
+                                const pathchar_t *pathname, int err) {
+  (void)ior;
+  return osal_check_fs_rdonly(fd, pathname, err);
 }
 
 #if MDBX_USE_COPYFILERANGE

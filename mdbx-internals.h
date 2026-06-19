@@ -1873,6 +1873,8 @@ MDBX_INTERNAL int osal_ioring_filesize(osal_ioring_t *ior, mdbx_filehandle_t fd,
 #if !defined(_WIN32) && !defined(_WIN64)
 MDBX_INTERNAL int osal_ioring_fstat(osal_ioring_t *ior, mdbx_filehandle_t fd, struct stat *st);
 #endif /* !Windows */
+MDBX_INTERNAL int osal_ioring_check_fs_rdonly(osal_ioring_t *ior, mdbx_filehandle_t fd,
+                                              const pathchar_t *pathname, int err);
 MDBX_INTERNAL int osal_ioring_check_fs_incore(osal_ioring_t *ior, mdbx_filehandle_t fd);
 
 enum osal_openfile_purpose {

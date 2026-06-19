@@ -15388,6 +15388,24 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.123` batch, `1.154` crud, `1.043` iterate, `1.050`
 get, and `1.074` delete.
 
+A later read-only filesystem probe checkpoint routed the storage-level
+`dxb_storage_submit_check_readonly()` probe through
+`osal_ioring_check_fs_rdonly()`. There is no Linux `io_uring`
+statfs/statvfs-style opcode in the local headers, so the OSAL wrapper currently
+falls back to `osal_check_fs_rdonly()`, but the storage submitter no longer
+reaches that raw probe directly. A source scan shows direct
+`osal_check_fs_rdonly()` calls only in the OSAL wrapper and its POSIX/Windows
+implementation. Verification passed `git diff --check`, the Ninja build
+(`cmake --build @cmake-ninja-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed 9/9, the ASAN
+build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.124` batch, `1.159` crud, `0.942` iterate, `1.029`
+get, and `1.072` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
