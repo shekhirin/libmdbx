@@ -1516,3 +1516,47 @@ Additional extended GET-loop API checkpoint:
 - conclusion: this slice improves async GET-family API coverage for coarse
   parallel read workloads; it does not change the storage backend or prove a new
   throughput step, and the forced no-map GET-loop samples remain scheduler-noisy
+
+Additional extended GET-batch API checkpoint:
+
+- added `mdbx_async_get_ex_batch()` and `mdbx_async_get_ex_batch_cb()` plus
+  `MDBX_get_ex_batch_func`; these let callers submit an array of `mdbx_get_ex()`
+  lookups as one async operation and optionally consume the filled key/data,
+  duplicate-count, and result arrays on the executor worker
+- added `mdbx_async_get_equal_or_great_batch()` and
+  `mdbx_async_get_equal_or_great_batch_cb()` plus
+  `MDBX_get_equal_or_great_batch_func`; per-item results preserve
+  `MDBX_SUCCESS` versus `MDBX_RESULT_TRUE`, and successful items update the
+  caller's key/data descriptors with the lower-bound result
+- this brings the extended GET wrappers closer to the plain `mdbx_get()` async
+  surface by providing single-operation, batch, callback-batch, and worker-loop
+  forms without changing the blocking API
+- smoke coverage now checks direct and callback batch paths for `get_ex` value
+  counts and mixed exact/greater lower-bound results
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- default benchmark spot check passed with GET-path ratios
+  async/blocking-parallel 1.071, async-thread/blocking-parallel 1.067,
+  async-thread-batch/blocking-parallel 1.092,
+  async-batch/blocking-parallel 1.088,
+  async-batch-callback/blocking-parallel 1.094,
+  async-loop/blocking-parallel 1.098, and
+  async-thread-loop/blocking-parallel 1.076
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check passed with
+  GET-path ratios async/blocking-parallel 1.138,
+  async-thread/blocking-parallel 1.096,
+  async-thread-batch/blocking-parallel 1.033,
+  async-batch/blocking-parallel 1.044,
+  async-batch-callback/blocking-parallel 1.114,
+  async-loop/blocking-parallel 1.135, and
+  async-thread-loop/blocking-parallel 1.084
+- conclusion: this slice improves GET-family API symmetry for callers that
+  already hold arrays of lookup work; it does not change storage internals, and
+  existing benchmark labels remain a guard against regressions in the parallel
+  plain-GET paths

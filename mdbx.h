@@ -5234,6 +5234,27 @@ LIBMDBX_API int mdbx_async_get_equal_or_great(MDBX_async *async, const MDBX_txn 
 typedef int (*MDBX_get_batch_func)(void *context, const MDBX_val keys[], MDBX_val data[], const int results[],
                                    size_t count) MDBX_CXX17_NOEXCEPT;
 
+/** \brief Callback for \ref mdbx_async_get_ex_batch_cb().
+ * \ingroup c_async
+ * \details The callback runs on the executor worker thread after the whole
+ *          batch has been fetched and per-item result codes have been stored.
+ *          Returned values follow the normal \ref mdbx_get_ex() lifetime
+ *          rules. Returning a non-success result makes that value the async
+ *          operation result. */
+typedef int (*MDBX_get_ex_batch_func)(void *context, MDBX_val keys[], MDBX_val data[],
+                                      const size_t values_counts[], const int results[],
+                                      size_t count) MDBX_CXX17_NOEXCEPT;
+
+/** \brief Callback for \ref mdbx_async_get_equal_or_great_batch_cb().
+ * \ingroup c_async
+ * \details The callback runs on the executor worker thread after the whole
+ *          lower-bound batch has been fetched and per-item result codes have
+ *          been stored. Returned values follow the normal
+ *          \ref mdbx_get_equal_or_great() lifetime rules. Returning a
+ *          non-success result makes that value the async operation result. */
+typedef int (*MDBX_get_equal_or_great_batch_func)(void *context, MDBX_val keys[], MDBX_val data[],
+                                                  const int results[], size_t count) MDBX_CXX17_NOEXCEPT;
+
 /** \brief Callback that prepares one key for \ref mdbx_async_get_loop().
  * \ingroup c_async
  * \details The callback runs on the executor worker thread. The key descriptor
@@ -5305,6 +5326,63 @@ LIBMDBX_API int mdbx_async_get_batch(MDBX_async *async, const MDBX_txn *txn, MDB
 LIBMDBX_API int mdbx_async_get_batch_cb(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
                                         const MDBX_val keys[], MDBX_val data[], int results[], size_t count,
                                         MDBX_get_batch_func func, void *context, MDBX_async_op **op);
+
+/** \brief Asynchronously get_ex a batch of items from a table.
+ * \ingroup c_async
+ * \details The `keys`, key bytes, `data`, `values_counts`, and `results` arrays
+ *          must remain valid until completion. Each `results` slot receives the
+ *          corresponding \ref mdbx_get_ex() result code. On success, `keys`,
+ *          `data`, and `values_counts` receive the corresponding outputs from
+ *          \ref mdbx_get_ex(). The async operation result is
+ *          \ref MDBX_SUCCESS when the batch has run and per-item outputs have
+ *          been stored.
+ * \see mdbx_get_ex() */
+LIBMDBX_API int mdbx_async_get_ex_batch(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val keys[],
+                                        MDBX_val data[], size_t values_counts[], int results[],
+                                        size_t count, MDBX_async_op **op);
+
+/** \brief Asynchronously get_ex a batch and consume it on the executor worker.
+ * \ingroup c_async
+ * \details This is equivalent to \ref mdbx_async_get_ex_batch(), followed by an
+ *          optional worker-thread callback over the filled `keys`, `data`,
+ *          `values_counts`, and `results` arrays before the async operation
+ *          completes.
+ * \see mdbx_async_get_ex_batch()
+ * \see MDBX_get_ex_batch_func */
+LIBMDBX_API int mdbx_async_get_ex_batch_cb(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                           MDBX_val keys[], MDBX_val data[], size_t values_counts[],
+                                           int results[], size_t count, MDBX_get_ex_batch_func func,
+                                           void *context, MDBX_async_op **op);
+
+/** \brief Asynchronously get equal-or-greater items from a table.
+ * \ingroup c_async
+ * \details The `keys`, key bytes, `data`, data bytes, and `results` arrays must
+ *          remain valid until completion. Each `results` slot receives the
+ *          corresponding \ref mdbx_get_equal_or_great() result code, including
+ *          \ref MDBX_RESULT_TRUE for greater lower-bound matches. On success or
+ *          \ref MDBX_RESULT_TRUE, `keys` and `data` receive the corresponding
+ *          lower-bound outputs. The async operation result is
+ *          \ref MDBX_SUCCESS when the batch has run and per-item outputs have
+ *          been stored.
+ * \see mdbx_get_equal_or_great() */
+LIBMDBX_API int mdbx_async_get_equal_or_great_batch(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                                    MDBX_val keys[], MDBX_val data[], int results[],
+                                                    size_t count, MDBX_async_op **op);
+
+/** \brief Asynchronously get equal-or-greater items and consume them on the
+ * executor worker.
+ * \ingroup c_async
+ * \details This is equivalent to
+ *          \ref mdbx_async_get_equal_or_great_batch(), followed by an optional
+ *          worker-thread callback over the filled `keys`, `data`, and `results`
+ *          arrays before the async operation completes.
+ * \see mdbx_async_get_equal_or_great_batch()
+ * \see MDBX_get_equal_or_great_batch_func */
+LIBMDBX_API int mdbx_async_get_equal_or_great_batch_cb(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                                       MDBX_val keys[], MDBX_val data[], int results[],
+                                                       size_t count,
+                                                       MDBX_get_equal_or_great_batch_func func,
+                                                       void *context, MDBX_async_op **op);
 
 /** \brief Asynchronously run a worker-side loop of get operations.
  * \ingroup c_async

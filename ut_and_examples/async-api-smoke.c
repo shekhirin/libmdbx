@@ -53,6 +53,18 @@ struct get_batch_probe {
   size_t successes;
 };
 
+struct get_ex_batch_probe {
+  unsigned calls;
+  size_t successes;
+  size_t values;
+};
+
+struct get_equal_or_great_batch_probe {
+  unsigned calls;
+  size_t successes;
+  size_t greater_results;
+};
+
 struct get_loop_probe {
   uint64_t key;
   size_t keys;
@@ -278,6 +290,52 @@ static int get_batch_probe_func(void *context, const MDBX_val keys[], MDBX_val d
     if (actual_value != expected_value(actual_key))
       return MDBX_PROBLEM;
     probe->successes += 1;
+  }
+  probe->calls += 1;
+  return MDBX_SUCCESS;
+}
+
+static int get_ex_batch_probe_func(void *context, MDBX_val keys[], MDBX_val data[], const size_t values_counts[],
+                                   const int results[], size_t count) {
+  struct get_ex_batch_probe *const probe = (struct get_ex_batch_probe *)context;
+  if (!probe || !keys || !data || !values_counts || !results)
+    return MDBX_PROBLEM;
+  for (size_t i = 0; i < count; ++i) {
+    if (results[i] != MDBX_SUCCESS || values_counts[i] != 1 || keys[i].iov_len != sizeof(uint64_t) ||
+        data[i].iov_len != sizeof(uint64_t))
+      return MDBX_PROBLEM;
+    uint64_t actual_key = UINT64_MAX;
+    uint64_t actual_value = 0;
+    memcpy(&actual_key, keys[i].iov_base, sizeof(actual_key));
+    memcpy(&actual_value, data[i].iov_base, sizeof(actual_value));
+    if (actual_value != expected_value(actual_key))
+      return MDBX_PROBLEM;
+    probe->successes += 1;
+    probe->values += values_counts[i];
+  }
+  probe->calls += 1;
+  return MDBX_SUCCESS;
+}
+
+static int get_equal_or_great_batch_probe_func(void *context, MDBX_val keys[], MDBX_val data[], const int results[],
+                                               size_t count) {
+  struct get_equal_or_great_batch_probe *const probe = (struct get_equal_or_great_batch_probe *)context;
+  if (!probe || !keys || !data || !results)
+    return MDBX_PROBLEM;
+  for (size_t i = 0; i < count; ++i) {
+    if (results[i] != MDBX_SUCCESS && results[i] != MDBX_RESULT_TRUE)
+      return MDBX_PROBLEM;
+    if (keys[i].iov_len != sizeof(uint64_t) || data[i].iov_len != sizeof(uint64_t))
+      return MDBX_PROBLEM;
+    uint64_t actual_key = UINT64_MAX;
+    uint64_t actual_value = 0;
+    memcpy(&actual_key, keys[i].iov_base, sizeof(actual_key));
+    memcpy(&actual_value, data[i].iov_base, sizeof(actual_value));
+    if (actual_value != expected_value(actual_key))
+      return MDBX_PROBLEM;
+    probe->successes += 1;
+    if (results[i] == MDBX_RESULT_TRUE)
+      probe->greater_results += 1;
   }
   probe->calls += 1;
   return MDBX_SUCCESS;
@@ -1246,6 +1304,94 @@ int main(void) {
   CHECK_OP(op);
   REQUIRE(get_batch_probe.calls == 1, "async get batch callback was not called");
   REQUIRE(get_batch_probe.successes == ITEM_COUNT, "async get batch callback saw wrong success count");
+
+  MDBX_val get_ex_batch_keys[ITEM_COUNT];
+  size_t get_ex_values_counts[ITEM_COUNT];
+  for (unsigned i = 0; i < ITEM_COUNT; ++i) {
+    get_ex_batch_keys[i] = key_values[i];
+    get_values[i] = val(NULL, 0);
+    get_ex_values_counts[i] = SIZE_MAX;
+  }
+  CHECK(mdbx_async_get_ex_batch(async, txn, dbi, get_ex_batch_keys, get_values, get_ex_values_counts, op_results,
+                                ITEM_COUNT, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < ITEM_COUNT; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_get_ex_batch item", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
+    REQUIRE(get_ex_values_counts[i] == 1, "async get_ex batch saw wrong value count");
+    REQUIRE(get_ex_batch_keys[i].iov_len == sizeof(uint64_t), "unexpected async get_ex batch key size");
+    uint64_t actual_key = UINT64_MAX;
+    memcpy(&actual_key, get_ex_batch_keys[i].iov_base, sizeof(actual_key));
+    REQUIRE(actual_key == keys[i], "unexpected async get_ex batch key");
+    CHECK(expect_value(&get_values[i], keys[i], __FILE__, __LINE__));
+  }
+
+  for (unsigned i = 0; i < ITEM_COUNT; ++i) {
+    get_ex_batch_keys[i] = key_values[i];
+    get_values[i] = val(NULL, 0);
+    get_ex_values_counts[i] = SIZE_MAX;
+  }
+  struct get_ex_batch_probe get_ex_batch_probe = {0, 0, 0};
+  CHECK(mdbx_async_get_ex_batch_cb(async, txn, dbi, get_ex_batch_keys, get_values, get_ex_values_counts,
+                                   op_results, ITEM_COUNT, get_ex_batch_probe_func, &get_ex_batch_probe, &op));
+  CHECK_OP(op);
+  REQUIRE(get_ex_batch_probe.calls == 1, "async get_ex batch callback was not called");
+  REQUIRE(get_ex_batch_probe.successes == ITEM_COUNT, "async get_ex batch callback saw wrong success count");
+  REQUIRE(get_ex_batch_probe.values == ITEM_COUNT, "async get_ex batch callback saw wrong value count");
+
+  MDBX_val equal_batch_keys[8];
+  MDBX_val equal_batch_data[8];
+  uint64_t equal_batch_exact_keys[8];
+  uint8_t equal_batch_greater_keys[4][sizeof(uint64_t) + 1];
+  for (unsigned i = 0; i < 8; ++i) {
+    equal_batch_exact_keys[i] = i;
+    if (i & 1) {
+      memcpy(equal_batch_greater_keys[i / 2], &equal_batch_exact_keys[i], sizeof(equal_batch_exact_keys[i]));
+      equal_batch_greater_keys[i / 2][sizeof(equal_batch_exact_keys[i])] = 0;
+      equal_batch_keys[i] = val(equal_batch_greater_keys[i / 2], sizeof(equal_batch_greater_keys[i / 2]));
+    } else {
+      equal_batch_keys[i] = val(&equal_batch_exact_keys[i], sizeof(equal_batch_exact_keys[i]));
+    }
+    equal_batch_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_get_equal_or_great_batch(async, txn, dbi, equal_batch_keys, equal_batch_data, op_results, 8,
+                                            &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < 8; ++i) {
+    const uint64_t expected_key = i + (i & 1);
+    REQUIRE(op_results[i] == ((i & 1) ? MDBX_RESULT_TRUE : MDBX_SUCCESS),
+            "unexpected async equal-or-great batch result");
+    REQUIRE(equal_batch_keys[i].iov_len == sizeof(uint64_t), "unexpected async equal-or-great batch key size");
+    uint64_t actual_key = UINT64_MAX;
+    memcpy(&actual_key, equal_batch_keys[i].iov_base, sizeof(actual_key));
+    REQUIRE(actual_key == expected_key, "unexpected async equal-or-great batch key");
+    CHECK(expect_value(&equal_batch_data[i], expected_key, __FILE__, __LINE__));
+  }
+
+  for (unsigned i = 0; i < 8; ++i) {
+    equal_batch_exact_keys[i] = i;
+    if (i & 1) {
+      memcpy(equal_batch_greater_keys[i / 2], &equal_batch_exact_keys[i], sizeof(equal_batch_exact_keys[i]));
+      equal_batch_greater_keys[i / 2][sizeof(equal_batch_exact_keys[i])] = 0;
+      equal_batch_keys[i] = val(equal_batch_greater_keys[i / 2], sizeof(equal_batch_greater_keys[i / 2]));
+    } else {
+      equal_batch_keys[i] = val(&equal_batch_exact_keys[i], sizeof(equal_batch_exact_keys[i]));
+    }
+    equal_batch_data[i] = val(NULL, 0);
+  }
+  struct get_equal_or_great_batch_probe get_equal_or_great_batch_probe = {0, 0, 0};
+  CHECK(mdbx_async_get_equal_or_great_batch_cb(async, txn, dbi, equal_batch_keys, equal_batch_data, op_results, 8,
+                                               get_equal_or_great_batch_probe_func,
+                                               &get_equal_or_great_batch_probe, &op));
+  CHECK_OP(op);
+  REQUIRE(get_equal_or_great_batch_probe.calls == 1,
+          "async equal-or-great batch callback was not called");
+  REQUIRE(get_equal_or_great_batch_probe.successes == 8,
+          "async equal-or-great batch callback saw wrong success count");
+  REQUIRE(get_equal_or_great_batch_probe.greater_results == 4,
+          "async equal-or-great batch callback saw wrong greater-result count");
 
   struct get_loop_probe get_loop_probe = {0, 0, 0};
   size_t get_loop_completed = 0;

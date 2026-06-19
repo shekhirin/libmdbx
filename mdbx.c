@@ -15070,6 +15070,8 @@ enum mdbx_async_opcode {
   async_op_cache_get,
   async_op_cache_get_singlethreaded,
   async_op_get_batch,
+  async_op_get_ex_batch,
+  async_op_get_equal_or_great_batch,
   async_op_get_loop,
   async_op_get_ex_loop,
   async_op_get_equal_or_great_loop,
@@ -15464,6 +15466,27 @@ struct MDBX_async_op {
       MDBX_get_batch_func func;
       void *context;
     } get_batch;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_dbi dbi;
+      MDBX_val *keys;
+      MDBX_val *data;
+      size_t *values_counts;
+      int *results;
+      size_t count;
+      MDBX_get_ex_batch_func func;
+      void *context;
+    } get_ex_batch;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_dbi dbi;
+      MDBX_val *keys;
+      MDBX_val *data;
+      int *results;
+      size_t count;
+      MDBX_get_equal_or_great_batch_func func;
+      void *context;
+    } get_equal_or_great_batch;
     struct {
       const MDBX_txn *txn;
       MDBX_dbi dbi;
@@ -16277,6 +16300,50 @@ static int async_op_execute(MDBX_async_op *op) {
       return op->args.get_batch.func(op->args.get_batch.context, op->args.get_batch.keys,
                                      op->args.get_batch.data, op->args.get_batch.results,
                                      op->args.get_batch.count);
+    return MDBX_SUCCESS;
+  case async_op_get_ex_batch:
+    for (size_t i = 0; i < op->args.get_ex_batch.count; ++i) {
+      MDBX_val key = op->args.get_ex_batch.keys[i];
+      MDBX_val data = {nullptr, 0};
+      size_t values_count = 0;
+      const int rc =
+          mdbx_get_ex(op->args.get_ex_batch.txn, op->args.get_ex_batch.dbi, &key, &data, &values_count);
+      op->args.get_ex_batch.results[i] = rc;
+      op->args.get_ex_batch.values_counts[i] = values_count;
+      if (rc == MDBX_SUCCESS) {
+        op->args.get_ex_batch.keys[i] = key;
+        op->args.get_ex_batch.data[i] = data;
+      } else {
+        op->args.get_ex_batch.data[i].iov_base = nullptr;
+        op->args.get_ex_batch.data[i].iov_len = 0;
+      }
+    }
+    if (op->args.get_ex_batch.func)
+      return op->args.get_ex_batch.func(op->args.get_ex_batch.context, op->args.get_ex_batch.keys,
+                                        op->args.get_ex_batch.data, op->args.get_ex_batch.values_counts,
+                                        op->args.get_ex_batch.results, op->args.get_ex_batch.count);
+    return MDBX_SUCCESS;
+  case async_op_get_equal_or_great_batch:
+    for (size_t i = 0; i < op->args.get_equal_or_great_batch.count; ++i) {
+      MDBX_val key = op->args.get_equal_or_great_batch.keys[i];
+      MDBX_val data = op->args.get_equal_or_great_batch.data[i];
+      const int rc = mdbx_get_equal_or_great(op->args.get_equal_or_great_batch.txn,
+                                             op->args.get_equal_or_great_batch.dbi, &key, &data);
+      op->args.get_equal_or_great_batch.results[i] = rc;
+      if (rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE) {
+        op->args.get_equal_or_great_batch.keys[i] = key;
+        op->args.get_equal_or_great_batch.data[i] = data;
+      } else {
+        op->args.get_equal_or_great_batch.data[i].iov_base = nullptr;
+        op->args.get_equal_or_great_batch.data[i].iov_len = 0;
+      }
+    }
+    if (op->args.get_equal_or_great_batch.func)
+      return op->args.get_equal_or_great_batch.func(op->args.get_equal_or_great_batch.context,
+                                                    op->args.get_equal_or_great_batch.keys,
+                                                    op->args.get_equal_or_great_batch.data,
+                                                    op->args.get_equal_or_great_batch.results,
+                                                    op->args.get_equal_or_great_batch.count);
     return MDBX_SUCCESS;
   case async_op_get_loop:
     if (op->args.get_loop.completed)
@@ -18678,6 +18745,87 @@ int mdbx_async_get_batch_cb(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi
   if (unlikely(!func))
     return LOG_IFERR(MDBX_EINVAL);
   return async_get_batch_submit(async, txn, dbi, keys, data, results, count, func, context, out);
+}
+
+static int async_get_ex_batch_submit(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val keys[],
+                                     MDBX_val data[], size_t values_counts[], int results[], size_t count,
+                                     MDBX_get_ex_batch_func func, void *context, MDBX_async_op **out) {
+  if (unlikely(!txn || !keys || !data || !values_counts || !results || !count))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_get_ex_batch);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.get_ex_batch.txn = txn;
+  op->args.get_ex_batch.dbi = dbi;
+  op->args.get_ex_batch.keys = keys;
+  op->args.get_ex_batch.data = data;
+  op->args.get_ex_batch.values_counts = values_counts;
+  op->args.get_ex_batch.results = results;
+  op->args.get_ex_batch.count = count;
+  op->args.get_ex_batch.func = func;
+  op->args.get_ex_batch.context = context;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_get_ex_batch(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val keys[],
+                            MDBX_val data[], size_t values_counts[], int results[], size_t count,
+                            MDBX_async_op **out) {
+  return async_get_ex_batch_submit(async, txn, dbi, keys, data, values_counts, results, count, nullptr, nullptr,
+                                   out);
+}
+
+int mdbx_async_get_ex_batch_cb(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val keys[],
+                               MDBX_val data[], size_t values_counts[], int results[], size_t count,
+                               MDBX_get_ex_batch_func func, void *context, MDBX_async_op **out) {
+  if (unlikely(!func))
+    return LOG_IFERR(MDBX_EINVAL);
+  return async_get_ex_batch_submit(async, txn, dbi, keys, data, values_counts, results, count, func, context, out);
+}
+
+static int async_get_equal_or_great_batch_submit(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                                 MDBX_val keys[], MDBX_val data[], int results[], size_t count,
+                                                 MDBX_get_equal_or_great_batch_func func, void *context,
+                                                 MDBX_async_op **out) {
+  if (unlikely(!txn || !keys || !data || !results || !count))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_get_equal_or_great_batch);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.get_equal_or_great_batch.txn = txn;
+  op->args.get_equal_or_great_batch.dbi = dbi;
+  op->args.get_equal_or_great_batch.keys = keys;
+  op->args.get_equal_or_great_batch.data = data;
+  op->args.get_equal_or_great_batch.results = results;
+  op->args.get_equal_or_great_batch.count = count;
+  op->args.get_equal_or_great_batch.func = func;
+  op->args.get_equal_or_great_batch.context = context;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_get_equal_or_great_batch(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val keys[],
+                                        MDBX_val data[], int results[], size_t count, MDBX_async_op **out) {
+  return async_get_equal_or_great_batch_submit(async, txn, dbi, keys, data, results, count, nullptr, nullptr, out);
+}
+
+int mdbx_async_get_equal_or_great_batch_cb(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                           MDBX_val keys[], MDBX_val data[], int results[], size_t count,
+                                           MDBX_get_equal_or_great_batch_func func, void *context,
+                                           MDBX_async_op **out) {
+  if (unlikely(!func))
+    return LOG_IFERR(MDBX_EINVAL);
+  return async_get_equal_or_great_batch_submit(async, txn, dbi, keys, data, results, count, func, context, out);
 }
 
 int mdbx_async_get_loop(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, size_t count,
