@@ -14967,6 +14967,7 @@ enum mdbx_async_opcode {
   async_op_txn_renew,
   async_op_dbi_open,
   async_op_get,
+  async_op_get_batch,
   async_op_put,
   async_op_del,
   async_op_cursor_open,
@@ -15036,6 +15037,14 @@ struct MDBX_async_op {
       MDBX_dbi dbi;
       MDBX_val *data;
     } get;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_dbi dbi;
+      const MDBX_val *keys;
+      MDBX_val *data;
+      int *results;
+      size_t count;
+    } get_batch;
     struct {
       MDBX_txn *txn;
       MDBX_dbi dbi;
@@ -15167,6 +15176,19 @@ static int async_op_execute(MDBX_async_op *op) {
       *op->args.get.data = data;
     return rc;
   }
+  case async_op_get_batch:
+    for (size_t i = 0; i < op->args.get_batch.count; ++i) {
+      MDBX_val data = {nullptr, 0};
+      const int rc = mdbx_get(op->args.get_batch.txn, op->args.get_batch.dbi, &op->args.get_batch.keys[i], &data);
+      op->args.get_batch.results[i] = rc;
+      if (rc == MDBX_SUCCESS) {
+        op->args.get_batch.data[i] = data;
+      } else {
+        op->args.get_batch.data[i].iov_base = nullptr;
+        op->args.get_batch.data[i].iov_len = 0;
+      }
+    }
+    return MDBX_SUCCESS;
   case async_op_put: {
     MDBX_val data = op->data;
     const int rc = mdbx_put(op->args.put.txn, op->args.put.dbi, &op->key, &data, op->args.put.flags);
@@ -15744,6 +15766,28 @@ int mdbx_async_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const M
   }
   if (unlikely(rc != MDBX_SUCCESS)) {
     async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_get_batch(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[], MDBX_val data[],
+                         int results[], size_t count, MDBX_async_op **out) {
+  if (unlikely(!txn || !keys || !data || !results || !count))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_get_batch);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.get_batch.txn = txn;
+  op->args.get_batch.dbi = dbi;
+  op->args.get_batch.keys = keys;
+  op->args.get_batch.data = data;
+  op->args.get_batch.results = results;
+  op->args.get_batch.count = count;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;
     osal_free(op);
   }

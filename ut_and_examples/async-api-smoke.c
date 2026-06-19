@@ -141,6 +141,7 @@ int main(void) {
   MDBX_dbi dbi = 0;
   uint64_t keys[ITEM_COUNT];
   uint64_t values[ITEM_COUNT];
+  MDBX_val key_values[ITEM_COUNT];
   MDBX_val put_values[ITEM_COUNT];
   MDBX_val get_values[ITEM_COUNT];
   MDBX_async_op *ops[ITEM_COUNT];
@@ -176,9 +177,9 @@ int main(void) {
   for (unsigned i = 0; i < ITEM_COUNT; ++i) {
     keys[i] = i;
     values[i] = expected_value(keys[i]);
-    MDBX_val key = val(&keys[i], sizeof(keys[i]));
+    key_values[i] = val(&keys[i], sizeof(keys[i]));
     put_values[i] = val(&values[i], sizeof(values[i]));
-    CHECK(mdbx_async_put(async, txn, dbi, &key, &put_values[i], 0, &ops[i]));
+    CHECK(mdbx_async_put(async, txn, dbi, &key_values[i], &put_values[i], 0, &ops[i]));
   }
   CHECK(wait_many_success("mdbx_async_put", ops, ITEM_COUNT, op_results, __FILE__, __LINE__));
 
@@ -191,12 +192,23 @@ int main(void) {
   REQUIRE(txn != NULL, "read transaction was not returned");
 
   for (unsigned i = 0; i < ITEM_COUNT; ++i) {
-    MDBX_val key = val(&keys[i], sizeof(keys[i]));
     get_values[i] = val(NULL, 0);
-    CHECK(mdbx_async_get(async, txn, dbi, &key, &get_values[i], &ops[i]));
+    CHECK(mdbx_async_get(async, txn, dbi, &key_values[i], &get_values[i], &ops[i]));
   }
   CHECK(wait_many_success("mdbx_async_get", ops, ITEM_COUNT, op_results, __FILE__, __LINE__));
   for (unsigned i = 0; i < ITEM_COUNT; ++i) {
+    CHECK(expect_value(&get_values[i], keys[i], __FILE__, __LINE__));
+  }
+
+  for (unsigned i = 0; i < ITEM_COUNT; ++i)
+    get_values[i] = val(NULL, 0);
+  CHECK(mdbx_async_get_batch(async, txn, dbi, key_values, get_values, op_results, ITEM_COUNT, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < ITEM_COUNT; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_get_batch", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
     CHECK(expect_value(&get_values[i], keys[i], __FILE__, __LINE__));
   }
 
@@ -267,8 +279,7 @@ int main(void) {
   CHECK_OP(op);
   size_t pending = 0;
   for (unsigned i = 0; i < ITEM_COUNT; i += 3) {
-    MDBX_val key = val(&keys[i], sizeof(keys[i]));
-    CHECK(mdbx_async_del(async, txn, dbi, &key, NULL, &ops[pending++]));
+    CHECK(mdbx_async_del(async, txn, dbi, &key_values[i], NULL, &ops[pending++]));
   }
   CHECK(wait_many_success("mdbx_async_del", ops, pending, op_results, __FILE__, __LINE__));
   CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
@@ -277,12 +288,10 @@ int main(void) {
 
   CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
   CHECK_OP(op);
-  for (unsigned i = 0; i < ITEM_COUNT; ++i) {
-    MDBX_val key = val(&keys[i], sizeof(keys[i]));
+  for (unsigned i = 0; i < ITEM_COUNT; ++i)
     get_values[i] = val(NULL, 0);
-    CHECK(mdbx_async_get(async, txn, dbi, &key, &get_values[i], &ops[i]));
-  }
-  CHECK(wait_many_result("mdbx_async_get", ops, ITEM_COUNT, op_results, __FILE__, __LINE__));
+  CHECK(mdbx_async_get_batch(async, txn, dbi, key_values, get_values, op_results, ITEM_COUNT, &op));
+  CHECK_OP(op);
   for (unsigned i = 0; i < ITEM_COUNT; ++i) {
     const int operation_rc = op_results[i];
     if (i % 3 == 0) {

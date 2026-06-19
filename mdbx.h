@@ -4681,6 +4681,18 @@ LIBMDBX_API int mdbx_async_dbi_open(MDBX_async *async, MDBX_txn *txn, const char
 LIBMDBX_API int mdbx_async_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
                                MDBX_val *data, MDBX_async_op **op);
 
+/** \brief Asynchronously get a batch of items from a table.
+ * \ingroup c_async
+ * \details The `keys`, key bytes, `data`, and `results` arrays must remain
+ *          valid until completion. Each `results` slot receives the
+ *          corresponding \ref mdbx_get() result code, and each successful
+ *          `data` slot follows \ref mdbx_get() value lifetime rules. The async
+ *          operation result is \ref MDBX_SUCCESS when the batch has run and
+ *          per-item results have been stored.
+ * \see mdbx_get() */
+LIBMDBX_API int mdbx_async_get_batch(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
+                                     MDBX_val data[], int results[], size_t count, MDBX_async_op **op);
+
 /** \brief Asynchronously put an item into a table.
  * \ingroup c_async
  * \details Key and data bytes are copied during submission. The initial async
