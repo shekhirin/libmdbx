@@ -1472,3 +1472,47 @@ Additional threaded GET-loop benchmark checkpoint:
   above blocking-parallel parity when submitted concurrently by multiple
   application threads; the result remains scheduler-noisy, but it is aligned
   with the target workload shape
+
+Additional extended GET-loop API checkpoint:
+
+- added `mdbx_async_get_ex_loop()` plus `MDBX_get_ex_loop_result_func` so
+  callers can run many `mdbx_get_ex()` operations as one worker-side async
+  operation while observing returned key/value descriptors and duplicate counts
+  in a worker-thread callback
+- added `mdbx_async_get_equal_or_great_loop()` plus
+  `MDBX_get_loop_data_func` and
+  `MDBX_get_equal_or_great_loop_result_func`; the data preparation callback is
+  optional for key-only lower-bound use, and the result callback receives the
+  exact `mdbx_get_equal_or_great()` result code, including
+  `MDBX_RESULT_TRUE`
+- this extends the coarse worker-side loop pattern from plain `mdbx_get()` to
+  the remaining GET-family public wrappers without changing the blocking API or
+  changing the existing benchmark labels
+- smoke coverage now checks completed counts, key callbacks, result callbacks,
+  `mdbx_get_ex()` duplicate counts, and mixed exact/greater lower-bound results
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- default benchmark spot check passed with GET-path ratios
+  async/blocking-parallel 1.062, async-thread/blocking-parallel 1.079,
+  async-thread-batch/blocking-parallel 1.073,
+  async-batch/blocking-parallel 1.094,
+  async-batch-callback/blocking-parallel 1.082,
+  async-loop/blocking-parallel 1.090, and
+  async-thread-loop/blocking-parallel 1.067
+- three forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` samples passed;
+  GET-path average ratios were async/blocking-parallel 1.081,
+  async-thread/blocking-parallel 1.073,
+  async-thread-batch/blocking-parallel 1.057,
+  async-batch/blocking-parallel 1.067,
+  async-batch-callback/blocking-parallel 1.104,
+  async-loop/blocking-parallel 0.996, and
+  async-thread-loop/blocking-parallel 1.047
+- conclusion: this slice improves async GET-family API coverage for coarse
+  parallel read workloads; it does not change the storage backend or prove a new
+  throughput step, and the forced no-map GET-loop samples remain scheduler-noisy

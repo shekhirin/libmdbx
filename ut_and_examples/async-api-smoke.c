@@ -59,6 +59,22 @@ struct get_loop_probe {
   size_t results;
 };
 
+struct get_ex_loop_probe {
+  uint64_t key;
+  size_t keys;
+  size_t results;
+  size_t values;
+};
+
+struct get_equal_or_great_loop_probe {
+  uint64_t key;
+  uint8_t greater_key[sizeof(uint64_t) + 1];
+  size_t keys;
+  size_t data;
+  size_t results;
+  size_t greater_results;
+};
+
 static int fail_rc(const char *expr, int rc, const char *file, int line) {
   fprintf(stderr, "%s:%d: %s failed: (%d) %s\n", file, line, expr, rc, mdbx_strerror(rc));
   return rc ? rc : MDBX_PROBLEM;
@@ -294,6 +310,81 @@ static int get_loop_result_func(void *context, size_t index, const MDBX_val *key
   if (actual_value != expected_value((uint64_t)index))
     return MDBX_PROBLEM;
   probe->results += 1;
+  return MDBX_SUCCESS;
+}
+
+static int get_ex_loop_key_func(void *context, size_t index, MDBX_val *key) {
+  struct get_ex_loop_probe *const probe = (struct get_ex_loop_probe *)context;
+  if (!probe || !key || index >= ITEM_COUNT)
+    return MDBX_PROBLEM;
+  probe->key = (uint64_t)index;
+  *key = val(&probe->key, sizeof(probe->key));
+  probe->keys += 1;
+  return MDBX_SUCCESS;
+}
+
+static int get_ex_loop_result_func(void *context, size_t index, const MDBX_val *key, const MDBX_val *data,
+                                   size_t values_count, int result) {
+  struct get_ex_loop_probe *const probe = (struct get_ex_loop_probe *)context;
+  if (!probe || !key || !data || result != MDBX_SUCCESS || index >= ITEM_COUNT)
+    return MDBX_PROBLEM;
+  if (values_count != 1 || key->iov_len != sizeof(uint64_t) || data->iov_len != sizeof(uint64_t))
+    return MDBX_PROBLEM;
+  uint64_t actual_key = UINT64_MAX;
+  uint64_t actual_value = 0;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  memcpy(&actual_value, data->iov_base, sizeof(actual_value));
+  if (actual_key != index || actual_value != expected_value((uint64_t)index))
+    return MDBX_PROBLEM;
+  probe->results += 1;
+  probe->values += values_count;
+  return MDBX_SUCCESS;
+}
+
+static int get_equal_or_great_loop_key_func(void *context, size_t index, MDBX_val *key) {
+  struct get_equal_or_great_loop_probe *const probe = (struct get_equal_or_great_loop_probe *)context;
+  if (!probe || !key || index + 1 >= ITEM_COUNT)
+    return MDBX_PROBLEM;
+  probe->key = (uint64_t)index;
+  if (index & 1) {
+    memcpy(probe->greater_key, &probe->key, sizeof(probe->key));
+    probe->greater_key[sizeof(probe->key)] = 0;
+    *key = val(probe->greater_key, sizeof(probe->greater_key));
+  } else {
+    *key = val(&probe->key, sizeof(probe->key));
+  }
+  probe->keys += 1;
+  return MDBX_SUCCESS;
+}
+
+static int get_equal_or_great_loop_data_func(void *context, size_t index, const MDBX_val *key, MDBX_val *data) {
+  struct get_equal_or_great_loop_probe *const probe = (struct get_equal_or_great_loop_probe *)context;
+  if (!probe || !key || !data || index + 1 >= ITEM_COUNT)
+    return MDBX_PROBLEM;
+  *data = val(NULL, 0);
+  probe->data += 1;
+  return MDBX_SUCCESS;
+}
+
+static int get_equal_or_great_loop_result_func(void *context, size_t index, const MDBX_val *key,
+                                               const MDBX_val *data, int result) {
+  struct get_equal_or_great_loop_probe *const probe = (struct get_equal_or_great_loop_probe *)context;
+  if (!probe || !key || !data || index + 1 >= ITEM_COUNT)
+    return MDBX_PROBLEM;
+  const uint64_t expected_key = (uint64_t)(index + (index & 1));
+  if ((index & 1) ? result != MDBX_RESULT_TRUE : result != MDBX_SUCCESS)
+    return MDBX_PROBLEM;
+  if (key->iov_len != sizeof(uint64_t) || data->iov_len != sizeof(uint64_t))
+    return MDBX_PROBLEM;
+  uint64_t actual_key = UINT64_MAX;
+  uint64_t actual_value = 0;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  memcpy(&actual_value, data->iov_base, sizeof(actual_value));
+  if (actual_key != expected_key || actual_value != expected_value(expected_key))
+    return MDBX_PROBLEM;
+  probe->results += 1;
+  if (result == MDBX_RESULT_TRUE)
+    probe->greater_results += 1;
   return MDBX_SUCCESS;
 }
 
@@ -1164,6 +1255,31 @@ int main(void) {
   REQUIRE(get_loop_completed == ITEM_COUNT, "async get loop completed wrong count");
   REQUIRE(get_loop_probe.keys == ITEM_COUNT, "async get loop prepared wrong key count");
   REQUIRE(get_loop_probe.results == ITEM_COUNT, "async get loop saw wrong result count");
+
+  struct get_ex_loop_probe get_ex_loop_probe = {0, 0, 0, 0};
+  size_t get_ex_loop_completed = 0;
+  CHECK(mdbx_async_get_ex_loop(async, txn, dbi, ITEM_COUNT, get_ex_loop_key_func, get_ex_loop_result_func,
+                               &get_ex_loop_probe, &get_ex_loop_completed, &op));
+  CHECK_OP(op);
+  REQUIRE(get_ex_loop_completed == ITEM_COUNT, "async get_ex loop completed wrong count");
+  REQUIRE(get_ex_loop_probe.keys == ITEM_COUNT, "async get_ex loop prepared wrong key count");
+  REQUIRE(get_ex_loop_probe.results == ITEM_COUNT, "async get_ex loop saw wrong result count");
+  REQUIRE(get_ex_loop_probe.values == ITEM_COUNT, "async get_ex loop saw wrong value count");
+
+  struct get_equal_or_great_loop_probe get_equal_or_great_loop_probe = {0, {0}, 0, 0, 0, 0};
+  size_t get_equal_or_great_loop_completed = 0;
+  CHECK(mdbx_async_get_equal_or_great_loop(async, txn, dbi, 8, get_equal_or_great_loop_key_func,
+                                           get_equal_or_great_loop_data_func,
+                                           get_equal_or_great_loop_result_func,
+                                           &get_equal_or_great_loop_probe,
+                                           &get_equal_or_great_loop_completed, &op));
+  CHECK_OP(op);
+  REQUIRE(get_equal_or_great_loop_completed == 8, "async equal-or-great loop completed wrong count");
+  REQUIRE(get_equal_or_great_loop_probe.keys == 8, "async equal-or-great loop prepared wrong key count");
+  REQUIRE(get_equal_or_great_loop_probe.data == 8, "async equal-or-great loop prepared wrong data count");
+  REQUIRE(get_equal_or_great_loop_probe.results == 8, "async equal-or-great loop saw wrong result count");
+  REQUIRE(get_equal_or_great_loop_probe.greater_results == 4,
+          "async equal-or-great loop saw wrong greater-result count");
 
   int dirty_result = MDBX_SUCCESS;
   CHECK(mdbx_async_is_dirty(async, txn, get_values[4].iov_base, &op));
