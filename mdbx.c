@@ -15511,6 +15511,8 @@ struct MDBX_async_op {
       volatile MDBX_cache_entry_t *entries;
       MDBX_cache_result_t *results;
       size_t count;
+      MDBX_cache_get_batch_func func;
+      void *context;
     } cache_get_batch;
     struct {
       const MDBX_txn *txn;
@@ -16566,6 +16568,12 @@ static int async_op_execute(MDBX_async_op *op) {
         op->args.cache_get_batch.data[i].iov_len = 0;
       }
     }
+    if (op->args.cache_get_batch.func)
+      return op->args.cache_get_batch.func(op->args.cache_get_batch.context,
+                                           op->args.cache_get_batch.keys,
+                                           op->args.cache_get_batch.data,
+                                           op->args.cache_get_batch.results,
+                                           op->args.cache_get_batch.count);
     return MDBX_SUCCESS;
   case async_op_cache_get_loop:
   case async_op_cache_get_singlethreaded_loop:
@@ -19468,6 +19476,7 @@ static int async_cache_get_batch_submit(MDBX_async *async, const MDBX_txn *txn, 
                                         const MDBX_val keys[], MDBX_val data[],
                                         volatile MDBX_cache_entry_t entries[],
                                         MDBX_cache_result_t results[], size_t count,
+                                        MDBX_cache_get_batch_func func, void *context,
                                         enum mdbx_async_opcode opcode, MDBX_async_op **out) {
   if (unlikely(!txn || !keys || !data || !entries || !results || !count))
     return LOG_IFERR(MDBX_EINVAL);
@@ -19482,6 +19491,8 @@ static int async_cache_get_batch_submit(MDBX_async *async, const MDBX_txn *txn, 
   op->args.cache_get_batch.entries = entries;
   op->args.cache_get_batch.results = results;
   op->args.cache_get_batch.count = count;
+  op->args.cache_get_batch.func = func;
+  op->args.cache_get_batch.context = context;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;
@@ -19496,7 +19507,17 @@ int mdbx_async_cache_get_batch(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi 
                                MDBX_cache_result_t results[], size_t count,
                                MDBX_async_op **out) {
   return async_cache_get_batch_submit(async, txn, dbi, keys, data, entries, results, count,
-                                      async_op_cache_get_batch, out);
+                                      nullptr, nullptr, async_op_cache_get_batch, out);
+}
+
+int mdbx_async_cache_get_batch_cb(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                  const MDBX_val keys[], MDBX_val data[],
+                                  volatile MDBX_cache_entry_t entries[],
+                                  MDBX_cache_result_t results[], size_t count,
+                                  MDBX_cache_get_batch_func func, void *context,
+                                  MDBX_async_op **out) {
+  return async_cache_get_batch_submit(async, txn, dbi, keys, data, entries, results, count,
+                                      func, context, async_op_cache_get_batch, out);
 }
 
 int mdbx_async_cache_get_SingleThreaded_batch(MDBX_async *async, const MDBX_txn *txn,
@@ -19505,7 +19526,17 @@ int mdbx_async_cache_get_SingleThreaded_batch(MDBX_async *async, const MDBX_txn 
                                               MDBX_cache_result_t results[], size_t count,
                                               MDBX_async_op **out) {
   return async_cache_get_batch_submit(async, txn, dbi, keys, data, entries, results, count,
-                                      async_op_cache_get_singlethreaded_batch, out);
+                                      nullptr, nullptr, async_op_cache_get_singlethreaded_batch, out);
+}
+
+int mdbx_async_cache_get_SingleThreaded_batch_cb(MDBX_async *async, const MDBX_txn *txn,
+                                                 MDBX_dbi dbi, const MDBX_val keys[],
+                                                 MDBX_val data[], MDBX_cache_entry_t entries[],
+                                                 MDBX_cache_result_t results[], size_t count,
+                                                 MDBX_cache_get_batch_func func, void *context,
+                                                 MDBX_async_op **out) {
+  return async_cache_get_batch_submit(async, txn, dbi, keys, data, entries, results, count,
+                                      func, context, async_op_cache_get_singlethreaded_batch, out);
 }
 
 static int async_cache_get_loop_submit(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, size_t count,

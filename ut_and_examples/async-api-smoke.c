@@ -69,6 +69,12 @@ struct get_equal_or_great_batch_probe {
   size_t greater_results;
 };
 
+struct cache_batch_probe {
+  unsigned calls;
+  size_t successes;
+  size_t hits;
+};
+
 struct get_loop_probe {
   uint64_t key;
   size_t keys;
@@ -394,6 +400,29 @@ static int get_equal_or_great_batch_probe_func(void *context, MDBX_val keys[], M
     probe->successes += 1;
     if (results[i] == MDBX_RESULT_TRUE)
       probe->greater_results += 1;
+  }
+  probe->calls += 1;
+  return MDBX_SUCCESS;
+}
+
+static int cache_batch_probe_func(void *context, const MDBX_val keys[], MDBX_val data[],
+                                  const MDBX_cache_result_t results[], size_t count) {
+  struct cache_batch_probe *const probe = (struct cache_batch_probe *)context;
+  if (!probe || !keys || !data || !results)
+    return MDBX_PROBLEM;
+  for (size_t i = 0; i < count; ++i) {
+    if (results[i].errcode != MDBX_SUCCESS || keys[i].iov_len != sizeof(uint64_t) ||
+        data[i].iov_len != sizeof(uint64_t))
+      return MDBX_PROBLEM;
+    uint64_t actual_key = 0;
+    uint64_t actual_value = 0;
+    memcpy(&actual_key, keys[i].iov_base, sizeof(actual_key));
+    memcpy(&actual_value, data[i].iov_base, sizeof(actual_value));
+    if (actual_value != expected_value(actual_key))
+      return MDBX_PROBLEM;
+    probe->successes += 1;
+    if (results[i].status == MDBX_CACHE_HIT)
+      probe->hits += 1;
   }
   probe->calls += 1;
   return MDBX_SUCCESS;
@@ -2003,6 +2032,36 @@ int main(void) {
             "unexpected async single-thread cache get batch result");
     CHECK(expect_value(&cache_many_data[i], keys[i + 2], __FILE__, __LINE__));
   }
+
+  for (unsigned i = 0; i < 4; ++i) {
+    mdbx_cache_init(&cache_many_entries[i]);
+    cache_many_results[i].errcode = MDBX_PROBLEM;
+    cache_many_results[i].status = MDBX_CACHE_ERROR;
+    cache_many_data[i] = val(NULL, 0);
+  }
+  struct cache_batch_probe cache_batch_probe = {0, 0, 0};
+  CHECK(mdbx_async_cache_get_batch_cb(async, txn, dbi, cache_many_keys, cache_many_data,
+                                      cache_many_entries, cache_many_results, 4,
+                                      cache_batch_probe_func, &cache_batch_probe, &op));
+  CHECK_OP(op);
+  REQUIRE(cache_batch_probe.calls == 1, "async cache batch callback was not called");
+  REQUIRE(cache_batch_probe.successes == 4, "async cache batch callback saw wrong success count");
+
+  for (unsigned i = 0; i < 4; ++i) {
+    cache_many_results[i].errcode = MDBX_PROBLEM;
+    cache_many_results[i].status = MDBX_CACHE_ERROR;
+    cache_many_data[i] = val(NULL, 0);
+  }
+  cache_batch_probe.calls = 0;
+  cache_batch_probe.successes = 0;
+  cache_batch_probe.hits = 0;
+  CHECK(mdbx_async_cache_get_SingleThreaded_batch_cb(async, txn, dbi, cache_many_keys, cache_many_data,
+                                                     cache_many_entries, cache_many_results, 4,
+                                                     cache_batch_probe_func, &cache_batch_probe, &op));
+  CHECK_OP(op);
+  REQUIRE(cache_batch_probe.calls == 1, "async single-thread cache batch callback was not called");
+  REQUIRE(cache_batch_probe.successes == 4 && cache_batch_probe.hits == 4,
+          "async single-thread cache batch callback did not hit all items");
 
   for (unsigned i = 0; i < 4; ++i)
     mdbx_cache_init(&cache_many_entries[i]);

@@ -6980,6 +6980,17 @@ LIBMDBX_API int mdbx_async_cache_get_many(MDBX_async *async, const MDBX_txn *txn
                                           MDBX_cache_result_t results[], size_t count,
                                           MDBX_async_op *ops[]);
 
+/** \brief Callback for \ref mdbx_async_cache_get_batch_cb().
+ * \ingroup c_async
+ * \details The callback runs on the executor worker thread after the whole
+ *          cache batch has been fetched and per-item cache results have been
+ *          stored. Returned values follow the normal \ref mdbx_cache_get()
+ *          lifetime rules. Returning a non-success result makes that value the
+ *          async operation result. */
+typedef int (*MDBX_cache_get_batch_func)(void *context, const MDBX_val keys[], MDBX_val data[],
+                                         const MDBX_cache_result_t results[],
+                                         size_t count) MDBX_CXX17_NOEXCEPT;
+
 /** \brief Asynchronously get a batch of items using cache entries.
  * \ingroup c_async
  * \details This submits one async operation that calls \ref mdbx_cache_get()
@@ -6995,6 +7006,20 @@ LIBMDBX_API int mdbx_async_cache_get_batch(MDBX_async *async, const MDBX_txn *tx
                                            volatile MDBX_cache_entry_t entries[],
                                            MDBX_cache_result_t results[], size_t count,
                                            MDBX_async_op **op);
+
+/** \brief Asynchronously get a cache batch and consume it on the executor worker.
+ * \ingroup c_async
+ * \details This is equivalent to \ref mdbx_async_cache_get_batch(), followed
+ *          by a worker-thread callback over the filled `data` and `results`
+ *          arrays before the async operation completes.
+ * \see mdbx_async_cache_get_batch()
+ * \see MDBX_cache_get_batch_func */
+LIBMDBX_API int mdbx_async_cache_get_batch_cb(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                              const MDBX_val keys[], MDBX_val data[],
+                                              volatile MDBX_cache_entry_t entries[],
+                                              MDBX_cache_result_t results[], size_t count,
+                                              MDBX_cache_get_batch_func func, void *context,
+                                              MDBX_async_op **op);
 
 /** \brief Callback that consumes one cache-get loop result.
  * \ingroup c_async
@@ -7098,6 +7123,24 @@ LIBMDBX_API int mdbx_async_cache_get_SingleThreaded_batch(MDBX_async *async, con
                                                           MDBX_cache_entry_t entries[],
                                                           MDBX_cache_result_t results[], size_t count,
                                                           MDBX_async_op **op);
+
+/** \brief Asynchronously get a single-threaded cache batch and consume it on the executor worker.
+ * \ingroup c_async
+ * \details This is equivalent to
+ *          \ref mdbx_async_cache_get_SingleThreaded_batch(), followed by a
+ *          worker-thread callback over the filled `data` and `results` arrays
+ *          before the async operation completes. Each cache entry must be used
+ *          only by the executor worker while the operation is pending.
+ * \see mdbx_async_cache_get_SingleThreaded_batch()
+ * \see MDBX_cache_get_batch_func */
+LIBMDBX_API int mdbx_async_cache_get_SingleThreaded_batch_cb(MDBX_async *async, const MDBX_txn *txn,
+                                                             MDBX_dbi dbi, const MDBX_val keys[],
+                                                             MDBX_val data[],
+                                                             MDBX_cache_entry_t entries[],
+                                                             MDBX_cache_result_t results[],
+                                                             size_t count,
+                                                             MDBX_cache_get_batch_func func,
+                                                             void *context, MDBX_async_op **op);
 
 /** \brief Asynchronously run a worker-side loop of single-threaded cache-get operations.
  * \ingroup c_async

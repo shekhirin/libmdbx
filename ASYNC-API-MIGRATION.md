@@ -4123,3 +4123,67 @@ Additional async cache-get-batch checkpoint:
   sample, cache-batch is a modest improvement over cache-many and the
   single-threaded batch beats hot blocking serial GET; the single-threaded loop
   remains the strongest public async point-read result.
+
+Additional async cache-get-batch-callback checkpoint:
+
+- added `MDBX_cache_get_batch_func`, `mdbx_async_cache_get_batch_cb()`, and
+  `mdbx_async_cache_get_SingleThreaded_batch_cb()` as async-only worker-side
+  callback variants for the cache GET batch API. These reuse the same
+  one-handle array-batch operation as cache-batch, then invoke a callback on
+  the executor worker after all per-item cache results and data slots are
+  filled.
+- smoke coverage now verifies that the multithread-safe callback batch is
+  called once and sees all four successful values, then reuses the same cache
+  entries through the single-threaded callback batch and verifies all four
+  entries are cache hits.
+- extended `ut_and_examples/async-api-bench.c` with cache-batch-callback and
+  single-threaded-cache-batch-callback GET rows. The callback benchmark uses
+  the same stable key-per-worker-slot pattern as cache-many and cache-batch,
+  but moves per-item validation into the executor worker callback before the
+  operation completes.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking serial get
+  1.882 Mops/s, blocking parallel get 590.792 Kops/s, async many parallel get
+  790.867 Kops/s, async cache many 1.852 Mops/s, async cache st many
+  2.327 Mops/s, async cache batch 2.205 Mops/s, async cache st batch
+  2.371 Mops/s, async cache batch callback 2.032 Mops/s, async cache st batch
+  callback 2.076 Mops/s, async cache loop 1.531 Mops/s, and async cache st
+  loop 1.525 Mops/s.
+- current ratios were async-cache-many/blocking-parallel 3.134,
+  async-cache-st-many/blocking-parallel 3.940,
+  async-cache-batch/blocking-parallel 3.732,
+  async-cache-st-batch/blocking-parallel 4.013,
+  async-cache-batch-callback/blocking-parallel 3.440,
+  async-cache-st-batch-callback/blocking-parallel 3.514,
+  async-cache-batch/cache-many 1.191,
+  async-cache-st-batch/cache-st-many 1.019,
+  async-cache-batch-callback/cache-batch 0.922,
+  async-cache-st-batch-callback/cache-st-batch 0.876,
+  async-cache-batch-callback/blocking-serial 1.080, and
+  async-cache-st-batch-callback/blocking-serial 1.103.
+- comparison with the previous cache-batch checkpoint: the new callback helper
+  improves API ergonomics and keeps cache-backed async reads well above
+  blocking pthread-parallel GET and hot blocking serial GET in this sample, but
+  it is not a performance win over plain cache-batch here. The callback path is
+  slower than plain batch in this run, likely because validation work moved
+  onto the executor worker's critical path instead of the caller thread after
+  wait completion.
+- comparison with the pre-async ioarena baseline at the top of this log remains
+  separate: cache-batch-callback measures public async API/cache lookup and
+  callback overhead on stable in-process keys, not storage-level lazy-mode
+  phases. It extends the public async read surface but does not remeasure or
+  close the storage/ioarena migration gap.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=198 async-covered=132 async-only=66 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: cache-backed point reads now have worker-side callback variants
+  for one-handle array batches. This improves async API shape and preserves
+  better-than-blocking parallel read throughput, while the latest reduced
+  sample shows plain cache-batch remains faster than callback batch.
