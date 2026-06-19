@@ -13008,6 +13008,29 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.110` batch, `1.143` crud, `0.925` iterate,
 `0.943` get, and `1.070` delete.
 
+A later page-cache read submit-boundary cleanup removed the one-call
+`dxb_storage_submit_cache_fill_read()` and
+`dxb_storage_submit_cache_materialize_read()` helpers from `mdbx.c`.
+`dxb_storage_submit_read_cached_page()` and
+`dxb_storage_submit_materialize_cached_large_page()` now revalidate their
+cache-specific read descriptors and submit the nested `dxb_read_submit_io_t`
+directly through `dxb_storage_submit_read_data()`. This preserves
+`submitted=false` validation failures and read submitted/completed accounting
+while avoiding a second internal submit wrapper around explicit data-file
+reads. Verification passed `git diff --check`, source scans proving
+`dxb_storage_submit_cache_fill_read()` and
+`dxb_storage_submit_cache_materialize_read()` are absent from `mdbx.c` and the
+public/internal headers, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.093` batch, `1.144` crud, `0.999` iterate,
+`1.020` get, and `1.061` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

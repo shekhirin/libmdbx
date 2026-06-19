@@ -27753,16 +27753,6 @@ static dxb_cache_result_t dxb_storage_submit_insert_cached_page(dxb_storage_t *s
   return dxb_cache_submitted(dxb_cache_inserted(io));
 }
 
-static dxb_read_result_t dxb_storage_submit_cache_fill_read(const dxb_storage_t *storage,
-                                                            const dxb_cache_fill_read_submit_io_t *io) {
-  int err = dxb_storage_cache_fill_read_submit_io_validate(storage, io);
-  if (unlikely(err != MDBX_SUCCESS)) {
-    const dxb_read_result_t result = {err, 0, false, false};
-    return result;
-  }
-  return dxb_storage_submit_read_data(storage, &io->storage_read);
-}
-
 static inline pgr_t dxb_storage_make_cached_pgr(page_cache_entry_t *entry) {
   pgr_t ret = pgr_make(entry->page, MDBX_SUCCESS, entry->io.pgno, entry->io.npages, PAGE_REF_CACHE);
   ret.ref.cache = entry;
@@ -27828,7 +27818,11 @@ static dxb_cache_page_result_t dxb_storage_submit_read_cached_page(dxb_storage_t
   if (unlikely(err != MDBX_SUCCESS))
     goto bailout;
 
-  dxb_read_result_t read_result = dxb_storage_submit_cache_fill_read(storage, &fill_submit);
+  err = dxb_storage_cache_fill_read_submit_io_validate(storage, &fill_submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    goto bailout;
+
+  dxb_read_result_t read_result = dxb_storage_submit_read_data(storage, &fill_submit.storage_read);
   submitted = read_result.submitted;
   err = read_result.err;
   if (unlikely(err != MDBX_SUCCESS))
@@ -27860,16 +27854,6 @@ bailout:
     osal_memalign_free(entry->page);
   osal_free(entry);
   return dxb_cache_page_submitted_error(err, submitted);
-}
-
-static dxb_read_result_t dxb_storage_submit_cache_materialize_read(
-    const dxb_storage_t *storage, const dxb_cache_materialize_read_submit_io_t *io) {
-  int err = dxb_storage_cache_materialize_read_submit_io_validate(storage, io);
-  if (unlikely(err != MDBX_SUCCESS)) {
-    const dxb_read_result_t result = {err, 0, false, false};
-    return result;
-  }
-  return dxb_storage_submit_read_data(storage, &io->storage_read);
 }
 
 static dxb_cache_result_t dxb_storage_submit_detach_materialized_large_page(
@@ -28015,7 +27999,13 @@ static dxb_cache_result_t dxb_storage_submit_materialize_cached_large_page(
     return dxb_cache_error(err);
   }
 
-  dxb_read_result_t read_result = dxb_storage_submit_cache_materialize_read(storage, &read_submit);
+  err = dxb_storage_cache_materialize_read_submit_io_validate(storage, &read_submit);
+  if (unlikely(err != MDBX_SUCCESS)) {
+    osal_memalign_free(large);
+    return dxb_cache_error(err);
+  }
+
+  dxb_read_result_t read_result = dxb_storage_submit_read_data(storage, &read_submit.storage_read);
   err = read_result.err;
   if (unlikely(err != MDBX_SUCCESS)) {
     osal_memalign_free(large);
