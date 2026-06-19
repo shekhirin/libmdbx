@@ -5840,6 +5840,31 @@ LIBMDBX_API int mdbx_async_cursor_get_batches(MDBX_async *async, MDBX_cursor *cu
                                               size_t batch_pairs, MDBX_cursor_batch_func func, void *context,
                                               size_t *completed_pairs, MDBX_async_op **op);
 
+/** \brief Asynchronously fetch cursor batches from a key/value position.
+ * \ingroup c_async
+ * \details This is a positioned variant of
+ *          \ref mdbx_async_cursor_get_batches(). The submitted `from_key` and
+ *          optional `from_value` bytes are copied during submission and used
+ *          only for the initial `from_op` positioning call. The caller
+ *          descriptor objects must remain valid until completion. As batches
+ *          are consumed, `from_key` and, when supplied, `from_value` are
+ *          updated to the last consumed key/value pair.
+ *
+ *          `func`, when non-NULL, is called once per internal batch on the
+ *          executor worker thread. Its `pairs` descriptors are reused by the
+ *          next internal batch and must not be retained after the callback
+ *          returns. `completed_pairs`, when non-NULL, is updated as batches are
+ *          consumed and must remain valid until operation completion.
+ *
+ * \see mdbx_async_cursor_get_batches()
+ * \see mdbx_cursor_get_batch() */
+LIBMDBX_API int mdbx_async_cursor_get_batches_from(MDBX_async *async, MDBX_cursor *cursor,
+                                                   size_t target_pairs, size_t batch_pairs,
+                                                   MDBX_cursor_op from_op, MDBX_val *from_key,
+                                                   MDBX_val *from_value, MDBX_cursor_batch_func func,
+                                                   void *context, size_t *completed_pairs,
+                                                   MDBX_async_op **op);
+
 /** \brief Asynchronously return the duplicate count for the current cursor key.
  * \ingroup c_async
  * \details The `count` output must remain valid until completion.

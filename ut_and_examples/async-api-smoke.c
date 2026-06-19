@@ -2150,6 +2150,24 @@ int main(void) {
   REQUIRE(batch_probe.pairs == loop_pairs, "async cursor batch loop probe mismatch");
   REQUIRE(batch_probe.calls >= 2, "async cursor batch loop did not restart");
 
+  uint64_t batch_from_key_data = 18;
+  MDBX_val batch_from_key = val(&batch_from_key_data, sizeof(batch_from_key_data));
+  MDBX_val batch_from_data = val(NULL, 0);
+  struct batch_probe batch_from_probe = {0, 0};
+  size_t batch_from_pairs = 0;
+  CHECK(mdbx_async_cursor_get_batches_from(async, cursor, 10, 4, MDBX_SET_LOWERBOUND,
+                                           &batch_from_key, &batch_from_data, batch_probe_func,
+                                           &batch_from_probe, &batch_from_pairs, &op));
+  CHECK_OP(op);
+  REQUIRE(batch_from_pairs >= 10, "async cursor batch loop-from consumed too few pairs");
+  REQUIRE(batch_from_probe.pairs == batch_from_pairs, "async cursor batch loop-from probe mismatch");
+  REQUIRE(batch_from_key.iov_len == sizeof(uint64_t), "unexpected cursor batch loop-from key size");
+  uint64_t batch_from_actual_key = 0;
+  memcpy(&batch_from_actual_key, batch_from_key.iov_base, sizeof(batch_from_actual_key));
+  REQUIRE(batch_from_actual_key == batch_from_key_data + batch_from_pairs - 1,
+          "unexpected cursor batch loop-from key");
+  CHECK(expect_value(&batch_from_data, batch_from_actual_key, __FILE__, __LINE__));
+
   struct cursor_get_loop_probe cursor_get_loop_probe = {0};
   size_t cursor_get_loop_completed = 0;
   CHECK(mdbx_async_cursor_get_loop(async, cursor, ITEM_COUNT, MDBX_FIRST, MDBX_NEXT,

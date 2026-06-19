@@ -15130,6 +15130,7 @@ enum mdbx_async_opcode {
   async_op_cursor_scan_from,
   async_op_cursor_get_batch,
   async_op_cursor_get_batches,
+  async_op_cursor_get_batches_from,
   async_op_cursor_count,
   async_op_cursor_txn,
   async_op_cursor_dbi,
@@ -15730,6 +15731,10 @@ struct MDBX_async_op {
       MDBX_cursor_batch_func func;
       void *context;
       size_t *completed_pairs;
+      MDBX_val *from_key;
+      MDBX_val *from_value;
+      MDBX_cursor_op from_op;
+      bool has_from_value;
     } cursor_get_batches;
     struct {
       const MDBX_cursor *cursor;
@@ -16087,6 +16092,25 @@ static int async_cursor_get_batches_execute(MDBX_async_op *op) {
   size_t completed = 0;
   int rc = MDBX_SUCCESS;
   MDBX_cursor_op cursor_op = MDBX_FIRST;
+  if (op->args.cursor_get_batches.from_key) {
+    MDBX_val key = op->key;
+    MDBX_val data = op->data;
+    MDBX_val *const data_ptr = op->args.cursor_get_batches.has_from_value ? &data : nullptr;
+    rc = mdbx_cursor_get(op->args.cursor_get_batches.cursor, &key, data_ptr,
+                         op->args.cursor_get_batches.from_op);
+    if (unlikely(rc == MDBX_NOTFOUND)) {
+      osal_free(pairs);
+      return MDBX_RESULT_TRUE;
+    }
+    if (unlikely(rc != MDBX_SUCCESS)) {
+      osal_free(pairs);
+      return rc;
+    }
+    *op->args.cursor_get_batches.from_key = key;
+    if (op->args.cursor_get_batches.has_from_value)
+      *op->args.cursor_get_batches.from_value = data;
+    cursor_op = MDBX_NEXT;
+  }
   while (completed < target_pairs) {
     size_t count = 0;
     rc = mdbx_cursor_get_batch(op->args.cursor_get_batches.cursor, &count, pairs, limit, cursor_op);
@@ -16105,6 +16129,11 @@ static int async_cursor_get_batches_execute(MDBX_async_op *op) {
     completed += count / 2;
     if (completed_pairs)
       *completed_pairs = completed;
+    if (op->args.cursor_get_batches.from_key && count >= 2) {
+      *op->args.cursor_get_batches.from_key = pairs[count - 2];
+      if (op->args.cursor_get_batches.has_from_value)
+        *op->args.cursor_get_batches.from_value = pairs[count - 1];
+    }
     cursor_op = batch_rc == MDBX_SUCCESS ? MDBX_NEXT : MDBX_FIRST;
     rc = MDBX_SUCCESS;
   }
@@ -16842,6 +16871,7 @@ static int async_op_execute(MDBX_async_op *op) {
                                  op->args.cursor_get_batch.pairs, op->args.cursor_get_batch.limit,
                                  op->args.cursor_get_batch.op);
   case async_op_cursor_get_batches:
+  case async_op_cursor_get_batches_from:
     return async_cursor_get_batches_execute(op);
   case async_op_cursor_count:
     return mdbx_cursor_count_ex(op->args.cursor_count.cursor, op->args.cursor_count.count,
@@ -20188,12 +20218,50 @@ int mdbx_async_cursor_get_batches(MDBX_async *async, MDBX_cursor *cursor, size_t
   op->args.cursor_get_batches.func = func;
   op->args.cursor_get_batches.context = context;
   op->args.cursor_get_batches.completed_pairs = completed_pairs;
+  op->args.cursor_get_batches.from_key = nullptr;
+  op->args.cursor_get_batches.from_value = nullptr;
+  op->args.cursor_get_batches.from_op = MDBX_FIRST;
+  op->args.cursor_get_batches.has_from_value = false;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;
     osal_free(op);
   }
   return rc;
+}
+
+int mdbx_async_cursor_get_batches_from(MDBX_async *async, MDBX_cursor *cursor, size_t target_pairs,
+                                       size_t batch_pairs, MDBX_cursor_op from_op, MDBX_val *from_key,
+                                       MDBX_val *from_value, MDBX_cursor_batch_func func, void *context,
+                                       size_t *completed_pairs, MDBX_async_op **out) {
+  if (unlikely(!cursor || !from_key || (target_pairs && batch_pairs == 0)))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_get_batches_from);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, from_key);
+  if (likely(rc == MDBX_SUCCESS) && from_value)
+    rc = async_copy_val(&op->data, &op->data_copy, op->data_inline, MDBX_ASYNC_INLINE_BYTES, from_value);
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.cursor_get_batches.cursor = cursor;
+    op->args.cursor_get_batches.target_pairs = target_pairs;
+    op->args.cursor_get_batches.batch_pairs = batch_pairs;
+    op->args.cursor_get_batches.func = func;
+    op->args.cursor_get_batches.context = context;
+    op->args.cursor_get_batches.completed_pairs = completed_pairs;
+    op->args.cursor_get_batches.from_key = from_key;
+    op->args.cursor_get_batches.from_value = from_value;
+    op->args.cursor_get_batches.from_op = from_op;
+    op->args.cursor_get_batches.has_from_value = from_value != nullptr;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
 }
 
 int mdbx_async_cursor_count(MDBX_async *async, const MDBX_cursor *cursor, size_t *count, MDBX_async_op **out) {

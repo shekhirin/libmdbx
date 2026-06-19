@@ -3852,3 +3852,47 @@ Additional positioned cursor get-loop checkpoint:
   count-limited async API shapes. The threaded count-limited shape beats the
   blocking pthread scan_from baseline in this sample, while the predicate
   scan_from helper remains the faster async positioned-scan path.
+
+Additional positioned cursor batch-loop checkpoint:
+
+- added `mdbx_async_cursor_get_batches_from()` as an async-only positioned,
+  batch-loop cursor range helper. It copies the submitted start key/value bytes
+  before enqueueing, positions the cursor once on the worker thread, repeatedly
+  calls `mdbx_cursor_get_batch()`, invokes the existing batch callback for each
+  internal batch, updates the caller's key/value descriptors to the last
+  consumed pair, and reports the completed pair count.
+- smoke coverage verifies a `MDBX_SET_LOWERBOUND` batch-loop from key 18,
+  including the completed count, callback pair count, and final key/value
+  descriptor update.
+- extended `ut_and_examples/async-api-bench.c` with single-submitter and
+  multi-application-thread `mdbx_async_cursor_get_batches_from()` measurements.
+  These sit beside the positioned `mdbx_async_cursor_get_loop_from()` and
+  predicate scan_from paths.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported parallel cursor scan_from
+  67.688 Mops/s, async cursor scan_from 73.440 Mops/s, async threaded cursor
+  scan_from 139.364 Mops/s, async cursor get loop_from 58.459 Mops/s, async
+  threaded cursor get loop_from 121.925 Mops/s, async cursor loop_from
+  99.517 Mops/s, and async threaded cursor loop_from 138.483 Mops/s.
+- ratios were async-cursor-loop-from/par 1.470,
+  async-cursor-loop-from/scan 1.355, async-thread-cur-from/par 2.046,
+  async-thread-cur-from/loop 1.392, and async-thread-cur-from/scan 0.994.
+- comparison with the previous positioned cursor get-loop checkpoint: the
+  batch-loop-from helper is the better count-limited positioned range shape.
+  It beats the current blocking pthread scan_from baseline in both
+  single-submitter and threaded forms, and the threaded form is effectively tied
+  with the predicate-based async scan_from path in this sample.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=190 async-covered=132 async-only=58 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: positioned range reads now have a count-limited batch-loop async
+  API that uses the faster cursor batch primitive. This improves the positioned
+  count-limited read story and gives the benchmark another parallel-heavy async
+  path above blocking pthread scan_from.
