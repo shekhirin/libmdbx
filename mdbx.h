@@ -5806,6 +5806,18 @@ LIBMDBX_API int mdbx_async_cursor_put_batch(MDBX_async *async, MDBX_cursor *curs
 LIBMDBX_API int mdbx_async_cursor_del(MDBX_async *async, MDBX_cursor *cursor, MDBX_put_flags_t flags,
                                       MDBX_async_op **op);
 
+/** \brief Asynchronously delete several current cursor items in one worker operation.
+ * \ingroup c_async
+ * \details The cursor handle and optional `completed` output must remain valid
+ *          until completion. The worker repeatedly calls \ref mdbx_cursor_del()
+ *          with `flags`; after each deletion except the last it follows the
+ *          post-delete cursor position with \ref MDBX_GET_CURRENT. `completed`
+ *          receives the number of successful deletions before any operation
+ *          result is returned.
+ * \see mdbx_cursor_del() */
+LIBMDBX_API int mdbx_async_cursor_del_loop(MDBX_async *async, MDBX_cursor *cursor, size_t count,
+                                           MDBX_put_flags_t flags, size_t *completed, MDBX_async_op **op);
+
 /** \brief Asynchronously delete a range between cursor positions.
  * \ingroup c_async
  * \details The cursor handles and optional `number_of_affected` output must

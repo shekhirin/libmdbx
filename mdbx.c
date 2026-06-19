@@ -15141,6 +15141,7 @@ enum mdbx_async_opcode {
   async_op_cursor_put,
   async_op_cursor_put_batch,
   async_op_cursor_del,
+  async_op_cursor_del_loop,
   async_op_cursor_delete_range,
   async_op_cursor_bunch_delete,
   async_op_cursor_close
@@ -15760,6 +15761,12 @@ struct MDBX_async_op {
       MDBX_cursor *cursor;
       MDBX_put_flags_t flags;
     } cursor_del;
+    struct {
+      MDBX_cursor *cursor;
+      size_t count;
+      size_t *completed;
+      MDBX_put_flags_t flags;
+    } cursor_del_loop;
     struct {
       MDBX_cursor *begin;
       MDBX_cursor *end;
@@ -16717,6 +16724,25 @@ static int async_op_execute(MDBX_async_op *op) {
     return MDBX_SUCCESS;
   case async_op_cursor_del:
     return mdbx_cursor_del(op->args.cursor_del.cursor, op->args.cursor_del.flags);
+  case async_op_cursor_del_loop: {
+    if (op->args.cursor_del_loop.completed)
+      *op->args.cursor_del_loop.completed = 0;
+    for (size_t i = 0; i < op->args.cursor_del_loop.count; ++i) {
+      int rc = mdbx_cursor_del(op->args.cursor_del_loop.cursor, op->args.cursor_del_loop.flags);
+      if (rc != MDBX_SUCCESS)
+        return rc;
+      if (op->args.cursor_del_loop.completed)
+        *op->args.cursor_del_loop.completed = i + 1;
+      if (i + 1 < op->args.cursor_del_loop.count) {
+        MDBX_val key = {nullptr, 0};
+        MDBX_val data = {nullptr, 0};
+        rc = mdbx_cursor_get(op->args.cursor_del_loop.cursor, &key, &data, MDBX_GET_CURRENT);
+        if (rc != MDBX_SUCCESS)
+          return rc;
+      }
+    }
+    return MDBX_SUCCESS;
+  }
   case async_op_cursor_delete_range:
     return mdbx_cursor_delete_range(op->args.cursor_delete_range.begin, op->args.cursor_delete_range.end,
                                     op->args.cursor_delete_range.end_including,
@@ -20162,6 +20188,26 @@ int mdbx_async_cursor_del(MDBX_async *async, MDBX_cursor *cursor, MDBX_put_flags
     return LOG_IFERR(rc);
   op->args.cursor_del.cursor = cursor;
   op->args.cursor_del.flags = flags;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return rc;
+}
+
+int mdbx_async_cursor_del_loop(MDBX_async *async, MDBX_cursor *cursor, size_t count, MDBX_put_flags_t flags,
+                               size_t *completed, MDBX_async_op **out) {
+  if (unlikely(!cursor || !count))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_del_loop);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cursor_del_loop.cursor = cursor;
+  op->args.cursor_del_loop.count = count;
+  op->args.cursor_del_loop.completed = completed;
+  op->args.cursor_del_loop.flags = flags;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;

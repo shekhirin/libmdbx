@@ -618,6 +618,7 @@ int main(void) {
   MDBX_dbi rename_dbi = 0;
   MDBX_dbi range_dbi = 0;
   MDBX_dbi bunch_dbi = 0;
+  MDBX_dbi del_loop_dbi = 0;
   MDBX_dbi custom_cstr_dbi = 0;
   MDBX_dbi custom_val_dbi = 0;
   uint64_t keys[ITEM_COUNT];
@@ -1065,6 +1066,38 @@ int main(void) {
   CHECK(mdbx_async_drop(async, txn, range_dbi, true, &op));
   CHECK_OP(op);
   range_dbi = 0;
+
+  CHECK(mdbx_async_dbi_open(async, txn, "async-del-loop-target", MDBX_CREATE, &del_loop_dbi, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put_batch(async, txn, del_loop_dbi, key_values, put_values, op_results, 5, 0, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < 5; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_put_batch del loop", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
+  }
+  CHECK(mdbx_async_cursor_open(async, txn, del_loop_dbi, &cursor, &op));
+  CHECK_OP(op);
+  MDBX_val del_loop_key = key_values[1];
+  MDBX_val del_loop_data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, cursor, &del_loop_key, &del_loop_data, MDBX_SET_KEY, &op));
+  CHECK_OP(op);
+  size_t del_loop_completed = 0;
+  CHECK(mdbx_async_cursor_del_loop(async, cursor, 3, MDBX_CURRENT, &del_loop_completed, &op));
+  CHECK_OP(op);
+  REQUIRE(del_loop_completed == 3, "unexpected async cursor delete loop count");
+  CHECK(mdbx_async_cursor_close(async, cursor, &op));
+  CHECK_OP(op);
+  cursor = NULL;
+  MDBX_stat del_loop_stat;
+  memset(&del_loop_stat, 0, sizeof(del_loop_stat));
+  CHECK(mdbx_async_dbi_stat(async, txn, del_loop_dbi, &del_loop_stat, sizeof(del_loop_stat), &op));
+  CHECK_OP(op);
+  REQUIRE(del_loop_stat.ms_entries == 2, "async cursor delete loop left unexpected entries");
+  CHECK(mdbx_async_drop(async, txn, del_loop_dbi, true, &op));
+  CHECK_OP(op);
+  del_loop_dbi = 0;
 
   CHECK(mdbx_async_dbi_open(async, txn, "async-bunch-target", MDBX_CREATE, &bunch_dbi, &op));
   CHECK_OP(op);

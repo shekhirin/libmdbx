@@ -1072,6 +1072,65 @@ bailout:
   return (rc == MDBX_SUCCESS) ? rate : -1.0;
 }
 
+static double async_cursor_delete_loop(MDBX_env *env, MDBX_dbi dbi, size_t ops) {
+  MDBX_async *async = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_cursor *cursor = NULL;
+  MDBX_async_op *op = NULL;
+  int rc = MDBX_SUCCESS;
+  double rate = -1.0;
+
+  if (!ops)
+    return -1.0;
+  CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+
+  MDBX_val key = val(NULL, 0);
+  MDBX_val data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, cursor, &key, &data, MDBX_FIRST, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+
+  size_t completed = 0;
+  int operation_rc = MDBX_SUCCESS;
+  const uint64_t start = monotime_ns();
+  CHECK(mdbx_async_cursor_del_loop(async, cursor, ops, MDBX_CURRENT, &completed, &op));
+  CHECK(wait_success(&op, &operation_rc, __FILE__, __LINE__));
+  const uint64_t finish = monotime_ns();
+  if (operation_rc != MDBX_SUCCESS) {
+    rc = fail_rc("mdbx_async_cursor_del_loop", operation_rc, __FILE__, __LINE__);
+    goto bailout;
+  }
+  if (completed != ops) {
+    rc = fail_msg("unexpected async cursor delete loop count", __FILE__, __LINE__);
+    goto bailout;
+  }
+  CHECK(mdbx_async_cursor_close(async, cursor, &op));
+  cursor = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  txn = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  if (finish > start)
+    rate = (double)completed * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  if (cursor && async) {
+    MDBX_async_op *close_op = NULL;
+    if (mdbx_async_cursor_close(async, cursor, &close_op) == MDBX_SUCCESS)
+      (void)wait_success(&close_op, NULL, __FILE__, __LINE__);
+  }
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  if (async)
+    (void)mdbx_async_destroy(async, true);
+  return (rc == MDBX_SUCCESS) ? rate : -1.0;
+}
+
 static double blocking_cursor_range_delete(MDBX_env *env, MDBX_dbi dbi, size_t ops) {
   MDBX_txn *txn = NULL;
   MDBX_cursor *end = NULL;
@@ -3156,6 +3215,8 @@ int main(void) {
   CHECK(seed_database(env, &dbi, items));
   const double async_cursor_del = async_cursor_delete(env, dbi, delete_ops);
   CHECK(seed_database(env, &dbi, items));
+  const double async_cursor_del_loop = async_cursor_delete_loop(env, dbi, delete_ops);
+  CHECK(seed_database(env, &dbi, items));
   const double blocking_cursor_range_del = blocking_cursor_range_delete(env, dbi, delete_ops);
   CHECK(seed_database(env, &dbi, items));
   const double async_cursor_range_del = async_cursor_range_delete(env, dbi, delete_ops);
@@ -3201,6 +3262,7 @@ int main(void) {
   print_rate("async batch delete", async_del_batch);
   print_rate("blocking cursor delete", blocking_cursor_del);
   print_rate("async cursor delete", async_cursor_del);
+  print_rate("async cursor del loop", async_cursor_del_loop);
   print_rate("blocking cursor range del", blocking_cursor_range_del);
   print_rate("async cursor range del", async_cursor_range_del);
   print_rate("blocking cursor bunch del", blocking_cursor_bunch_del);
@@ -3320,8 +3382,12 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-del-batch/async-del", async_del_batch / async_del);
   if (blocking_cursor_del > 0.0 && async_cursor_del > 0.0)
     printf("%-28s %8.3f\n", "async-cursor-del/block", async_cursor_del / blocking_cursor_del);
+  if (blocking_cursor_del > 0.0 && async_cursor_del_loop > 0.0)
+    printf("%-28s %8.3f\n", "async-cursor-del-loop/block", async_cursor_del_loop / blocking_cursor_del);
   if (async_del > 0.0 && async_cursor_del > 0.0)
     printf("%-28s %8.3f\n", "async-cursor-del/async-del", async_cursor_del / async_del);
+  if (async_cursor_del > 0.0 && async_cursor_del_loop > 0.0)
+    printf("%-28s %8.3f\n", "async-cursor-del-loop/async", async_cursor_del_loop / async_cursor_del);
   if (blocking_cursor_range_del > 0.0 && async_cursor_range_del > 0.0)
     printf("%-28s %8.3f\n", "async-cursor-range/block", async_cursor_range_del / blocking_cursor_range_del);
   if (blocking_cursor_bunch_del > 0.0 && async_cursor_bunch_del > 0.0)

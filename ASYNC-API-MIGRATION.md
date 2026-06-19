@@ -3186,3 +3186,39 @@ Additional cursor-delete benchmark checkpoint:
   result highlights another concrete optimization/API-design target for
   cursor-heavy write workloads: callers need coarser submitted cursor mutation
   shapes, or the per-operation cursor executor path needs lower latency.
+
+Additional async cursor-delete loop API checkpoint:
+
+- added `mdbx_async_cursor_del_loop()` as an async-only helper for deleting
+  several current cursor items inside one worker operation. The blocking API is
+  unchanged. The operation repeatedly calls `mdbx_cursor_del()` with the
+  supplied flags and uses `MDBX_GET_CURRENT` between deletes, matching the
+  existing cursor-delete benchmark's post-delete cursor contract.
+- the API accepts an optional `completed` output that receives the number of
+  successful deletes before completion or before an operation-level error.
+- extended `ut_and_examples/async-api-smoke.c` with a dedicated temporary table
+  that deletes three adjacent cursor items and verifies the completion count
+  and final entry count.
+- extended `ut_and_examples/async-api-bench.c` with
+  `mdbx_async_cursor_del_loop()` timing beside the existing blocking and
+  per-item async cursor-delete measurements.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking cursor delete
+  4.028 Mops/s, async cursor delete 133.939 Kops/s, async cursor delete loop
+  4.099 Mops/s, async-cursor-del/block 0.033,
+  async-cursor-del-loop/block 1.017, and
+  async-cursor-del-loop/async 30.601.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=180 async-covered=132 async-only=48 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the cursor-delete benchmark gap was primarily submission
+  granularity. Moving the delete/get-current loop into one async worker
+  operation brings this reduced cursor-delete workload to parity with the
+  blocking cursor path while preserving the existing blocking API.
