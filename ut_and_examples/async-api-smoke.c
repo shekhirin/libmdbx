@@ -201,6 +201,17 @@ int main(void) {
   CHECK_OP(op);
   REQUIRE(sequence_value == 0, "unexpected initial async dbi sequence");
 
+  MDBX_canary canary = {11, 22, 33, 0};
+  CHECK(mdbx_async_canary_put(async, txn, &canary, &op));
+  CHECK_OP(op);
+  MDBX_canary canary_read;
+  memset(&canary_read, 0, sizeof(canary_read));
+  CHECK(mdbx_async_canary_get(async, txn, &canary_read, &op));
+  CHECK_OP(op);
+  REQUIRE(canary_read.x == canary.x && canary_read.y == canary.y && canary_read.z == canary.z,
+          "unexpected async canary values in write txn");
+  REQUIRE(canary_read.v != 0, "async canary did not receive transaction id");
+
   for (unsigned i = 0; i < ITEM_COUNT; ++i) {
     keys[i] = i;
     values[i] = expected_value(keys[i]);
@@ -350,6 +361,13 @@ int main(void) {
   CHECK(wait_result("mdbx_async_txn_refresh", &op, &refresh_result, __FILE__, __LINE__));
   REQUIRE(refresh_result == MDBX_SUCCESS || refresh_result == MDBX_RESULT_TRUE, "unexpected async txn refresh result");
 
+  memset(&canary_read, 0, sizeof(canary_read));
+  CHECK(mdbx_async_canary_get(async, txn, &canary_read, &op));
+  CHECK_OP(op);
+  REQUIRE(canary_read.x == canary.x && canary_read.y == canary.y && canary_read.z == canary.z,
+          "unexpected persisted async canary values");
+  REQUIRE(canary_read.v != 0, "persisted async canary has empty transaction id");
+
   sequence_value = UINT64_MAX;
   CHECK(mdbx_async_dbi_sequence(async, txn, dbi, &sequence_value, 0, &op));
   CHECK_OP(op);
@@ -489,6 +507,40 @@ int main(void) {
   CHECK(mdbx_async_cursor_distance(async, cursor, cursor2, &cursor_distance, 42, &op));
   CHECK_OP(op);
   REQUIRE(cursor_distance == (intptr_t)ITEM_COUNT - 1, "unexpected async cursor distance");
+
+  ptrdiff_t estimated_distance = 0;
+  CHECK(mdbx_async_estimate_distance(async, cursor, cursor2, &estimated_distance, &op));
+  CHECK_OP(op);
+  REQUIRE(estimated_distance >= 0 && estimated_distance <= (ptrdiff_t)ITEM_COUNT,
+          "unexpected async estimate distance");
+
+  MDBX_val estimate_key = val(NULL, 0);
+  MDBX_val estimate_data = val(NULL, 0);
+  ptrdiff_t estimated_move = 0;
+  CHECK(mdbx_async_estimate_move(async, cursor, &estimate_key, &estimate_data, MDBX_LAST, &estimated_move, &op));
+  CHECK_OP(op);
+  REQUIRE(estimated_move >= 0 && estimated_move <= (ptrdiff_t)ITEM_COUNT, "unexpected async estimate move");
+  REQUIRE(estimate_key.iov_len == sizeof(uint64_t), "unexpected async estimate move key size");
+  uint64_t estimate_actual_key = 0;
+  memcpy(&estimate_actual_key, estimate_key.iov_base, sizeof(estimate_actual_key));
+  REQUIRE(estimate_actual_key == ITEM_COUNT - 1, "unexpected async estimate move key");
+  CHECK(expect_value(&estimate_data, estimate_actual_key, __FILE__, __LINE__));
+
+  ptrdiff_t estimated_range = -1;
+  CHECK(mdbx_async_estimate_range(async, txn, dbi, NULL, NULL, NULL, NULL, &estimated_range, &op));
+  CHECK_OP(op);
+  REQUIRE(estimated_range == (ptrdiff_t)ITEM_COUNT, "unexpected async full-range estimate");
+
+  estimated_range = 0;
+  CHECK(mdbx_async_estimate_range(async, txn, dbi, &key_values[10], NULL, &key_values[20], NULL,
+                                  &estimated_range, &op));
+  CHECK_OP(op);
+  REQUIRE(estimated_range > 0 && estimated_range <= (ptrdiff_t)ITEM_COUNT, "unexpected async bounded estimate");
+
+  estimated_range = 0;
+  CHECK(mdbx_async_estimate_range(async, txn, dbi, &key_values[5], NULL, MDBX_EPSILON, NULL, &estimated_range, &op));
+  CHECK_OP(op);
+  REQUIRE(estimated_range == 1, "unexpected async epsilon estimate");
 
   MDBX_cursor *distribution[3] = {NULL, NULL, NULL};
   const size_t distribution_count = sizeof(distribution) / sizeof(distribution[0]);

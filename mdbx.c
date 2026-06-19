@@ -14992,6 +14992,8 @@ enum mdbx_async_opcode {
   async_op_dbi_dupsort_depthmask,
   async_op_dbi_sequence,
   async_op_drop,
+  async_op_canary_put,
+  async_op_canary_get,
   async_op_get,
   async_op_get_ex,
   async_op_get_equal_or_great,
@@ -15011,6 +15013,9 @@ enum mdbx_async_opcode {
   async_op_cursor_distance,
   async_op_cursor_scroll,
   async_op_cursor_distribute,
+  async_op_estimate_distance,
+  async_op_estimate_move,
+  async_op_estimate_range,
   async_op_cursor_put,
   async_op_cursor_del,
   async_op_cursor_delete_range,
@@ -15054,13 +15059,16 @@ struct MDBX_async_op {
   void *key_copy;
   void *data_copy;
   void *old_data_copy;
+  void *extra_copy;
   char *name_copy;
   MDBX_val key;
   MDBX_val data;
   MDBX_val old_data;
+  MDBX_val extra;
   uint64_t key_inline[MDBX_ASYNC_INLINE_WORDS];
   uint64_t data_inline[MDBX_ASYNC_INLINE_WORDS];
   uint64_t old_data_inline[MDBX_ASYNC_INLINE_WORDS];
+  uint64_t extra_inline[MDBX_ASYNC_INLINE_WORDS];
   union {
     struct {
       MDBX_async_func func;
@@ -15125,6 +15133,15 @@ struct MDBX_async_op {
       MDBX_dbi dbi;
       bool del;
     } drop;
+    struct {
+      MDBX_txn *txn;
+      MDBX_canary canary;
+      bool has_canary;
+    } canary_put;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_canary *canary;
+    } canary_get;
     struct {
       const MDBX_txn *txn;
       MDBX_dbi dbi;
@@ -15239,6 +15256,29 @@ struct MDBX_async_op {
       unsigned deepness;
     } cursor_distribute;
     struct {
+      const MDBX_cursor *first;
+      const MDBX_cursor *last;
+      ptrdiff_t *distance;
+    } estimate_distance;
+    struct {
+      const MDBX_cursor *cursor;
+      MDBX_val *key;
+      MDBX_val *data;
+      MDBX_cursor_op op;
+      ptrdiff_t *distance;
+      bool has_key;
+      bool has_data;
+    } estimate_move;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_dbi dbi;
+      const MDBX_val *begin_key;
+      const MDBX_val *begin_data;
+      const MDBX_val *end_key;
+      const MDBX_val *end_data;
+      ptrdiff_t *distance;
+    } estimate_range;
+    struct {
       MDBX_cursor *cursor;
       MDBX_val *data;
       MDBX_put_flags_t flags;
@@ -15330,6 +15370,25 @@ static int async_copy_val(MDBX_val *dst, void **copy, void *inline_storage, size
   return MDBX_SUCCESS;
 }
 
+static int async_copy_optional_val_ref(MDBX_val *dst, void **copy, void *inline_storage, size_t inline_bytes,
+                                       const MDBX_val *src, const MDBX_val **out) {
+  dst->iov_base = nullptr;
+  dst->iov_len = 0;
+  *copy = nullptr;
+  if (!src) {
+    *out = nullptr;
+    return MDBX_SUCCESS;
+  }
+  if (src == MDBX_EPSILON) {
+    *out = MDBX_EPSILON;
+    return MDBX_SUCCESS;
+  }
+  const int rc = async_copy_val(dst, copy, inline_storage, inline_bytes, src);
+  if (likely(rc == MDBX_SUCCESS))
+    *out = dst;
+  return rc;
+}
+
 static int async_copy_name(MDBX_async_op *op, const MDBX_val *name) {
   if (!name || name == MDBX_CHK_MAIN) {
     op->key.iov_base = MDBX_CHK_MAIN;
@@ -15358,10 +15417,12 @@ static void async_op_payload_release(MDBX_async_op *op) {
   osal_free(op->key_copy);
   osal_free(op->data_copy);
   osal_free(op->old_data_copy);
+  osal_free(op->extra_copy);
   osal_free(op->name_copy);
   op->key_copy = nullptr;
   op->data_copy = nullptr;
   op->old_data_copy = nullptr;
+  op->extra_copy = nullptr;
   op->name_copy = nullptr;
 }
 
@@ -15408,6 +15469,11 @@ static int async_op_execute(MDBX_async_op *op) {
                              op->args.dbi_sequence.result, op->args.dbi_sequence.increment);
   case async_op_drop:
     return mdbx_drop(op->args.drop.txn, op->args.drop.dbi, op->args.drop.del);
+  case async_op_canary_put:
+    return mdbx_canary_put(op->args.canary_put.txn,
+                           op->args.canary_put.has_canary ? &op->args.canary_put.canary : nullptr);
+  case async_op_canary_get:
+    return mdbx_canary_get(op->args.canary_get.txn, op->args.canary_get.canary);
   case async_op_get: {
     MDBX_val data = {nullptr, 0};
     const int rc = mdbx_get(op->args.get.txn, op->args.get.dbi, &op->key, &data);
@@ -15531,6 +15597,29 @@ static int async_op_execute(MDBX_async_op *op) {
     return mdbx_cursor_distribute(op->args.cursor_distribute.first, op->args.cursor_distribute.last,
                                   op->args.cursor_distribute.array, op->args.cursor_distribute.count,
                                   op->args.cursor_distribute.deepness);
+  case async_op_estimate_distance:
+    return mdbx_estimate_distance(op->args.estimate_distance.first, op->args.estimate_distance.last,
+                                  op->args.estimate_distance.distance);
+  case async_op_estimate_move: {
+    MDBX_val key = op->key;
+    MDBX_val data = op->data;
+    MDBX_val *const key_ptr = op->args.estimate_move.has_key ? &key : nullptr;
+    MDBX_val *const data_ptr = op->args.estimate_move.has_data ? &data : nullptr;
+    const int rc = mdbx_estimate_move(op->args.estimate_move.cursor, key_ptr, data_ptr,
+                                      op->args.estimate_move.op, op->args.estimate_move.distance);
+    if (rc == MDBX_SUCCESS) {
+      if (op->args.estimate_move.has_key)
+        *op->args.estimate_move.key = key;
+      if (op->args.estimate_move.has_data)
+        *op->args.estimate_move.data = data;
+    }
+    return rc;
+  }
+  case async_op_estimate_range:
+    return mdbx_estimate_range(op->args.estimate_range.txn, op->args.estimate_range.dbi,
+                               op->args.estimate_range.begin_key, op->args.estimate_range.begin_data,
+                               op->args.estimate_range.end_key, op->args.estimate_range.end_data,
+                               op->args.estimate_range.distance);
   case async_op_cursor_put: {
     MDBX_val data = op->data;
     const int rc = mdbx_cursor_put(op->args.cursor_put.cursor, &op->key, &data, op->args.cursor_put.flags);
@@ -16299,6 +16388,42 @@ int mdbx_async_drop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, bool del, MD
   return LOG_IFERR(rc);
 }
 
+int mdbx_async_canary_put(MDBX_async *async, MDBX_txn *txn, const MDBX_canary *canary, MDBX_async_op **out) {
+  if (unlikely(!txn))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_canary_put);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.canary_put.txn = txn;
+  op->args.canary_put.has_canary = canary != nullptr;
+  if (canary)
+    op->args.canary_put.canary = *canary;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_canary_get(MDBX_async *async, const MDBX_txn *txn, MDBX_canary *canary, MDBX_async_op **out) {
+  if (unlikely(!txn || !canary))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_canary_get);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.canary_get.txn = txn;
+  op->args.canary_get.canary = canary;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
 int mdbx_async_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *data,
                    MDBX_async_op **out) {
   if (unlikely(!txn || !data))
@@ -16761,6 +16886,117 @@ int mdbx_async_cursor_distribute(MDBX_async *async, const MDBX_cursor *first, co
     osal_free(op);
   }
   return rc;
+}
+
+int mdbx_async_estimate_distance(MDBX_async *async, const MDBX_cursor *first, const MDBX_cursor *last,
+                                 ptrdiff_t *distance_items, MDBX_async_op **out) {
+  if (unlikely(!first || !last || !distance_items))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_estimate_distance);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.estimate_distance.first = first;
+  op->args.estimate_distance.last = last;
+  op->args.estimate_distance.distance = distance_items;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+static bool async_estimate_move_uses_key(MDBX_cursor_op move_op) {
+  switch (move_op) {
+  case MDBX_GET_BOTH:
+  case MDBX_GET_BOTH_RANGE:
+  case MDBX_SET:
+  case MDBX_SET_KEY:
+  case MDBX_SET_RANGE:
+  case MDBX_SET_LOWERBOUND:
+  case MDBX_SET_UPPERBOUND:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static bool async_estimate_move_uses_data(MDBX_cursor_op move_op) {
+  switch (move_op) {
+  case MDBX_GET_BOTH:
+  case MDBX_GET_BOTH_RANGE:
+  case MDBX_SET_KEY:
+  case MDBX_SET_LOWERBOUND:
+  case MDBX_SET_UPPERBOUND:
+    return true;
+  default:
+    return false;
+  }
+}
+
+int mdbx_async_estimate_move(MDBX_async *async, const MDBX_cursor *cursor, MDBX_val *key, MDBX_val *data,
+                             MDBX_cursor_op move_op, ptrdiff_t *distance_items, MDBX_async_op **out) {
+  if (unlikely(!cursor || !distance_items))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_estimate_move);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  if (key && async_estimate_move_uses_key(move_op))
+    rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, key);
+  if (likely(rc == MDBX_SUCCESS) && data && async_estimate_move_uses_data(move_op))
+    rc = async_copy_val(&op->data, &op->data_copy, op->data_inline, MDBX_ASYNC_INLINE_BYTES, data);
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.estimate_move.cursor = cursor;
+    op->args.estimate_move.key = key;
+    op->args.estimate_move.data = data;
+    op->args.estimate_move.op = move_op;
+    op->args.estimate_move.distance = distance_items;
+    op->args.estimate_move.has_key = key != nullptr;
+    op->args.estimate_move.has_data = data != nullptr;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_estimate_range(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *begin_key,
+                              const MDBX_val *begin_data, const MDBX_val *end_key, const MDBX_val *end_data,
+                              ptrdiff_t *distance_items, MDBX_async_op **out) {
+  if (unlikely(!txn || !distance_items))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_estimate_range);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  rc = async_copy_optional_val_ref(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, begin_key,
+                                   &op->args.estimate_range.begin_key);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = async_copy_optional_val_ref(&op->data, &op->data_copy, op->data_inline, MDBX_ASYNC_INLINE_BYTES,
+                                     begin_data, &op->args.estimate_range.begin_data);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = async_copy_optional_val_ref(&op->old_data, &op->old_data_copy, op->old_data_inline,
+                                     MDBX_ASYNC_INLINE_BYTES, end_key, &op->args.estimate_range.end_key);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = async_copy_optional_val_ref(&op->extra, &op->extra_copy, op->extra_inline, MDBX_ASYNC_INLINE_BYTES,
+                                     end_data, &op->args.estimate_range.end_data);
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.estimate_range.txn = txn;
+    op->args.estimate_range.dbi = dbi;
+    op->args.estimate_range.distance = distance_items;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
 }
 
 int mdbx_async_cursor_put(MDBX_async *async, MDBX_cursor *cursor, const MDBX_val *key, MDBX_val *data,

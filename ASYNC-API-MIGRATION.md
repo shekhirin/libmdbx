@@ -619,3 +619,26 @@ Additional transaction management checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed twice; samples reported async/blocking-parallel ratios 0.903 and 1.084, async-batch/blocking-parallel ratios 0.863 and 1.075, and async-cursor/blocking-parallel ratios 1.590 and 1.219
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional canary and estimate checkpoint:
+
+- added `mdbx_async_canary_put()` and `mdbx_async_canary_get()` for async
+  canary marker updates and reads; put copies the optional canary payload at
+  submission time, while get uses caller-owned output storage until completion
+- added `mdbx_async_estimate_distance()`, `mdbx_async_estimate_move()`, and
+  `mdbx_async_estimate_range()` for async query-planning estimates; range
+  submission copies optional bound descriptors and preserves NULL and
+  `MDBX_EPSILON` sentinels, while move submission copies key/data bytes only
+  for cursor operations that use input descriptors
+- smoke coverage now checks write/read transaction canary visibility, cursor
+  distance estimates, move estimates with returned key/value descriptors, full
+  range estimates, copied bounded range estimates, and epsilon single-key
+  estimates
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.071, async-batch/blocking-parallel ratio 1.075, and async-cursor/blocking-parallel ratio 1.755
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17

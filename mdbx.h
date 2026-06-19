@@ -755,6 +755,8 @@ typedef struct MDBX_txn MDBX_txn;
 struct MDBX_txn;
 #endif
 
+struct MDBX_canary;
+
 /** \brief A handle for an individual table (key-value spaces) in the
  * environment.
  * \ingroup c_dbi
@@ -4777,6 +4779,20 @@ LIBMDBX_API int mdbx_async_dbi_sequence(MDBX_async *async, MDBX_txn *txn, MDBX_d
  * \see mdbx_drop() */
 LIBMDBX_API int mdbx_async_drop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, bool del, MDBX_async_op **op);
 
+/** \brief Asynchronously update transaction canary markers.
+ * \ingroup c_async
+ * \details The optional `canary` values are copied during submission.
+ * \see mdbx_canary_put() */
+LIBMDBX_API int mdbx_async_canary_put(MDBX_async *async, MDBX_txn *txn, const struct MDBX_canary *canary,
+                                      MDBX_async_op **op);
+
+/** \brief Asynchronously retrieve transaction canary markers.
+ * \ingroup c_async
+ * \details The `canary` output must remain valid until completion.
+ * \see mdbx_canary_get() */
+LIBMDBX_API int mdbx_async_canary_get(MDBX_async *async, const MDBX_txn *txn, struct MDBX_canary *canary,
+                                      MDBX_async_op **op);
+
 /** \brief Asynchronously get an item from a table.
  * \ingroup c_async
  * \details The key bytes are copied during submission. Returned value lifetime
@@ -4975,6 +4991,34 @@ LIBMDBX_API int mdbx_async_cursor_scroll(MDBX_async *async, MDBX_cursor *cursor,
 LIBMDBX_API int mdbx_async_cursor_distribute(MDBX_async *async, const MDBX_cursor *first, const MDBX_cursor *last,
                                              MDBX_cursor **array, intptr_t count, unsigned deepness,
                                              MDBX_async_op **op);
+
+/** \brief Asynchronously estimate the distance between two cursors.
+ * \ingroup c_async
+ * \details The `distance_items` output must remain valid until completion.
+ * \see mdbx_estimate_distance() */
+LIBMDBX_API int mdbx_async_estimate_distance(MDBX_async *async, const MDBX_cursor *first, const MDBX_cursor *last,
+                                             ptrdiff_t *distance_items, MDBX_async_op **op);
+
+/** \brief Asynchronously estimate a cursor move distance.
+ * \ingroup c_async
+ * \details Optional input key/data bytes are copied during submission. The
+ *          caller-provided `key`, `data`, and `distance_items` outputs must
+ *          remain valid until completion.
+ * \see mdbx_estimate_move() */
+LIBMDBX_API int mdbx_async_estimate_move(MDBX_async *async, const MDBX_cursor *cursor, MDBX_val *key,
+                                         MDBX_val *data, MDBX_cursor_op move_op, ptrdiff_t *distance_items,
+                                         MDBX_async_op **op);
+
+/** \brief Asynchronously estimate range size.
+ * \ingroup c_async
+ * \details Optional bound values are copied during submission. NULL bounds and
+ *          the \ref MDBX_EPSILON sentinel are preserved.
+ *          The `distance_items` output must remain valid until completion.
+ * \see mdbx_estimate_range() */
+LIBMDBX_API int mdbx_async_estimate_range(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                          const MDBX_val *begin_key, const MDBX_val *begin_data,
+                                          const MDBX_val *end_key, const MDBX_val *end_data,
+                                          ptrdiff_t *distance_items, MDBX_async_op **op);
 
 /** \brief Asynchronously store an item through a cursor.
  * \ingroup c_async
