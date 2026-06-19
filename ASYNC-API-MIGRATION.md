@@ -118,6 +118,43 @@ enough to make it a gate. The next optimization target is lowering per-operation
 allocation, key-copy, and condpair signaling overhead so async can also compete
 with hot serial reads and no-map runs.
 
+Operation allocation/release checkpoint:
+
+- async operation handles now keep small inline key/data copies, avoiding heap
+  allocation for common short payloads including the benchmark's 8-byte keys
+- each executor keeps a bounded spare list for completed operation handles
+- operation release no longer signals the completion condition variable; worker
+  completion already wakes waiters, and destroy does not wait for handle release
+
+Five-run default benchmark average after this checkpoint:
+
+```text
+async-api-bench items=20000 ops=200000 workers=4 window=64
+blocking serial get           771.548 Kops/s
+blocking parallel get         396.309 Kops/s
+async parallel get            429.108 Kops/s
+async/blocking parallel         1.083
+async/blocking serial           0.556
+```
+
+Three-run forced no-map/tiny-cache average after this checkpoint:
+
+```text
+async-api-bench items=20000 ops=200000 workers=4 window=64
+blocking serial get           720.980 Kops/s
+blocking parallel get         394.609 Kops/s
+async parallel get            397.655 Kops/s
+async/blocking parallel         1.008
+async/blocking serial           0.552
+```
+
+The allocation/release cleanup moves the default async read path slightly above
+the previous ~419 Kops/s single-run result and keeps no-map near blocking
+parallel parity, but it still does not challenge hot serial reads. The next
+performance target is reducing per-operation condition-variable lock/unlock
+traffic, likely through batched wait/release or a lower-overhead completion
+queue.
+
 ## Validation
 
 Completed for this checkpoint:
@@ -146,3 +183,16 @@ Additional read-reuse and benchmark checkpoint:
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - `MDBX_ASYNC_BENCH_OPS=30000 LD_LIBRARY_PATH=@cmake-ninja-build MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.072
 - `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.067
+
+Additional allocation/release checkpoint:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, 5-run average async/blocking-parallel ratio 1.083
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, 3-run average async/blocking-parallel ratio 1.008
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_async_api_bench_run MDBX_ASYNC_BENCH_OPS=30000`: passed, async/blocking-parallel ratio 1.137
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17

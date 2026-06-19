@@ -14975,6 +14975,10 @@ enum mdbx_async_opcode {
   async_op_cursor_close
 };
 
+#define MDBX_ASYNC_INLINE_WORDS 2
+#define MDBX_ASYNC_INLINE_BYTES (MDBX_ASYNC_INLINE_WORDS * sizeof(uint64_t))
+#define MDBX_ASYNC_SPARE_LIMIT 1024
+
 struct MDBX_async {
   int32_t signature;
   MDBX_env *env;
@@ -14982,7 +14986,9 @@ struct MDBX_async {
   osal_thread_t thread;
   MDBX_async_op *head;
   MDBX_async_op *tail;
+  MDBX_async_op *spare;
   size_t refs;
+  size_t spare_count;
   bool active;
   bool stop;
 };
@@ -14999,6 +15005,8 @@ struct MDBX_async_op {
   char *name_copy;
   MDBX_val key;
   MDBX_val data;
+  uint64_t key_inline[MDBX_ASYNC_INLINE_WORDS];
+  uint64_t data_inline[MDBX_ASYNC_INLINE_WORDS];
   union {
     struct {
       MDBX_async_func func;
@@ -15071,7 +15079,8 @@ static int async_op_check(const MDBX_async_op *op) {
   return likely(op->signature == async_op_signature) ? MDBX_SUCCESS : MDBX_EBADSIGN;
 }
 
-static int async_copy_val(MDBX_val *dst, void **copy, const MDBX_val *src) {
+static int async_copy_val(MDBX_val *dst, void **copy, void *inline_storage, size_t inline_bytes,
+                          const MDBX_val *src) {
   dst->iov_base = nullptr;
   dst->iov_len = 0;
   *copy = nullptr;
@@ -15082,6 +15091,11 @@ static int async_copy_val(MDBX_val *dst, void **copy, const MDBX_val *src) {
     return MDBX_SUCCESS;
   if (unlikely(!src->iov_base))
     return MDBX_EINVAL;
+  if (src->iov_len <= inline_bytes) {
+    memcpy(inline_storage, src->iov_base, src->iov_len);
+    dst->iov_base = inline_storage;
+    return MDBX_SUCCESS;
+  }
   void *const ptr = osal_malloc(src->iov_len);
   if (unlikely(!ptr))
     return MDBX_ENOMEM;
@@ -15191,10 +15205,36 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
   return (THREAD_RESULT)0;
 }
 
-static int async_op_alloc(MDBX_async_op **out, enum mdbx_async_opcode opcode) {
-  MDBX_async_op *const op = osal_calloc(1, sizeof(MDBX_async_op));
-  if (unlikely(!op))
-    return MDBX_ENOMEM;
+static int async_op_alloc(MDBX_async *async, MDBX_async_op **out, enum mdbx_async_opcode opcode) {
+  int rc = async_check(async);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (unlikely(!out))
+    return MDBX_EINVAL;
+  *out = nullptr;
+
+  MDBX_async_op *op = nullptr;
+  rc = osal_condpair_lock(&async->condpair);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (async->spare) {
+    op = async->spare;
+    async->spare = op->next;
+    async->spare_count -= 1;
+  }
+  const int unlock_err = osal_condpair_unlock(&async->condpair);
+  if (unlikely(unlock_err != MDBX_SUCCESS)) {
+    osal_free(op);
+    return unlock_err;
+  }
+
+  if (op)
+    memset(op, 0, sizeof(MDBX_async_op));
+  else {
+    op = osal_calloc(1, sizeof(MDBX_async_op));
+    if (unlikely(!op))
+      return MDBX_ENOMEM;
+  }
   op->signature = async_op_signature;
   op->opcode = opcode;
   *out = op;
@@ -15316,6 +15356,11 @@ int mdbx_async_destroy(MDBX_async *async, bool drain) {
 
   rc = osal_thread_join(async->thread);
   const int cond_err = osal_condpair_destroy(&async->condpair);
+  while (async->spare) {
+    MDBX_async_op *const op = async->spare;
+    async->spare = op->next;
+    osal_free(op);
+  }
   async->signature = 0;
   osal_free(async);
   return LOG_IFERR(rc != MDBX_SUCCESS ? rc : cond_err);
@@ -15325,7 +15370,7 @@ int mdbx_async_submit(MDBX_async *async, MDBX_async_func func, void *context, MD
   if (unlikely(!func))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_user);
+  int rc = async_op_alloc(async, &op, async_op_user);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   op->args.user.func = func;
@@ -15398,16 +15443,22 @@ int mdbx_async_op_release(MDBX_async_op *op) {
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   bool released = false;
+  bool recycled = false;
   if (unlikely(!op->done)) {
     rc = MDBX_BUSY;
   } else {
     if (unlikely(async->refs == 0)) {
       rc = MDBX_PROBLEM;
     } else {
-      rc = osal_condpair_signal(&async->condpair, false);
-      if (likely(rc == MDBX_SUCCESS)) {
-        async->refs -= 1;
-        released = true;
+      async_op_payload_release(op);
+      op->signature = 0;
+      async->refs -= 1;
+      released = true;
+      if (async->spare_count < MDBX_ASYNC_SPARE_LIMIT) {
+        op->next = async->spare;
+        async->spare = op;
+        async->spare_count += 1;
+        recycled = true;
       }
     }
   }
@@ -15417,9 +15468,8 @@ int mdbx_async_op_release(MDBX_async_op *op) {
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
 
-  async_op_payload_release(op);
-  op->signature = 0;
-  osal_free(op);
+  if (!recycled)
+    osal_free(op);
   return MDBX_SUCCESS;
 }
 
@@ -15428,7 +15478,7 @@ int mdbx_async_txn_begin(MDBX_async *async, MDBX_txn *parent, MDBX_txn_flags_t f
   if (unlikely(!txn))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_txn_begin);
+  int rc = async_op_alloc(async, &op, async_op_txn_begin);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   op->args.txn_begin.parent = parent;
@@ -15447,7 +15497,7 @@ int mdbx_async_txn_commit(MDBX_async *async, MDBX_txn *txn, MDBX_commit_latency 
   if (unlikely(!txn))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_txn_commit);
+  int rc = async_op_alloc(async, &op, async_op_txn_commit);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   op->args.txn_end.txn = txn;
@@ -15464,7 +15514,7 @@ int mdbx_async_txn_abort(MDBX_async *async, MDBX_txn *txn, MDBX_commit_latency *
   if (unlikely(!txn))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_txn_abort);
+  int rc = async_op_alloc(async, &op, async_op_txn_abort);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   op->args.txn_end.txn = txn;
@@ -15481,7 +15531,7 @@ int mdbx_async_txn_reset(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **out) 
   if (unlikely(!txn))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_txn_reset);
+  int rc = async_op_alloc(async, &op, async_op_txn_reset);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   op->args.txn_reuse.txn = txn;
@@ -15497,7 +15547,7 @@ int mdbx_async_txn_renew(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **out) 
   if (unlikely(!txn))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_txn_renew);
+  int rc = async_op_alloc(async, &op, async_op_txn_renew);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   op->args.txn_reuse.txn = txn;
@@ -15514,7 +15564,7 @@ int mdbx_async_dbi_open(MDBX_async *async, MDBX_txn *txn, const char *name, MDBX
   if (unlikely(!txn || !dbi))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_dbi_open);
+  int rc = async_op_alloc(async, &op, async_op_dbi_open);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   if (name) {
@@ -15542,10 +15592,10 @@ int mdbx_async_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const M
   if (unlikely(!txn || !data))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_get);
+  int rc = async_op_alloc(async, &op, async_op_get);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
-  rc = async_copy_val(&op->key, &op->key_copy, key);
+  rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, key);
   if (likely(rc == MDBX_SUCCESS)) {
     op->args.get.txn = txn;
     op->args.get.dbi = dbi;
@@ -15567,12 +15617,12 @@ int mdbx_async_put(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_va
   if (unlikely(flags & (MDBX_RESERVE | MDBX_MULTIPLE)))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_put);
+  int rc = async_op_alloc(async, &op, async_op_put);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
-  rc = async_copy_val(&op->key, &op->key_copy, key);
+  rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, key);
   if (likely(rc == MDBX_SUCCESS))
-    rc = async_copy_val(&op->data, &op->data_copy, data);
+    rc = async_copy_val(&op->data, &op->data_copy, op->data_inline, MDBX_ASYNC_INLINE_BYTES, data);
   if (likely(rc == MDBX_SUCCESS)) {
     op->args.put.txn = txn;
     op->args.put.dbi = dbi;
@@ -15593,12 +15643,12 @@ int mdbx_async_del(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_va
   if (unlikely(!txn))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_del);
+  int rc = async_op_alloc(async, &op, async_op_del);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
-  rc = async_copy_val(&op->key, &op->key_copy, key);
+  rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, key);
   if (likely(rc == MDBX_SUCCESS) && data) {
-    rc = async_copy_val(&op->data, &op->data_copy, data);
+    rc = async_copy_val(&op->data, &op->data_copy, op->data_inline, MDBX_ASYNC_INLINE_BYTES, data);
     op->args.del.has_data = (rc == MDBX_SUCCESS);
   }
   if (likely(rc == MDBX_SUCCESS)) {
@@ -15619,7 +15669,7 @@ int mdbx_async_cursor_open(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, MDBX_
   if (unlikely(!txn || !cursor))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_cursor_open);
+  int rc = async_op_alloc(async, &op, async_op_cursor_open);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   op->args.cursor_open.txn = txn;
@@ -15637,7 +15687,7 @@ int mdbx_async_cursor_reset(MDBX_async *async, MDBX_cursor *cursor, MDBX_async_o
   if (unlikely(!cursor))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_cursor_reset);
+  int rc = async_op_alloc(async, &op, async_op_cursor_reset);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   op->args.cursor_close.cursor = cursor;
@@ -15653,7 +15703,7 @@ int mdbx_async_cursor_renew(MDBX_async *async, MDBX_txn *txn, MDBX_cursor *curso
   if (unlikely(!txn || !cursor))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_cursor_renew);
+  int rc = async_op_alloc(async, &op, async_op_cursor_renew);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   op->args.cursor_renew.txn = txn;
@@ -15671,7 +15721,7 @@ int mdbx_async_cursor_get(MDBX_async *async, MDBX_cursor *cursor, MDBX_val *key,
   if (unlikely(!cursor || !key || !data))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_cursor_get);
+  int rc = async_op_alloc(async, &op, async_op_cursor_get);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   op->args.cursor_get.cursor = cursor;
@@ -15690,7 +15740,7 @@ int mdbx_async_cursor_close(MDBX_async *async, MDBX_cursor *cursor, MDBX_async_o
   if (unlikely(!cursor))
     return LOG_IFERR(MDBX_EINVAL);
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(&op, async_op_cursor_close);
+  int rc = async_op_alloc(async, &op, async_op_cursor_close);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   op->args.cursor_close.cursor = cursor;
