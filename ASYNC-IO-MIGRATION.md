@@ -14320,6 +14320,36 @@ migration CTest suite including API checks and tool roundtrips, the ASAN build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.091`
 batch, `1.139` crud, `1.082` iterate, `0.966` get, and `1.073` delete.
 
+A later environment lifecycle descriptor cleanup removed
+`dxb_env_storage_init_submit_io_t`,
+`env_make_storage_init_submit_io()`,
+`env_storage_init_submit_io_validate()`,
+`dxb_env_storage_deinit_submit_io_t`,
+`env_make_storage_deinit_submit_io()`,
+`env_storage_deinit_submit_io_validate()`,
+`dxb_env_close_sync_stat_submit_io_t`,
+`env_make_close_sync_stat_submit_io()`,
+`env_close_sync_stat_submit_io_validate()`,
+`dxb_env_sysinfo_submit_io_t`, `env_make_sysinfo_submit_io()`,
+`env_sysinfo_submit_io_validate()`, `dxb_env_data_reset_submit_io_t`,
+`env_make_data_reset_submit_io()`, and
+`env_data_reset_submit_io_validate()` from `mdbx.c`. Environment creation,
+destruction, close-time stat probing, `mdbx_env_info` sysinfo fetching,
+preopen snapshot reset, and lock-destroy reset now build, validate, and submit
+the corresponding storage descriptors directly. This keeps lifecycle and
+inspection paths on the same explicit storage-submit interface used by the
+data-file migration path. Verification passed `git diff --check`, a source
+scan proving the removed lifecycle/sysinfo/reset descriptor helpers are absent
+from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.114` batch, `1.141` crud, `1.182`
+iterate, `0.927` get, and `1.067` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
