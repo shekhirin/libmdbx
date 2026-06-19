@@ -30874,15 +30874,6 @@ static inline int dxb_setup_storage_size_submit_io_validate(
   return MDBX_SUCCESS;
 }
 
-static dxb_resize_result_t dxb_setup_submit_storage_size(
-    const dxb_setup_storage_size_submit_io_t *io) {
-  int rc = dxb_setup_storage_size_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return io && io->storage ? dxb_resize_error(io->storage, rc)
-                             : dxb_resize_unsubmitted_error(rc);
-  return dxb_storage_submit_setup_size(io->storage, &io->submit);
-}
-
 __cold int dxb_read_header(MDBX_env *env, meta_t *dest, const int lck_exclusive, const mdbx_mode_t mode_bits) {
   dxb_storage_t *const storage = &env->dxb_storage;
   memset(dest, 0, sizeof(meta_t));
@@ -31284,15 +31275,6 @@ static inline int dxb_resize_storage_size_submit_io_validate(
   return MDBX_SUCCESS;
 }
 
-static dxb_resize_result_t dxb_resize_submit_storage_size(
-    const dxb_resize_storage_size_submit_io_t *io) {
-  int rc = dxb_resize_storage_size_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return io && io->storage ? dxb_resize_error(io->storage, rc)
-                             : dxb_resize_unsubmitted_error(rc);
-  return dxb_storage_submit_resize_size(io->storage, &io->submit);
-}
-
 __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pgno_t size_pgno, pgno_t limit_pgno,
                       const enum resize_mode mode) {
   /* Acquire guard to avoid collision between read and write txns
@@ -31359,8 +31341,9 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
       env, size_pgno, limit_pgno, resize_flags, &resize_submit);
   if (unlikely(rc != MDBX_SUCCESS))
     goto bailout;
-  dxb_resize_result_t resize_result = dxb_resize_submit_storage_size(&resize_submit);
-  rc = resize_result.err;
+  rc = dxb_resize_storage_size_submit_io_validate(&resize_submit);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = dxb_storage_submit_resize_size(resize_submit.storage, &resize_submit.submit).err;
   eASSERT0(env, dxb_storage_current_within_limit(storage));
 
   if (rc == MDBX_SUCCESS) {
@@ -32084,8 +32067,9 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
   err = dxb_setup_make_storage_size_submit_io(env, storage_options, &setup_submit);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
-  dxb_resize_result_t setup_size = dxb_setup_submit_storage_size(&setup_submit);
-  err = setup_size.err;
+  err = dxb_setup_storage_size_submit_io_validate(&setup_submit);
+  if (likely(err == MDBX_SUCCESS))
+    err = dxb_storage_submit_setup_size(setup_submit.storage, &setup_submit.submit).err;
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 

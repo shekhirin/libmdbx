@@ -13256,6 +13256,27 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.110`
 batch, `1.149` crud, `0.984` iterate, `0.990` get, and `1.067` delete.
 
+A later storage-size submit-boundary cleanup removed the one-call
+`dxb_setup_submit_storage_size()` and `dxb_resize_submit_storage_size()`
+helpers from `mdbx.c`. Open/setup and resize policy paths now validate their
+prepared storage-size descriptors at the local call site, then submit the
+nested setup/resize storage-size request directly through
+`dxb_storage_submit_setup_size()` or `dxb_storage_submit_resize_size()`. This
+keeps file-size fetch/set completion and current/limit/filesize bookkeeping on
+the storage-owned explicit request boundary without changing setup, resize,
+or bailout behavior. Verification passed `git diff --check`, source scans
+proving the removed setup/resize storage-size helpers are absent from `mdbx.c`
+and the public/internal headers, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.108` batch, `1.160` crud, `0.993` iterate,
+`0.964` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
