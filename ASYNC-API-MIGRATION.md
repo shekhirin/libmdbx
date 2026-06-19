@@ -3026,3 +3026,39 @@ Additional cursor bunch-delete benchmark checkpoint:
   coverage. This reduced sample shows the async wrapper below blocking for this
   single-operation bunch-delete case, which gives a concrete follow-up target
   for cursor mutation overhead work.
+
+Additional replace-ex benchmark coverage checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` with blocking
+  `mdbx_replace_ex()`, per-item `mdbx_async_replace_ex()`, and batched
+  `mdbx_async_replace_ex_batch()` measurements using the same preservation
+  callback semantics as the async smoke test.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking replace_ex
+  2.561 Mops/s, async replace_ex 1.774 Mops/s, async batch replace_ex
+  2.408 Mops/s, async-replace-ex/blocking 0.693,
+  async-repl-ex-batch/block 0.940, and async-repl-ex-batch/async 1.357.
+- comparison against the pre-migration ioarena lazy baselines remains
+  workload-specific. The latest logged repeat benchmark has current explicit
+  default get at 451.442 Kops/s versus earlier mapped get at 279.409 Kops/s
+  (1.616x), and current explicit forced no-map get at 435.297 Kops/s versus
+  earlier no-map get at 274.039 Kops/s (1.588x). Iterate is mixed to better:
+  default 25.404 Mops/s versus 26.143 Mops/s (0.972x), forced no-map
+  31.281 Mops/s versus 25.827 Mops/s (1.211x). Write-heavy ioarena phases
+  remain below the old baseline: default batch/crud/delete are 0.917x,
+  0.914x, and 0.890x; forced no-map batch/crud/delete are 0.887x, 0.849x,
+  and 0.856x.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=179 async-covered=132 async-only=47 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the async benchmark now covers both replace preservation paths.
+  Batch `replace_ex` recovers most of the per-item async overhead in the reduced
+  sample, but write-heavy end-to-end ioarena results still trail the
+  pre-migration baseline and remain the main performance gap.

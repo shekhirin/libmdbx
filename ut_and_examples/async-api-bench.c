@@ -133,6 +133,20 @@ static uint64_t write_value(uint64_t key, size_t index, uint64_t salt) {
   return key * UINT64_C(31) + (uint64_t)index * UINT64_C(7) + salt;
 }
 
+static int preserve_value_copy(void *context, MDBX_val *target, const void *src, size_t bytes) {
+  (void)context;
+  if (!target || !src)
+    return MDBX_EINVAL;
+  if (target->iov_len < bytes) {
+    target->iov_base = NULL;
+    target->iov_len = bytes;
+    return MDBX_RESULT_TRUE;
+  }
+  memcpy(target->iov_base, src, bytes);
+  target->iov_len = bytes;
+  return MDBX_SUCCESS;
+}
+
 static uint64_t key_for(size_t index, size_t items) {
   return (uint64_t)((index * UINT64_C(11400714819323198485) + UINT64_C(0x9E3779B9)) % items);
 }
@@ -1352,6 +1366,215 @@ bailout:
   return (rc == MDBX_SUCCESS) ? rate : -1.0;
 }
 
+static double blocking_replace_ex(MDBX_env *env, MDBX_dbi dbi, size_t ops) {
+  MDBX_txn *txn = NULL;
+  int rc = mdbx_txn_begin(env, NULL, 0, &txn);
+  if (rc != MDBX_SUCCESS)
+    return -1.0;
+
+  const uint64_t start = monotime_ns();
+  for (size_t i = 0; i < ops; ++i) {
+    uint64_t key_data = (uint64_t)i;
+    uint64_t value_data = write_value(key_data, i, UINT64_C(707));
+    uint64_t old_data_buffer = 0;
+    MDBX_val key = val(&key_data, sizeof(key_data));
+    MDBX_val value = val(&value_data, sizeof(value_data));
+    MDBX_val old_data = val(&old_data_buffer, sizeof(old_data_buffer));
+    rc = mdbx_replace_ex(txn, dbi, &key, &value, &old_data, 0, preserve_value_copy, NULL);
+    if (rc != MDBX_SUCCESS)
+      break;
+  }
+  if (rc == MDBX_SUCCESS)
+    rc = mdbx_txn_commit(txn);
+  else
+    (void)mdbx_txn_abort(txn);
+  const uint64_t finish = monotime_ns();
+  if (rc != MDBX_SUCCESS || finish <= start)
+    return -1.0;
+  return (double)ops * 1000000000.0 / (double)(finish - start);
+}
+
+static double async_window_replace_ex(MDBX_env *env, MDBX_dbi dbi, size_t ops, size_t window) {
+  MDBX_async *async = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_async_op *op = NULL;
+  MDBX_async_op **opv = NULL;
+  MDBX_val *keys = NULL;
+  MDBX_val *values = NULL;
+  MDBX_val *old_values = NULL;
+  uint64_t *key_data = NULL;
+  uint64_t *value_data = NULL;
+  uint64_t *old_data = NULL;
+  int *results = NULL;
+  int rc = MDBX_SUCCESS;
+  double rate = -1.0;
+
+  if (!window)
+    window = 1;
+  CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+
+  opv = calloc(window, sizeof(*opv));
+  keys = calloc(window, sizeof(*keys));
+  values = calloc(window, sizeof(*values));
+  old_values = calloc(window, sizeof(*old_values));
+  key_data = calloc(window, sizeof(*key_data));
+  value_data = calloc(window, sizeof(*value_data));
+  old_data = calloc(window, sizeof(*old_data));
+  results = calloc(window, sizeof(*results));
+  if (!opv || !keys || !values || !old_values || !key_data || !value_data || !old_data || !results) {
+    rc = fail_rc("calloc", MDBX_ENOMEM, __FILE__, __LINE__);
+    goto bailout;
+  }
+
+  const uint64_t start = monotime_ns();
+  for (size_t offset = 0; offset < ops;) {
+    const size_t chunk = (ops - offset < window) ? ops - offset : window;
+    size_t submitted = 0;
+    for (size_t i = 0; i < chunk; ++i) {
+      key_data[i] = (uint64_t)(offset + i);
+      value_data[i] = write_value(key_data[i], offset + i, UINT64_C(808));
+      old_data[i] = 0;
+      keys[i] = val(&key_data[i], sizeof(key_data[i]));
+      values[i] = val(&value_data[i], sizeof(value_data[i]));
+      old_values[i] = val(&old_data[i], sizeof(old_data[i]));
+      rc = mdbx_async_replace_ex(async, txn, dbi, &keys[i], &values[i], &old_values[i], 0, preserve_value_copy,
+                                 NULL, &opv[i]);
+      if (rc != MDBX_SUCCESS) {
+        rc = fail_rc("mdbx_async_replace_ex", rc, __FILE__, __LINE__);
+        if (submitted)
+          (void)mdbx_async_wait_release_all(opv, submitted, results);
+        goto bailout;
+      }
+      submitted += 1;
+    }
+
+    rc = mdbx_async_wait_release_all(opv, submitted, results);
+    if (rc != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_wait_release_all", rc, __FILE__, __LINE__);
+      goto bailout;
+    }
+    for (size_t i = 0; i < submitted; ++i) {
+      if (results[i] != MDBX_SUCCESS) {
+        rc = fail_rc("mdbx_async_replace_ex item", results[i], __FILE__, __LINE__);
+        goto bailout;
+      }
+    }
+    offset += submitted;
+  }
+
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  txn = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  const uint64_t finish = monotime_ns();
+  if (finish > start)
+    rate = (double)ops * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  if (async)
+    (void)mdbx_async_destroy(async, true);
+  free(results);
+  free(old_data);
+  free(value_data);
+  free(key_data);
+  free(old_values);
+  free(values);
+  free(keys);
+  free(opv);
+  return (rc == MDBX_SUCCESS) ? rate : -1.0;
+}
+
+static double async_batch_replace_ex(MDBX_env *env, MDBX_dbi dbi, size_t ops, size_t batch) {
+  MDBX_async *async = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_async_op *op = NULL;
+  MDBX_val *keys = NULL;
+  MDBX_val *values = NULL;
+  MDBX_val *old_values = NULL;
+  uint64_t *key_data = NULL;
+  uint64_t *value_data = NULL;
+  uint64_t *old_data = NULL;
+  int *results = NULL;
+  int rc = MDBX_SUCCESS;
+  double rate = -1.0;
+
+  if (!batch)
+    batch = 1;
+  CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+
+  keys = calloc(batch, sizeof(*keys));
+  values = calloc(batch, sizeof(*values));
+  old_values = calloc(batch, sizeof(*old_values));
+  key_data = calloc(batch, sizeof(*key_data));
+  value_data = calloc(batch, sizeof(*value_data));
+  old_data = calloc(batch, sizeof(*old_data));
+  results = calloc(batch, sizeof(*results));
+  if (!keys || !values || !old_values || !key_data || !value_data || !old_data || !results) {
+    rc = fail_rc("calloc", MDBX_ENOMEM, __FILE__, __LINE__);
+    goto bailout;
+  }
+
+  const uint64_t start = monotime_ns();
+  for (size_t offset = 0; offset < ops;) {
+    const size_t chunk = (ops - offset < batch) ? ops - offset : batch;
+    for (size_t i = 0; i < chunk; ++i) {
+      key_data[i] = (uint64_t)(offset + i);
+      value_data[i] = write_value(key_data[i], offset + i, UINT64_C(909));
+      old_data[i] = 0;
+      keys[i] = val(&key_data[i], sizeof(key_data[i]));
+      values[i] = val(&value_data[i], sizeof(value_data[i]));
+      old_values[i] = val(&old_data[i], sizeof(old_data[i]));
+      results[i] = MDBX_SUCCESS;
+    }
+
+    int batch_rc = MDBX_SUCCESS;
+    CHECK(mdbx_async_replace_ex_batch(async, txn, dbi, keys, values, old_values, results, chunk, 0,
+                                      preserve_value_copy, NULL, &op));
+    CHECK(wait_success(&op, &batch_rc, __FILE__, __LINE__));
+    if (batch_rc != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_replace_ex_batch", batch_rc, __FILE__, __LINE__);
+      goto bailout;
+    }
+    for (size_t i = 0; i < chunk; ++i) {
+      if (results[i] != MDBX_SUCCESS) {
+        rc = fail_rc("mdbx_async_replace_ex_batch item", results[i], __FILE__, __LINE__);
+        goto bailout;
+      }
+    }
+    offset += chunk;
+  }
+
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  txn = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  const uint64_t finish = monotime_ns();
+  if (finish > start)
+    rate = (double)ops * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  if (async)
+    (void)mdbx_async_destroy(async, true);
+  free(results);
+  free(old_data);
+  free(value_data);
+  free(key_data);
+  free(old_values);
+  free(values);
+  free(keys);
+  return (rc == MDBX_SUCCESS) ? rate : -1.0;
+}
+
 static int blocking_cursor_batch_loop(MDBX_cursor *cursor, size_t items, size_t target_pairs, size_t batch_pairs,
                                       size_t *completed_pairs) {
   MDBX_val *pairs = calloc(batch_pairs * 2, sizeof(*pairs));
@@ -2327,6 +2550,12 @@ int main(void) {
   CHECK(seed_database(env, &dbi, items));
   const double async_replace_batch_rate = async_batch_replace(env, dbi, replace_ops, write_batch);
   CHECK(seed_database(env, &dbi, items));
+  const double blocking_replace_ex_rate = blocking_replace_ex(env, dbi, replace_ops);
+  CHECK(seed_database(env, &dbi, items));
+  const double async_replace_ex_rate = async_window_replace_ex(env, dbi, replace_ops, window);
+  CHECK(seed_database(env, &dbi, items));
+  const double async_replace_ex_batch_rate = async_batch_replace_ex(env, dbi, replace_ops, write_batch);
+  CHECK(seed_database(env, &dbi, items));
   const double blocking_del = blocking_delete(env, dbi, delete_ops);
   CHECK(seed_database(env, &dbi, items));
   const double async_del = async_window_delete(env, dbi, delete_ops, window);
@@ -2364,6 +2593,9 @@ int main(void) {
   print_rate("blocking replace", blocking_replace_rate);
   print_rate("async replace", async_replace_rate);
   print_rate("async batch replace", async_replace_batch_rate);
+  print_rate("blocking replace_ex", blocking_replace_ex_rate);
+  print_rate("async replace_ex", async_replace_ex_rate);
+  print_rate("async batch replace_ex", async_replace_ex_batch_rate);
   print_rate("blocking delete", blocking_del);
   print_rate("async delete", async_del);
   print_rate("async batch delete", async_del_batch);
@@ -2436,6 +2668,12 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-repl-batch/blocking", async_replace_batch_rate / blocking_replace_rate);
   if (async_replace_rate > 0.0 && async_replace_batch_rate > 0.0)
     printf("%-28s %8.3f\n", "async-repl-batch/async", async_replace_batch_rate / async_replace_rate);
+  if (blocking_replace_ex_rate > 0.0 && async_replace_ex_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-replace-ex/blocking", async_replace_ex_rate / blocking_replace_ex_rate);
+  if (blocking_replace_ex_rate > 0.0 && async_replace_ex_batch_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-repl-ex-batch/block", async_replace_ex_batch_rate / blocking_replace_ex_rate);
+  if (async_replace_ex_rate > 0.0 && async_replace_ex_batch_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-repl-ex-batch/async", async_replace_ex_batch_rate / async_replace_ex_rate);
   if (blocking_del > 0.0 && async_del > 0.0)
     printf("%-28s %8.3f\n", "async-del/blocking del", async_del / blocking_del);
   if (blocking_del > 0.0 && async_del_batch > 0.0)
