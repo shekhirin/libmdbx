@@ -14765,6 +14765,26 @@ including API checks and tool roundtrips, the ASAN build (`cmake --build
 passed with forced/default ratios of `1.084` batch, `1.159` crud, `0.998`
 iterate, `0.995` get, and `1.072` delete.
 
+A later cache-invalidation submission cleanup removed
+`dxb_cache_invalidate_submit_io_t`,
+`dxb_storage_make_cache_invalidate_submit_io()`, and
+`dxb_storage_cache_invalidate_submit_io_validate()` from `mdbx.c`.
+`dxb_storage_submit_invalidate_cached_io()` now validates and consumes the
+plain `dxb_cache_invalidate_io_t` request directly. Discard, data write,
+writev, copy-file-range, filesize-shrink, and dirty-write queue completion
+paths no longer allocate a one-field submit wrapper before invalidating cached
+pages. Verification passed `git diff --check`, a source scan proving the
+removed cache-invalidation submit helpers are absent from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including API checks and tool
+roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`.
+The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
+of `1.118` batch, `1.160` crud, `0.938` iterate, `0.953` get, and `1.044`
+delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

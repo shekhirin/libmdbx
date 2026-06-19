@@ -222,10 +222,6 @@ typedef struct dxb_cache_invalidate_io {
   bool include_reusable;
 } dxb_cache_invalidate_io_t;
 
-typedef struct dxb_cache_invalidate_submit_io {
-  dxb_cache_invalidate_io_t invalidate;
-} dxb_cache_invalidate_submit_io_t;
-
 typedef struct dxb_write_submit_io {
   dxb_data_write_io_t data;
   const void *buffer;
@@ -3610,36 +3606,6 @@ static inline int dxb_storage_cache_invalidate_io_validate(const dxb_storage_t *
                checked.pages.npages != io->pages.npages || checked.pages.offset != io->pages.offset ||
                checked.pages.bytes != io->pages.bytes ||
                checked.include_reusable != io->include_reusable))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_make_cache_invalidate_submit_io(const dxb_storage_t *storage,
-                                                              const dxb_cache_invalidate_io_t *invalidate,
-                                                              dxb_cache_invalidate_submit_io_t *io) {
-  if (unlikely(!invalidate || !io))
-    return MDBX_EINVAL;
-  int rc = dxb_storage_cache_invalidate_io_validate(storage, invalidate);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  io->invalidate = *invalidate;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_cache_invalidate_submit_io_validate(
-    const dxb_storage_t *storage, const dxb_cache_invalidate_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-  dxb_cache_invalidate_submit_io_t checked;
-  int rc = dxb_storage_make_cache_invalidate_submit_io(storage, &io->invalidate, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.invalidate.pages.pgno != io->invalidate.pages.pgno ||
-               checked.invalidate.pages.end_pgno != io->invalidate.pages.end_pgno ||
-               checked.invalidate.pages.npages != io->invalidate.pages.npages ||
-               checked.invalidate.pages.offset != io->invalidate.pages.offset ||
-               checked.invalidate.pages.bytes != io->invalidate.pages.bytes ||
-               checked.invalidate.include_reusable != io->invalidate.include_reusable))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -24259,12 +24225,11 @@ static inline dxb_cache_result_t dxb_cache_materialized(const dxb_cache_material
 }
 
 static dxb_cache_result_t dxb_storage_submit_invalidate_cached_io(dxb_storage_t *storage,
-                                                                  const dxb_cache_invalidate_submit_io_t *io) {
-  int rc = dxb_storage_cache_invalidate_submit_io_validate(storage, io);
+                                                                  const dxb_cache_invalidate_io_t *invalidate) {
+  int rc = dxb_storage_cache_invalidate_io_validate(storage, invalidate);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_cache_error(rc);
 
-  const dxb_cache_invalidate_io_t *const invalidate = &io->invalidate;
   if (invalidate->pages.npages == 0)
     return dxb_cache_submitted(dxb_cache_invalidated(invalidate, 0));
 
@@ -25920,13 +25885,8 @@ static dxb_range_result_t dxb_storage_submit_discard_io(dxb_storage_t *storage, 
                      invalidate.pages.bytes != discard->range.pages.bytes))
           rc = MDBX_EINVAL;
       }
-      dxb_cache_invalidate_submit_io_t submit;
       if (rc == MDBX_SUCCESS)
-        rc = dxb_storage_make_cache_invalidate_submit_io(storage, &invalidate, &submit);
-      if (rc == MDBX_SUCCESS)
-        rc = dxb_storage_cache_invalidate_submit_io_validate(storage, &submit);
-      if (rc == MDBX_SUCCESS)
-        rc = dxb_storage_submit_invalidate_cached_io(storage, &submit).err;
+        rc = dxb_storage_submit_invalidate_cached_io(storage, &invalidate).err;
     }
     if (rc == MDBX_SUCCESS)
       return dxb_range_completed(range->bytes);
@@ -25947,13 +25907,8 @@ static dxb_range_result_t dxb_storage_submit_discard_io(dxb_storage_t *storage, 
                      invalidate.pages.bytes != discard->range.pages.bytes))
           rc = MDBX_EINVAL;
       }
-      dxb_cache_invalidate_submit_io_t submit;
       if (rc == MDBX_SUCCESS)
-        rc = dxb_storage_make_cache_invalidate_submit_io(storage, &invalidate, &submit);
-      if (rc == MDBX_SUCCESS)
-        rc = dxb_storage_cache_invalidate_submit_io_validate(storage, &submit);
-      if (rc == MDBX_SUCCESS)
-        rc = dxb_storage_submit_invalidate_cached_io(storage, &submit).err;
+        rc = dxb_storage_submit_invalidate_cached_io(storage, &invalidate).err;
     }
     if (rc != MDBX_RESULT_TRUE)
       return rc == MDBX_SUCCESS ? dxb_range_completed(range->bytes) : dxb_range_error(rc);
@@ -26301,14 +26256,7 @@ static dxb_write_result_t dxb_storage_submit_write_data(dxb_storage_t *storage, 
                invalidate.pages.bytes != data->pages.bytes))
     return dxb_write_completed_error(MDBX_EINVAL, data->bytes.bytes);
 
-  dxb_cache_invalidate_submit_io_t invalidate_submit;
-  rc = dxb_storage_make_cache_invalidate_submit_io(storage, &invalidate, &invalidate_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_completed_error(rc, data->bytes.bytes);
-  rc = dxb_storage_cache_invalidate_submit_io_validate(storage, &invalidate_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_completed_error(rc, data->bytes.bytes);
-  dxb_cache_result_t result = dxb_storage_submit_invalidate_cached_io(storage, &invalidate_submit);
+  dxb_cache_result_t result = dxb_storage_submit_invalidate_cached_io(storage, &invalidate);
   if (unlikely(result.err != MDBX_SUCCESS))
     return dxb_write_completed_error(result.err, data->bytes.bytes);
   return dxb_write_completed(data->bytes.bytes);
@@ -26378,14 +26326,7 @@ static dxb_write_result_t dxb_storage_submit_writev_data(dxb_storage_t *storage,
                invalidate.pages.bytes != data->pages.bytes))
     return dxb_write_completed_error(MDBX_EINVAL, data->bytes.bytes);
 
-  dxb_cache_invalidate_submit_io_t invalidate_submit;
-  rc = dxb_storage_make_cache_invalidate_submit_io(storage, &invalidate, &invalidate_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_completed_error(rc, data->bytes.bytes);
-  rc = dxb_storage_cache_invalidate_submit_io_validate(storage, &invalidate_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_write_completed_error(rc, data->bytes.bytes);
-  dxb_cache_result_t result = dxb_storage_submit_invalidate_cached_io(storage, &invalidate_submit);
+  dxb_cache_result_t result = dxb_storage_submit_invalidate_cached_io(storage, &invalidate);
   if (unlikely(result.err != MDBX_SUCCESS))
     return dxb_write_completed_error(result.err, data->bytes.bytes);
   return dxb_write_completed(data->bytes.bytes);
@@ -26565,14 +26506,7 @@ static dxb_filesize_result_t dxb_storage_submit_set_filesize_bytes(dxb_storage_t
                  !dxb_page_io_equal(&stale.pages, &invalidate.pages)))
       return dxb_filesize_completed_error(MDBX_EINVAL, setsize.filesize);
 
-    dxb_cache_invalidate_submit_io_t invalidate_submit;
-    rc = dxb_storage_make_cache_invalidate_submit_io(storage, &invalidate, &invalidate_submit);
-    if (unlikely(rc != MDBX_SUCCESS))
-      return dxb_filesize_completed_error(rc, setsize.filesize);
-    rc = dxb_storage_cache_invalidate_submit_io_validate(storage, &invalidate_submit);
-    if (unlikely(rc != MDBX_SUCCESS))
-      return dxb_filesize_completed_error(rc, setsize.filesize);
-    dxb_cache_result_t invalidate_result = dxb_storage_submit_invalidate_cached_io(storage, &invalidate_submit);
+    dxb_cache_result_t invalidate_result = dxb_storage_submit_invalidate_cached_io(storage, &invalidate);
     if (unlikely(invalidate_result.err != MDBX_SUCCESS))
       return dxb_filesize_completed_error(invalidate_result.err, setsize.filesize);
   }
@@ -26772,14 +26706,7 @@ static dxb_copy_result_t dxb_storage_submit_copy_data(dxb_storage_t *storage, co
                invalidate.pages.bytes != copy->dst_pages.bytes))
     return dxb_copy_completed_error(MDBX_EINVAL, copy->src_bytes.bytes);
 
-  dxb_cache_invalidate_submit_io_t invalidate_submit;
-  rc = dxb_storage_make_cache_invalidate_submit_io(storage, &invalidate, &invalidate_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_copy_completed_error(rc, copy->src_bytes.bytes);
-  rc = dxb_storage_cache_invalidate_submit_io_validate(storage, &invalidate_submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_copy_completed_error(rc, copy->src_bytes.bytes);
-  dxb_cache_result_t result = dxb_storage_submit_invalidate_cached_io(storage, &invalidate_submit);
+  dxb_cache_result_t result = dxb_storage_submit_invalidate_cached_io(storage, &invalidate);
   if (unlikely(result.err != MDBX_SUCCESS))
     return dxb_copy_completed_error(result.err, copy->src_bytes.bytes);
   return dxb_copy_completed(copy->src_bytes.bytes);
@@ -40464,17 +40391,8 @@ static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_data_write_io_t *q
     if (unlikely(err == MDBX_SUCCESS &&
                  (!iov_page_io_equal(&queued->pages, &invalidate.pages) || invalidate.include_reusable)))
       err = MDBX_EINVAL;
-    dxb_cache_invalidate_submit_io_t invalidate_submit;
-    if (likely(err == MDBX_SUCCESS))
-      err = dxb_storage_make_cache_invalidate_submit_io(storage, &invalidate, &invalidate_submit);
-    if (likely(err == MDBX_SUCCESS))
-      err = dxb_storage_cache_invalidate_submit_io_validate(storage, &invalidate_submit);
-    if (unlikely(err == MDBX_SUCCESS &&
-                 (!iov_page_io_equal(&invalidate.pages, &invalidate_submit.invalidate.pages) ||
-                  invalidate.include_reusable != invalidate_submit.invalidate.include_reusable)))
-      err = MDBX_EINVAL;
     if (likely(err == MDBX_SUCCESS)) {
-      dxb_cache_result_t result = dxb_storage_submit_invalidate_cached_io(storage, &invalidate_submit);
+      dxb_cache_result_t result = dxb_storage_submit_invalidate_cached_io(storage, &invalidate);
       if (unlikely(result.err != MDBX_SUCCESS))
         err = result.err;
     }
