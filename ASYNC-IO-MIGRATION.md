@@ -14427,6 +14427,29 @@ migration CTest suite including API checks and tool roundtrips, the ASAN build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.132`
 batch, `1.144` crud, `0.798` iterate, `1.023` get, and `1.070` delete.
 
+A later setup write/discard descriptor cleanup removed
+`dxb_setup_meta_pages_write_submit_io_t`,
+`dxb_setup_make_meta_pages_write_submit_io()`,
+`dxb_setup_meta_pages_write_submit_io_validate()`,
+`dxb_setup_stale_tail_discard_submit_io_t`,
+`dxb_setup_make_stale_tail_discard_submit_io()`, and
+`dxb_setup_stale_tail_discard_submit_io_validate()` from `mdbx.c`.
+New-database meta-page initialization now builds and validates the page span,
+data-write descriptor, and storage write descriptor directly before submitting
+through `dxb_storage_submit_write_data()`. Setup-time stale-tail cleanup now
+builds and validates the byte span, discard descriptor, and discard submit
+descriptor directly before `dxb_storage_submit_discard_io()`. Verification
+passed `git diff --check`, a source scan proving the removed setup
+write/discard descriptor helpers are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.112`
+batch, `1.145` crud, `0.785` iterate, `0.836` get, and `1.061` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

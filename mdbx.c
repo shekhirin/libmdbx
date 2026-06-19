@@ -28184,210 +28184,6 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
   return err;
 }
 
-typedef struct dxb_setup_meta_pages_write_submit_io {
-  MDBX_env *env;
-  dxb_storage_t *storage;
-  dxb_page_io_t pages;
-  dxb_data_write_io_t write_pages;
-  dxb_write_submit_io_t write;
-  const void *buffer;
-  size_t expected_bytes;
-} dxb_setup_meta_pages_write_submit_io_t;
-
-static inline int dxb_setup_make_meta_pages_write_submit_io(MDBX_env *env, const void *buffer,
-                                                            dxb_setup_meta_pages_write_submit_io_t *io) {
-  if (unlikely(!env || !env->page_auxbuf || !buffer || !io))
-    return MDBX_EINVAL;
-  if (unlikely(buffer != env->page_auxbuf))
-    return MDBX_EINVAL;
-
-  dxb_storage_t *const storage = &env->dxb_storage;
-  if (unlikely(dxb_storage_pagesize(storage) != env->ps))
-    return MDBX_EINVAL;
-
-  dxb_page_io_t pages;
-  int rc = dxb_storage_page_prefix_io(storage, NUM_METAS, &pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(pages.pgno != 0 || pages.npages != NUM_METAS || pages.offset != 0))
-    return MDBX_EINVAL;
-
-  dxb_data_write_io_t write_pages;
-  rc = dxb_storage_make_data_write_io_from_page(storage, &pages, &write_pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(write_pages.bytes.offset != 0 || write_pages.bytes.bytes != pages.bytes))
-    return MDBX_EINVAL;
-
-  dxb_write_submit_io_t write;
-  rc = dxb_storage_make_write_submit_io(storage, &write_pages, buffer, &write);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->env = env;
-  io->storage = storage;
-  io->pages = pages;
-  io->write_pages = write_pages;
-  io->write = write;
-  io->buffer = buffer;
-  io->expected_bytes = write_pages.bytes.bytes;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_setup_meta_pages_write_submit_io_validate(
-    const dxb_setup_meta_pages_write_submit_io_t *io) {
-  if (unlikely(!io || !io->env || !io->storage || !io->buffer || !io->write.buffer))
-    return MDBX_EINVAL;
-  MDBX_env *const env = io->env;
-  if (unlikely(io->storage != &env->dxb_storage || io->buffer != env->page_auxbuf ||
-               io->write.buffer != io->buffer || io->expected_bytes != io->write_pages.bytes.bytes ||
-               io->write.data.bytes.bytes != io->expected_bytes))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_page_io_validate(io->storage, &io->pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_data_write_io_validate(io->storage, &io->write_pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_write_submit_io_validate(io->storage, &io->write);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io->pages.pgno != 0 || io->pages.npages != NUM_METAS ||
-               io->write_pages.pages.pgno != io->pages.pgno ||
-               io->write_pages.pages.end_pgno != io->pages.end_pgno ||
-               io->write_pages.pages.npages != io->pages.npages ||
-               io->write_pages.pages.offset != io->pages.offset ||
-               io->write_pages.pages.bytes != io->pages.bytes ||
-               io->write_pages.bytes.offset != 0 || io->write_pages.bytes.bytes != io->pages.bytes ||
-               io->write.data.pages.pgno != io->write_pages.pages.pgno ||
-               io->write.data.pages.end_pgno != io->write_pages.pages.end_pgno ||
-               io->write.data.pages.npages != io->write_pages.pages.npages ||
-               io->write.data.pages.offset != io->write_pages.pages.offset ||
-               io->write.data.pages.bytes != io->write_pages.pages.bytes ||
-               io->write.data.bytes.offset != io->write_pages.bytes.offset ||
-               io->write.data.bytes.bytes != io->write_pages.bytes.bytes))
-    return MDBX_EINVAL;
-
-  dxb_setup_meta_pages_write_submit_io_t checked;
-  rc = dxb_setup_make_meta_pages_write_submit_io(env, io->buffer, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.env != io->env || checked.storage != io->storage ||
-               checked.buffer != io->buffer || checked.expected_bytes != io->expected_bytes ||
-               checked.pages.pgno != io->pages.pgno ||
-               checked.pages.end_pgno != io->pages.end_pgno ||
-               checked.pages.npages != io->pages.npages ||
-               checked.pages.offset != io->pages.offset ||
-               checked.pages.bytes != io->pages.bytes ||
-               checked.write_pages.pages.pgno != io->write_pages.pages.pgno ||
-               checked.write_pages.pages.end_pgno != io->write_pages.pages.end_pgno ||
-               checked.write_pages.pages.npages != io->write_pages.pages.npages ||
-               checked.write_pages.pages.offset != io->write_pages.pages.offset ||
-               checked.write_pages.pages.bytes != io->write_pages.pages.bytes ||
-               checked.write_pages.bytes.offset != io->write_pages.bytes.offset ||
-               checked.write_pages.bytes.bytes != io->write_pages.bytes.bytes ||
-               checked.write.data.pages.pgno != io->write.data.pages.pgno ||
-               checked.write.data.pages.end_pgno != io->write.data.pages.end_pgno ||
-               checked.write.data.pages.npages != io->write.data.pages.npages ||
-               checked.write.data.pages.offset != io->write.data.pages.offset ||
-               checked.write.data.pages.bytes != io->write.data.pages.bytes ||
-               checked.write.data.bytes.offset != io->write.data.bytes.offset ||
-               checked.write.data.bytes.bytes != io->write.data.bytes.bytes ||
-               checked.write.buffer != io->write.buffer))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-typedef struct dxb_setup_stale_tail_discard_submit_io {
-  MDBX_env *env;
-  dxb_storage_t *storage;
-  size_t begin_bytes;
-  size_t end_bytes;
-  dxb_byte_io_t bytes;
-  dxb_discard_io_t discard;
-  dxb_discard_submit_io_t submit;
-} dxb_setup_stale_tail_discard_submit_io_t;
-
-static inline int dxb_setup_make_stale_tail_discard_submit_io(MDBX_env *env, size_t begin_bytes, size_t end_bytes,
-                                                              dxb_setup_stale_tail_discard_submit_io_t *io) {
-  if (unlikely(!env || !io || begin_bytes >= end_bytes))
-    return MDBX_EINVAL;
-
-  dxb_storage_t *const storage = &env->dxb_storage;
-  dxb_byte_io_t bytes;
-  int rc = dxb_storage_byte_span_io(begin_bytes, end_bytes, &bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_discard_io_t discard;
-  rc = dxb_storage_make_discard_io(storage, &bytes, dxb_discard_clean, &discard);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  dxb_discard_submit_io_t submit;
-  rc = dxb_storage_make_discard_submit_io(storage, &discard, &submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->env = env;
-  io->storage = storage;
-  io->begin_bytes = begin_bytes;
-  io->end_bytes = end_bytes;
-  io->bytes = bytes;
-  io->discard = discard;
-  io->submit = submit;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_setup_stale_tail_discard_submit_io_validate(
-    const dxb_setup_stale_tail_discard_submit_io_t *io) {
-  if (unlikely(!io || !io->env || !io->storage || io->storage != &io->env->dxb_storage ||
-               io->begin_bytes >= io->end_bytes))
-    return MDBX_EINVAL;
-  if (unlikely(io->bytes.offset != io->begin_bytes ||
-               io->bytes.bytes != (size_t)(io->end_bytes - io->begin_bytes) ||
-               io->discard.mode != dxb_discard_clean ||
-               io->discard.range.request.offset != io->bytes.offset ||
-               io->discard.range.request.bytes != io->bytes.bytes ||
-               io->submit.discard.range.request.offset != io->discard.range.request.offset ||
-               io->submit.discard.range.request.bytes != io->discard.range.request.bytes ||
-               io->submit.discard.mode != io->discard.mode))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_discard_submit_io_validate(io->storage, &io->submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  dxb_setup_stale_tail_discard_submit_io_t checked;
-  rc = dxb_setup_make_stale_tail_discard_submit_io(io->env, io->begin_bytes, io->end_bytes, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.env != io->env || checked.storage != io->storage ||
-               checked.begin_bytes != io->begin_bytes || checked.end_bytes != io->end_bytes ||
-               checked.bytes.offset != io->bytes.offset || checked.bytes.bytes != io->bytes.bytes ||
-               checked.discard.range.request.offset != io->discard.range.request.offset ||
-               checked.discard.range.request.bytes != io->discard.range.request.bytes ||
-               checked.discard.range.pages.pgno != io->discard.range.pages.pgno ||
-               checked.discard.range.pages.end_pgno != io->discard.range.pages.end_pgno ||
-               checked.discard.range.pages.npages != io->discard.range.pages.npages ||
-               checked.discard.range.pages.offset != io->discard.range.pages.offset ||
-               checked.discard.range.pages.bytes != io->discard.range.pages.bytes ||
-               checked.discard.range.page_bytes.offset != io->discard.range.page_bytes.offset ||
-               checked.discard.range.page_bytes.bytes != io->discard.range.page_bytes.bytes ||
-               checked.discard.mode != io->discard.mode ||
-               checked.submit.discard.range.request.offset != io->submit.discard.range.request.offset ||
-               checked.submit.discard.range.request.bytes != io->submit.discard.range.request.bytes ||
-               checked.submit.discard.range.pages.pgno != io->submit.discard.range.pages.pgno ||
-               checked.submit.discard.range.pages.end_pgno != io->submit.discard.range.pages.end_pgno ||
-               checked.submit.discard.range.pages.npages != io->submit.discard.range.pages.npages ||
-               checked.submit.discard.range.pages.offset != io->submit.discard.range.pages.offset ||
-               checked.submit.discard.range.pages.bytes != io->submit.discard.range.pages.bytes ||
-               checked.submit.discard.range.page_bytes.offset != io->submit.discard.range.page_bytes.offset ||
-               checked.submit.discard.range.page_bytes.bytes != io->submit.discard.range.page_bytes.bytes ||
-               checked.submit.discard.mode != io->submit.discard.mode))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bits) {
   dxb_storage_t *const storage = &env->dxb_storage;
   meta_t header;
@@ -28424,15 +28220,31 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
       return err;
 
     header = *meta_init_triplet(env, env->page_auxbuf);
-    dxb_setup_meta_pages_write_submit_io_t meta_pages_submit;
-    err = dxb_setup_make_meta_pages_write_submit_io(env, env->page_auxbuf, &meta_pages_submit);
+    if (unlikely(!env->page_auxbuf || dxb_storage_pagesize(storage) != env->ps))
+      return MDBX_EINVAL;
+    dxb_page_io_t meta_pages;
+    err = dxb_storage_page_prefix_io(storage, NUM_METAS, &meta_pages);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    err = dxb_setup_meta_pages_write_submit_io_validate(&meta_pages_submit);
+    if (unlikely(meta_pages.pgno != 0 || meta_pages.npages != NUM_METAS || meta_pages.offset != 0))
+      return MDBX_EINVAL;
+    dxb_data_write_io_t meta_write_pages;
+    err = dxb_storage_make_data_write_io_from_page(storage, &meta_pages, &meta_write_pages);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
-    dxb_write_result_t meta_pages_write =
-        dxb_storage_submit_write_data(meta_pages_submit.storage, &meta_pages_submit.write);
+    err = dxb_storage_data_write_io_validate(storage, &meta_write_pages);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    if (unlikely(meta_write_pages.bytes.offset != 0 || meta_write_pages.bytes.bytes != meta_pages.bytes))
+      return MDBX_EINVAL;
+    dxb_write_submit_io_t meta_pages_submit;
+    err = dxb_storage_make_write_submit_io(storage, &meta_write_pages, env->page_auxbuf, &meta_pages_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    err = dxb_storage_write_submit_io_validate(storage, &meta_pages_submit);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    dxb_write_result_t meta_pages_write = dxb_storage_submit_write_data(storage, &meta_pages_submit);
     err = meta_pages_write.err;
     if (unlikely(err != MDBX_SUCCESS))
       return err;
@@ -28882,12 +28694,22 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
 #if defined(POSIX_FADV_DONTNEED)
     NOTICE("open-FADV_%s %u..%u", "DONTNEED", env->lck->discarded_tail.weak,
            (pgno_t)dxb_storage_bytes2pgno(storage, current_size));
-    dxb_setup_stale_tail_discard_submit_io_t discard_submit;
-    err = dxb_setup_make_stale_tail_discard_submit_io(env, allocated_aligned2os_bytes, current_size, &discard_submit);
-    if (likely(err == MDBX_SUCCESS))
-      err = dxb_setup_stale_tail_discard_submit_io_validate(&discard_submit);
-    if (likely(err == MDBX_SUCCESS))
-      err = dxb_storage_submit_discard_io(discard_submit.storage, &discard_submit.submit).err;
+    dxb_byte_io_t discard_bytes;
+    err = dxb_storage_byte_span_io(allocated_aligned2os_bytes, current_size, &discard_bytes);
+    if (likely(err == MDBX_SUCCESS)) {
+      dxb_discard_io_t discard;
+      err = dxb_storage_make_discard_io(storage, &discard_bytes, dxb_discard_clean, &discard);
+      if (likely(err == MDBX_SUCCESS))
+        err = dxb_storage_discard_io_validate(storage, &discard);
+      if (likely(err == MDBX_SUCCESS)) {
+        dxb_discard_submit_io_t discard_submit;
+        err = dxb_storage_make_discard_submit_io(storage, &discard, &discard_submit);
+        if (likely(err == MDBX_SUCCESS))
+          err = dxb_storage_discard_submit_io_validate(storage, &discard_submit);
+        if (likely(err == MDBX_SUCCESS))
+          err = dxb_storage_submit_discard_io(storage, &discard_submit).err;
+      }
+    }
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
 #endif /* POSIX_FADV_DONTNEED */
