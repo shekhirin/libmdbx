@@ -30617,13 +30617,6 @@ static inline int dxb_resize_tail_discard_submit_io_validate(const dxb_resize_ta
   return MDBX_SUCCESS;
 }
 
-static dxb_range_result_t dxb_resize_submit_tail_discard(const dxb_resize_tail_discard_submit_io_t *io) {
-  int rc = dxb_resize_tail_discard_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_range_error(rc);
-  return dxb_storage_submit_discard_io(io->storage, &io->submit);
-}
-
 typedef struct dxb_env_filesize_fetch_submit_io {
   MDBX_env *env;
   dxb_storage_t *storage;
@@ -31351,7 +31344,9 @@ __cold int dxb_resize(MDBX_env *const env, const pgno_t allocated_pgno, const pg
     dxb_resize_tail_discard_submit_io_t discard_submit;
     rc = dxb_resize_make_tail_discard_submit_io(storage, size_bytes, prev_size, &discard_submit);
     if (likely(rc == MDBX_SUCCESS))
-      rc = dxb_resize_submit_tail_discard(&discard_submit).err;
+      rc = dxb_resize_tail_discard_submit_io_validate(&discard_submit);
+    if (likely(rc == MDBX_SUCCESS))
+      rc = dxb_storage_submit_discard_io(discard_submit.storage, &discard_submit.submit).err;
     if (unlikely(MDBX_IS_ERROR(rc))) {
       ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "resize", "DONTNEED", size_bytes, prev_size - size_bytes, rc);
       goto bailout;
@@ -31870,14 +31865,6 @@ static inline int dxb_setup_stale_tail_discard_submit_io_validate(
   return MDBX_SUCCESS;
 }
 
-static dxb_range_result_t dxb_setup_submit_stale_tail_discard(
-    const dxb_setup_stale_tail_discard_submit_io_t *io) {
-  int rc = dxb_setup_stale_tail_discard_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_range_error(rc);
-  return dxb_storage_submit_discard_io(io->storage, &io->submit);
-}
-
 __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bits) {
   dxb_storage_t *const storage = &env->dxb_storage;
   meta_t header;
@@ -32350,7 +32337,9 @@ __cold int dxb_setup(MDBX_env *env, const int lck_rc, const mdbx_mode_t mode_bit
     dxb_setup_stale_tail_discard_submit_io_t discard_submit;
     err = dxb_setup_make_stale_tail_discard_submit_io(env, allocated_aligned2os_bytes, current_size, &discard_submit);
     if (likely(err == MDBX_SUCCESS))
-      err = dxb_setup_submit_stale_tail_discard(&discard_submit).err;
+      err = dxb_setup_stale_tail_discard_submit_io_validate(&discard_submit);
+    if (likely(err == MDBX_SUCCESS))
+      err = dxb_storage_submit_discard_io(discard_submit.storage, &discard_submit.submit).err;
     if (unlikely(MDBX_IS_ERROR(err)))
       return err;
 #endif /* POSIX_FADV_DONTNEED */
@@ -32777,14 +32766,6 @@ static inline int dxb_sync_shrink_discard_submit_io_validate(
   return MDBX_SUCCESS;
 }
 
-static dxb_range_result_t dxb_sync_submit_shrink_discard(
-    const dxb_sync_shrink_discard_submit_io_t *io) {
-  int rc = dxb_sync_shrink_discard_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_range_error(rc);
-  return dxb_storage_submit_discard_io(io->storage, &io->submit);
-}
-
 int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika_t *const troika) {
   eASSERT0(env, ((env->flags ^ flags) & MDBX_WRITEMAP) == 0);
   eASSERT0(env, (flags & MDBX_WRITEMAP) == 0);
@@ -32848,7 +32829,9 @@ int dxb_sync_locked(MDBX_env *env, unsigned flags, meta_t *const pending, troika
           int err = dxb_sync_make_shrink_discard_submit_io(
               env, discard_edge_pgno, prev_discarded_pgno, &discard_submit);
           if (likely(err == MDBX_SUCCESS))
-            err = dxb_sync_submit_shrink_discard(&discard_submit).err;
+            err = dxb_sync_shrink_discard_submit_io_validate(&discard_submit);
+          if (likely(err == MDBX_SUCCESS))
+            err = dxb_storage_submit_discard_io(discard_submit.storage, &discard_submit.submit).err;
           if (unlikely(MDBX_IS_ERROR(err))) {
             ERROR("%s-fadvise(%s, %zu, +%zu), err %d", "shrink", "DONTNEED", discard_edge_bytes,
                   prev_discarded_bytes - discard_edge_bytes, err);
