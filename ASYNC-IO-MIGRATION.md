@@ -14677,6 +14677,28 @@ default sample was an outlier; the immediate rerun passed with forced/default
 ratios of `0.999` batch, `1.000` crud, `1.014` iterate, `0.944` get, and
 `0.993` delete.
 
+A later data-copy submission cleanup removed
+`dxb_copy_cache_invalidate_submit_io_t`, `dxb_data_copy_submit_io_t`,
+`dxb_storage_make_copy_cache_invalidate_submit_io()`,
+`dxb_storage_copy_cache_invalidate_submit_io_validate()`,
+`dxb_storage_make_data_copy_submit_io()`,
+`dxb_storage_data_copy_submit_io_validate()`, and the copy-specific equality
+helpers from `mdbx.c`. Defrag page-copy setup now validates the plain
+`dxb_data_copy_io_t` request and passes it directly to
+`dxb_storage_submit_copy_data()`, while the submitter derives, validates, and
+submits the destination page-cache invalidation after the successful
+`copy_file_range()` call. Verification passed `git diff --check`, a source
+scan proving the removed copy-submit helpers are absent from `mdbx.c`, the
+GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the
+full 15-test public migration CTest suite including API checks and tool
+roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`.
+The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
+of `1.109` batch, `1.155` crud, `0.992` iterate, `1.005` get, and `1.082`
+delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
