@@ -312,16 +312,6 @@ typedef struct dxb_cursor_page_get_submit_io {
   uint16_t ill;
 } dxb_cursor_page_get_submit_io_t;
 
-typedef struct dxb_page_get_with_ref_submit_io {
-  const MDBX_cursor *cursor;
-  page_t **page;
-  page_ref_t *ref;
-  pgno_t pgno;
-  txnid_t front;
-  dxb_cursor_page_get_submit_io_t get;
-  bool retain_ref;
-} dxb_page_get_with_ref_submit_io_t;
-
 typedef struct dxb_compacting_branch_child_copy_submit_io {
   MDBX_cursor *cursor;
   page_t **source;
@@ -7305,10 +7295,9 @@ static inline int page_make_cursor_get_submit_io(const MDBX_cursor *mc, const ui
                                                  const txnid_t front, dxb_cursor_page_get_submit_io_t *io);
 static __always_inline pgr_t page_submit_cursor_get(const dxb_cursor_page_get_submit_io_t *io);
 
-static inline int page_make_get_with_ref_submit_io(const MDBX_cursor *mc, const pgno_t pgno, page_t **mp,
-                                                   page_ref_t *ref, const txnid_t front,
-                                                   dxb_page_get_with_ref_submit_io_t *io) {
-  if (unlikely(!mc || !mc->txn || !mp || !io))
+static inline int __must_check_result page_get_with_ref(const MDBX_cursor *mc, const pgno_t pgno, page_t **mp,
+                                                        page_ref_t *ref, const txnid_t front) {
+  if (unlikely(!mc || !mc->txn || !mp))
     return MDBX_EINVAL;
 
   dxb_cursor_page_get_submit_io_t get;
@@ -7316,55 +7305,12 @@ static inline int page_make_get_with_ref_submit_io(const MDBX_cursor *mc, const 
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  io->cursor = mc;
-  io->page = mp;
-  io->ref = ref;
-  io->pgno = get.get.request.pgno;
-  io->front = get.get.front;
-  io->get = get;
-  io->retain_ref = ref != nullptr;
-  return MDBX_SUCCESS;
-}
-
-static inline int page_get_with_ref_submit_io_validate(const dxb_page_get_with_ref_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->cursor->txn || !io->page))
-    return MDBX_EINVAL;
-
-  dxb_page_get_with_ref_submit_io_t checked;
-  int err = page_make_get_with_ref_submit_io(io->cursor, io->pgno, io->page, io->ref, io->front, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.ref != io->ref ||
-               checked.pgno != io->pgno || checked.front != io->front ||
-               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
-               checked.get.get.request.pgno != io->get.get.request.pgno ||
-               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
-               checked.get.get.request.npages != io->get.get.request.npages ||
-               checked.get.get.request.offset != io->get.get.request.offset ||
-               checked.get.get.request.bytes != io->get.get.request.bytes ||
-               checked.get.get.front != io->get.get.front ||
-               checked.get.get.track_private != io->get.get.track_private ||
-               checked.retain_ref != io->retain_ref))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline int __must_check_result page_get_with_ref(const MDBX_cursor *mc, const pgno_t pgno, page_t **mp,
-                                                        page_ref_t *ref, const txnid_t front) {
-  dxb_page_get_with_ref_submit_io_t submit;
-  int err = page_make_get_with_ref_submit_io(mc, pgno, mp, ref, front, &submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  err = page_get_with_ref_submit_io_validate(&submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  pgr_t ret = page_submit_cursor_get(&submit.get);
+  pgr_t ret = page_submit_cursor_get(&get);
   *mp = ret.page;
-  if (submit.retain_ref)
+  if (ref)
     *ref = ret.ref;
   else
-    pgr_release(submit.cursor, &ret);
+    pgr_release(mc, &ret);
   return ret.err;
 }
 

@@ -13953,6 +13953,26 @@ six focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.134` batch, `1.154` crud, `0.982`
 iterate, `1.020` get, and `1.053` delete.
 
+A later page-get-with-ref descriptor cleanup removed
+`dxb_page_get_with_ref_submit_io_t`,
+`page_make_get_with_ref_submit_io()`, and
+`page_get_with_ref_submit_io_validate()` from `mdbx.c`.
+`page_get_with_ref()` now validates its cursor/output arguments, builds the
+existing checked cursor page-get request directly, and either returns the
+fetched page ref to the caller or releases it immediately. This keeps compacting
+and sibling/root lookup pin ownership at the direct page-get handoff without a
+descriptor wrapper around a single local fetch. Verification passed `git diff
+--check`, a source scan proving the removed page-get-with-ref descriptor
+helpers are absent from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.147` batch, `1.163` crud, `1.013`
+iterate, `1.005` get, and `1.054` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
