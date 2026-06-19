@@ -13593,6 +13593,25 @@ six focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.107` batch, `1.125` crud, `1.217`
 iterate, `0.970` get, and `1.077` delete.
 
+A later transaction-retained-ref submit-boundary cleanup removed the one-call
+`txn_submit_retained_ref_append()`, `txn_submit_retained_refs_release()`, and
+`cursor_submit_txn_pins_capture()` helpers from `mdbx.c`. Public-result
+retained-ref append, transaction retained-ref release, and cursor stack/value
+pin capture now validate their prepared descriptors at the caller, then update
+the transaction retained-ref list or release cached refs directly. This keeps
+the public `MDBX_val` lifetime pins next to the cursor/cache ownership sites
+that future async completion handling must preserve. Verification passed
+`git diff --check`, a source scan proving the removed transaction retained-ref
+submit helpers are absent from `mdbx.c`, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.119`
+batch, `1.150` crud, `0.971` iterate, `0.982` get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

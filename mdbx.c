@@ -6547,15 +6547,6 @@ static inline int txn_retained_ref_append_submit_io_validate(const dxb_txn_retai
   return MDBX_SUCCESS;
 }
 
-static inline int txn_submit_retained_ref_append(const dxb_txn_retained_ref_append_submit_io_t *io) {
-  int err = txn_retained_ref_append_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  io->txn->retained_refs[io->txn->retained_refs_count++] = cursor_ref_retain(io->cursor, io->ref);
-  return MDBX_SUCCESS;
-}
-
 static inline int txn_make_retained_refs_release_submit_io(MDBX_txn *txn,
                                                            dxb_txn_retained_refs_release_submit_io_t *io) {
   if (unlikely(!txn || !io))
@@ -6592,46 +6583,42 @@ static inline int txn_retained_refs_release_submit_io_validate(const dxb_txn_ret
   return MDBX_SUCCESS;
 }
 
-static inline int txn_submit_retained_refs_release(const dxb_txn_retained_refs_release_submit_io_t *io) {
-  int err = txn_retained_refs_release_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  MDBX_txn *const txn = io->txn;
-  for (size_t i = 0; i < io->retained_refs_count; ++i) {
-    dxb_cursor_ref_release_submit_io_t release;
-    err = cursor_make_ref_release_submit_io(nullptr, &txn->retained_refs[i], &release);
-    if (unlikely(err != MDBX_SUCCESS))
-      return err;
-    err = cursor_ref_release_submit_io_validate(&release);
-    if (likely(err == MDBX_SUCCESS)) {
-      page_ref_t *const target = release.ref;
-      if (target->cache) {
-        dxb_cache_ref_submit_io_t cache_submit;
-        err = dxb_storage_make_cache_ref_submit_io(target, release.cursor, false, &cache_submit);
-        dxb_cache_result_t cache_release =
-            likely(err == MDBX_SUCCESS) ? dxb_storage_submit_release_cached_ref(target->cache->storage, &cache_submit)
-                                        : dxb_cache_error(err);
-        if (unlikely(cache_release.err != MDBX_SUCCESS || !cache_release.submitted || !cache_release.completed))
-          err = cache_release.err == MDBX_SUCCESS ? MDBX_EIO : cache_release.err;
-      } else if (unlikely(target->flags & PAGE_REF_CACHE))
-        err = MDBX_EINVAL;
-      if (likely(err == MDBX_SUCCESS))
-        *target = page_ref_empty();
-    }
-    if (unlikely(err != MDBX_SUCCESS))
-      return err;
-  }
-  txn->retained_refs_count = 0;
-  return MDBX_SUCCESS;
-}
-
 static void txn_retained_refs_release(MDBX_txn *txn) {
   dxb_txn_retained_refs_release_submit_io_t submit;
   int err = txn_make_retained_refs_release_submit_io(txn, &submit);
   ASSERT(err == MDBX_SUCCESS);
   if (likely(err == MDBX_SUCCESS)) {
-    err = txn_submit_retained_refs_release(&submit);
+    err = txn_retained_refs_release_submit_io_validate(&submit);
+    if (likely(err == MDBX_SUCCESS)) {
+      MDBX_txn *const submitted_txn = submit.txn;
+      for (size_t i = 0; i < submit.retained_refs_count; ++i) {
+        dxb_cursor_ref_release_submit_io_t release;
+        err = cursor_make_ref_release_submit_io(nullptr, &submitted_txn->retained_refs[i], &release);
+        if (unlikely(err != MDBX_SUCCESS))
+          break;
+        err = cursor_ref_release_submit_io_validate(&release);
+        if (likely(err == MDBX_SUCCESS)) {
+          page_ref_t *const target = release.ref;
+          if (target->cache) {
+            dxb_cache_ref_submit_io_t cache_submit;
+            err = dxb_storage_make_cache_ref_submit_io(target, release.cursor, false, &cache_submit);
+            dxb_cache_result_t cache_release =
+                likely(err == MDBX_SUCCESS)
+                    ? dxb_storage_submit_release_cached_ref(target->cache->storage, &cache_submit)
+                    : dxb_cache_error(err);
+            if (unlikely(cache_release.err != MDBX_SUCCESS || !cache_release.submitted || !cache_release.completed))
+              err = cache_release.err == MDBX_SUCCESS ? MDBX_EIO : cache_release.err;
+          } else if (unlikely(target->flags & PAGE_REF_CACHE))
+            err = MDBX_EINVAL;
+          if (likely(err == MDBX_SUCCESS))
+            *target = page_ref_empty();
+        }
+        if (unlikely(err != MDBX_SUCCESS))
+          break;
+      }
+      if (likely(err == MDBX_SUCCESS))
+        submitted_txn->retained_refs_count = 0;
+    }
     ASSERT(err == MDBX_SUCCESS);
   }
 }
@@ -6705,41 +6692,33 @@ static inline int cursor_txn_pins_capture_submit_io_validate(const dxb_cursor_tx
   return MDBX_SUCCESS;
 }
 
-static inline int cursor_submit_txn_pins_capture(const dxb_cursor_txn_pins_capture_submit_io_t *io) {
-  int err = cursor_txn_pins_capture_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  MDBX_txn *const txn = io->txn;
-  if (page_ref_requires_txn_pin(&io->value_ref)) {
-    dxb_txn_retained_ref_append_submit_io_t append;
-    err = txn_make_retained_ref_append_submit_io(txn, io->cursor, io->value_ref, &append);
-    if (unlikely(err != MDBX_SUCCESS))
-      return err;
-    err = txn_submit_retained_ref_append(&append);
-    if (unlikely(err != MDBX_SUCCESS))
-      return err;
-  }
-  for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i) {
-    if (page_ref_requires_txn_pin(&io->pgref[i])) {
-      dxb_txn_retained_ref_append_submit_io_t append;
-      err = txn_make_retained_ref_append_submit_io(txn, io->cursor, io->pgref[i], &append);
-      if (unlikely(err != MDBX_SUCCESS))
-        return err;
-      err = txn_submit_retained_ref_append(&append);
-      if (unlikely(err != MDBX_SUCCESS))
-        return err;
-    }
-  }
-  return MDBX_SUCCESS;
-}
-
 static void cursor_capture_txn_pins(MDBX_cursor *mc) {
   dxb_cursor_txn_pins_capture_submit_io_t submit;
   int err = cursor_make_txn_pins_capture_submit_io(mc, &submit);
   cASSERT0(mc, err == MDBX_SUCCESS);
   if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_submit_txn_pins_capture(&submit);
+    err = cursor_txn_pins_capture_submit_io_validate(&submit);
+    if (likely(err == MDBX_SUCCESS)) {
+      MDBX_txn *const txn = submit.txn;
+      if (page_ref_requires_txn_pin(&submit.value_ref)) {
+        dxb_txn_retained_ref_append_submit_io_t append;
+        err = txn_make_retained_ref_append_submit_io(txn, submit.cursor, submit.value_ref, &append);
+        if (likely(err == MDBX_SUCCESS))
+          err = txn_retained_ref_append_submit_io_validate(&append);
+        if (likely(err == MDBX_SUCCESS))
+          append.txn->retained_refs[append.txn->retained_refs_count++] = cursor_ref_retain(append.cursor, append.ref);
+      }
+      for (intptr_t i = 0; likely(err == MDBX_SUCCESS) && i < CURSOR_STACK_SIZE; ++i) {
+        if (page_ref_requires_txn_pin(&submit.pgref[i])) {
+          dxb_txn_retained_ref_append_submit_io_t append;
+          err = txn_make_retained_ref_append_submit_io(txn, submit.cursor, submit.pgref[i], &append);
+          if (likely(err == MDBX_SUCCESS))
+            err = txn_retained_ref_append_submit_io_validate(&append);
+          if (likely(err == MDBX_SUCCESS))
+            append.txn->retained_refs[append.txn->retained_refs_count++] = cursor_ref_retain(append.cursor, append.ref);
+        }
+      }
+    }
     cASSERT0(mc, err == MDBX_SUCCESS);
   }
 }
@@ -15244,9 +15223,11 @@ static int cache_materialize_entry(const MDBX_txn *txn, const MDBX_cache_entry_t
     err = txn_make_retained_ref_append_submit_io((MDBX_txn *)txn, nullptr, pgr.ref, &retain_submit);
     if (unlikely(err != MDBX_SUCCESS))
       goto bailout;
-    err = txn_submit_retained_ref_append(&retain_submit);
+    err = txn_retained_ref_append_submit_io_validate(&retain_submit);
     if (unlikely(err != MDBX_SUCCESS))
       goto bailout;
+    retain_submit.txn->retained_refs[retain_submit.txn->retained_refs_count++] =
+        cursor_ref_retain(retain_submit.cursor, retain_submit.ref);
   }
 
   *data = materialized_data;
