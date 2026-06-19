@@ -2435,3 +2435,70 @@ Additional dirty-write completion batching checkpoint:
   write-heavy repeat averages modestly upward compared with the prior
   checkpoint, especially in forced no-map mode. They do not close the
   pre-migration write-heavy gap, and the default iterate samples remain noisy.
+
+Additional dirty-write backend validation checkpoint:
+
+- split `osal_ioring_add()` into a validating wrapper and a trusted
+  `osal_ioring_add_validated()` path used by
+  `dxb_storage_submit_add_validated_queued_write()`. The validated path skips
+  repeated queued data-write validation during enqueue and merge after the
+  storage constructor has produced the descriptor.
+- removed the immediate storage-level revalidation of the just-constructed
+  `dxb_queued_write_io_t` in `dxb_storage_write_queued()`. The OSAL write
+  boundary still validates the submit descriptor and queue counters.
+- moved queued write-item descriptor validation in the sync and io_uring write
+  backends behind `MDBX_CHECKING > 0 || MDBX_DEBUG > 0`, so release builds trust
+  the internally constructed queue items while debug/checking builds still
+  verify them.
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_migration_smoke mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|migration_smoke)'`: passed 9/9
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench mdbx_migration_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check reported
+  async/blocking-parallel 1.109, async-many/blocking-parallel 1.054,
+  async-thread/blocking-parallel 1.053,
+  async-thread-many/blocking-parallel 1.026,
+  async-thread-batch/blocking-parallel 1.025,
+  async-batch/blocking-parallel 0.924,
+  async-batch-callback/blocking-parallel 0.832,
+  async-loop/blocking-parallel 1.054,
+  async-thread-loop/blocking-parallel 1.049,
+  async-cursor/blocking-parallel 1.168, and
+  async-loop-cursor/blocking-parallel 1.013. Batch and callback read samples
+  were below blocking-parallel in this run.
+- `make -f GNUmakefile mdbx_migration_bench_lazy`: passed with default
+  explicit batch 974.029 ops/s, crud 50.479 Kops/s, iterate 30.243 Mops/s,
+  get 477.230 Kops/s, delete 58.727 Kops/s; forced no-map batch
+  956.454 ops/s, crud 50.570 Kops/s, iterate 27.451 Mops/s,
+  get 474.441 Kops/s, delete 59.069 Kops/s. Forced/default ratios were batch
+  0.982, crud 1.002, iterate 0.908, get 0.994, delete 1.006.
+- `make -f GNUmakefile mdbx_migration_bench_lazy_repeat`: passed all three
+  paired samples. The repeat averages for current explicit default were:
+
+| phase | earlier mapped avg | current explicit default avg | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1033.245 ops/s | 953.109 ops/s | 0.922 |
+| crud | 55.675 Kops/s | 50.379 Kops/s | 0.905 |
+| iterate | 26.143 Mops/s | 28.810 Mops/s | 1.102 |
+| get | 279.409 Kops/s | 468.403 Kops/s | 1.676 |
+| delete | 66.398 Kops/s | 58.813 Kops/s | 0.886 |
+
+- repeat averages for current explicit forced no-map against the earlier no-map
+  baseline were:
+
+| phase | earlier no-map avg | current explicit forced avg | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1089.750 ops/s | 967.739 ops/s | 0.888 |
+| crud | 59.787 Kops/s | 50.293 Kops/s | 0.841 |
+| iterate | 25.827 Mops/s | 30.636 Mops/s | 1.186 |
+| get | 274.039 Kops/s | 468.368 Kops/s | 1.709 |
+| delete | 69.067 Kops/s | 58.620 Kops/s | 0.849 |
+
+- conclusion: release-build validation overhead is lower in the trusted
+  dirty-write queue path and all gates pass, but the repeat averages remain in
+  the same band as the prior checkpoint rather than proving a write-heavy
+  benchmark win. Batch, CRUD, and delete are still below the pre-migration
+  baseline.

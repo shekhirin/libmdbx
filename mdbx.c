@@ -3434,6 +3434,8 @@ static inline int dxb_storage_queued_data_write_io_validate(const dxb_storage_t 
 
 static unsigned osal_ioring_write_items(const osal_ioring_t *ior);
 static size_t osal_ioring_payload_bytes(const osal_ioring_t *ior);
+static dxb_queue_op_result_t osal_ioring_add_validated(osal_ioring_t *ior,
+                                                       const dxb_dirty_queued_write_io_t *io);
 
 static inline int dxb_queued_write_io_validate(const dxb_queued_write_io_t *io) {
   if (unlikely(!io || !dxb_io_channel_is_data(io->channel) || io->fd == INVALID_HANDLE_VALUE ||
@@ -30467,7 +30469,7 @@ static inline dxb_queue_op_result_t dxb_storage_submit_add_validated_queued_writ
   if (unlikely(!io))
     return dxb_queue_op_result(MDBX_EINVAL, dxb_storage_write_queue_const(storage), false, false, false, false,
                                false);
-  return osal_ioring_add(dxb_storage_write_queue(storage), &io->queued);
+  return osal_ioring_add_validated(dxb_storage_write_queue(storage), &io->queued);
 }
 
 static inline int dxb_storage_make_dirty_write_walk_io(const dxb_storage_t *storage, iov_ctx_t *ctx,
@@ -30585,10 +30587,6 @@ static inline dxb_queue_write_result_t dxb_storage_write_queued(dxb_storage_t *s
   int rc = dxb_storage_make_queued_write_io(storage, channel, &io);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_queue_write_result(rc, channel, 0, 0, 0, 0, false, false);
-
-  rc = dxb_storage_queued_write_io_validate(storage, channel, &io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_queue_write_result(rc, io.channel, 0, io.used_slots, io.write_items, io.payload_bytes, false, false);
 
   const osal_ioring_write_result_t write = osal_ioring_write(dxb_storage_write_queue(storage), &io);
   dxb_queue_write_result_t result =
@@ -41715,7 +41713,7 @@ static size_t osal_ioring_payload_bytes(const osal_ioring_t *ior) {
 }
 
 static inline int ior_item_make_merged_io(const ior_item_t *item, const dxb_data_write_io_t *io,
-                                          dxb_data_write_io_t *merged) {
+                                          dxb_data_write_io_t *merged, bool validated) {
   const dxb_data_write_io_t *base = &item->io;
   if (unlikely(base->bytes.offset > UINT64_MAX - base->bytes.bytes ||
                base->pages.offset > UINT64_MAX - base->pages.bytes))
@@ -41724,9 +41722,11 @@ static inline int ior_item_make_merged_io(const ior_item_t *item, const dxb_data
       base->pages.end_pgno != io->pages.pgno || base->pages.offset + base->pages.bytes != io->pages.offset)
     return MDBX_RESULT_TRUE;
 
-  int rc = dxb_data_write_io_validate_queued(base, base->bytes.bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+  if (!validated) {
+    int rc = dxb_data_write_io_validate_queued(base, base->bytes.bytes);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+  }
 
   const size_t base_pagesize = base->pages.bytes / base->pages.npages;
   const size_t io_pagesize = io->pages.bytes / io->pages.npages;
@@ -41741,6 +41741,8 @@ static inline int ior_item_make_merged_io(const ior_item_t *item, const dxb_data
   merged->pages.end_pgno = io->pages.end_pgno;
   merged->pages.npages += io->pages.npages;
   merged->pages.bytes += io->pages.bytes;
+  if (validated)
+    return MDBX_SUCCESS;
   return dxb_data_write_io_validate_queued(merged, merged->bytes.bytes);
 }
 
@@ -41748,14 +41750,17 @@ static inline dxb_queue_op_result_t osal_ioring_add_result(osal_ioring_t *ior, i
   return dxb_queue_op_result(err, ior, false, enqueued, false, false, enqueued || err == MDBX_RESULT_TRUE);
 }
 
-dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued_write_io_t *io) {
+static dxb_queue_op_result_t osal_ioring_add_impl(osal_ioring_t *ior, const dxb_dirty_queued_write_io_t *io,
+                                                  bool validated) {
   if (unlikely(!ior || !io || !io->buffer))
     return osal_ioring_add_result(ior, MDBX_EINVAL, false);
   const dxb_data_write_io_t *const data_io = &io->data;
   void *data = io->buffer;
-  int rc = dxb_data_write_io_validate_queued(data_io, data_io->bytes.bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return osal_ioring_add_result(ior, rc, false);
+  if (!validated) {
+    int rc = dxb_data_write_io_validate_queued(data_io, data_io->bytes.bytes);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return osal_ioring_add_result(ior, rc, false);
+  }
 
   if (unlikely(data_io->bytes.offset > SIZE_MAX || data_io->bytes.bytes > MAX_WRITE ||
                data_io->bytes.bytes > SIZE_MAX - (size_t)data_io->bytes.offset ||
@@ -41779,7 +41784,7 @@ dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued
   if (likely(ior->last)) {
     item = ior->last;
     dxb_data_write_io_t merged_io;
-    const int merge_rc = ior_item_make_merged_io(item, data_io, &merged_io);
+    const int merge_rc = ior_item_make_merged_io(item, data_io, &merged_io, validated);
     if (unlikely(MDBX_IS_ERROR(merge_rc)))
       return osal_ioring_add_result(ior, merge_rc, false);
     if (unlikely(merge_rc == MDBX_SUCCESS) && likely(ior_last_bytes(ior, item) + bytes <= MAX_WRITE)) {
@@ -41888,6 +41893,16 @@ dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ior, const dxb_dirty_queued
   return osal_ioring_add_result(ior, MDBX_SUCCESS, true);
 }
 
+MDBX_MAYBE_UNUSED dxb_queue_op_result_t osal_ioring_add(osal_ioring_t *ior,
+                                                        const dxb_dirty_queued_write_io_t *io) {
+  return osal_ioring_add_impl(ior, io, false);
+}
+
+static dxb_queue_op_result_t osal_ioring_add_validated(osal_ioring_t *ior,
+                                                       const dxb_dirty_queued_write_io_t *io) {
+  return osal_ioring_add_impl(ior, io, true);
+}
+
 static int dxb_data_write_subrange_io(const dxb_data_write_io_t *base, size_t offset, size_t bytes,
                                       dxb_data_write_io_t *io) {
   const size_t pagesize = base->pages.bytes / base->pages.npages;
@@ -41980,13 +41995,13 @@ dxb_queue_op_result_t osal_ioring_walk(osal_ioring_t *ior, const dxb_dirty_write
   return dxb_queue_op_result(io->ctx->err, ior, false, false, true, false, true);
 }
 
-static int osal_ioring_item_io_validate(const ior_item_t *item, size_t bytes) {
+MDBX_MAYBE_UNUSED static int osal_ioring_item_io_validate(const ior_item_t *item, size_t bytes) {
   return dxb_data_write_io_validate_queued(&item->io, bytes);
 }
 
 #if !defined(_WIN32) && !defined(_WIN64)
 #if MDBX_HAVE_PWRITEV
-static int osal_ioring_item_iov_bytes(const ior_item_t *item, size_t *bytes) {
+MDBX_MAYBE_UNUSED static int osal_ioring_item_iov_bytes(const ior_item_t *item, size_t *bytes) {
   size_t total = 0;
   for (size_t i = 0; i < item->sgvcnt; ++i) {
     if (unlikely(item->sgv[i].iov_len > SIZE_MAX - total))
@@ -42012,13 +42027,10 @@ static inline osal_ioring_write_item_io_t osal_ioring_make_write_item_io(osal_io
 }
 
 static size_t osal_ioring_write_item(const osal_ioring_write_item_io_t *io) {
-  if (unlikely(!io || !io->result))
+  if (unlikely(!io || !io->result || !io->submit))
     return 1;
   osal_ioring_write_result_t *const result = io->result;
   ior_item_t *const item = io->item;
-  result->err = dxb_queued_write_io_validate(io->submit);
-  if (unlikely(result->err != MDBX_SUCCESS))
-    return 1;
   if (unlikely(!item)) {
     result->err = MDBX_EINVAL;
     return 1;
@@ -42033,6 +42045,7 @@ static size_t osal_ioring_write_item(const osal_ioring_write_item_io_t *io) {
 
   const mdbx_filehandle_t fd = io->submit->fd;
   const size_t sgvcnt = item->sgvcnt;
+#if MDBX_CHECKING > 0 || MDBX_DEBUG > 0
   size_t bytes;
   result->err = osal_ioring_item_iov_bytes(item, &bytes);
   if (unlikely(result->err != MDBX_SUCCESS))
@@ -42040,6 +42053,7 @@ static size_t osal_ioring_write_item(const osal_ioring_write_item_io_t *io) {
   result->err = osal_ioring_item_io_validate(item, bytes);
   if (unlikely(result->err != MDBX_SUCCESS))
     return sgvcnt;
+#endif /* MDBX_CHECKING > 0 || MDBX_DEBUG > 0 */
 
   if (item->sgvcnt == 1) {
     result->err = dxb_fault_inject("write");
@@ -42060,9 +42074,11 @@ static size_t osal_ioring_write_item(const osal_ioring_write_item_io_t *io) {
   return sgvcnt;
 #else
   const mdbx_filehandle_t fd = io->submit->fd;
+#if MDBX_CHECKING > 0 || MDBX_DEBUG > 0
   result->err = osal_ioring_item_io_validate(item, item->single.iov_len);
   if (unlikely(result->err != MDBX_SUCCESS))
     return 1;
+#endif /* MDBX_CHECKING > 0 || MDBX_DEBUG > 0 */
 
   result->err = dxb_fault_inject("write");
   if (likely(result->err == MDBX_SUCCESS))
@@ -42162,6 +42178,7 @@ static size_t osal_ioring_linux_uring_prep_item(osal_ioring_t *ior, const dxb_qu
     r->err = MDBX_EINVAL;
     return 1;
   }
+#if MDBX_CHECKING > 0 || MDBX_DEBUG > 0
   size_t bytes;
   r->err = osal_ioring_item_iov_bytes(item, &bytes);
   if (unlikely(r->err != MDBX_SUCCESS))
@@ -42169,6 +42186,7 @@ static size_t osal_ioring_linux_uring_prep_item(osal_ioring_t *ior, const dxb_qu
   r->err = osal_ioring_item_io_validate(item, bytes);
   if (unlikely(r->err != MDBX_SUCCESS))
     return sgvcnt;
+#endif /* MDBX_CHECKING > 0 || MDBX_DEBUG > 0 */
   if (unlikely(item->sgvcnt > UINT32_MAX)) {
     r->err = MDBX_EINVAL;
     return sgvcnt;
@@ -42181,9 +42199,11 @@ static size_t osal_ioring_linux_uring_prep_item(osal_ioring_t *ior, const dxb_qu
   sqe->addr = (uintptr_t)item->sgv;
   sqe->len = (uint32_t)item->sgvcnt;
 #else
+#if MDBX_CHECKING > 0 || MDBX_DEBUG > 0
   r->err = osal_ioring_item_io_validate(item, item->single.iov_len);
   if (unlikely(r->err != MDBX_SUCCESS))
     return 1;
+#endif /* MDBX_CHECKING > 0 || MDBX_DEBUG > 0 */
   if (unlikely(item->single.iov_len > UINT32_MAX)) {
     r->err = MDBX_EINVAL;
     return 1;
