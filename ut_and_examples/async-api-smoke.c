@@ -142,10 +142,13 @@ int main(void) {
   MDBX_async *async = NULL;
   MDBX_txn *txn = NULL;
   MDBX_cursor *cursor = NULL;
+  MDBX_cursor *cursor2 = NULL;
   MDBX_async_op *op = NULL;
   MDBX_dbi dbi = 0;
   MDBX_dbi drop_dbi = 0;
   MDBX_dbi rename_dbi = 0;
+  MDBX_dbi range_dbi = 0;
+  MDBX_dbi bunch_dbi = 0;
   uint64_t keys[ITEM_COUNT];
   uint64_t values[ITEM_COUNT];
   uint64_t cursor_extra_key = ITEM_COUNT;
@@ -176,7 +179,7 @@ int main(void) {
   }
 
   CHECK(mdbx_env_create(&env));
-  CHECK(mdbx_env_set_maxdbs(env, 4));
+  CHECK(mdbx_env_set_maxdbs(env, 8));
   CHECK(mdbx_env_open(env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM, 0664));
   CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
   REQUIRE(mdbx_async_env(async) == env, "async executor returned wrong environment");
@@ -238,6 +241,79 @@ int main(void) {
   CHECK(mdbx_async_drop(async, txn, rename_dbi, true, &op));
   CHECK_OP(op);
   rename_dbi = 0;
+
+  CHECK(mdbx_async_dbi_open(async, txn, "async-range-target", MDBX_CREATE, &range_dbi, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put_batch(async, txn, range_dbi, key_values, put_values, op_results, 5, 0, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < 5; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_put_batch range", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
+  }
+  CHECK(mdbx_async_cursor_open(async, txn, range_dbi, &cursor, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_cursor_open(async, txn, range_dbi, &cursor2, &op));
+  CHECK_OP(op);
+  MDBX_val range_key = key_values[1];
+  MDBX_val range_data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, cursor, &range_key, &range_data, MDBX_SET_KEY, &op));
+  CHECK_OP(op);
+  range_key = key_values[3];
+  range_data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, cursor2, &range_key, &range_data, MDBX_SET_KEY, &op));
+  CHECK_OP(op);
+  uint64_t affected = UINT64_MAX;
+  CHECK(mdbx_async_cursor_delete_range(async, cursor, cursor2, true, &affected, &op));
+  CHECK_OP(op);
+  REQUIRE(affected == 3, "unexpected async cursor range deletion count");
+  CHECK(mdbx_async_cursor_close(async, cursor2, &op));
+  CHECK_OP(op);
+  cursor2 = NULL;
+  CHECK(mdbx_async_cursor_close(async, cursor, &op));
+  CHECK_OP(op);
+  cursor = NULL;
+  MDBX_stat range_stat;
+  memset(&range_stat, 0, sizeof(range_stat));
+  CHECK(mdbx_async_dbi_stat(async, txn, range_dbi, &range_stat, sizeof(range_stat), &op));
+  CHECK_OP(op);
+  REQUIRE(range_stat.ms_entries == 2, "async cursor range deletion left unexpected entries");
+  CHECK(mdbx_async_drop(async, txn, range_dbi, true, &op));
+  CHECK_OP(op);
+  range_dbi = 0;
+
+  CHECK(mdbx_async_dbi_open(async, txn, "async-bunch-target", MDBX_CREATE, &bunch_dbi, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put_batch(async, txn, bunch_dbi, key_values, put_values, op_results, 5, 0, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < 5; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_put_batch bunch", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
+  }
+  CHECK(mdbx_async_cursor_open(async, txn, bunch_dbi, &cursor, &op));
+  CHECK_OP(op);
+  MDBX_val bunch_key = key_values[2];
+  MDBX_val bunch_data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, cursor, &bunch_key, &bunch_data, MDBX_SET_KEY, &op));
+  CHECK_OP(op);
+  affected = UINT64_MAX;
+  CHECK(mdbx_async_cursor_bunch_delete(async, cursor, MDBX_DELETE_AFTER_INCLUDING, &affected, &op));
+  CHECK_OP(op);
+  REQUIRE(affected == 3, "unexpected async cursor bunch deletion count");
+  CHECK(mdbx_async_cursor_close(async, cursor, &op));
+  CHECK_OP(op);
+  cursor = NULL;
+  MDBX_stat bunch_stat;
+  memset(&bunch_stat, 0, sizeof(bunch_stat));
+  CHECK(mdbx_async_dbi_stat(async, txn, bunch_dbi, &bunch_stat, sizeof(bunch_stat), &op));
+  CHECK_OP(op);
+  REQUIRE(bunch_stat.ms_entries == 2, "async cursor bunch deletion left unexpected entries");
+  CHECK(mdbx_async_drop(async, txn, bunch_dbi, true, &op));
+  CHECK_OP(op);
+  bunch_dbi = 0;
 
   CHECK(mdbx_async_put(async, txn, dbi, &key_values[0], &put_values[0], 0, &op));
   CHECK_OP(op);

@@ -15005,6 +15005,8 @@ enum mdbx_async_opcode {
   async_op_cursor_state,
   async_op_cursor_put,
   async_op_cursor_del,
+  async_op_cursor_delete_range,
+  async_op_cursor_bunch_delete,
   async_op_cursor_close
 };
 
@@ -15210,6 +15212,17 @@ struct MDBX_async_op {
       MDBX_cursor *cursor;
       MDBX_put_flags_t flags;
     } cursor_del;
+    struct {
+      MDBX_cursor *begin;
+      MDBX_cursor *end;
+      uint64_t *number_of_affected;
+      bool end_including;
+    } cursor_delete_range;
+    struct {
+      MDBX_cursor *cursor;
+      MDBX_bunch_action_t action;
+      uint64_t *number_of_affected;
+    } cursor_bunch_delete;
     struct {
       MDBX_cursor *cursor;
     } cursor_close;
@@ -15472,6 +15485,13 @@ static int async_op_execute(MDBX_async_op *op) {
   }
   case async_op_cursor_del:
     return mdbx_cursor_del(op->args.cursor_del.cursor, op->args.cursor_del.flags);
+  case async_op_cursor_delete_range:
+    return mdbx_cursor_delete_range(op->args.cursor_delete_range.begin, op->args.cursor_delete_range.end,
+                                    op->args.cursor_delete_range.end_including,
+                                    op->args.cursor_delete_range.number_of_affected);
+  case async_op_cursor_bunch_delete:
+    return mdbx_cursor_bunch_delete(op->args.cursor_bunch_delete.cursor, op->args.cursor_bunch_delete.action,
+                                    op->args.cursor_bunch_delete.number_of_affected);
   case async_op_cursor_close:
     return mdbx_cursor_close2(op->args.cursor_close.cursor);
   }
@@ -16587,6 +16607,45 @@ int mdbx_async_cursor_del(MDBX_async *async, MDBX_cursor *cursor, MDBX_put_flags
     return LOG_IFERR(rc);
   op->args.cursor_del.cursor = cursor;
   op->args.cursor_del.flags = flags;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return rc;
+}
+
+int mdbx_async_cursor_delete_range(MDBX_async *async, MDBX_cursor *begin, MDBX_cursor *end, bool end_including,
+                                   uint64_t *number_of_affected, MDBX_async_op **out) {
+  if (unlikely(!begin && !end))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_delete_range);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cursor_delete_range.begin = begin;
+  op->args.cursor_delete_range.end = end;
+  op->args.cursor_delete_range.end_including = end_including;
+  op->args.cursor_delete_range.number_of_affected = number_of_affected;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return rc;
+}
+
+int mdbx_async_cursor_bunch_delete(MDBX_async *async, MDBX_cursor *cursor, MDBX_bunch_action_t action,
+                                   uint64_t *number_of_affected, MDBX_async_op **out) {
+  if (unlikely(!cursor))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_bunch_delete);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cursor_bunch_delete.cursor = cursor;
+  op->args.cursor_bunch_delete.action = action;
+  op->args.cursor_bunch_delete.number_of_affected = number_of_affected;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;

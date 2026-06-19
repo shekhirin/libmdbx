@@ -280,6 +280,16 @@ This narrows the remaining gap between cursor operations in the blocking API
 and the additive async API. A one-run default read benchmark after this change
 reported async-batch/blocking-parallel ratio 1.121.
 
+Cursor deletion helper checkpoint:
+
+- added `mdbx_async_cursor_delete_range()` for async range deletion between
+  positioned cursors
+- added `mdbx_async_cursor_bunch_delete()` for async neighboring-item deletion
+  using `MDBX_bunch_action_t`
+- smoke coverage now creates temporary named tables, deletes a positioned
+  inclusive range with two cursors, deletes a suffix bunch from one cursor, and
+  verifies affected counts and remaining table entries
+
 Extended get checkpoint:
 
 - added `mdbx_async_get_ex()` so async reads can return the same optional
@@ -531,4 +541,15 @@ Additional replace checkpoint:
 - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.049
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional cursor deletion helper checkpoint:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.064, async-cursor/blocking-parallel ratio 1.002
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17

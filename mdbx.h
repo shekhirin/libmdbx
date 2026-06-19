@@ -4549,6 +4549,27 @@ LIBMDBX_API int mdbx_txn_abort_ex(MDBX_txn *txn, MDBX_commit_latency *latency);
  * \retval MDBX_EINVAL           Transaction handle is NULL. */
 LIBMDBX_INLINE_API(int, mdbx_txn_abort, (MDBX_txn * txn)) { return mdbx_txn_abort_ex(txn, NULL); }
 
+/** \brief Modes for deleting bunches of neighboring items with self-documenting names.
+ *
+ * The EXCLUDING and INCLUDING suffixes mean correspondingly
+ * excluding and including deletion items in the current cursor position, and so forth.
+ *
+ * \ingroup c_crud
+ * \see mdbx_cursor_bunch_delete() */
+typedef enum MDBX_bunch_action {
+  MDBX_DELETE_CURRENT_VALUE,
+  MDBX_DELETE_CURRENT_MULTIVAL_BEFORE_EXCLUDING,
+  MDBX_DELETE_CURRENT_MULTIVAL_BEFORE_INCLUDING,
+  MDBX_DELETE_CURRENT_MULTIVAL_AFTER_INCLUDING,
+  MDBX_DELETE_CURRENT_MULTIVAL_AFTER_EXCLUDING,
+  MDBX_DELETE_CURRENT_MULTIVAL_ALL,
+  MDBX_DELETE_BEFORE_EXCLUDING,
+  MDBX_DELETE_BEFORE_INCLUDING,
+  MDBX_DELETE_AFTER_INCLUDING,
+  MDBX_DELETE_AFTER_EXCLUDING,
+  MDBX_DELETE_WHOLE,
+} MDBX_bunch_action_t;
+
 /** \brief Asynchronous executor flags.
  * \ingroup c_async
  * \details Reserved for future extensions; pass \ref MDBX_ASYNC_DEFAULTS for now. */
@@ -4917,6 +4938,23 @@ LIBMDBX_API int mdbx_async_cursor_put(MDBX_async *async, MDBX_cursor *cursor, co
  * \see mdbx_cursor_del() */
 LIBMDBX_API int mdbx_async_cursor_del(MDBX_async *async, MDBX_cursor *cursor, MDBX_put_flags_t flags,
                                       MDBX_async_op **op);
+
+/** \brief Asynchronously delete a range between cursor positions.
+ * \ingroup c_async
+ * \details The cursor handles and optional `number_of_affected` output must
+ *          remain valid until completion.
+ * \see mdbx_cursor_delete_range() */
+LIBMDBX_API int mdbx_async_cursor_delete_range(MDBX_async *async, MDBX_cursor *begin, MDBX_cursor *end,
+                                               bool end_including, uint64_t *number_of_affected,
+                                               MDBX_async_op **op);
+
+/** \brief Asynchronously delete neighboring items around a cursor.
+ * \ingroup c_async
+ * \details The cursor handle and optional `number_of_affected` output must
+ *          remain valid until completion.
+ * \see mdbx_cursor_bunch_delete() */
+LIBMDBX_API int mdbx_async_cursor_bunch_delete(MDBX_async *async, MDBX_cursor *cursor, MDBX_bunch_action_t action,
+                                               uint64_t *number_of_affected, MDBX_async_op **op);
 
 /** \brief Asynchronously close a cursor.
  * \ingroup c_async
@@ -6780,27 +6818,6 @@ LIBMDBX_API int mdbx_cursor_scroll(MDBX_cursor *cursor, intptr_t amount, unsigne
  * \retval MDBX_EINVAL           An invalid parameter was specified. */
 LIBMDBX_API int mdbx_cursor_distribute(const MDBX_cursor *first, const MDBX_cursor *last, MDBX_cursor **array,
                                        intptr_t count, unsigned deepness);
-
-/** \brief Modes for deleting bunches of neighboring items with self-documenting names.
- *
- * The EXCLUDING and INCLUDING suffixes mean correspondingly
- * excluding and including deletion items in the current cursor position, and so forth.
- *
- * \ingroup c_crud
- * \see mdbx_cursor_bunch_delete() */
-typedef enum MDBX_bunch_action {
-  MDBX_DELETE_CURRENT_VALUE,
-  MDBX_DELETE_CURRENT_MULTIVAL_BEFORE_EXCLUDING,
-  MDBX_DELETE_CURRENT_MULTIVAL_BEFORE_INCLUDING,
-  MDBX_DELETE_CURRENT_MULTIVAL_AFTER_INCLUDING,
-  MDBX_DELETE_CURRENT_MULTIVAL_AFTER_EXCLUDING,
-  MDBX_DELETE_CURRENT_MULTIVAL_ALL,
-  MDBX_DELETE_BEFORE_EXCLUDING,
-  MDBX_DELETE_BEFORE_INCLUDING,
-  MDBX_DELETE_AFTER_INCLUDING,
-  MDBX_DELETE_AFTER_EXCLUDING,
-  MDBX_DELETE_WHOLE,
-} MDBX_bunch_action_t;
 
 /** \brief Quickly removes bunches of neighboring items.
  * \ingroup c_crud
