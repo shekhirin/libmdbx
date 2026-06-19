@@ -29213,9 +29213,19 @@ static dxb_cache_result_t dxb_storage_submit_invalidate_cached_io(dxb_storage_t 
     page_cache_unlock(storage);
     return dxb_cache_submitted(dxb_cache_invalidated(invalidate, 0));
   }
+  size_t nonreusable_left =
+      invalidate->include_reusable ? 0 : cache->entries_count - cache->reusable_count;
   page_cache_entry_t *entry = cache->entries;
   while (entry) {
     page_cache_entry_t *const next = entry->next;
+    if (!invalidate->include_reusable) {
+      if (entry->reusable) {
+        entry = next;
+        continue;
+      }
+      ASSERT(nonreusable_left > 0);
+      nonreusable_left -= 1;
+    }
     if (entry->io.pgno < invalidate->pages.end_pgno && invalidate->pages.pgno < entry->io.end_pgno) {
       /* Snapshot-keyed reusable entries remain valid across ordinary CoW
        * writes. Only destructive truncate/remove operations force them out. */
@@ -29230,6 +29240,8 @@ static dxb_cache_result_t dxb_storage_submit_invalidate_cached_io(dxb_storage_t 
           page_cache_release_entry_locked(entry);
       }
     }
+    if (!invalidate->include_reusable && nonreusable_left == 0)
+      break;
     entry = next;
   }
   page_cache_unlock(storage);

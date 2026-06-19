@@ -2107,3 +2107,50 @@ Additional reusable-cache invalidation checkpoint:
 - conclusion: skipping ordinary invalidation scans preserves the read-heavy
   GET win and nudges CRUD upward in this sample, but batch/delete are still
   below the pre-migration baselines and forced iterate remains noisy.
+
+Additional ordinary-invalidation scan checkpoint:
+
+- ordinary CoW cache invalidation now skips reusable entries before range
+  overlap checks and stops scanning once all non-reusable cache entries have
+  been considered
+- destructive invalidations still scan reusable entries, preserving truncate and
+  remove semantics; this is a small write-path cleanup for mixed explicit-cache
+  workloads rather than a public API change
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_migration_smoke mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|migration_smoke)'`: passed 9/9
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench mdbx_migration_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check reported
+  async/blocking-parallel 1.134, async-many/blocking-parallel 1.140,
+  async-thread/blocking-parallel 1.104,
+  async-thread-many/blocking-parallel 1.119,
+  async-batch/blocking-parallel 1.169,
+  async-batch-callback/blocking-parallel 1.147, and
+  async-loop/blocking-parallel 1.121
+- `make -f GNUmakefile mdbx_migration_bench_lazy`: passed, with current
+  explicit default:
+
+| phase | earlier mapped avg | current explicit default | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1033.245 ops/s | 948.717 ops/s | 0.918 |
+| crud | 55.675 Kops/s | 49.691 Kops/s | 0.893 |
+| iterate | 26.143 Mops/s | 31.743 Mops/s | 1.214 |
+| get | 279.409 Kops/s | 402.623 Kops/s | 1.441 |
+| delete | 66.398 Kops/s | 58.319 Kops/s | 0.878 |
+
+- current explicit forced no-map against the earlier no-map baseline:
+
+| phase | earlier no-map avg | current explicit forced | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1089.750 ops/s | 944.933 ops/s | 0.867 |
+| crud | 59.787 Kops/s | 50.467 Kops/s | 0.844 |
+| iterate | 25.827 Mops/s | 31.041 Mops/s | 1.202 |
+| get | 274.039 Kops/s | 432.381 Kops/s | 1.578 |
+| delete | 69.067 Kops/s | 57.240 Kops/s | 0.829 |
+
+- conclusion: the scan cleanup is correct under the validation gates and keeps
+  read-heavy phases above baseline, but it does not close the batch, CRUD, or
+  delete gaps. The remaining work is still in the write-heavy explicit-I/O path.
