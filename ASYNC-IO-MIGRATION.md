@@ -15241,6 +15241,30 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.145` batch, `1.159` crud, `0.995` iterate, `1.010`
 get, and `1.075` delete.
 
+A later Linux `io_uring` copy-range checkpoint moved both DXB
+`copy_file_range()` submitters behind `osal_ioring_copy_file_range()`. Active
+Linux rings now try a regular-file copy bridge built from two
+`IORING_OP_SPLICE` submissions through an internal close-on-exec pipe, while
+unsupported kernels, overlapping same-file ranges, missing explicit offsets,
+and non-zero flags fall back to the direct `copy_file_range()` syscall. The
+existing pipe export helper shares the same generic splice SQE submitter. A
+forced file-to-file `mdbx_copy` trace showed `io_uring_setup=1`,
+`io_uring_enter=6`, and no direct `copy_file_range`, `sendfile`, or `splice`
+syscalls; the copied database passed `mdbx_chk -q`. The forced pipe-copy trace
+still produced `77824` bytes with `io_uring_setup=1`, `io_uring_enter=4`, and
+no direct `copy_file_range`, `sendfile`, or `splice` syscalls. Verification
+passed `git diff --check`, the Ninja build (`cmake --build
+@cmake-ninja-build`), the focused `migration_tool_roundtrip` CTest entries
+passed 3/3, normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` focused
+`migration_smoke` CTest entries passed 6/6, the ASAN build (`cmake --build
+@cmake-asan-build`) passed, normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN
+focused `migration_smoke` CTest entries passed 6/6 with
+`LSAN_OPTIONS=detect_leaks=0`, the GNUmake `mdbx_migration_smoke` build target
+passed, and both normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration
+CTest suites passed 15/15. The paired `make -f GNUmakefile
+mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.146`
+batch, `1.161` crud, `0.793` iterate, `1.037` get, and `1.076` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
