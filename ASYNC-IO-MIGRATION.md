@@ -13911,6 +13911,27 @@ six focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.129` batch, `1.143` crud, `1.016`
 iterate, `1.014` get, and `1.075` delete.
 
+A later branch-child validation descriptor cleanup removed
+`dxb_cursor_validate_branch_child_submit_io_t`,
+`cursor_make_validate_branch_child_submit_io()`, and
+`cursor_validate_branch_child_submit_io_validate()` from `mdbx.c`.
+Audit-time `cursor_validate_branch_child()` now validates the parent branch
+slot, snapshots the parent ref/top, builds the existing checked cursor page-get
+request directly, rechecks the parent snapshot, and then page-checks the fetched
+child page before releasing it. This keeps validation reads on the same
+async-facing page-get boundary while removing descriptor wrappers around a
+single immediate audit fetch. Verification passed `git diff --check`, a source
+scan proving the removed validation descriptor helpers are absent from
+`mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.142` batch, `1.145` crud, `0.848`
+iterate, `1.108` get, and `1.062` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
