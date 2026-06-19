@@ -8629,8 +8629,8 @@ __cold static int copy_asis(MDBX_env *env, MDBX_txn *txn, mdbx_filehandle_t fd, 
 #endif /* linux */
   bool not_the_same_filesystem = false;
   if (!copyfilerange_unavailable) {
-    struct statfs statfs_info;
-    if (fstatfs(fd, &statfs_info) || statfs_info.f_type == /* ECRYPTFS_SUPER_MAGIC */ 0xf15f)
+    const int fs_ecryptfs = osal_ioring_check_fs_ecryptfs(copy_ioring(env), fd);
+    if (fs_ecryptfs != MDBX_RESULT_FALSE)
       /* avoid use copyfilerange_unavailable() to ecryptfs due bugs */
       not_the_same_filesystem = true;
   }
@@ -8882,13 +8882,8 @@ __cold static int copy2pathname(MDBX_txn *txn, const pathchar_t *dest_path, MDBX
 #if defined(_WIN32) || defined(_WIN64)
   /* no locking required since the file opened with ShareMode == 0 */
 #else
-  MDBX_STRUCT_FLOCK lock_op;
-  memset(&lock_op, 0, sizeof(lock_op));
-  lock_op.l_type = F_WRLCK;
-  lock_op.l_whence = SEEK_SET;
-  lock_op.l_start = 0;
-  lock_op.l_len = OFF_T_MAX;
-  const int err_fcntl = MDBX_FCNTL(newfd, MDBX_F_SETLK, &lock_op) ? errno : MDBX_SUCCESS;
+  const int err_fcntl =
+      osal_ioring_lock_op(copy_ioring(txn->env), newfd, MDBX_F_SETLK, F_WRLCK, 0, OFF_T_MAX);
 
   const int err_flock =
 #ifdef LOCK_EX
@@ -38237,6 +38232,20 @@ int osal_ioring_check_fs_rdonly(osal_ioring_t *ior, mdbx_filehandle_t fd,
 int osal_ioring_check_fs_local(osal_ioring_t *ior, mdbx_filehandle_t fd, int flags) {
   (void)ior;
   return osal_check_fs_local(fd, flags);
+}
+
+int osal_ioring_check_fs_ecryptfs(osal_ioring_t *ior, mdbx_filehandle_t fd) {
+  (void)ior;
+#if defined(__linux__) || defined(__gnu_linux__)
+  struct statfs statfs_info;
+  if (fstatfs(fd, &statfs_info))
+    return errno;
+  return (statfs_info.f_type == 0xf15f /* ECRYPTFS_SUPER_MAGIC */) ? MDBX_RESULT_TRUE
+                                                                    : MDBX_RESULT_FALSE;
+#else
+  (void)fd;
+  return MDBX_ENOSYS;
+#endif /* Linux */
 }
 
 #if MDBX_USE_COPYFILERANGE

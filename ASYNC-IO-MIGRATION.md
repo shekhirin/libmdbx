@@ -15457,6 +15457,25 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.125` batch, `1.158` crud, `1.207` iterate, `0.993`
 get, and `1.072` delete.
 
+A later copy-destination setup checkpoint routed the POSIX destination
+`F_SETLK` lock through `osal_ioring_lock_op()` and routed the regular-file
+destination eCryptfs `copy_file_range()` suitability probe through
+`osal_ioring_check_fs_ecryptfs()`. Linux has no `io_uring` statfs opcode, so
+the wrapper keeps the required `fstatfs()` probe inside OSAL and returns
+unsupported elsewhere; callers conservatively disable `copy_file_range()` unless
+the wrapper proves the destination is not eCryptfs. Copy setup no longer reaches
+raw `MDBX_FCNTL(newfd, ...)` or raw destination `fstatfs()` directly.
+Verification passed `git diff --check`, the Ninja build
+(`cmake --build @cmake-ninja-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed 9/9, the ASAN
+build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.137` batch, `1.159` crud, `1.274` iterate, `0.989`
+get, and `1.082` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
