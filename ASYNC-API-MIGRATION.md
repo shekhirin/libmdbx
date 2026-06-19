@@ -1688,3 +1688,63 @@ Additional async executor queue-drain checkpoint:
   no-map/tiny-cache samples are still noisy; the next performance work should
   continue moving hot parallel read workloads toward coarse worker-side
   operations or address the explicit-I/O storage backend gap directly
+
+Additional async waiter-target checkpoint:
+
+- added internal wait-target bookkeeping to the async executor so waiters that
+  are waiting for a known operation sequence register that target sequence
+- `mdbx_async_wait()`, `mdbx_async_wait_all()`, and
+  `mdbx_async_wait_release_all()` now avoid worker wakeups until the requested
+  sequence has completed; untargeted drain waits used by
+  `mdbx_async_destroy(..., true)` still wake when the executor becomes idle
+- this removes avoidable condition-variable wakeups for windowed
+  `mdbx_async_wait_release_all()` users, which is the hot path for submitted
+  parallel GET windows in `mdbx_async_api_bench`
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench mdbx_async_api_audit`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench mdbx_async_api_audit`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed with GET-path ratios
+  async/blocking-parallel 1.340, async-thread/blocking-parallel 1.515,
+  async-thread-batch/blocking-parallel 1.502,
+  async-batch/blocking-parallel 1.553,
+  async-batch-callback/blocking-parallel 1.526,
+  async-loop/blocking-parallel 1.588, and
+  async-thread-loop/blocking-parallel 1.537
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- default benchmark spot check passed with GET-path ratios
+  async/blocking-parallel 1.030, async-thread/blocking-parallel 1.002,
+  async-thread-batch/blocking-parallel 1.053,
+  async-batch/blocking-parallel 1.012,
+  async-batch-callback/blocking-parallel 1.065,
+  async-loop/blocking-parallel 1.063, and
+  async-thread-loop/blocking-parallel 1.086
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check remained
+  mixed: async/blocking-parallel 1.065, async-thread/blocking-parallel 0.994,
+  async-thread-batch/blocking-parallel 1.038,
+  async-batch/blocking-parallel 0.944,
+  async-batch-callback/blocking-parallel 1.055,
+  async-loop/blocking-parallel 0.972, and
+  async-thread-loop/blocking-parallel 0.954
+- larger default `MDBX_ASYNC_BENCH_OPS=1000000` sample passed with all reported
+  GET paths above blocking-parallel: async/blocking-parallel 1.166,
+  async-thread/blocking-parallel 1.145,
+  async-thread-batch/blocking-parallel 1.214,
+  async-batch/blocking-parallel 1.227,
+  async-batch-callback/blocking-parallel 1.228,
+  async-loop/blocking-parallel 1.232, and
+  async-thread-loop/blocking-parallel 1.234
+- larger forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=1000000` sample passed
+  with all GET paths except simple threaded per-operation GET above
+  blocking-parallel: async/blocking-parallel 1.140,
+  async-thread/blocking-parallel 0.992,
+  async-thread-batch/blocking-parallel 1.179,
+  async-batch/blocking-parallel 1.184,
+  async-batch-callback/blocking-parallel 1.158,
+  async-loop/blocking-parallel 1.127, and
+  async-thread-loop/blocking-parallel 1.127
+- conclusion: targeted waits reduce wakeup churn for batched async windows and
+  show a useful larger-sample GET benchmark improvement, but this still does
+  not close the separate pre-migration ioarena storage-throughput gap

@@ -15146,8 +15146,10 @@ struct MDBX_async {
   size_t refs;
   size_t spare_count;
   size_t waiters;
+  size_t untargeted_waiters;
   uint64_t next_seq;
   uint64_t completed_seq;
+  uint64_t min_wait_seq;
   bool active;
   bool stop;
 };
@@ -15785,6 +15787,39 @@ static int async_ops_check(MDBX_async_op *const ops[], size_t count, MDBX_async 
   }
   *out = async;
   return MDBX_SUCCESS;
+}
+
+static void async_wait_enter(MDBX_async *async, uint64_t target_seq) {
+  async->waiters += 1;
+  if (!target_seq) {
+    async->untargeted_waiters += 1;
+  } else if (!async->min_wait_seq || target_seq < async->min_wait_seq) {
+    async->min_wait_seq = target_seq;
+  }
+}
+
+static void async_wait_leave(MDBX_async *async, uint64_t target_seq) {
+  if (target_seq) {
+    if (--async->waiters == 0) {
+      async->untargeted_waiters = 0;
+      async->min_wait_seq = 0;
+    }
+  } else {
+    if (async->untargeted_waiters)
+      async->untargeted_waiters -= 1;
+    if (--async->waiters == 0) {
+      async->untargeted_waiters = 0;
+      async->min_wait_seq = 0;
+    }
+  }
+}
+
+static void async_signal_waiters(MDBX_async *async, bool include_untargeted) {
+  if (!async->waiters)
+    return;
+  if ((include_untargeted && async->untargeted_waiters) ||
+      (async->min_wait_seq && async->completed_seq >= async->min_wait_seq))
+    osal_condpair_signal(&async->condpair, false);
 }
 
 static int async_copy_val(MDBX_val *dst, void **copy, void *inline_storage, size_t inline_bytes,
@@ -16641,12 +16676,10 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
       async->completed_seq = op->seq;
       if (!next) {
         async->active = false;
-        if (async->waiters)
-          osal_condpair_signal(&async->condpair, false);
+        async_signal_waiters(async, true);
         break;
       }
-      if (async->waiters)
-        osal_condpair_signal(&async->condpair, false);
+      async_signal_waiters(async, false);
       osal_condpair_unlock(&async->condpair);
 
       op = next;
@@ -16789,7 +16822,7 @@ int mdbx_async_destroy(MDBX_async *async, bool drain) {
     bool waiting = false;
     while (async->head || async->active) {
       if (!waiting) {
-        async->waiters += 1;
+        async_wait_enter(async, 0);
         waiting = true;
       }
       rc = osal_condpair_wait(&async->condpair, false);
@@ -16797,7 +16830,7 @@ int mdbx_async_destroy(MDBX_async *async, bool drain) {
         break;
     }
     if (waiting)
-      async->waiters -= 1;
+      async_wait_leave(async, 0);
   } else if (async->head || async->active || async->refs) {
     rc = MDBX_BUSY;
   }
@@ -16882,7 +16915,7 @@ int mdbx_async_wait(MDBX_async_op *op, int *result) {
   bool waiting = false;
   while (!op->done) {
     if (!waiting) {
-      async->waiters += 1;
+      async_wait_enter(async, op->seq);
       waiting = true;
     }
     rc = osal_condpair_wait(&async->condpair, false);
@@ -16890,7 +16923,7 @@ int mdbx_async_wait(MDBX_async_op *op, int *result) {
       break;
   }
   if (waiting)
-    async->waiters -= 1;
+    async_wait_leave(async, op->seq);
   if (likely(rc == MDBX_SUCCESS) && result)
     *result = op->result;
   const int unlock_err = osal_condpair_unlock(&async->condpair);
@@ -16917,7 +16950,7 @@ int mdbx_async_wait_all(MDBX_async_op *const ops[], size_t count, int results[])
   bool waiting = false;
   while (async->completed_seq < max_seq) {
     if (!waiting) {
-      async->waiters += 1;
+      async_wait_enter(async, max_seq);
       waiting = true;
     }
     rc = osal_condpair_wait(&async->condpair, false);
@@ -16925,7 +16958,7 @@ int mdbx_async_wait_all(MDBX_async_op *const ops[], size_t count, int results[])
       break;
   }
   if (waiting)
-    async->waiters -= 1;
+    async_wait_leave(async, max_seq);
   if (likely(rc == MDBX_SUCCESS) && results) {
     for (size_t i = 0; i < count; ++i)
       results[i] = ops[i]->result;
@@ -17007,7 +17040,7 @@ int mdbx_async_wait_release_all(MDBX_async_op *ops[], size_t count, int results[
   bool waiting = false;
   while (async->completed_seq < max_seq) {
     if (!waiting) {
-      async->waiters += 1;
+      async_wait_enter(async, max_seq);
       waiting = true;
     }
     rc = osal_condpair_wait(&async->condpair, false);
@@ -17015,7 +17048,7 @@ int mdbx_async_wait_release_all(MDBX_async_op *ops[], size_t count, int results[
       break;
   }
   if (waiting)
-    async->waiters -= 1;
+    async_wait_leave(async, max_seq);
 
   MDBX_async_op *free_list = nullptr;
   bool released = false;
