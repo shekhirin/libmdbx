@@ -46523,14 +46523,6 @@ static inline int iov_dirty_cache_invalidate_submit_io_validate(
   return MDBX_SUCCESS;
 }
 
-static dxb_cache_result_t iov_submit_dirty_cache_invalidate(
-    const dxb_iov_dirty_cache_invalidate_submit_io_t *io) {
-  int err = iov_dirty_cache_invalidate_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return dxb_cache_error(err);
-  return dxb_storage_submit_invalidate_cached_io(io->storage, &io->submit);
-}
-
 int iov_init(MDBX_txn *const txn, iov_ctx_t *ctx, size_t items, size_t npages, enum dxb_io_channel channel) {
   ctx->env = txn->env;
   ctx->storage = &ctx->env->dxb_storage;
@@ -46577,12 +46569,17 @@ static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_data_write_io_t *q
       ctx->err = MDBX_EINVAL;
     else {
       dxb_iov_dirty_cache_invalidate_submit_io_t invalidate_submit;
-      const int err = iov_make_dirty_cache_invalidate_submit_io(ctx, queued, &invalidate_submit);
+      int err = iov_make_dirty_cache_invalidate_submit_io(ctx, queued, &invalidate_submit);
       if (likely(err == MDBX_SUCCESS)) {
-        dxb_cache_result_t invalidate = iov_submit_dirty_cache_invalidate(&invalidate_submit);
-        if (unlikely(invalidate.err != MDBX_SUCCESS))
-          ctx->err = invalidate.err;
-      } else
+        err = iov_dirty_cache_invalidate_submit_io_validate(&invalidate_submit);
+        if (likely(err == MDBX_SUCCESS)) {
+          dxb_cache_result_t invalidate =
+              dxb_storage_submit_invalidate_cached_io(invalidate_submit.storage, &invalidate_submit.submit);
+          if (unlikely(invalidate.err != MDBX_SUCCESS))
+            err = invalidate.err;
+        }
+      }
+      if (unlikely(err != MDBX_SUCCESS))
         ctx->err = err;
     }
   }
