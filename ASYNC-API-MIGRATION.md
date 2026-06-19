@@ -1748,3 +1748,69 @@ Additional async waiter-target checkpoint:
 - conclusion: targeted waits reduce wakeup churn for batched async windows and
   show a useful larger-sample GET benchmark improvement, but this still does
   not close the separate pre-migration ioarena storage-throughput gap
+
+Additional async GET many-submit checkpoint:
+
+- added `mdbx_async_get_many()`, an additive public API that submits many
+  independent `mdbx_get()` async operations and returns one normal operation
+  handle per item
+- the new API copies all key bytes during submission, preserves normal
+  per-operation wait/release semantics, and can be consumed with
+  `mdbx_async_wait_release_all()`
+- internally, many-submit allocation pulls a window of operation handles from
+  the executor spare list under one condition-pair lock, allocates any missing
+  handles outside the lock, and enqueues the prepared window with one executor
+  lock/signaling pass
+- `mdbx_async_api_bench` now uses `mdbx_async_get_many()` for its windowed
+  per-operation GET paths; the operation handles and result validation remain
+  per item, but submission no longer takes the executor lock once per key
+- smoke coverage now verifies `mdbx_async_get_many()` through
+  `mdbx_async_wait_release_all()` and per-item value checks
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench mdbx_async_api_audit`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench mdbx_async_api_audit`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed with GET-path ratios
+  async/blocking-parallel 1.174, async-thread/blocking-parallel 1.215,
+  async-thread-batch/blocking-parallel 1.006,
+  async-batch/blocking-parallel 1.552,
+  async-batch-callback/blocking-parallel 1.122,
+  async-loop/blocking-parallel 1.529, and
+  async-thread-loop/blocking-parallel 1.392
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- default benchmark spot check passed with GET-path ratios
+  async/blocking-parallel 1.102, async-thread/blocking-parallel 1.023,
+  async-thread-batch/blocking-parallel 1.098,
+  async-batch/blocking-parallel 1.107,
+  async-batch-callback/blocking-parallel 1.084,
+  async-loop/blocking-parallel 1.101, and
+  async-thread-loop/blocking-parallel 1.081
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check passed
+  near or above blocking-parallel for the GET paths: async/blocking-parallel
+  1.054, async-thread/blocking-parallel 0.997,
+  async-thread-batch/blocking-parallel 1.061,
+  async-batch/blocking-parallel 1.099,
+  async-batch-callback/blocking-parallel 1.141,
+  async-loop/blocking-parallel 1.096, and
+  async-thread-loop/blocking-parallel 1.114
+- larger default `MDBX_ASYNC_BENCH_OPS=1000000` sample passed with GET-path
+  ratios async/blocking-parallel 1.127, async-thread/blocking-parallel 1.022,
+  async-thread-batch/blocking-parallel 1.117,
+  async-batch/blocking-parallel 1.181,
+  async-batch-callback/blocking-parallel 1.185,
+  async-loop/blocking-parallel 1.183, and
+  async-thread-loop/blocking-parallel 1.177
+- larger forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=1000000` sample
+  remained mixed for the simple threaded many-submit shape:
+  async/blocking-parallel 1.056, async-thread/blocking-parallel 0.901,
+  async-thread-batch/blocking-parallel 1.018,
+  async-batch/blocking-parallel 1.058,
+  async-batch-callback/blocking-parallel 1.041,
+  async-loop/blocking-parallel 0.971, and
+  async-thread-loop/blocking-parallel 1.105
+- conclusion: `mdbx_async_get_many()` reduces submission overhead for callers
+  that still need independent operation handles, improving the default
+  per-operation GET benchmark path while preserving the coarser batch/loop APIs
+  for callers that can use one async operation per window

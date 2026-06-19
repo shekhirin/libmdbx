@@ -537,16 +537,17 @@ static int async_get_window_loop(struct async_worker *worker, MDBX_dbi dbi, size
     while (worker->pending < window && issued < ops) {
       const size_t slot = worker->pending;
       worker->keys[slot] = key_for(offset + issued, items);
+      worker->key_vals[slot] = val(&worker->keys[slot], sizeof(worker->keys[slot]));
       worker->data[slot] = val(NULL, 0);
-      MDBX_val key = val(&worker->keys[slot], sizeof(worker->keys[slot]));
-      int rc = mdbx_async_get(worker->async, worker->txn, dbi, &key, &worker->data[slot], &worker->ops[slot]);
-      if (rc != MDBX_SUCCESS)
-        return rc;
       worker->pending += 1;
       issued += 1;
     }
 
-    int rc = mdbx_async_wait_release_all(worker->ops, worker->pending, worker->results);
+    int rc = mdbx_async_get_many(worker->async, worker->txn, dbi, worker->key_vals, worker->data,
+                                 worker->pending, worker->ops);
+    if (rc != MDBX_SUCCESS)
+      return rc;
+    rc = mdbx_async_wait_release_all(worker->ops, worker->pending, worker->results);
     if (rc != MDBX_SUCCESS)
       return rc;
     for (size_t slot = 0; slot < worker->pending; ++slot) {
@@ -620,12 +621,15 @@ static double async_parallel_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size
       while (worker->pending < window && issued < ops) {
         const size_t slot = worker->pending++;
         worker->keys[slot] = key_for(issued, items);
+        worker->key_vals[slot] = val(&worker->keys[slot], sizeof(worker->keys[slot]));
         worker->data[slot] = val(NULL, 0);
-        MDBX_val key = val(&worker->keys[slot], sizeof(worker->keys[slot]));
-        rc = mdbx_async_get(worker->async, worker->txn, dbi, &key, &worker->data[slot], &worker->ops[slot]);
+        issued += 1;
+      }
+      if (worker->pending) {
+        rc = mdbx_async_get_many(worker->async, worker->txn, dbi, worker->key_vals, worker->data,
+                                 worker->pending, worker->ops);
         if (rc != MDBX_SUCCESS)
           goto bailout;
-        issued += 1;
       }
     }
 

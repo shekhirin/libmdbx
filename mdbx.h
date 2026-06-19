@@ -5203,6 +5203,25 @@ LIBMDBX_API int mdbx_async_canary_get(MDBX_async *async, const MDBX_txn *txn, st
 LIBMDBX_API int mdbx_async_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
                                MDBX_val *data, MDBX_async_op **op);
 
+/** \brief Asynchronously submit many independent get operations.
+ * \ingroup c_async
+ * \details This is equivalent to calling \ref mdbx_async_get() once per item,
+ *          but allocates and enqueues the operation window with fewer executor
+ *          lock round trips. Key bytes are copied during submission. The `data`
+ *          and `ops` arrays must remain valid until the submitted operation
+ *          handles complete. Each successful `data` slot follows
+ *          \ref mdbx_get() value lifetime rules. On success, each `ops` slot
+ *          receives an independent operation handle that can be waited and
+ *          released normally, including with \ref mdbx_async_wait_release_all().
+ *          On failure, no operations are queued and the `ops` slots are set to
+ *          NULL.
+ * \see mdbx_get()
+ * \see mdbx_async_get()
+ * \see mdbx_async_wait_release_all() */
+LIBMDBX_API int mdbx_async_get_many(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                    const MDBX_val keys[], MDBX_val data[], size_t count,
+                                    MDBX_async_op *ops[]);
+
 /** \brief Asynchronously get an item and optional duplicate count from a table.
  * \ingroup c_async
  * \details The input key bytes are copied during submission. The `key` and

@@ -1246,6 +1246,14 @@ int main(void) {
     CHECK(expect_value(&get_values[i], keys[i], __FILE__, __LINE__));
   }
 
+  for (unsigned i = 0; i < ITEM_COUNT; ++i)
+    get_values[i] = val(NULL, 0);
+  CHECK(mdbx_async_get_many(async, txn, dbi, key_values, get_values, ITEM_COUNT, ops));
+  CHECK(wait_many_success("mdbx_async_get_many", ops, ITEM_COUNT, op_results, __FILE__, __LINE__));
+  for (unsigned i = 0; i < ITEM_COUNT; ++i) {
+    CHECK(expect_value(&get_values[i], keys[i], __FILE__, __LINE__));
+  }
+
   MDBX_val get_ex_key = key_values[5];
   MDBX_val get_ex_data = val(NULL, 0);
   size_t values_count = 0;
