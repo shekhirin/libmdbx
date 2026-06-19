@@ -25914,7 +25914,7 @@ static dxb_sync_result_t dxb_storage_submit_sync_io(const dxb_storage_t *storage
     if (unlikely(rc != MDBX_SUCCESS))
       return dxb_sync_error(rc);
   }
-  rc = osal_fsync(dxb_storage_data_fd(storage), mode_bits);
+  rc = osal_ioring_fsync((osal_ioring_t *)&storage->ioring, dxb_storage_data_fd(storage), mode_bits);
   if (unlikely(rc != MDBX_SUCCESS))
     return has_sync_work ? dxb_sync_submitted_error(rc) : dxb_sync_error(rc);
   if (!has_sync_work)
@@ -37094,6 +37094,86 @@ bailout:
   return osal_ioring_linux_uring_unlock(ior, rc);
 }
 
+static int osal_ioring_linux_uring_fsync(osal_ioring_t *ior, mdbx_filehandle_t fd,
+                                         enum osal_syncmode_bits mode_bits) {
+  uint32_t fsync_flags = 0;
+  switch (mode_bits & (MDBX_SYNC_DATA | MDBX_SYNC_SIZE)) {
+  case MDBX_SYNC_NONE:
+  case MDBX_SYNC_KICK:
+  case MDBX_SYNC_SIZE:
+    return MDBX_SUCCESS;
+  case MDBX_SYNC_DATA:
+#if defined(IORING_FSYNC_DATASYNC)
+    fsync_flags = IORING_FSYNC_DATASYNC;
+    break;
+#else
+    return osal_fsync(fd, mode_bits);
+#endif /* IORING_FSYNC_DATASYNC */
+  default:
+    break;
+  }
+
+  if (unlikely(!osal_ioring_linux_uring_ready(ior)))
+    return MDBX_EINVAL;
+
+  int rc = osal_ioring_linux_uring_lock(ior);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  const uint32_t sq_entries = *ior->linux_uring_sq_entries;
+  const uint32_t sq_mask = *ior->linux_uring_sq_mask;
+  const uint32_t head = osal_ioring_linux_load(ior->linux_uring_sq_head);
+  uint32_t tail = osal_ioring_linux_load(ior->linux_uring_sq_tail);
+  if (unlikely(tail - head >= sq_entries)) {
+    rc = EBUSY;
+    goto bailout;
+  }
+
+  const uint32_t index = tail & sq_mask;
+  struct io_uring_sqe *const sqe = &ior->linux_uring_sqes[index];
+  memset(sqe, 0, sizeof(*sqe));
+  sqe->opcode = IORING_OP_FSYNC;
+  sqe->fd = fd;
+  sqe->fsync_flags = fsync_flags;
+  sqe->user_data = (uintptr_t)ior;
+  ior->linux_uring_sq_array[index] = index;
+  osal_ioring_linux_store(ior->linux_uring_sq_tail, tail + 1);
+
+  unsigned submitted = 0;
+  rc = osal_ioring_linux_uring_submit(ior, 1, &submitted);
+  if (unlikely(rc != MDBX_SUCCESS || submitted != 1)) {
+    rc = (rc != MDBX_SUCCESS) ? rc : MDBX_EIO;
+    goto bailout;
+  }
+
+  uint32_t cq_head = osal_ioring_linux_load(ior->linux_uring_cq_head);
+  uint32_t cq_tail = osal_ioring_linux_load(ior->linux_uring_cq_tail);
+  while (cq_head == cq_tail) {
+    rc = osal_ioring_linux_enter(ior, 0, 1, IORING_ENTER_GETEVENTS);
+    if (unlikely(rc < 0)) {
+      rc = -rc;
+      goto bailout;
+    }
+    cq_head = osal_ioring_linux_load(ior->linux_uring_cq_head);
+    cq_tail = osal_ioring_linux_load(ior->linux_uring_cq_tail);
+  }
+
+  const uint32_t cq_index = cq_head & *ior->linux_uring_cq_mask;
+  const struct io_uring_cqe *const cqe = &ior->linux_uring_cqes[cq_index];
+  if (unlikely(cqe->user_data != (uintptr_t)ior))
+    rc = MDBX_EINVAL;
+  else if (unlikely(cqe->res < 0))
+    rc = -cqe->res;
+  else if (unlikely(cqe->res != 0))
+    rc = MDBX_EIO;
+  else
+    rc = MDBX_SUCCESS;
+  osal_ioring_linux_store(ior->linux_uring_cq_head, cq_head + 1);
+
+bailout:
+  return osal_ioring_linux_uring_unlock(ior, rc);
+}
+
 static void osal_ioring_write_linux_uring(osal_ioring_t *ior, const dxb_queued_write_io_t *io,
                                           osal_ioring_write_result_t *r) {
   if (unlikely(!osal_ioring_linux_uring_ready(ior))) {
@@ -37438,6 +37518,17 @@ int osal_ioring_pread(osal_ioring_t *ior, mdbx_filehandle_t fd, void *buf, size_
   (void)ior;
 #endif /* MDBX_HAVE_LINUX_IO_URING */
   return osal_pread(fd, buf, bytes, offset);
+}
+
+int osal_ioring_fsync(osal_ioring_t *ior, mdbx_filehandle_t fd, enum osal_syncmode_bits mode_bits) {
+#if MDBX_HAVE_LINUX_IO_URING
+  if (likely(ior && ior->backend == osal_ioring_backend_linux_uring &&
+             osal_ioring_linux_uring_ready(ior)))
+    return osal_ioring_linux_uring_fsync(ior, fd, mode_bits);
+#else
+  (void)ior;
+#endif /* MDBX_HAVE_LINUX_IO_URING */
+  return osal_fsync(fd, mode_bits);
 }
 
 dxb_queue_op_result_t osal_ioring_reset(osal_ioring_t *ior) {

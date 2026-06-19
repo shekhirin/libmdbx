@@ -15061,6 +15061,32 @@ The paired `MDBX_EXPLICIT_IO_BACKEND=io_uring make -f GNUmakefile
 mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.113`
 batch, `1.143` crud, `1.025` iterate, `0.986` get, and `1.089` delete.
 
+A later Linux `io_uring` sync-backend checkpoint routed explicit data-file sync
+submissions through `osal_ioring_fsync()`. The storage sync submitter now uses
+the same backend wrapper shape as explicit reads: requested/ready Linux rings
+submit a single `IORING_OP_FSYNC` SQE and wait for its CQE at the existing
+synchronous MDBX boundary, while all other builds and unavailable rings fall
+back to `osal_fsync()`. The helper preserves the existing Linux sync-mode
+mapping: no-op for modes without data durability, `IORING_FSYNC_DATASYNC` for
+data-only durability, and full fsync semantics when size durability is needed.
+Lock-file and copy-destination sync remain direct OSAL calls in this checkpoint.
+Verification passed `git diff --check`, the GNUmake `mdbx_migration_smoke`
+build target, direct default, forced no-mmap, `MDBX_EXPLICIT_IO_BACKEND=io_uring`,
+and compatibility `MDBX_EXPLICIT_WRITE_BACKEND=io_uring` forced tiny-cache
+smokes. An fd-decoded `strace` check of the forced io_uring smoke showed
+successful `io_uring_setup()` plus `io_uring_enter()` activity for the explicit
+backend; the remaining direct `fsync()`/`fdatasync()` calls were on lock files
+and copy destinations. The Ninja build (`cmake --build @cmake-ninja-build`),
+the ASAN build (`cmake --build @cmake-asan-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` focused `migration_smoke` CTest entries,
+normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused
+`migration_smoke` CTest entries with `LSAN_OPTIONS=detect_leaks=0`, the normal
+15-test public migration CTest suite, and the
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suite all passed.
+The paired `MDBX_EXPLICIT_IO_BACKEND=io_uring make -f GNUmakefile
+mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.106`
+batch, `0.996` crud, `1.124` iterate, `0.963` get, and `1.144` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
