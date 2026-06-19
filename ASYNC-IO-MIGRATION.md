@@ -15217,6 +15217,30 @@ The paired `MDBX_EXPLICIT_IO_BACKEND=io_uring make -f GNUmakefile
 mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.127`
 batch, `1.053` crud, `0.788` iterate, `1.024` get, and `1.048` delete.
 
+A later Linux `io_uring` readonly-copy checkpoint creates and destroys the POSIX
+OSAL ring even for readonly DXB opens, so requested readonly environments can use
+the same async-capable read/stat/copy wrappers while write-queue submission
+remains a no-op for actual writes. The DXB-to-pipe `sendfile()` export path now
+uses `osal_ioring_sendfile()` on ready Linux rings, submitting
+`IORING_OP_SPLICE` for file-to-pipe movement and falling back to direct
+`sendfile()` on unsupported kernels or incompatible descriptors. The
+`migration-smoke` copy coverage now also exercises `mdbx_env_copy2fd()` into a
+POSIX pipe drained by a local thread, which avoids MDBX after-fork cleanup while
+still proving the pipe destination path produces bytes. A forced piped
+`mdbx_copy` trace produced `77824` bytes and showed `io_uring_setup=1`,
+`io_uring_enter=4`, and no direct `sendfile` or `splice` userspace syscalls.
+Verification passed `git diff --check`, the Ninja build (`cmake --build
+@cmake-ninja-build`), the focused `migration_tool_roundtrip` CTest, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` focused `migration_smoke` CTest entries
+passed 6/6, the ASAN build (`cmake --build @cmake-asan-build`) passed, normal
+and `MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest
+entries passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, the GNUmake
+`mdbx_migration_smoke` build target passed, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.145` batch, `1.159` crud, `0.995` iterate, `1.010`
+get, and `1.075` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

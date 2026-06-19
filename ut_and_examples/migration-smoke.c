@@ -17,6 +17,7 @@
 
 #if !defined(_WIN32) && !defined(_WIN64)
 #include <errno.h>
+#include <pthread.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -2466,6 +2467,102 @@ bailout_rc:
   goto bailout;
 }
 
+#if !defined(_WIN32) && !defined(_WIN64)
+static int close_copy_pipe_fd(int *fd) {
+  if (*fd < 0)
+    return MDBX_SUCCESS;
+  for (;;) {
+    if (close(*fd) == 0) {
+      *fd = -1;
+      return MDBX_SUCCESS;
+    }
+    if (errno != EINTR)
+      break;
+  }
+  const int err = errno;
+  *fd = -1;
+  return fail_errno("close(copy pipe)", err, __FILE__, __LINE__);
+}
+
+typedef struct copy_pipe_drain_ctx {
+  int fd;
+  int err;
+  size_t bytes;
+} copy_pipe_drain_ctx_t;
+
+static void *drain_copy_pipe_thread(void *arg) {
+  copy_pipe_drain_ctx_t *const ctx = (copy_pipe_drain_ctx_t *)arg;
+  unsigned char buffer[8192];
+
+  for (;;) {
+    const ssize_t got = read(ctx->fd, buffer, sizeof(buffer));
+    if (got > 0) {
+      ctx->bytes += (size_t)got;
+      continue;
+    }
+    if (got == 0)
+      break;
+    if (errno == EINTR)
+      continue;
+    ctx->err = errno;
+    return NULL;
+  }
+
+  ctx->err = ctx->bytes > 0 ? MDBX_SUCCESS : MDBX_PROBLEM;
+  return NULL;
+}
+
+static int join_copy_pipe_thread(pthread_t thread, copy_pipe_drain_ctx_t *ctx) {
+  const int join_err = pthread_join(thread, NULL);
+  if (join_err)
+    return fail_errno("pthread_join(copy pipe)", join_err, __FILE__, __LINE__);
+  if (ctx->err == MDBX_SUCCESS)
+    return MDBX_SUCCESS;
+  if (ctx->err > 0)
+    return fail_errno("read(copy pipe)", ctx->err, __FILE__, __LINE__);
+  return fail_msg("copy pipe produced no bytes", __FILE__, __LINE__);
+}
+
+static int exercise_env_copy2fd_pipe(MDBX_env *env) {
+  int pipefd[2] = {-1, -1};
+  pthread_t drain_thread;
+  bool drain_started = false;
+  copy_pipe_drain_ctx_t drain_ctx = {pipefd[0], MDBX_SUCCESS, 0};
+  int rc = MDBX_SUCCESS;
+
+  if (pipe(pipefd) != 0)
+    return fail_errno("pipe(copy)", errno, __FILE__, __LINE__);
+  drain_ctx.fd = pipefd[0];
+  rc = pthread_create(&drain_thread, NULL, drain_copy_pipe_thread, &drain_ctx);
+  if (rc) {
+    rc = fail_errno("pthread_create(copy pipe)", rc, __FILE__, __LINE__);
+    goto bailout;
+  }
+  drain_started = true;
+  CHECK(mdbx_env_copy2fd(env, pipefd[1], MDBX_CP_DEFAULTS));
+  CHECK(close_copy_pipe_fd(&pipefd[1]));
+  CHECK(join_copy_pipe_thread(drain_thread, &drain_ctx));
+  drain_started = false;
+  CHECK(close_copy_pipe_fd(&pipefd[0]));
+
+  return MDBX_SUCCESS;
+
+bailout:
+  (void)close_copy_pipe_fd(&pipefd[1]);
+  if (drain_started) {
+    int wait_rc = join_copy_pipe_thread(drain_thread, &drain_ctx);
+    if (rc == MDBX_SUCCESS)
+      rc = wait_rc;
+  }
+  (void)close_copy_pipe_fd(&pipefd[0]);
+  return rc;
+
+bailout_rc:
+  rc = fail_rc("copy pipe operation", rc, __FILE__, __LINE__);
+  goto bailout;
+}
+#endif /* !Windows */
+
 static int exercise_env_copy(MDBX_env *env, const char *name, const char *items_name, size_t records) {
   static const struct {
     const char *suffix;
@@ -2495,6 +2592,12 @@ static int exercise_env_copy(MDBX_env *env, const char *name, const char *items_
     if (rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE)
       return fail_rc("mdbx_env_delete copy cleanup", rc, __FILE__, __LINE__);
   }
+
+#if !defined(_WIN32) && !defined(_WIN64)
+  rc = exercise_env_copy2fd_pipe(env);
+  if (rc != MDBX_SUCCESS)
+    return rc;
+#endif /* !Windows */
 
   return MDBX_SUCCESS;
 }
