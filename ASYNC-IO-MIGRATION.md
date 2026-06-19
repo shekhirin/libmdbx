@@ -14890,6 +14890,25 @@ focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.117` batch, `1.152` crud, `1.017`
 iterate, `0.767` get, and `1.084` delete.
 
+A later readahead cleanup removed `dxb_readahead_submit_io_t`,
+`dxb_storage_make_readahead_submit_io()`, and
+`dxb_storage_readahead_submit_io_validate()` from `mdbx.c`. The read-ahead
+toggle path now calls `dxb_storage_submit_readahead()` with the requested
+boolean state directly, and the submitter validates the storage pointer before
+preserving the existing `F_RDAHEAD`/noop result mapping. This keeps data-file
+readahead as a direct storage operation instead of wrapping a single boolean in
+a submit descriptor. Verification passed `git diff --check`, a source scan
+proving the removed readahead submit helpers and old pointer-based submit call
+are absent from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.131` batch, `1.167` crud, `1.190`
+iterate, `1.030` get, and `1.064` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

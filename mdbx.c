@@ -430,10 +430,6 @@ typedef struct dxb_advice_submit_io {
   dxb_advice_io_t advice;
 } dxb_advice_submit_io_t;
 
-typedef struct dxb_readahead_submit_io {
-  bool enable;
-} dxb_readahead_submit_io_t;
-
 typedef struct dxb_data_export_io {
   dxb_page_coverage_io_t source;
   uint64_t dst_offset;
@@ -3279,19 +3275,6 @@ static inline int dxb_storage_advice_submit_io_validate(const dxb_storage_t *sto
                checked.advice.range.page_bytes.offset != io->advice.range.page_bytes.offset ||
                checked.advice.range.page_bytes.bytes != io->advice.range.page_bytes.bytes ||
                checked.advice.advice != io->advice.advice))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_make_readahead_submit_io(bool enable, dxb_readahead_submit_io_t *io) {
-  if (unlikely(!io))
-    return MDBX_EINVAL;
-  io->enable = enable != 0;
-  return MDBX_SUCCESS;
-}
-
-static inline int dxb_storage_readahead_submit_io_validate(const dxb_readahead_submit_io_t *io) {
-  if (unlikely(!io || (io->enable & 1) != (io->enable != 0)))
     return MDBX_EINVAL;
   return MDBX_SUCCESS;
 }
@@ -25854,18 +25837,16 @@ static inline dxb_readahead_result_t dxb_readahead_completed(bool enabled) {
   return dxb_readahead_result(MDBX_SUCCESS, enabled, true, true, true);
 }
 
-static dxb_readahead_result_t dxb_storage_submit_readahead(const dxb_storage_t *storage,
-                                                           const dxb_readahead_submit_io_t *io) {
-  int rc = dxb_storage_readahead_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_readahead_result(rc, false, false, false, false);
+static dxb_readahead_result_t dxb_storage_submit_readahead(const dxb_storage_t *storage, bool enable) {
+  if (unlikely(!storage))
+    return dxb_readahead_result(MDBX_EINVAL, false, false, false, false);
 #if defined(F_RDAHEAD)
-  if (unlikely(fcntl(dxb_storage_data_fd(storage), F_RDAHEAD, io->enable) == -1))
-    return dxb_readahead_submitted_error(errno, io->enable);
-  return dxb_readahead_completed(io->enable);
+  if (unlikely(fcntl(dxb_storage_data_fd(storage), F_RDAHEAD, enable) == -1))
+    return dxb_readahead_submitted_error(errno, enable);
+  return dxb_readahead_completed(enable);
 #else
   (void)storage;
-  return dxb_readahead_noop_completed(io->enable);
+  return dxb_readahead_noop_completed(enable);
 #endif /* F_RDAHEAD */
 }
 
@@ -26984,14 +26965,7 @@ __cold int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool 
          window_coverage.pages.end_pgno);
 
   if (toggle) {
-    dxb_readahead_submit_io_t readahead_submit;
-    err = dxb_storage_make_readahead_submit_io(enable, &readahead_submit);
-    if (unlikely(err != MDBX_SUCCESS))
-      return err;
-    err = dxb_storage_readahead_submit_io_validate(&readahead_submit);
-    if (unlikely(err != MDBX_SUCCESS))
-      return err;
-    dxb_readahead_result_t readahead_result = dxb_storage_submit_readahead(storage, &readahead_submit);
+    dxb_readahead_result_t readahead_result = dxb_storage_submit_readahead(storage, enable);
     err = readahead_result.err;
     if (unlikely(err != MDBX_SUCCESS))
       return err;
