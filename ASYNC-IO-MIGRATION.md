@@ -13152,6 +13152,26 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.142` batch, `1.140` crud, `0.964` iterate,
 `0.969` get, and `1.080` delete.
 
+A later env-filesize submit-boundary cleanup removed the one-call
+`dxb_env_submit_filesize_fetch()` helper from `mdbx.c`. Header reads,
+metadata validation, and primal transaction setup now validate their
+environment-shaped filesize fetch descriptors at the call site, then submit the
+nested `dxb_filesize_fetch_submit_io_t` directly through
+`dxb_storage_submit_fetch_filesize()`. This keeps the environment policy wrapper
+limited to descriptor construction while leaving the disk-size probe on the
+storage-owned async-capable request boundary. Verification passed `git diff
+--check`, source scans proving `dxb_env_submit_filesize_fetch()` is absent from
+`mdbx.c` and the public/internal headers, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.104` batch, `1.148` crud, `0.947` iterate,
+`1.036` get, and `1.090` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
