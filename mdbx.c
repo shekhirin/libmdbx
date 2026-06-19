@@ -14969,7 +14969,9 @@ enum mdbx_async_opcode {
   async_op_get,
   async_op_get_batch,
   async_op_put,
+  async_op_put_batch,
   async_op_del,
+  async_op_del_batch,
   async_op_cursor_open,
   async_op_cursor_reset,
   async_op_cursor_renew,
@@ -15054,8 +15056,26 @@ struct MDBX_async_op {
     struct {
       MDBX_txn *txn;
       MDBX_dbi dbi;
+      const MDBX_val *keys;
+      MDBX_val *data;
+      int *results;
+      size_t count;
+      MDBX_put_flags_t flags;
+    } put_batch;
+    struct {
+      MDBX_txn *txn;
+      MDBX_dbi dbi;
       bool has_data;
     } del;
+    struct {
+      MDBX_txn *txn;
+      MDBX_dbi dbi;
+      const MDBX_val *keys;
+      const MDBX_val *data;
+      int *results;
+      size_t count;
+      bool has_data;
+    } del_batch;
     struct {
       MDBX_txn *txn;
       MDBX_dbi dbi;
@@ -15196,8 +15216,25 @@ static int async_op_execute(MDBX_async_op *op) {
       *op->args.put.data = data;
     return rc;
   }
+  case async_op_put_batch:
+    for (size_t i = 0; i < op->args.put_batch.count; ++i) {
+      MDBX_val data = op->args.put_batch.data[i];
+      const int rc =
+          mdbx_put(op->args.put_batch.txn, op->args.put_batch.dbi, &op->args.put_batch.keys[i], &data,
+                   op->args.put_batch.flags);
+      if (rc == MDBX_KEYEXIST)
+        op->args.put_batch.data[i] = data;
+      op->args.put_batch.results[i] = rc;
+    }
+    return MDBX_SUCCESS;
   case async_op_del:
     return mdbx_del(op->args.del.txn, op->args.del.dbi, &op->key, op->args.del.has_data ? &op->data : nullptr);
+  case async_op_del_batch:
+    for (size_t i = 0; i < op->args.del_batch.count; ++i)
+      op->args.del_batch.results[i] =
+          mdbx_del(op->args.del_batch.txn, op->args.del_batch.dbi, &op->args.del_batch.keys[i],
+                   op->args.del_batch.has_data ? &op->args.del_batch.data[i] : nullptr);
+    return MDBX_SUCCESS;
   case async_op_cursor_open:
     return mdbx_cursor_open(op->args.cursor_open.txn, op->args.cursor_open.dbi, op->args.cursor_open.cursor);
   case async_op_cursor_reset:
@@ -15822,6 +15859,31 @@ int mdbx_async_put(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_va
   return LOG_IFERR(rc);
 }
 
+int mdbx_async_put_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[], MDBX_val data[],
+                         int results[], size_t count, MDBX_put_flags_t flags, MDBX_async_op **out) {
+  if (unlikely(!txn || !keys || !data || !results || !count))
+    return LOG_IFERR(MDBX_EINVAL);
+  if (unlikely(flags & (MDBX_RESERVE | MDBX_MULTIPLE)))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_put_batch);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.put_batch.txn = txn;
+  op->args.put_batch.dbi = dbi;
+  op->args.put_batch.keys = keys;
+  op->args.put_batch.data = data;
+  op->args.put_batch.results = results;
+  op->args.put_batch.count = count;
+  op->args.put_batch.flags = flags;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
 int mdbx_async_del(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, const MDBX_val *data,
                    MDBX_async_op **out) {
   if (unlikely(!txn))
@@ -15842,6 +15904,29 @@ int mdbx_async_del(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_va
   }
   if (unlikely(rc != MDBX_SUCCESS)) {
     async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_del_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
+                         const MDBX_val data[], int results[], size_t count, MDBX_async_op **out) {
+  if (unlikely(!txn || !keys || !results || !count))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_del_batch);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.del_batch.txn = txn;
+  op->args.del_batch.dbi = dbi;
+  op->args.del_batch.keys = keys;
+  op->args.del_batch.data = data;
+  op->args.del_batch.results = results;
+  op->args.del_batch.count = count;
+  op->args.del_batch.has_data = data != nullptr;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;
     osal_free(op);
   }

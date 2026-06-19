@@ -4702,12 +4702,38 @@ LIBMDBX_API int mdbx_async_get_batch(MDBX_async *async, const MDBX_txn *txn, MDB
 LIBMDBX_API int mdbx_async_put(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *data,
                                MDBX_put_flags_t flags, MDBX_async_op **op);
 
+/** \brief Asynchronously put a batch of items into a table.
+ * \ingroup c_async
+ * \details The `keys`, key bytes, `data`, data bytes, and `results` arrays must
+ *          remain valid until completion. Each `results` slot receives the
+ *          corresponding \ref mdbx_put() result code. The async operation
+ *          result is \ref MDBX_SUCCESS when the batch has run and per-item
+ *          results have been stored. The wrapper rejects \ref MDBX_RESERVE and
+ *          \ref MDBX_MULTIPLE because those modes require caller-managed
+ *          in-place memory.
+ * \see mdbx_put() */
+LIBMDBX_API int mdbx_async_put_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
+                                     MDBX_val data[], int results[], size_t count, MDBX_put_flags_t flags,
+                                     MDBX_async_op **op);
+
 /** \brief Asynchronously delete an item from a table.
  * \ingroup c_async
  * \details Key and optional data bytes are copied during submission.
  * \see mdbx_del() */
 LIBMDBX_API int mdbx_async_del(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
                                const MDBX_val *data, MDBX_async_op **op);
+
+/** \brief Asynchronously delete a batch of items from a table.
+ * \ingroup c_async
+ * \details The `keys`, key bytes, optional `data`, optional data bytes, and
+ *          `results` arrays must remain valid until completion. Each `results`
+ *          slot receives the corresponding \ref mdbx_del() result code. Pass
+ *          NULL for `data` to delete by key only. The async operation result is
+ *          \ref MDBX_SUCCESS when the batch has run and per-item results have
+ *          been stored.
+ * \see mdbx_del() */
+LIBMDBX_API int mdbx_async_del_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
+                                     const MDBX_val data[], int results[], size_t count, MDBX_async_op **op);
 
 /** \brief Asynchronously open a cursor.
  * \ingroup c_async

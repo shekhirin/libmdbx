@@ -142,6 +142,7 @@ int main(void) {
   uint64_t keys[ITEM_COUNT];
   uint64_t values[ITEM_COUNT];
   MDBX_val key_values[ITEM_COUNT];
+  MDBX_val delete_keys[ITEM_COUNT];
   MDBX_val put_values[ITEM_COUNT];
   MDBX_val get_values[ITEM_COUNT];
   MDBX_async_op *ops[ITEM_COUNT];
@@ -179,9 +180,17 @@ int main(void) {
     values[i] = expected_value(keys[i]);
     key_values[i] = val(&keys[i], sizeof(keys[i]));
     put_values[i] = val(&values[i], sizeof(values[i]));
-    CHECK(mdbx_async_put(async, txn, dbi, &key_values[i], &put_values[i], 0, &ops[i]));
   }
-  CHECK(wait_many_success("mdbx_async_put", ops, ITEM_COUNT, op_results, __FILE__, __LINE__));
+  CHECK(mdbx_async_put(async, txn, dbi, &key_values[0], &put_values[0], 0, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put_batch(async, txn, dbi, key_values + 1, put_values + 1, op_results, ITEM_COUNT - 1, 0, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < ITEM_COUNT - 1; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_put_batch", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
+  }
 
   CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
   CHECK_OP(op);
@@ -278,10 +287,18 @@ int main(void) {
   CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
   CHECK_OP(op);
   size_t pending = 0;
-  for (unsigned i = 0; i < ITEM_COUNT; i += 3) {
-    CHECK(mdbx_async_del(async, txn, dbi, &key_values[i], NULL, &ops[pending++]));
+  CHECK(mdbx_async_del(async, txn, dbi, &key_values[0], NULL, &op));
+  CHECK_OP(op);
+  for (unsigned i = 3; i < ITEM_COUNT; i += 3)
+    delete_keys[pending++] = key_values[i];
+  CHECK(mdbx_async_del_batch(async, txn, dbi, delete_keys, NULL, op_results, pending, &op));
+  CHECK_OP(op);
+  for (size_t i = 0; i < pending; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_del_batch", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
   }
-  CHECK(wait_many_success("mdbx_async_del", ops, pending, op_results, __FILE__, __LINE__));
   CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
   CHECK_OP(op);
   txn = NULL;

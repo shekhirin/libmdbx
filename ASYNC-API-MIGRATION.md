@@ -237,6 +237,24 @@ Batch get reduces async submission surface for windowed callers and is the best
 default-sample async result so far, but the benchmark still appears dominated
 by hot `mdbx_get()` work rather than operation submission overhead.
 
+Batch mutation checkpoint:
+
+- added `mdbx_async_put_batch()` and `mdbx_async_del_batch()` for submitting
+  many mutations as one async operation
+- batch put/delete use caller-owned key/value descriptors and payload bytes
+  until completion, matching `mdbx_async_get_batch()` and avoiding per-item
+  copies on the submission thread
+- batch put/delete store per-item `mdbx_put()`/`mdbx_del()` return codes in a
+  caller-provided result array and return `MDBX_SUCCESS` for the async operation
+  once the batch has run
+- smoke coverage now keeps single put/delete coverage while using batch put for
+  the rest of the initial load and batch delete for the remaining every-third
+  deletion set
+
+This checkpoint broadens the async API surface for write-heavy callers. The
+read benchmark is unchanged except for rebuild noise; a one-run default sample
+after this change reported async-batch/blocking-parallel ratio 1.044.
+
 ## Validation
 
 Completed for this checkpoint:
@@ -303,4 +321,15 @@ Additional batch get checkpoint:
 - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_async_api_bench_run MDBX_ASYNC_BENCH_OPS=100000`: passed, async-batch/blocking-parallel ratio 1.097
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional batch mutation checkpoint:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.044
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
