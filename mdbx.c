@@ -7643,52 +7643,47 @@ static inline int page_touch_redirect_submit_io_validate(const dxb_page_touch_re
   return MDBX_SUCCESS;
 }
 
-static inline int page_touch_submit_redirect(const dxb_page_touch_redirect_submit_io_t *io) {
-  int err = page_touch_redirect_submit_io_validate(io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  MDBX_cursor *const mc = io->cursor;
-  MDBX_txn *const txn = io->txn;
-  const intptr_t slot = io->slot;
-  page_t *const np = io->new_page;
-  cursor_stack_set(mc, slot, np, io->new_ref);
-#ifdef MDBX_EVENBUG20260405_FIX
-  if (is_leaf(np) && inner_pointed(mc))
-    cursor_inner_refresh(mc, np, mc->ki[slot]);
-#endif /* MDBX_EVENBUG20260405_FIX */
-
-  MDBX_cursor *m2 = txn->cursors[io->dbi];
-  if (io->inner) {
-    for (; m2; m2 = m2->next) {
-      MDBX_cursor *m3 = &m2->subcur->cursor;
-      if (m3->top < slot)
-        continue;
-      if (m3->pg[slot] == io->old_page)
-        cursor_stack_set(m3, slot, np, io->new_ref);
-    }
-  } else {
-    for (; m2; m2 = m2->next) {
-      if (m2->top < slot)
-        continue;
-      if (m2->pg[slot] == io->old_page) {
-        cursor_stack_set(m2, slot, np, io->new_ref);
-        if (is_leaf(np) && inner_pointed(m2))
-          cursor_inner_refresh(m2, np, m2->ki[slot]);
-      }
-    }
-  }
-  return MDBX_SUCCESS;
-}
-
 static inline int __must_check_result page_touch_redirect_cursors(MDBX_txn *txn, MDBX_cursor *mc,
                                                                   const page_t *old_page, page_t *new_page,
                                                                   page_ref_t new_ref) {
   dxb_page_touch_redirect_submit_io_t submit;
   int err = page_touch_make_redirect_submit_io(txn, mc, old_page, new_page, new_ref, &submit);
   cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS))
-    err = page_touch_submit_redirect(&submit);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = page_touch_redirect_submit_io_validate(&submit);
+    if (likely(err == MDBX_SUCCESS)) {
+      MDBX_cursor *const cursor = submit.cursor;
+      MDBX_txn *const submitted_txn = submit.txn;
+      const intptr_t slot = submit.slot;
+      page_t *const np = submit.new_page;
+      cursor_stack_set(cursor, slot, np, submit.new_ref);
+#ifdef MDBX_EVENBUG20260405_FIX
+      if (is_leaf(np) && inner_pointed(cursor))
+        cursor_inner_refresh(cursor, np, cursor->ki[slot]);
+#endif /* MDBX_EVENBUG20260405_FIX */
+
+      MDBX_cursor *m2 = submitted_txn->cursors[submit.dbi];
+      if (submit.inner) {
+        for (; m2; m2 = m2->next) {
+          MDBX_cursor *m3 = &m2->subcur->cursor;
+          if (m3->top < slot)
+            continue;
+          if (m3->pg[slot] == submit.old_page)
+            cursor_stack_set(m3, slot, np, submit.new_ref);
+        }
+      } else {
+        for (; m2; m2 = m2->next) {
+          if (m2->top < slot)
+            continue;
+          if (m2->pg[slot] == submit.old_page) {
+            cursor_stack_set(m2, slot, np, submit.new_ref);
+            if (is_leaf(np) && inner_pointed(m2))
+              cursor_inner_refresh(m2, np, m2->ki[slot]);
+          }
+        }
+      }
+    }
+  }
   cASSERT0(mc, err == MDBX_SUCCESS);
   return err;
 }

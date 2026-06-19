@@ -13612,6 +13612,24 @@ including API checks and tool roundtrips, the ASAN build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.119`
 batch, `1.150` crud, `0.971` iterate, `0.982` get, and `1.068` delete.
 
+A later page-touch cursor-redirection submit-boundary cleanup removed the
+one-call `page_touch_submit_redirect()` helper from `mdbx.c`. Page-touch now
+validates the prepared redirect descriptor inside
+`page_touch_redirect_cursors()`, then updates the touched cursor and tracked
+sibling cursors directly through the cursor stack helper layer. This keeps
+dirty-page replacement and cursor page-ref transfer at the same ownership site
+that future async dirty-page completion must preserve. Verification passed
+`git diff --check`, a source scan proving the removed page-touch submit helper
+is absent from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build target,
+direct `mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja
+build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.119`
+batch, `1.130` crud, `0.896` iterate, `1.004` get, and `1.072` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
