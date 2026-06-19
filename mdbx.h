@@ -5210,6 +5210,16 @@ LIBMDBX_API int mdbx_async_get_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_d
 LIBMDBX_API int mdbx_async_get_equal_or_great(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key,
                                               MDBX_val *data, MDBX_async_op **op);
 
+/** \brief Callback for \ref mdbx_async_get_batch_cb().
+ * \ingroup c_async
+ * \details The callback runs on the executor worker thread after the whole
+ *          batch has been fetched and per-item result codes have been stored.
+ *          Returned values follow the normal \ref mdbx_get() lifetime rules.
+ *          Returning a non-success result makes that value the async operation
+ *          result. */
+typedef int (*MDBX_get_batch_func)(void *context, const MDBX_val keys[], MDBX_val data[], const int results[],
+                                   size_t count) MDBX_CXX17_NOEXCEPT;
+
 /** \brief Asynchronously get a batch of items from a table.
  * \ingroup c_async
  * \details The `keys`, key bytes, `data`, and `results` arrays must remain
@@ -5221,6 +5231,17 @@ LIBMDBX_API int mdbx_async_get_equal_or_great(MDBX_async *async, const MDBX_txn 
  * \see mdbx_get() */
 LIBMDBX_API int mdbx_async_get_batch(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
                                      MDBX_val data[], int results[], size_t count, MDBX_async_op **op);
+
+/** \brief Asynchronously get a batch and consume it on the executor worker.
+ * \ingroup c_async
+ * \details This is equivalent to \ref mdbx_async_get_batch(), followed by an
+ *          optional worker-thread callback over the filled `data` and `results`
+ *          arrays before the async operation completes.
+ * \see mdbx_async_get_batch()
+ * \see MDBX_get_batch_func */
+LIBMDBX_API int mdbx_async_get_batch_cb(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                        const MDBX_val keys[], MDBX_val data[], int results[], size_t count,
+                                        MDBX_get_batch_func func, void *context, MDBX_async_op **op);
 
 /** \brief Asynchronously put an item into a table.
  * \ingroup c_async

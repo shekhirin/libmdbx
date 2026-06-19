@@ -48,6 +48,11 @@ struct batch_probe {
   size_t pairs;
 };
 
+struct get_batch_probe {
+  unsigned calls;
+  size_t successes;
+};
+
 static int fail_rc(const char *expr, int rc, const char *file, int line) {
   fprintf(stderr, "%s:%d: %s failed: (%d) %s\n", file, line, expr, rc, mdbx_strerror(rc));
   return rc ? rc : MDBX_PROBLEM;
@@ -233,6 +238,26 @@ static int batch_probe_func(void *context, const MDBX_val *pairs, size_t count) 
   }
   probe->calls += 1;
   probe->pairs += count / 2;
+  return MDBX_SUCCESS;
+}
+
+static int get_batch_probe_func(void *context, const MDBX_val keys[], MDBX_val data[], const int results[],
+                                size_t count) {
+  struct get_batch_probe *const probe = (struct get_batch_probe *)context;
+  if (!probe || !keys || !data || !results)
+    return MDBX_PROBLEM;
+  for (size_t i = 0; i < count; ++i) {
+    if (results[i] != MDBX_SUCCESS || keys[i].iov_len != sizeof(uint64_t) || data[i].iov_len != sizeof(uint64_t))
+      return MDBX_PROBLEM;
+    uint64_t actual_key = 0;
+    uint64_t actual_value = 0;
+    memcpy(&actual_key, keys[i].iov_base, sizeof(actual_key));
+    memcpy(&actual_value, data[i].iov_base, sizeof(actual_value));
+    if (actual_value != expected_value(actual_key))
+      return MDBX_PROBLEM;
+    probe->successes += 1;
+  }
+  probe->calls += 1;
   return MDBX_SUCCESS;
 }
 
@@ -1088,6 +1113,15 @@ int main(void) {
     }
     CHECK(expect_value(&get_values[i], keys[i], __FILE__, __LINE__));
   }
+
+  for (unsigned i = 0; i < ITEM_COUNT; ++i)
+    get_values[i] = val(NULL, 0);
+  struct get_batch_probe get_batch_probe = {0, 0};
+  CHECK(mdbx_async_get_batch_cb(async, txn, dbi, key_values, get_values, op_results, ITEM_COUNT,
+                                get_batch_probe_func, &get_batch_probe, &op));
+  CHECK_OP(op);
+  REQUIRE(get_batch_probe.calls == 1, "async get batch callback was not called");
+  REQUIRE(get_batch_probe.successes == ITEM_COUNT, "async get batch callback saw wrong success count");
 
   int dirty_result = MDBX_SUCCESS;
   CHECK(mdbx_async_is_dirty(async, txn, get_values[4].iov_base, &op));

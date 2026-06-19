@@ -1276,3 +1276,39 @@ Additional typed cursor-loop checkpoint:
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - cursor benchmark samples remain scheduler-noisy, so this checkpoint should be
   treated as API-surface progress rather than a proven cursor throughput win
+
+Additional batch-get callback checkpoint:
+
+- added `mdbx_async_get_batch_cb()` plus `MDBX_get_batch_func` so callers can
+  consume or validate a completed get batch on the executor worker before the
+  async operation completes
+- kept `mdbx_async_get_batch()` behavior unchanged by sharing the submit path
+  with a null callback; per-item result storage and returned value lifetimes
+  remain the same as the existing batch-get wrapper
+- smoke coverage now verifies the callback sees all successful items and can
+  validate the returned key/value payloads on the worker thread
+- `mdbx_async_api_bench` now reports `async batch callback get`,
+  `async-batch-cb/blocking par`, and `async-batch-cb/blocking ser` alongside
+  the existing batch-get measurement
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- three clean default `mdbx_async_api_bench` samples passed; average ratios
+  were async/blocking-parallel 1.027, async-batch/blocking-parallel 1.079,
+  async-batch-callback/blocking-parallel 1.079, typed
+  async-cursor/blocking-parallel 0.717, and async-loop-cursor/blocking-parallel
+  0.845
+- three forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` samples passed;
+  average ratios were async/blocking-parallel 1.004,
+  async-batch/blocking-parallel 1.031,
+  async-batch-callback/blocking-parallel 0.987, typed
+  async-cursor/blocking-parallel 1.184, and async-loop-cursor/blocking-parallel
+  1.236
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- the callback path is API-surface progress, not a proven throughput
+  improvement yet; default samples matched plain batch-get on average, while
+  forced no-map/tiny-cache samples were lower and noisy

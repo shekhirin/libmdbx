@@ -50,6 +50,10 @@ struct async_cursor_batch_check {
   size_t items;
 };
 
+struct async_get_batch_check {
+  size_t checked;
+};
+
 struct async_worker {
   MDBX_async *async;
   MDBX_txn *txn;
@@ -123,6 +127,26 @@ static int expect_value(const MDBX_val *data, uint64_t key, const char *file, in
   memcpy(&actual, data->iov_base, sizeof(actual));
   if (actual != expected_value(key))
     return fail_msg("unexpected value payload", file, line);
+  return MDBX_SUCCESS;
+}
+
+static int async_get_batch_check_func(void *context, const MDBX_val keys[], MDBX_val data[], const int results[],
+                                      size_t count) {
+  struct async_get_batch_check *const check = (struct async_get_batch_check *)context;
+  if (!check || !keys || !data || !results)
+    return fail_msg("missing async get batch callback state", __FILE__, __LINE__);
+  for (size_t i = 0; i < count; ++i) {
+    if (results[i] != MDBX_SUCCESS)
+      return fail_rc("mdbx_async_get_batch_cb item", results[i], __FILE__, __LINE__);
+    if (keys[i].iov_len != sizeof(uint64_t))
+      return fail_msg("unexpected async get batch callback key size", __FILE__, __LINE__);
+    uint64_t key = 0;
+    memcpy(&key, keys[i].iov_base, sizeof(key));
+    const int rc = expect_value(&data[i], key, __FILE__, __LINE__);
+    if (rc != MDBX_SUCCESS)
+      return rc;
+    check->checked += 1;
+  }
   return MDBX_SUCCESS;
 }
 
@@ -597,6 +621,79 @@ bailout:
   return -1.0;
 }
 
+static double async_batch_callback_parallel_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops,
+                                                size_t workers_count, size_t window) {
+  struct async_worker *workers = calloc(workers_count, sizeof(*workers));
+  struct async_get_batch_check *checks = calloc(workers_count, sizeof(*checks));
+  if (!workers || !checks) {
+    free(workers);
+    free(checks);
+    return -1.0;
+  }
+  for (size_t i = 0; i < workers_count; ++i) {
+    if (async_worker_init(env, &workers[i], dbi, window) != MDBX_SUCCESS) {
+      workers_count = i + 1;
+      goto bailout;
+    }
+  }
+
+  size_t issued = 0;
+  int rc = MDBX_SUCCESS;
+  const uint64_t start = monotime_ns();
+  while (issued < ops) {
+    for (size_t i = 0; i < workers_count; ++i) {
+      struct async_worker *const worker = &workers[i];
+      worker->pending = 0;
+      while (worker->pending < window && issued < ops) {
+        const size_t slot = worker->pending++;
+        worker->keys[slot] = key_for(issued, items);
+        worker->key_vals[slot] = val(&worker->keys[slot], sizeof(worker->keys[slot]));
+        worker->data[slot] = val(NULL, 0);
+        issued += 1;
+      }
+      if (worker->pending) {
+        rc = mdbx_async_get_batch_cb(worker->async, worker->txn, dbi, worker->key_vals, worker->data,
+                                     worker->results, worker->pending, async_get_batch_check_func, &checks[i],
+                                     &worker->ops[0]);
+        if (rc != MDBX_SUCCESS)
+          goto bailout;
+      }
+    }
+
+    for (size_t i = 0; i < workers_count; ++i) {
+      struct async_worker *const worker = &workers[i];
+      if (!worker->pending)
+        continue;
+      rc = wait_success(&worker->ops[0], NULL, __FILE__, __LINE__);
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
+      worker->pending = 0;
+    }
+  }
+  const uint64_t finish = monotime_ns();
+  size_t checked = 0;
+  for (size_t i = 0; i < workers_count; ++i) {
+    checked += checks[i].checked;
+    async_worker_destroy(&workers[i]);
+  }
+  free(checks);
+  free(workers);
+  if (checked != ops || finish <= start)
+    return -1.0;
+  return (double)ops * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  for (size_t i = 0; i < workers_count; ++i) {
+    if (workers[i].ops && workers[i].ops[0])
+      (void)wait_success(&workers[i].ops[0], NULL, __FILE__, __LINE__);
+    async_worker_destroy(&workers[i]);
+  }
+  free(checks);
+  free(workers);
+  (void)rc;
+  return -1.0;
+}
+
 static int async_cursor_batch_worker_init(MDBX_env *env, struct async_worker *worker, MDBX_dbi dbi,
                                           size_t batch_pairs) {
   int rc;
@@ -786,6 +883,8 @@ int main(void) {
   const double blocking_parallel = blocking_parallel_get(env, dbi, items, ops, workers);
   const double async_parallel = async_parallel_get(env, dbi, items, ops, workers, window);
   const double async_batch_parallel = async_batch_parallel_get(env, dbi, items, ops, workers, window);
+  const double async_batch_callback_parallel =
+      async_batch_callback_parallel_get(env, dbi, items, ops, workers, window);
   const double blocking_cursor_serial = blocking_serial_cursor_batch(env, dbi, items, cursor_pairs, cursor_batch_pairs);
   const double blocking_cursor_parallel =
       blocking_parallel_cursor_batch(env, dbi, items, cursor_pairs, workers, cursor_batch_pairs);
@@ -797,6 +896,7 @@ int main(void) {
   print_rate("blocking parallel get", blocking_parallel);
   print_rate("async parallel get", async_parallel);
   print_rate("async batch parallel get", async_batch_parallel);
+  print_rate("async batch callback get", async_batch_callback_parallel);
   print_rate("blocking cursor batch", blocking_cursor_serial);
   print_rate("parallel cursor batch", blocking_cursor_parallel);
   print_rate("async cursor batch", async_cursor_parallel);
@@ -805,10 +905,14 @@ int main(void) {
     printf("%-28s %8.3f\n", "async/blocking parallel", async_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-batch/blocking parallel", async_batch_parallel / blocking_parallel);
+  if (blocking_parallel > 0.0 && async_batch_callback_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-batch-cb/blocking par", async_batch_callback_parallel / blocking_parallel);
   if (blocking_serial > 0.0 && async_parallel > 0.0)
     printf("%-28s %8.3f\n", "async/blocking serial", async_parallel / blocking_serial);
   if (blocking_serial > 0.0 && async_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-batch/blocking serial", async_batch_parallel / blocking_serial);
+  if (blocking_serial > 0.0 && async_batch_callback_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-batch-cb/blocking ser", async_batch_callback_parallel / blocking_serial);
   if (blocking_cursor_parallel > 0.0 && async_cursor_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-cursor/blocking par", async_cursor_parallel / blocking_cursor_parallel);
   if (blocking_cursor_serial > 0.0 && async_cursor_parallel > 0.0)
