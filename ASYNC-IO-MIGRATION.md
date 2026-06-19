@@ -15562,6 +15562,22 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.100` batch, `1.159` crud, `0.832` iterate, `0.991`
 get, and `1.081` delete.
 
+A later copy-destination flock checkpoint added `osal_ioring_flock_op()` and
+routed the fallback POSIX copy-target `flock()` through that OSAL I/O boundary.
+POSIX still executes the advisory whole-file lock directly because Linux has no
+`io_uring` flock opcode, but the copy destination fallback now crosses the same
+boundary as the destination `F_SETLK`, local-filesystem probe, eCryptfs probe,
+copy-target open/close/remove/write/sync, and env-delete lock operations.
+Verification passed `git diff --check`, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed 9/9, the ASAN
+build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.096` batch, `1.167` crud, `0.973` iterate, `1.061`
+get, and `1.082` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

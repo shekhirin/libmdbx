@@ -8888,7 +8888,7 @@ __cold static int copy2pathname(MDBX_txn *txn, const pathchar_t *dest_path, MDBX
 
   const int err_flock =
 #ifdef LOCK_EX
-      flock(newfd, LOCK_EX | LOCK_NB) ? errno : MDBX_SUCCESS;
+      osal_ioring_flock_op(copy_ioring(txn->env), newfd, LOCK_EX | LOCK_NB);
 #else
       MDBX_ENOSYS;
 #endif /* LOCK_EX */
@@ -38430,6 +38430,17 @@ int osal_ioring_setlk_with3retries(osal_ioring_t *ior, mdbx_filehandle_t fd, int
   if (unlikely(offset > (uint64_t)OFF_T_MAX || bytes > (uint64_t)OFF_T_MAX))
     return MDBX_EINVAL;
   return lck_setlk_with3retries(fd, lck, (off_t)offset, (off_t)bytes);
+}
+
+int osal_ioring_flock_op(osal_ioring_t *ior, mdbx_filehandle_t fd, int operation) {
+  (void)ior;
+#ifdef LOCK_EX
+  return flock(fd, operation) ? errno : MDBX_SUCCESS;
+#else
+  (void)fd;
+  (void)operation;
+  return MDBX_ENOSYS;
+#endif /* LOCK_EX */
 }
 #endif /* !Windows */
 
