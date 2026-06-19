@@ -1883,6 +1883,37 @@ int main(void) {
   CHECK_OP(op);
   CHECK(expect_payload(&replace_old_value, replacement_value, __FILE__, __LINE__));
 
+  uint64_t replace_batch_values[] = {expected_value(4) + UINT64_C(4000), expected_value(5) + UINT64_C(5000)};
+  uint64_t replace_batch_old_values[] = {0, 0};
+  MDBX_val replace_batch_keys[] = {key_values[4], key_values[5]};
+  MDBX_val replace_batch_new_values[] = {
+      val(&replace_batch_values[0], sizeof(replace_batch_values[0])),
+      val(&replace_batch_values[1], sizeof(replace_batch_values[1]))};
+  MDBX_val replace_batch_old_data[] = {
+      val(&replace_batch_old_values[0], sizeof(replace_batch_old_values[0])),
+      val(&replace_batch_old_values[1], sizeof(replace_batch_old_values[1]))};
+  CHECK(mdbx_async_replace_batch(async, txn, dbi, replace_batch_keys, replace_batch_new_values,
+                                 replace_batch_old_data, op_results, 2, 0, &op));
+  CHECK_OP(op);
+  for (size_t i = 0; i < 2; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_replace_batch", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
+    CHECK(expect_value(&replace_batch_old_data[i], i + 4, __FILE__, __LINE__));
+  }
+  memset(op_results, 0, sizeof(op_results));
+  CHECK(mdbx_async_replace_batch(async, txn, dbi, replace_batch_keys, put_values + 4, replace_batch_old_data,
+                                 op_results, 2, 0, &op));
+  CHECK_OP(op);
+  for (size_t i = 0; i < 2; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_replace_batch restore", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
+    CHECK(expect_payload(&replace_batch_old_data[i], replace_batch_values[i], __FILE__, __LINE__));
+  }
+
   size_t pending = 0;
   CHECK(mdbx_async_del(async, txn, dbi, &key_values[3], NULL, &op));
   CHECK_OP(op);

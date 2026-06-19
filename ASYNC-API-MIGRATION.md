@@ -2824,3 +2824,47 @@ Additional async delete benchmark checkpoint:
   overhead versus per-item async submission. The reduced run beats blocking,
   and the larger forced no-map sample nearly reaches blocking throughput
   (0.970) while improving 16.6% over per-item async delete.
+
+Additional async replace-batch API checkpoint:
+
+- added `mdbx_async_replace_batch()` as a public async-only batch helper for
+  repeated `mdbx_replace()` operations. The blocking API is unchanged. The new
+  helper follows the existing put/delete batch contract: caller-owned key,
+  new-data, old-data, and result arrays must remain valid until completion,
+  each `results` slot receives the corresponding `mdbx_replace()` result, and
+  the async operation result is `MDBX_SUCCESS` after the batch has run.
+- wired the new operation through the async executor (`async_op_replace_batch`)
+  and added smoke coverage that replaces two existing records, verifies the
+  previous values, then restores the original values before the existing final
+  readback assertions.
+- extended `ut_and_examples/async-api-bench.c` to report blocking replace,
+  per-item async replace, and batched async replace.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking replace 2.552 Mops/s,
+  async replace 1.778 Mops/s, async batch replace 2.515 Mops/s,
+  async-replace/blocking 0.697, async-repl-batch/blocking 0.985, and
+  async-repl-batch/async 1.415.
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000
+  MDBX_ASYNC_BENCH_WRITE_OPS=20000` spot check reported
+  async/blocking-parallel 1.188, async-batch/blocking-parallel 1.189,
+  async-put/blocking-put 0.759, async-put-batch/blocking 0.992,
+  async-put-batch/async-put 1.308, async-replace/blocking 0.748,
+  async-repl-batch/blocking 0.943, async-repl-batch/async 1.261,
+  async-del/blocking-del 0.765, async-del-batch/blocking 0.970, and
+  async-del-batch/async-del 1.268. Cursor samples were again below
+  blocking-parallel in this spot run and remain noisy.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|migration_smoke)'`: passed 9/9
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h`: `blocking=171 async-covered=132 exempt=39 missing=0`
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: batched async replace materially reduces async replace overhead
+  versus per-item async submission. The reduced run nearly matches blocking
+  replace, and the larger forced no-map sample improves async replace throughput
+  by 26.1% over per-item async replace.

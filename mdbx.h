@@ -5518,6 +5518,23 @@ LIBMDBX_API int mdbx_async_replace(MDBX_async *async, MDBX_txn *txn, MDBX_dbi db
                                    MDBX_val *new_data, MDBX_val *old_data, MDBX_put_flags_t flags,
                                    MDBX_async_op **op);
 
+/** \brief Asynchronously replace or delete a batch of items while retrieving previous values.
+ * \ingroup c_async
+ * \details The `keys`, `new_data`, `old_data`, and `results` arrays and the
+ *          pointed-to key/data bytes must remain valid until completion. Pass
+ *          NULL for `new_data` to delete by key while retrieving previous
+ *          values. Each `results` slot receives the corresponding
+ *          \ref mdbx_replace() result code. The async operation result is
+ *          \ref MDBX_SUCCESS when the batch has run and per-item results have
+ *          been stored. The wrapper rejects \ref MDBX_RESERVE and
+ *          \ref MDBX_MULTIPLE because those modes require caller-managed
+ *          in-place memory.
+ * \see mdbx_replace() */
+LIBMDBX_API int mdbx_async_replace_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi,
+                                         const MDBX_val keys[], MDBX_val new_data[],
+                                         MDBX_val old_data[], int results[], size_t count,
+                                         MDBX_put_flags_t flags, MDBX_async_op **op);
+
 /** \brief Asynchronously delete an item from a table.
  * \ingroup c_async
  * \details Key and optional data bytes are copied during submission.
