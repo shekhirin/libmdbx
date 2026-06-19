@@ -13073,6 +13073,26 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.086`
 batch, `1.142` crud, `0.898` iterate, `1.059` get, and `1.076` delete.
 
+A later page-read submit-boundary cleanup removed the one-call
+`page_submit_committed_read()` and `page_submit_large_read()` helpers from
+`mdbx.c`. `page_get_committed()`, `page_read_large()`, and the public cache
+large-value path now revalidate their committed-page or large-page descriptors
+and submit directly through `page_cache_submit_read()` or
+`dxb_storage_submit_materialize_cached_large_page()`. This keeps explicit page
+cache lookup/fill and overflow materialization at the async-capable storage
+boundary without changing pinned page ownership. Verification passed `git diff
+--check`, source scans proving `page_submit_committed_read()` and
+`page_submit_large_read()` are absent from `mdbx.c` and the public/internal
+headers, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.112`
+batch, `1.140` crud, `0.985` iterate, `0.998` get, and `1.072` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

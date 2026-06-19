@@ -15165,10 +15165,13 @@ static MDBX_cache_result_t cache_get(const MDBX_txn *txn, MDBX_dbi dbi, const MD
 static inline int page_cache_make_read_submit_io(const MDBX_txn *txn, const dxb_cache_read_io_t *read,
                                                  dxb_page_cache_read_submit_io_t *io);
 static dxb_cache_page_result_t page_cache_submit_read(MDBX_txn *txn, const dxb_page_cache_read_submit_io_t *io);
+static inline dxb_cache_result_t dxb_cache_success(void);
+static dxb_cache_result_t dxb_storage_submit_materialize_cached_large_page(
+    dxb_storage_t *storage, pgr_t *pgr, const dxb_cache_materialize_submit_io_t *io);
 static inline int page_make_large_page_read_submit_io(MDBX_txn *txn, const pgr_t *pgr,
                                                       dxb_large_page_read_submit_io_t *io);
-static dxb_cache_result_t page_submit_large_read(MDBX_txn *txn, pgr_t *pgr,
-                                                 const dxb_large_page_read_submit_io_t *io);
+static inline int page_large_read_submit_io_validate(MDBX_txn *txn, const pgr_t *pgr,
+                                                     const dxb_large_page_read_submit_io_t *io);
 
 static inline MDBX_cache_result_t cache_result(int err, MDBX_cache_status_t status) {
   MDBX_cache_result_t result = {.errcode = err, .status = status};
@@ -15409,7 +15412,15 @@ static dxb_cache_result_t cache_submit_entry_large_read(const MDBX_txn *txn, con
   int err = cache_entry_large_submit_io_validate(txn, entry, pgr, io);
   if (unlikely(err != MDBX_SUCCESS))
     return dxb_cache_error(err);
-  return page_submit_large_read((MDBX_txn *)txn, pgr, &io->large);
+  err = page_large_read_submit_io_validate((MDBX_txn *)txn, pgr, &io->large);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_error(err);
+  if (!io->large.materialize)
+    return dxb_cache_success();
+  page_cache_entry_t *const large_entry = pgr->ref.cache;
+  if (unlikely(!io->large.cache_backed || !large_entry))
+    return dxb_cache_error(MDBX_EINVAL);
+  return dxb_storage_submit_materialize_cached_large_page(large_entry->storage, pgr, &io->large.materialize_submit);
 }
 
 static inline int cache_value_io_from_ref(const dxb_storage_t *storage, const page_ref_t *ref, const MDBX_val *data,
@@ -45931,21 +45942,16 @@ static inline int page_committed_read_submit_io_validate(MDBX_txn *txn,
   return MDBX_SUCCESS;
 }
 
-static dxb_cache_page_result_t page_submit_committed_read(MDBX_txn *txn,
-                                                          const dxb_committed_page_submit_io_t *io) {
-  int err = page_committed_read_submit_io_validate(txn, io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return dxb_cache_page_error(err);
-  return page_cache_submit_read(txn, &io->cache);
-}
-
 static inline dxb_cache_page_result_t page_get_committed(MDBX_txn *txn, const dxb_page_io_t *request,
                                                          const bool track_private) {
   dxb_committed_page_submit_io_t submit;
   int err = page_make_committed_read_submit_io(txn, request, track_private, &submit);
   if (unlikely(err != MDBX_SUCCESS))
     return dxb_cache_page_error(err);
-  return page_submit_committed_read(txn, &submit);
+  err = page_committed_read_submit_io_validate(txn, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_page_error(err);
+  return page_cache_submit_read(txn, &submit.cache);
 }
 
 static inline int page_make_large_page_read_submit_io(MDBX_txn *txn, const pgr_t *pgr,
@@ -46014,25 +46020,20 @@ static inline int page_large_read_submit_io_validate(MDBX_txn *txn, const pgr_t 
   return MDBX_SUCCESS;
 }
 
-static dxb_cache_result_t page_submit_large_read(MDBX_txn *txn, pgr_t *pgr,
-                                                 const dxb_large_page_read_submit_io_t *io) {
-  int err = page_large_read_submit_io_validate(txn, pgr, io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return dxb_cache_error(err);
-  if (!io->materialize)
-    return dxb_cache_success();
-  page_cache_entry_t *const entry = pgr->ref.cache;
-  if (unlikely(!io->cache_backed || !entry))
-    return dxb_cache_error(MDBX_EINVAL);
-  return dxb_storage_submit_materialize_cached_large_page(entry->storage, pgr, &io->materialize_submit);
-}
-
 static inline dxb_cache_result_t page_read_large(MDBX_txn *txn, pgr_t *pgr) {
   dxb_large_page_read_submit_io_t submit;
   int err = page_make_large_page_read_submit_io(txn, pgr, &submit);
   if (unlikely(err != MDBX_SUCCESS))
     return dxb_cache_error(err);
-  return page_submit_large_read(txn, pgr, &submit);
+  err = page_large_read_submit_io_validate(txn, pgr, &submit);
+  if (unlikely(err != MDBX_SUCCESS))
+    return dxb_cache_error(err);
+  if (!submit.materialize)
+    return dxb_cache_success();
+  page_cache_entry_t *const entry = pgr->ref.cache;
+  if (unlikely(!submit.cache_backed || !entry))
+    return dxb_cache_error(MDBX_EINVAL);
+  return dxb_storage_submit_materialize_cached_large_page(entry->storage, pgr, &submit.materialize_submit);
 }
 
 static inline int page_make_get_submit_io(MDBX_txn *txn, const pgno_t pgno, const txnid_t front,
