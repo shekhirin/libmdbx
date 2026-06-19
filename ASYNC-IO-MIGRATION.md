@@ -14642,6 +14642,22 @@ migration CTest suite including API checks and tool roundtrips, the ASAN build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.098`
 batch, `1.131` crud, `1.219` iterate, `0.938` get, and `1.071` delete.
 
+A later dirty-write queued-write cleanup removed `dxb_iov_write_submit_io_t`,
+`iov_make_write_submit_io()`, and `iov_write_submit_io_validate()` from
+`mdbx.c`. `iov_write()` now validates the queued-write state, builds and
+validates the queued-write submit descriptor, checks the submitted data
+channel, and submits the queued write directly through storage. Verification
+passed `git diff --check`, a source scan proving the removed queued-write
+helpers are absent from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.105` batch, `1.149` crud, `0.908`
+iterate, `1.054` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
