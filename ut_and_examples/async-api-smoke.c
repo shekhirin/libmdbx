@@ -53,6 +53,12 @@ struct get_batch_probe {
   size_t successes;
 };
 
+struct get_loop_probe {
+  uint64_t key;
+  size_t keys;
+  size_t results;
+};
+
 static int fail_rc(const char *expr, int rc, const char *file, int line) {
   fprintf(stderr, "%s:%d: %s failed: (%d) %s\n", file, line, expr, rc, mdbx_strerror(rc));
   return rc ? rc : MDBX_PROBLEM;
@@ -258,6 +264,36 @@ static int get_batch_probe_func(void *context, const MDBX_val keys[], MDBX_val d
     probe->successes += 1;
   }
   probe->calls += 1;
+  return MDBX_SUCCESS;
+}
+
+static int get_loop_key_func(void *context, size_t index, MDBX_val *key) {
+  struct get_loop_probe *const probe = (struct get_loop_probe *)context;
+  if (!probe || !key || index >= ITEM_COUNT)
+    return MDBX_PROBLEM;
+  probe->key = (uint64_t)index;
+  *key = val(&probe->key, sizeof(probe->key));
+  probe->keys += 1;
+  return MDBX_SUCCESS;
+}
+
+static int get_loop_result_func(void *context, size_t index, const MDBX_val *key, const MDBX_val *data, int result) {
+  struct get_loop_probe *const probe = (struct get_loop_probe *)context;
+  if (!probe || !key || !data || result != MDBX_SUCCESS || index >= ITEM_COUNT)
+    return MDBX_PROBLEM;
+  if (key->iov_len != sizeof(uint64_t))
+    return MDBX_PROBLEM;
+  uint64_t actual_key = UINT64_MAX;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  if (actual_key != index)
+    return MDBX_PROBLEM;
+  if (data->iov_len != sizeof(uint64_t))
+    return MDBX_PROBLEM;
+  uint64_t actual_value = 0;
+  memcpy(&actual_value, data->iov_base, sizeof(actual_value));
+  if (actual_value != expected_value((uint64_t)index))
+    return MDBX_PROBLEM;
+  probe->results += 1;
   return MDBX_SUCCESS;
 }
 
@@ -1119,6 +1155,15 @@ int main(void) {
   CHECK_OP(op);
   REQUIRE(get_batch_probe.calls == 1, "async get batch callback was not called");
   REQUIRE(get_batch_probe.successes == ITEM_COUNT, "async get batch callback saw wrong success count");
+
+  struct get_loop_probe get_loop_probe = {0, 0, 0};
+  size_t get_loop_completed = 0;
+  CHECK(mdbx_async_get_loop(async, txn, dbi, ITEM_COUNT, get_loop_key_func, get_loop_result_func, &get_loop_probe,
+                            &get_loop_completed, &op));
+  CHECK_OP(op);
+  REQUIRE(get_loop_completed == ITEM_COUNT, "async get loop completed wrong count");
+  REQUIRE(get_loop_probe.keys == ITEM_COUNT, "async get loop prepared wrong key count");
+  REQUIRE(get_loop_probe.results == ITEM_COUNT, "async get loop saw wrong result count");
 
   int dirty_result = MDBX_SUCCESS;
   CHECK(mdbx_async_is_dirty(async, txn, get_values[4].iov_base, &op));

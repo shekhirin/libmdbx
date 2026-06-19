@@ -5234,6 +5234,23 @@ LIBMDBX_API int mdbx_async_get_equal_or_great(MDBX_async *async, const MDBX_txn 
 typedef int (*MDBX_get_batch_func)(void *context, const MDBX_val keys[], MDBX_val data[], const int results[],
                                    size_t count) MDBX_CXX17_NOEXCEPT;
 
+/** \brief Callback that prepares one key for \ref mdbx_async_get_loop().
+ * \ingroup c_async
+ * \details The callback runs on the executor worker thread. The key descriptor
+ *          and pointed-to bytes only need to remain valid until the matching
+ *          result callback returns, or until the next key callback when no
+ *          result callback is supplied. */
+typedef int (*MDBX_get_loop_key_func)(void *context, size_t index, MDBX_val *key) MDBX_CXX17_NOEXCEPT;
+
+/** \brief Callback that consumes one \ref mdbx_async_get_loop() result.
+ * \ingroup c_async
+ * \details The callback runs on the executor worker thread after one
+ *          \ref mdbx_get() call. Returned values follow normal \ref mdbx_get()
+ *          lifetime rules. Returning a non-success result stops the loop and
+ *          becomes the async operation result. */
+typedef int (*MDBX_get_loop_result_func)(void *context, size_t index, const MDBX_val *key, const MDBX_val *data,
+                                         int result) MDBX_CXX17_NOEXCEPT;
+
 /** \brief Asynchronously get a batch of items from a table.
  * \ingroup c_async
  * \details The `keys`, key bytes, `data`, and `results` arrays must remain
@@ -5256,6 +5273,19 @@ LIBMDBX_API int mdbx_async_get_batch(MDBX_async *async, const MDBX_txn *txn, MDB
 LIBMDBX_API int mdbx_async_get_batch_cb(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
                                         const MDBX_val keys[], MDBX_val data[], int results[], size_t count,
                                         MDBX_get_batch_func func, void *context, MDBX_async_op **op);
+
+/** \brief Asynchronously run a worker-side loop of get operations.
+ * \ingroup c_async
+ * \details This submits one async operation that invokes `key_func` for each
+ *          index, calls \ref mdbx_get(), and then invokes `result_func` when it
+ *          is non-NULL. If no result callback is supplied, the first non-success
+ *          \ref mdbx_get() result stops the loop and becomes the async operation
+ *          result. If `completed` is non-NULL, it receives the number of get
+ *          attempts completed before the operation returned.
+ * \see mdbx_get() */
+LIBMDBX_API int mdbx_async_get_loop(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, size_t count,
+                                    MDBX_get_loop_key_func key_func, MDBX_get_loop_result_func result_func,
+                                    void *context, size_t *completed, MDBX_async_op **op);
 
 /** \brief Asynchronously put an item into a table.
  * \ingroup c_async
