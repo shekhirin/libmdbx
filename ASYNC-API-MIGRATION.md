@@ -1120,3 +1120,30 @@ Additional async wait-all sequence checkpoint:
 - forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` sample passed with
   ratios async/blocking-parallel 1.010, async-batch/blocking-parallel 1.078,
   and async-cursor/blocking-parallel 1.016
+
+Additional completion-signal suppression checkpoint:
+
+- added a completion-waiter count to the async executor
+- `mdbx_async_wait()`, `mdbx_async_wait_all()`, and draining
+  `mdbx_async_destroy()` register themselves while actually waiting on the
+  completion condition; the worker now signals completions only when such a
+  waiter exists
+- this removes unnecessary per-operation completion wakeups while callers are
+  still filling an async window, without changing operation ordering or the
+  visible wait/poll/release semantics
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- three clean default `mdbx_async_api_bench` samples passed; average ratios
+  were async/blocking-parallel 1.105, async-batch/blocking-parallel 1.090, and
+  async-cursor/blocking-parallel 1.129
+- larger `MDBX_ASYNC_BENCH_OPS=1000000` default sample passed with ratios
+  async/blocking-parallel 1.111, async-batch/blocking-parallel 1.116, and
+  async-cursor/blocking-parallel 1.580
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` sample passed with
+  ratios async/blocking-parallel 1.035, async-batch/blocking-parallel 1.080,
+  and async-cursor/blocking-parallel 1.522

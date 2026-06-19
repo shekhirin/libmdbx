@@ -15139,6 +15139,7 @@ struct MDBX_async {
   MDBX_async_op *spare;
   size_t refs;
   size_t spare_count;
+  size_t waiters;
   uint64_t next_seq;
   uint64_t completed_seq;
   bool active;
@@ -16382,7 +16383,8 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
     op->done = true;
     async->completed_seq = op->seq;
     async->active = false;
-    osal_condpair_signal(&async->condpair, false);
+    if (async->waiters)
+      osal_condpair_signal(&async->condpair, false);
   }
 
   osal_condpair_unlock(&async->condpair);
@@ -16521,11 +16523,18 @@ int mdbx_async_destroy(MDBX_async *async, bool drain) {
     return LOG_IFERR(rc);
 
   if (drain) {
+    bool waiting = false;
     while (async->head || async->active) {
+      if (!waiting) {
+        async->waiters += 1;
+        waiting = true;
+      }
       rc = osal_condpair_wait(&async->condpair, false);
       if (unlikely(rc != MDBX_SUCCESS))
         break;
     }
+    if (waiting)
+      async->waiters -= 1;
   } else if (async->head || async->active || async->refs) {
     rc = MDBX_BUSY;
   }
@@ -16607,11 +16616,18 @@ int mdbx_async_wait(MDBX_async_op *op, int *result) {
   rc = osal_condpair_lock(&async->condpair);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
+  bool waiting = false;
   while (!op->done) {
+    if (!waiting) {
+      async->waiters += 1;
+      waiting = true;
+    }
     rc = osal_condpair_wait(&async->condpair, false);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
   }
+  if (waiting)
+    async->waiters -= 1;
   if (likely(rc == MDBX_SUCCESS) && result)
     *result = op->result;
   const int unlock_err = osal_condpair_unlock(&async->condpair);
@@ -16635,11 +16651,18 @@ int mdbx_async_wait_all(MDBX_async_op *const ops[], size_t count, int results[])
   rc = osal_condpair_lock(&async->condpair);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
+  bool waiting = false;
   while (async->completed_seq < max_seq) {
+    if (!waiting) {
+      async->waiters += 1;
+      waiting = true;
+    }
     rc = osal_condpair_wait(&async->condpair, false);
     if (unlikely(rc != MDBX_SUCCESS))
       break;
   }
+  if (waiting)
+    async->waiters -= 1;
   if (likely(rc == MDBX_SUCCESS) && results) {
     for (size_t i = 0; i < count; ++i)
       results[i] = ops[i]->result;
