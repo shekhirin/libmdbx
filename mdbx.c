@@ -368,14 +368,6 @@ typedef struct dxb_page_touch_redirect_submit_io {
   bool inner;
 } dxb_page_touch_redirect_submit_io_t;
 
-typedef struct dxb_cursor_stack_set_ref_consume_submit_io {
-  MDBX_cursor *cursor;
-  page_t *page;
-  page_ref_t *ref;
-  page_ref_t captured;
-  intptr_t slot;
-} dxb_cursor_stack_set_ref_consume_submit_io_t;
-
 typedef struct dxb_cursor_stack_set_synthetic_submit_io {
   MDBX_cursor *cursor;
   page_t *page;
@@ -6602,49 +6594,20 @@ static inline int cursor_tree_drop_stack_restore(MDBX_cursor *mc, page_t *const 
   return err;
 }
 
-static inline int cursor_make_stack_set_ref_consume_submit_io(MDBX_cursor *mc, intptr_t i, page_t *mp,
-                                                              page_ref_t *ref,
-                                                              dxb_cursor_stack_set_ref_consume_submit_io_t *io) {
-  if (unlikely(!mc || !ref || !io || i < 0 || i >= CURSOR_STACK_SIZE))
+static inline int cursor_stack_set_ref_consume_checked(MDBX_cursor *mc, intptr_t i, page_t *mp, page_ref_t *ref) {
+  if (unlikely(!mc || !ref))
     return MDBX_EINVAL;
 
-  io->cursor = mc;
-  io->page = mp;
-  io->ref = ref;
-  io->captured = *ref;
-  io->slot = i;
-  return MDBX_SUCCESS;
-}
-
-static inline int
-cursor_stack_set_ref_consume_submit_io_validate(const dxb_cursor_stack_set_ref_consume_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->ref || io->slot < 0 || io->slot >= CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-  if (unlikely(!page_ref_equal(io->ref, &io->captured)))
-    return MDBX_EINVAL;
-
-  dxb_cursor_stack_set_ref_consume_submit_io_t checked;
-  int err = cursor_make_stack_set_ref_consume_submit_io(io->cursor, io->slot, io->page, io->ref, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.ref != io->ref ||
-               checked.slot != io->slot || !page_ref_equal(&checked.captured, &io->captured)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
+  page_ref_t captured = *ref;
+  int err = cursor_stack_set_checked(mc, i, mp, captured);
+  if (likely(err == MDBX_SUCCESS))
+    err = cursor_ref_release_checked(mc, ref);
+  return err;
 }
 
 static inline void cursor_stack_set_ref_consume(MDBX_cursor *mc, intptr_t i, page_t *mp, page_ref_t *ref) {
-  dxb_cursor_stack_set_ref_consume_submit_io_t submit;
-  int err = cursor_make_stack_set_ref_consume_submit_io(mc, i, mp, ref, &submit);
+  int err = cursor_stack_set_ref_consume_checked(mc, i, mp, ref);
   cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_stack_set_ref_consume_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      cursor_stack_set(submit.cursor, submit.slot, submit.page, submit.captured);
-      cursor_ref_release(submit.cursor, submit.ref);
-    }
-    cASSERT0(mc, err == MDBX_SUCCESS);
-  }
 }
 
 static inline int cursor_make_stack_set_synthetic_submit_io(MDBX_cursor *mc, intptr_t i, page_t *mp,
