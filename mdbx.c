@@ -8669,21 +8669,6 @@ typedef struct compacting_context {
   mdbx_filehandle_t fd;
 } ctx_t;
 
-typedef struct dxb_compacting_large_page_get_submit_io {
-  ctx_t *ctx;
-  MDBX_cursor *cursor;
-  MDBX_txn *txn;
-  page_t *source;
-  const node_t *node;
-  size_t node_index;
-  intptr_t top;
-  pgno_t large_pgno;
-  pgno_t first_unallocated;
-  txnid_t front;
-  dxb_cursor_page_get_submit_io_t get;
-  size_t bytes;
-} dxb_compacting_large_page_get_submit_io_t;
-
 __cold static int compacting_walk_tree(ctx_t *ctx, tree_t *tree);
 
 /* Dedicated writer thread for compacting copy. */
@@ -8813,88 +8798,38 @@ static int compacting_put_page(ctx_t *ctx, const page_t *mp, const size_t head_b
   return compacting_put_bytes(ctx, ptr_disp(mp, ctx->env->ps - tail_bytes), tail_bytes, 0, 0);
 }
 
-static inline int compacting_make_large_page_get_submit_io(ctx_t *ctx, MDBX_cursor *mc, page_t *source,
-                                                           size_t node_index,
-                                                           dxb_compacting_large_page_get_submit_io_t *io) {
-  if (unlikely(!ctx || !ctx->txn || !mc || !mc->txn || !source || !io || mc->top < 0))
-    return MDBX_EINVAL;
-  if (unlikely(ctx->txn != mc->txn || mc->pg[mc->top] != source || !is_leaf(source)))
-    return MDBX_EINVAL;
+static inline pgr_t compacting_large_page_get(ctx_t *ctx, MDBX_cursor *mc, page_t *source, size_t node_index) {
+  if (unlikely(!ctx || !ctx->txn || !mc || !mc->txn || !source || mc->top < 0))
+    return pgr_error(MDBX_EINVAL);
+  MDBX_txn *const txn = mc->txn;
+  const intptr_t top = mc->top;
+  if (unlikely(ctx->txn != txn || mc->pg[top] != source || !is_leaf(source)))
+    return pgr_error(MDBX_EINVAL);
   if (unlikely(node_index >= page_numkeys(source)))
-    return MDBX_EINVAL;
+    return pgr_error(MDBX_EINVAL);
 
   const node_t *const node = page_node(source, node_index);
   if (unlikely(node_flags(node) != N_BIG))
-    return MDBX_EINVAL;
+    return pgr_error(MDBX_EINVAL);
   const pgno_t large_pgno = node_largedata_pgno(node);
+  const pgno_t first_unallocated = ctx->first_unallocated;
   const txnid_t front = source->txnid;
+  const size_t bytes = node_ds(node);
+
   dxb_cursor_page_get_submit_io_t get;
   int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_BRANCH | P_LEAF | P_DUPFIX, large_pgno, front, &get);
   if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  io->ctx = ctx;
-  io->cursor = mc;
-  io->txn = mc->txn;
-  io->source = source;
-  io->node = node;
-  io->node_index = node_index;
-  io->top = mc->top;
-  io->large_pgno = get.get.request.pgno;
-  io->first_unallocated = ctx->first_unallocated;
-  io->front = get.get.front;
-  io->get = get;
-  io->bytes = node_ds(node);
-  return MDBX_SUCCESS;
-}
-
-static inline int compacting_large_page_get_submit_io_validate(
-    const dxb_compacting_large_page_get_submit_io_t *io) {
-  if (unlikely(!io || !io->ctx || !io->cursor || !io->txn || !io->source || !io->node || io->top < 0))
-    return MDBX_EINVAL;
-
-  MDBX_cursor *const mc = io->cursor;
-  if (unlikely(io->ctx->txn != io->txn || mc->txn != io->txn || mc->top != io->top || mc->pg[io->top] != io->source ||
-               io->ctx->first_unallocated != io->first_unallocated))
-    return MDBX_EINVAL;
-  if (unlikely(!is_leaf(io->source) || io->node_index >= page_numkeys(io->source)))
-    return MDBX_EINVAL;
-
-  const node_t *const node = page_node(io->source, io->node_index);
-  if (unlikely(node != io->node || node_flags(node) != N_BIG || node_largedata_pgno(node) != io->large_pgno ||
-               io->source->txnid != io->front || node_ds(node) != io->bytes))
-    return MDBX_EINVAL;
-
-  dxb_compacting_large_page_get_submit_io_t checked;
-  int err = compacting_make_large_page_get_submit_io(io->ctx, mc, io->source, io->node_index, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.ctx != io->ctx || checked.cursor != io->cursor || checked.txn != io->txn ||
-               checked.source != io->source || checked.node != io->node || checked.node_index != io->node_index ||
-               checked.top != io->top || checked.large_pgno != io->large_pgno ||
-               checked.first_unallocated != io->first_unallocated || checked.front != io->front ||
-               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
-               checked.get.get.request.pgno != io->get.get.request.pgno ||
-               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
-               checked.get.get.request.npages != io->get.get.request.npages ||
-               checked.get.get.request.offset != io->get.get.request.offset ||
-               checked.get.get.request.bytes != io->get.get.request.bytes ||
-               checked.get.get.front != io->get.get.front ||
-               checked.get.get.track_private != io->get.get.track_private ||
-               checked.bytes != io->bytes))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline pgr_t compacting_large_page_get(ctx_t *ctx, MDBX_cursor *mc, page_t *source, size_t node_index) {
-  dxb_compacting_large_page_get_submit_io_t submit;
-  int err = compacting_make_large_page_get_submit_io(ctx, mc, source, node_index, &submit);
-  if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  err = compacting_large_page_get_submit_io_validate(&submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-  return page_submit_cursor_get(&submit.get);
+  if (unlikely(ctx->txn != txn || mc->txn != txn || mc->top != top || mc->pg[top] != source ||
+               ctx->first_unallocated != first_unallocated || !is_leaf(source) || node_index >= page_numkeys(source)))
+    return pgr_error(MDBX_EINVAL);
+
+  const node_t *const checked_node = page_node(source, node_index);
+  if (unlikely(checked_node != node || node_flags(checked_node) != N_BIG ||
+               node_largedata_pgno(checked_node) != large_pgno || source->txnid != front ||
+               node_ds(checked_node) != bytes))
+    return pgr_error(MDBX_EINVAL);
+  return page_submit_cursor_get(&get);
 }
 
 __cold static int compacting_walk(ctx_t *ctx, MDBX_cursor *mc, pgno_t *const parent_pgno, txnid_t parent_txnid) {

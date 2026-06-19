@@ -14075,6 +14075,28 @@ six focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.126` batch, `1.141` crud, `0.995`
 iterate, `1.012` get, and `1.059` delete.
 
+A later compacting-copy overflow page-get descriptor cleanup removed
+`dxb_compacting_large_page_get_submit_io_t`,
+`compacting_make_large_page_get_submit_io()`, and
+`compacting_large_page_get_submit_io_validate()` from `mdbx.c`.
+`compacting_large_page_get()` now validates the compacting context, cursor,
+synthetic source leaf, node index, and N_BIG node, snapshots the cursor top,
+target large pgno, source txnid, copied value size, and current
+`first_unallocated` edge, builds the checked cursor page-get request directly,
+rechecks that snapshot, and submits through `page_submit_cursor_get()`. This
+keeps compacting-copy overflow fetches on the shared cursor page-get boundary
+without a descriptor wrapper for a single immediate read. Verification passed
+`git diff --check`, a source scan proving the removed compacting page-get
+descriptor helpers are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.108`
+batch, `1.151` crud, `1.132` iterate, `0.951` get, and `1.066` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
