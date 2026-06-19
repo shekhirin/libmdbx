@@ -13503,6 +13503,29 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.106` batch, `1.147` crud, `0.841` iterate,
 `1.086` get, and `1.072` delete.
 
+A later cursor page-ref submit-boundary cleanup removed the one-call
+`cursor_submit_ref_retain()`, `cursor_submit_top_ref_retain()`,
+`cursor_submit_ref_release()`, `pgr_submit_release()`,
+`cursor_submit_value_release()`, and `cursor_submit_value_set()` helpers from
+`mdbx.c`. Cursor ref retain/release, top-ref retention during merge recovery,
+`pgr_t` release, cursor value-ref release, and cursor value-ref replacement now
+validate their prepared descriptors at the local caller, then submit the
+cache-ref retain/release operation directly where needed. The transaction
+retained-ref release loop now does the same direct checked cache release while
+preserving error propagation. This keeps page-cache pin accounting and public
+value lifetime refs at the ownership sites that future async completion paths
+must respect. Verification passed `git diff --check`, source scans proving the
+removed cursor page-ref submit helpers are absent from `mdbx.c` and the
+public/internal headers, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`
+for this ptrace-limited environment. The paired `mdbx_migration_bench_lazy`
+gate passed with forced/default ratios of `1.099` batch, `1.146` crud, `1.015`
+iterate, `0.962` get, and `1.068` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
