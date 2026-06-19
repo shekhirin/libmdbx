@@ -155,6 +155,44 @@ performance target is reducing per-operation condition-variable lock/unlock
 traffic, likely through batched wait/release or a lower-overhead completion
 queue.
 
+Batch wait/release checkpoint:
+
+- added `mdbx_async_wait_all()` and `mdbx_async_op_release_all()` for batches of
+  operation handles from the same executor
+- batch release validates and marks the batch under the executor lock, then
+  recycles all completed handles in one pass
+- smoke coverage now uses batch wait/release for put, get, delete, and mixed
+  success/not-found get results
+- `mdbx_async_api_bench` now waits and releases one submitted window at a time
+
+Three-run default benchmark average after this checkpoint:
+
+```text
+async-api-bench items=20000 ops=200000 workers=4 window=64
+blocking serial get           759.867 Kops/s
+blocking parallel get         398.038 Kops/s
+async parallel get            430.763 Kops/s
+async/blocking parallel         1.082
+async/blocking serial           0.567
+```
+
+Three-run forced no-map/tiny-cache average after this checkpoint:
+
+```text
+async-api-bench items=20000 ops=200000 workers=4 window=64
+blocking serial get           776.398 Kops/s
+blocking parallel get         391.460 Kops/s
+async parallel get            405.979 Kops/s
+async/blocking parallel         1.037
+async/blocking serial           0.523
+```
+
+The batch API improves the public async surface for windowed callers and keeps
+the benchmark above blocking pthread-parallel reads in both default and forced
+no-map samples. The short GNUmake 30k sample remained noisy, ranging from
+slightly below parity to above parity across runs, so the async read benchmark
+still should not be made a deterministic gate.
+
 ## Validation
 
 Completed for this checkpoint:
@@ -195,4 +233,17 @@ Additional allocation/release checkpoint:
 - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_async_api_bench_run MDBX_ASYNC_BENCH_OPS=30000`: passed, async/blocking-parallel ratio 1.137
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional batch wait/release checkpoint:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, 3-run average async/blocking-parallel ratio 1.082
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, 3-run average async/blocking-parallel ratio 1.037
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_async_api_bench_run MDBX_ASYNC_BENCH_OPS=100000`: passed, async/blocking-parallel ratio 1.024
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17

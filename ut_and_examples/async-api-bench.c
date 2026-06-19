@@ -39,6 +39,7 @@ struct async_worker {
   MDBX_async_op **ops;
   MDBX_val *data;
   uint64_t *keys;
+  int *results;
   size_t pending;
 };
 
@@ -235,7 +236,8 @@ static int async_worker_init(MDBX_env *env, struct async_worker *worker, MDBX_db
   worker->ops = calloc(window, sizeof(*worker->ops));
   worker->data = calloc(window, sizeof(*worker->data));
   worker->keys = calloc(window, sizeof(*worker->keys));
-  if (!worker->ops || !worker->data || !worker->keys)
+  worker->results = calloc(window, sizeof(*worker->results));
+  if (!worker->ops || !worker->data || !worker->keys || !worker->results)
     return MDBX_ENOMEM;
 
   CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &worker->async));
@@ -268,6 +270,7 @@ static void async_worker_destroy(struct async_worker *worker) {
   free(worker->ops);
   free(worker->data);
   free(worker->keys);
+  free(worker->results);
 }
 
 static double async_parallel_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops, size_t workers_count,
@@ -303,11 +306,14 @@ static double async_parallel_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size
 
     for (size_t i = 0; i < workers_count; ++i) {
       struct async_worker *const worker = &workers[i];
+      rc = mdbx_async_wait_all(worker->ops, worker->pending, worker->results);
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
+      rc = mdbx_async_op_release_all(worker->ops, worker->pending);
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
       for (size_t slot = 0; slot < worker->pending; ++slot) {
-        int operation_rc = MDBX_SUCCESS;
-        rc = wait_success(&worker->ops[slot], &operation_rc, __FILE__, __LINE__);
-        if (rc != MDBX_SUCCESS)
-          goto bailout;
+        const int operation_rc = worker->results[slot];
         if (operation_rc != MDBX_SUCCESS) {
           rc = fail_rc("mdbx_async_get", operation_rc, __FILE__, __LINE__);
           goto bailout;

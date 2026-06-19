@@ -1342,7 +1342,8 @@ enum signatures {
   cur_signature_ready4dispose = INT32_C(0x2817A047),
   cur_signature_wait4eot = INT32_C(0x10E297A7),
   async_signature = INT32_C(0x21A5A11C),
-  async_op_signature = INT32_C(0x21A50F1C)
+  async_op_signature = INT32_C(0x21A50F1C),
+  async_op_batch_signature = INT32_C(0x21A5BA7C)
 };
 
 /*----------------------------------------------------------------------------*/
@@ -15079,6 +15080,34 @@ static int async_op_check(const MDBX_async_op *op) {
   return likely(op->signature == async_op_signature) ? MDBX_SUCCESS : MDBX_EBADSIGN;
 }
 
+static int async_ops_check(MDBX_async_op *const ops[], size_t count, MDBX_async **out) {
+  if (unlikely(!out))
+    return MDBX_EINVAL;
+  *out = nullptr;
+  if (!count)
+    return MDBX_SUCCESS;
+  if (unlikely(!ops))
+    return MDBX_EINVAL;
+
+  MDBX_async *async = nullptr;
+  for (size_t i = 0; i < count; ++i) {
+    MDBX_async_op *const op = ops[i];
+    int rc = async_op_check(op);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+    rc = async_check(op->async);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+    if (!async) {
+      async = op->async;
+    } else if (unlikely(op->async != async)) {
+      return MDBX_EINVAL;
+    }
+  }
+  *out = async;
+  return MDBX_SUCCESS;
+}
+
 static int async_copy_val(MDBX_val *dst, void **copy, void *inline_storage, size_t inline_bytes,
                           const MDBX_val *src) {
   dst->iov_base = nullptr;
@@ -15430,6 +15459,39 @@ int mdbx_async_wait(MDBX_async_op *op, int *result) {
   return LOG_IFERR(rc == MDBX_SUCCESS && unlock_err != MDBX_SUCCESS ? unlock_err : rc);
 }
 
+int mdbx_async_wait_all(MDBX_async_op *const ops[], size_t count, int results[]) {
+  MDBX_async *async = nullptr;
+  int rc = async_ops_check(ops, count, &async);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  if (!count)
+    return MDBX_SUCCESS;
+
+  rc = osal_condpair_lock(&async->condpair);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  for (;;) {
+    bool pending = false;
+    for (size_t i = 0; i < count; ++i) {
+      if (!ops[i]->done) {
+        pending = true;
+        break;
+      }
+    }
+    if (!pending)
+      break;
+    rc = osal_condpair_wait(&async->condpair, false);
+    if (unlikely(rc != MDBX_SUCCESS))
+      break;
+  }
+  if (likely(rc == MDBX_SUCCESS) && results) {
+    for (size_t i = 0; i < count; ++i)
+      results[i] = ops[i]->result;
+  }
+  const int unlock_err = osal_condpair_unlock(&async->condpair);
+  return LOG_IFERR(rc == MDBX_SUCCESS && unlock_err != MDBX_SUCCESS ? unlock_err : rc);
+}
+
 int mdbx_async_op_release(MDBX_async_op *op) {
   int rc = async_op_check(op);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -15470,6 +15532,84 @@ int mdbx_async_op_release(MDBX_async_op *op) {
 
   if (!recycled)
     osal_free(op);
+  return MDBX_SUCCESS;
+}
+
+int mdbx_async_op_release_all(MDBX_async_op *ops[], size_t count) {
+  MDBX_async *async = nullptr;
+  int rc = async_ops_check((MDBX_async_op *const *)ops, count, &async);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  if (!count)
+    return MDBX_SUCCESS;
+
+  rc = osal_condpair_lock(&async->condpair);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+
+  bool released = false;
+  MDBX_async_op *free_list = nullptr;
+  size_t marked = 0;
+  for (size_t i = 0; likely(rc == MDBX_SUCCESS) && i < count; ++i) {
+    MDBX_async_op *const op = ops[i];
+    if (unlikely(!op)) {
+      rc = MDBX_EINVAL;
+      break;
+    }
+    if (unlikely(op->signature == async_op_batch_signature)) {
+      rc = MDBX_EINVAL;
+      break;
+    }
+    rc = async_op_check(op);
+    if (unlikely(rc != MDBX_SUCCESS))
+      break;
+    if (unlikely(op->async != async)) {
+      rc = MDBX_EINVAL;
+      break;
+    }
+    if (unlikely(!op->done)) {
+      rc = MDBX_BUSY;
+      break;
+    }
+    op->signature = async_op_batch_signature;
+    marked += 1;
+  }
+
+  if (likely(rc == MDBX_SUCCESS) && unlikely(async->refs < count))
+    rc = MDBX_PROBLEM;
+  if (likely(rc == MDBX_SUCCESS)) {
+    for (size_t i = 0; i < count; ++i) {
+      MDBX_async_op *const op = ops[i];
+      async_op_payload_release(op);
+      op->signature = 0;
+      async->refs -= 1;
+      if (async->spare_count < MDBX_ASYNC_SPARE_LIMIT) {
+        op->next = async->spare;
+        async->spare = op;
+        async->spare_count += 1;
+      } else {
+        op->next = free_list;
+        free_list = op;
+      }
+      ops[i] = nullptr;
+    }
+    released = true;
+  } else {
+    for (size_t i = 0; i < marked; ++i)
+      ops[i]->signature = async_op_signature;
+  }
+
+  const int unlock_err = osal_condpair_unlock(&async->condpair);
+  if (likely(rc == MDBX_SUCCESS) && unlikely(unlock_err != MDBX_SUCCESS) && !released)
+    rc = unlock_err;
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+
+  while (free_list) {
+    MDBX_async_op *const op = free_list;
+    free_list = op->next;
+    osal_free(op);
+  }
   return MDBX_SUCCESS;
 }
 

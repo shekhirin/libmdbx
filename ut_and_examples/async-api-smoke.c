@@ -95,6 +95,32 @@ static int wait_success(const char *expr, MDBX_async_op **op, const char *file, 
   return result == MDBX_SUCCESS ? MDBX_SUCCESS : fail_rc(expr, result, file, line);
 }
 
+static int wait_many_result(const char *expr, MDBX_async_op **ops, size_t count, int *operation_results,
+                            const char *file, int line) {
+  if (count && (!ops || !operation_results))
+    return fail_msg("missing async operation batch", file, line);
+
+  int rc = mdbx_async_wait_all(ops, count, operation_results);
+  if (rc != MDBX_SUCCESS)
+    return fail_rc(expr, rc, file, line);
+  rc = mdbx_async_op_release_all(ops, count);
+  if (rc != MDBX_SUCCESS)
+    return fail_rc("mdbx_async_op_release_all", rc, file, line);
+  return MDBX_SUCCESS;
+}
+
+static int wait_many_success(const char *expr, MDBX_async_op **ops, size_t count, int *operation_results,
+                             const char *file, int line) {
+  int rc = wait_many_result(expr, ops, count, operation_results, file, line);
+  if (rc != MDBX_SUCCESS)
+    return rc;
+  for (size_t i = 0; i < count; ++i) {
+    if (operation_results[i] != MDBX_SUCCESS)
+      return fail_rc(expr, operation_results[i], file, line);
+  }
+  return MDBX_SUCCESS;
+}
+
 static int expect_value(const MDBX_val *data, uint64_t key, const char *file, int line) {
   if (data->iov_len != sizeof(uint64_t))
     return fail_msg("unexpected value size", file, line);
@@ -118,6 +144,7 @@ int main(void) {
   MDBX_val put_values[ITEM_COUNT];
   MDBX_val get_values[ITEM_COUNT];
   MDBX_async_op *ops[ITEM_COUNT];
+  int op_results[ITEM_COUNT];
   int rc = MDBX_SUCCESS;
 
   memset(ops, 0, sizeof(ops));
@@ -153,8 +180,7 @@ int main(void) {
     put_values[i] = val(&values[i], sizeof(values[i]));
     CHECK(mdbx_async_put(async, txn, dbi, &key, &put_values[i], 0, &ops[i]));
   }
-  for (unsigned i = 0; i < ITEM_COUNT; ++i)
-    CHECK_OP(ops[i]);
+  CHECK(wait_many_success("mdbx_async_put", ops, ITEM_COUNT, op_results, __FILE__, __LINE__));
 
   CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
   CHECK_OP(op);
@@ -169,8 +195,8 @@ int main(void) {
     get_values[i] = val(NULL, 0);
     CHECK(mdbx_async_get(async, txn, dbi, &key, &get_values[i], &ops[i]));
   }
+  CHECK(wait_many_success("mdbx_async_get", ops, ITEM_COUNT, op_results, __FILE__, __LINE__));
   for (unsigned i = 0; i < ITEM_COUNT; ++i) {
-    CHECK_OP(ops[i]);
     CHECK(expect_value(&get_values[i], keys[i], __FILE__, __LINE__));
   }
 
@@ -239,12 +265,12 @@ int main(void) {
 
   CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
   CHECK_OP(op);
+  size_t pending = 0;
   for (unsigned i = 0; i < ITEM_COUNT; i += 3) {
     MDBX_val key = val(&keys[i], sizeof(keys[i]));
-    CHECK(mdbx_async_del(async, txn, dbi, &key, NULL, &ops[i]));
+    CHECK(mdbx_async_del(async, txn, dbi, &key, NULL, &ops[pending++]));
   }
-  for (unsigned i = 0; i < ITEM_COUNT; i += 3)
-    CHECK_OP(ops[i]);
+  CHECK(wait_many_success("mdbx_async_del", ops, pending, op_results, __FILE__, __LINE__));
   CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
   CHECK_OP(op);
   txn = NULL;
@@ -256,9 +282,9 @@ int main(void) {
     get_values[i] = val(NULL, 0);
     CHECK(mdbx_async_get(async, txn, dbi, &key, &get_values[i], &ops[i]));
   }
+  CHECK(wait_many_result("mdbx_async_get", ops, ITEM_COUNT, op_results, __FILE__, __LINE__));
   for (unsigned i = 0; i < ITEM_COUNT; ++i) {
-    int operation_rc = MDBX_SUCCESS;
-    CHECK(wait_result("mdbx_async_get", &ops[i], &operation_rc, __FILE__, __LINE__));
+    const int operation_rc = op_results[i];
     if (i % 3 == 0) {
       REQUIRE(operation_rc == MDBX_NOTFOUND, "deleted key was found");
     } else {
