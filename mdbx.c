@@ -8943,7 +8943,7 @@ __cold static int copy2pathname(MDBX_txn *txn, const pathchar_t *dest_path, MDBX
     if (rc == MDBX_SUCCESS && err != rc)
       rc = err;
     if (rc != MDBX_SUCCESS)
-      (void)osal_removefile(dest_path);
+      (void)osal_ioring_removefile(copy_ioring(txn->env), dest_path);
   }
   return rc;
 }
@@ -10820,7 +10820,7 @@ __cold int mdbx_env_deleteW(const wchar_t *pathname, MDBX_env_delete_mode_t mode
     }
 
     if (err == MDBX_SUCCESS) {
-      err = osal_removefile(dummy_env->pathname.dxb);
+      err = osal_ioring_removefile(&dummy_env->dxb_storage.ioring, dummy_env->pathname.dxb);
       if (err == MDBX_SUCCESS)
         rc = MDBX_SUCCESS;
       else if (err == MDBX_ENOFILE)
@@ -10828,7 +10828,7 @@ __cold int mdbx_env_deleteW(const wchar_t *pathname, MDBX_env_delete_mode_t mode
     }
 
     if (err == MDBX_SUCCESS) {
-      err = osal_removefile(dummy_env->pathname.lck);
+      err = osal_ioring_removefile(&dummy_env->dxb_storage.ioring, dummy_env->pathname.lck);
       if (err == MDBX_SUCCESS)
         rc = MDBX_SUCCESS;
       else if (err == MDBX_ENOFILE)
@@ -37548,6 +37548,71 @@ bailout:
   return osal_ioring_linux_uring_unlock(ior, rc);
 }
 
+#define MDBX_IORING_OP_UNLINKAT 36u /* Stable Linux io_uring ABI opcode value. */
+
+static int osal_ioring_linux_uring_unlinkat(osal_ioring_t *ior, const pathchar_t *pathname, int flags) {
+  if (unlikely(!osal_ioring_linux_uring_ready(ior) || !pathname))
+    return MDBX_EINVAL;
+
+  int rc = osal_ioring_linux_uring_lock(ior);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  const uint32_t sq_entries = *ior->linux_uring_sq_entries;
+  const uint32_t sq_mask = *ior->linux_uring_sq_mask;
+  const uint32_t head = osal_ioring_linux_load(ior->linux_uring_sq_head);
+  uint32_t tail = osal_ioring_linux_load(ior->linux_uring_sq_tail);
+  if (unlikely(tail - head >= sq_entries)) {
+    rc = EBUSY;
+    goto bailout;
+  }
+
+  const uint32_t index = tail & sq_mask;
+  struct io_uring_sqe *const sqe = &ior->linux_uring_sqes[index];
+  memset(sqe, 0, sizeof(*sqe));
+  sqe->opcode = MDBX_IORING_OP_UNLINKAT;
+  sqe->fd = AT_FDCWD;
+  sqe->addr = (uintptr_t)pathname;
+  sqe->unlink_flags = (uint32_t)flags;
+  sqe->user_data = (uintptr_t)pathname;
+  ior->linux_uring_sq_array[index] = index;
+  osal_ioring_linux_store(ior->linux_uring_sq_tail, tail + 1);
+
+  unsigned submitted = 0;
+  rc = osal_ioring_linux_uring_submit(ior, 1, &submitted);
+  if (unlikely(rc != MDBX_SUCCESS || submitted != 1)) {
+    rc = (rc != MDBX_SUCCESS) ? rc : MDBX_EIO;
+    goto bailout;
+  }
+
+  uint32_t cq_head = osal_ioring_linux_load(ior->linux_uring_cq_head);
+  uint32_t cq_tail = osal_ioring_linux_load(ior->linux_uring_cq_tail);
+  while (cq_head == cq_tail) {
+    rc = osal_ioring_linux_enter(ior, 0, 1, IORING_ENTER_GETEVENTS);
+    if (unlikely(rc < 0)) {
+      rc = -rc;
+      goto bailout;
+    }
+    cq_head = osal_ioring_linux_load(ior->linux_uring_cq_head);
+    cq_tail = osal_ioring_linux_load(ior->linux_uring_cq_tail);
+  }
+
+  const uint32_t cq_index = cq_head & *ior->linux_uring_cq_mask;
+  const struct io_uring_cqe *const cqe = &ior->linux_uring_cqes[cq_index];
+  if (unlikely(cqe->user_data != (uintptr_t)pathname))
+    rc = MDBX_EINVAL;
+  else if (unlikely(cqe->res < 0))
+    rc = -cqe->res;
+  else if (unlikely(cqe->res != 0))
+    rc = MDBX_EIO;
+  else
+    rc = MDBX_SUCCESS;
+  osal_ioring_linux_store(ior->linux_uring_cq_head, cq_head + 1);
+
+bailout:
+  return osal_ioring_linux_uring_unlock(ior, rc);
+}
+
 #define MDBX_IORING_OP_CLOSE 19u /* Stable Linux io_uring ABI opcode value. */
 
 static int osal_ioring_linux_uring_close(osal_ioring_t *ior, mdbx_filehandle_t fd) {
@@ -38678,6 +38743,20 @@ int osal_removefile(const pathchar_t *pathname) {
 #else
   return unlink(pathname) ? errno : MDBX_SUCCESS;
 #endif
+}
+
+int osal_ioring_removefile(osal_ioring_t *ior, const pathchar_t *pathname) {
+#if MDBX_HAVE_LINUX_IO_URING && !defined(_WIN32) && !defined(_WIN64)
+  if (likely(ior && ior->backend == osal_ioring_backend_linux_uring &&
+             osal_ioring_linux_uring_ready(ior))) {
+    const int err = osal_ioring_linux_uring_unlinkat(ior, pathname, 0);
+    if (likely(err == MDBX_SUCCESS || (err != MDBX_EINVAL && err != MDBX_ENOSYS && err != EOPNOTSUPP)))
+      return err;
+  }
+#else
+  (void)ior;
+#endif /* MDBX_HAVE_LINUX_IO_URING && !Windows */
+  return osal_removefile(pathname);
 }
 
 #if !(defined(_WIN32) || defined(_WIN64))

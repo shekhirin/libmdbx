@@ -15514,6 +15514,23 @@ The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
 forced/default ratios of `1.120` batch, `1.177` crud, `1.244` iterate, `0.917`
 get, and `1.063` delete.
 
+A later remove-file checkpoint added `osal_ioring_removefile()` and Linux
+`IORING_OP_UNLINKAT` submission. Failed copy cleanup and env-delete DXB/LCK
+removal now cross the same OSAL I/O boundary, with non-ready queues and
+unsupported platforms falling back to the existing `osal_removefile()` behavior.
+The env-delete path still normally uses that fallback because it runs outside an
+active environment queue, while failed-copy cleanup can use the ready
+environment queue. Verification passed `git diff --check`, the Ninja build
+(`cmake --build @cmake-ninja-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` migration CTest entries passed 9/9, the ASAN
+build (`cmake --build @cmake-asan-build`) passed, normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused `migration_smoke` CTest entries
+passed 6/6 with `LSAN_OPTIONS=detect_leaks=0`, and both normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suites passed 15/15.
+The paired `make -f GNUmakefile mdbx_migration_bench_lazy` gate passed with
+forced/default ratios of `1.125` batch, `1.170` crud, `1.058` iterate, `1.011`
+get, and `1.079` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

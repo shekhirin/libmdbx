@@ -1916,6 +1916,7 @@ MDBX_INTERNAL int osal_ioring_openfile(osal_ioring_t *ior, const enum osal_openf
 MDBX_INTERNAL int osal_closefile(mdbx_filehandle_t fd);
 MDBX_INTERNAL int osal_ioring_closefile(osal_ioring_t *ior, mdbx_filehandle_t fd);
 MDBX_INTERNAL int osal_removefile(const pathchar_t *pathname);
+MDBX_INTERNAL int osal_ioring_removefile(osal_ioring_t *ior, const pathchar_t *pathname);
 MDBX_INTERNAL int osal_removedirectory(const pathchar_t *pathname);
 MDBX_INTERNAL int osal_is_pipe(mdbx_filehandle_t fd);
 MDBX_INTERNAL int osal_lockfile(mdbx_filehandle_t fd, bool wait);
