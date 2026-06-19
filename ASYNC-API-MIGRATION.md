@@ -2735,3 +2735,45 @@ Additional async write benchmark coverage checkpoint:
   single-writer async `put` is currently slower than direct blocking `put`,
   which matches the serialized write model and the profile showing kernel
   write submission as the remaining cost rather than public API coverage.
+
+Additional async put-batch benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` to exercise the existing
+  `mdbx_async_put_batch()` public API separately from windowed single-item
+  `mdbx_async_put()` submissions.
+- added `MDBX_ASYNC_BENCH_WRITE_BATCH`, defaulting to 1024, so write batching
+  can be tuned independently from the read submission window.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking write put
+  2.400 Mops/s, async write put 2.279 Mops/s, async batch write put
+  2.462 Mops/s, async-put/blocking-put 0.950,
+  async-put-batch/blocking 1.026, and async-put-batch/async-put 1.080.
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000
+  MDBX_ASYNC_BENCH_WRITE_OPS=20000` spot check reported
+  async/blocking-parallel 1.129, async-many/blocking-parallel 1.127,
+  async-thread/blocking-parallel 1.098,
+  async-thread-many/blocking-parallel 1.056,
+  async-thread-batch/blocking-parallel 1.065,
+  async-batch/blocking-parallel 1.126,
+  async-batch-callback/blocking-parallel 1.119,
+  async-loop/blocking-parallel 1.109,
+  async-thread-loop/blocking-parallel 1.090,
+  async-cursor/blocking-parallel 1.200,
+  async-loop-cursor/blocking-parallel 1.385,
+  async-put/blocking-put 0.816,
+  async-put-batch/blocking 0.922, and async-put-batch/async-put 1.130.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|migration_smoke)'`: passed 9/9
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h`: `blocking=171 async-covered=132 exempt=39 missing=0`
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: `mdbx_async_put_batch()` materially reduces async write API
+  overhead versus per-item async submission. The smaller reduced run can edge
+  ahead of blocking writes, while the larger forced no-map write sample remains
+  below blocking but improves from 0.816 to 0.922 of blocking throughput.

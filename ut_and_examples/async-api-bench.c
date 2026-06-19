@@ -5,7 +5,7 @@
  * This is intentionally not a pass/fail CTest. It gives a repeatable local
  * comparison between blocking serial reads, blocking pthread-parallel reads,
  * and reads submitted through multiple async executors. It covers random point
- * gets, cursor-batch iteration, and a bounded write-transaction put workload.
+ * gets, cursor-batch iteration, and bounded write-transaction put workloads.
  */
 
 #include "mdbx.h"
@@ -24,6 +24,7 @@
 #define DEFAULT_ITEMS 20000u
 #define DEFAULT_OPS 200000u
 #define DEFAULT_WRITE_OPS 20000u
+#define DEFAULT_WRITE_BATCH 1024u
 #define DEFAULT_WORKERS 4u
 #define DEFAULT_WINDOW 64u
 #define DEFAULT_CURSOR_BATCH_PAIRS 2048u
@@ -472,6 +473,83 @@ bailout:
   free(values);
   free(keys);
   free(opv);
+  return (rc == MDBX_SUCCESS) ? rate : -1.0;
+}
+
+static double async_batch_put(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops, size_t batch) {
+  MDBX_async *async = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_async_op *op = NULL;
+  MDBX_val *keys = NULL;
+  MDBX_val *values = NULL;
+  uint64_t *key_data = NULL;
+  uint64_t *value_data = NULL;
+  int *results = NULL;
+  int rc = MDBX_SUCCESS;
+  double rate = -1.0;
+
+  if (!batch)
+    batch = 1;
+  CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+
+  keys = calloc(batch, sizeof(*keys));
+  values = calloc(batch, sizeof(*values));
+  key_data = calloc(batch, sizeof(*key_data));
+  value_data = calloc(batch, sizeof(*value_data));
+  results = calloc(batch, sizeof(*results));
+  if (!keys || !values || !key_data || !value_data || !results) {
+    rc = fail_rc("calloc", MDBX_ENOMEM, __FILE__, __LINE__);
+    goto bailout;
+  }
+
+  const uint64_t start = monotime_ns();
+  for (size_t offset = 0; offset < ops;) {
+    const size_t chunk = (ops - offset < batch) ? ops - offset : batch;
+    for (size_t i = 0; i < chunk; ++i) {
+      key_data[i] = key_for(offset + i, items);
+      value_data[i] = write_value(key_data[i], offset + i, UINT64_C(303));
+      keys[i] = val(&key_data[i], sizeof(key_data[i]));
+      values[i] = val(&value_data[i], sizeof(value_data[i]));
+      results[i] = MDBX_SUCCESS;
+    }
+
+    int batch_rc = MDBX_SUCCESS;
+    CHECK(mdbx_async_put_batch(async, txn, dbi, keys, values, results, chunk, 0, &op));
+    CHECK(wait_success(&op, &batch_rc, __FILE__, __LINE__));
+    if (batch_rc != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_put_batch", batch_rc, __FILE__, __LINE__);
+      goto bailout;
+    }
+    for (size_t i = 0; i < chunk; ++i) {
+      if (results[i] != MDBX_SUCCESS) {
+        rc = fail_rc("mdbx_async_put_batch item", results[i], __FILE__, __LINE__);
+        goto bailout;
+      }
+    }
+    offset += chunk;
+  }
+
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  txn = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  const uint64_t finish = monotime_ns();
+  if (finish > start)
+    rate = (double)ops * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  if (async)
+    (void)mdbx_async_destroy(async, true);
+  free(results);
+  free(value_data);
+  free(key_data);
+  free(values);
+  free(keys);
   return (rc == MDBX_SUCCESS) ? rate : -1.0;
 }
 
@@ -1390,6 +1468,7 @@ int main(void) {
   const size_t items = env_size("MDBX_ASYNC_BENCH_ITEMS", DEFAULT_ITEMS);
   const size_t ops = env_size("MDBX_ASYNC_BENCH_OPS", DEFAULT_OPS);
   const size_t write_ops = env_size("MDBX_ASYNC_BENCH_WRITE_OPS", DEFAULT_WRITE_OPS);
+  const size_t write_batch = env_size("MDBX_ASYNC_BENCH_WRITE_BATCH", DEFAULT_WRITE_BATCH);
   const size_t workers = env_size("MDBX_ASYNC_BENCH_WORKERS", DEFAULT_WORKERS);
   const size_t window = env_size("MDBX_ASYNC_BENCH_WINDOW", DEFAULT_WINDOW);
   size_t cursor_batch_pairs = env_size("MDBX_ASYNC_BENCH_CURSOR_BATCH_PAIRS", DEFAULT_CURSOR_BATCH_PAIRS);
@@ -1409,8 +1488,9 @@ int main(void) {
   CHECK(mdbx_env_open(env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM | MDBX_SAFE_NOSYNC | MDBX_NOMETASYNC, 0664));
   CHECK(seed_database(env, &dbi, items));
 
-  printf("async-api-bench items=%zu ops=%zu write-ops=%zu workers=%zu window=%zu cursor-batch-pairs=%zu\n", items,
-         ops, write_ops, workers, window, cursor_batch_pairs);
+  printf("async-api-bench items=%zu ops=%zu write-ops=%zu write-batch=%zu workers=%zu window=%zu "
+         "cursor-batch-pairs=%zu\n",
+         items, ops, write_ops, write_batch, workers, window, cursor_batch_pairs);
   const double blocking_serial = blocking_serial_get(env, dbi, items, ops);
   const double blocking_parallel = blocking_parallel_get(env, dbi, items, ops, workers);
   const double async_parallel = async_parallel_get(env, dbi, items, ops, workers, window);
@@ -1432,6 +1512,7 @@ int main(void) {
       async_loop_cursor_batch(env, dbi, items, cursor_pairs, workers, cursor_batch_pairs);
   const double blocking_put = blocking_write_put(env, dbi, items, write_ops);
   const double async_put = async_window_put(env, dbi, items, write_ops, window);
+  const double async_put_batch = async_batch_put(env, dbi, items, write_ops, write_batch);
   print_rate("blocking serial get", blocking_serial);
   print_rate("blocking parallel get", blocking_parallel);
   print_rate("async parallel get", async_parallel);
@@ -1449,6 +1530,7 @@ int main(void) {
   print_rate("async cursor loop", async_loop_cursor_parallel);
   print_rate("blocking write put", blocking_put);
   print_rate("async write put", async_put);
+  print_rate("async batch write put", async_put_batch);
   if (blocking_parallel > 0.0 && async_parallel > 0.0)
     printf("%-28s %8.3f\n", "async/blocking parallel", async_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_many_parallel > 0.0)
@@ -1500,6 +1582,10 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-loop-cursor/ser", async_loop_cursor_parallel / blocking_cursor_serial);
   if (blocking_put > 0.0 && async_put > 0.0)
     printf("%-28s %8.3f\n", "async-put/blocking put", async_put / blocking_put);
+  if (blocking_put > 0.0 && async_put_batch > 0.0)
+    printf("%-28s %8.3f\n", "async-put-batch/blocking", async_put_batch / blocking_put);
+  if (async_put > 0.0 && async_put_batch > 0.0)
+    printf("%-28s %8.3f\n", "async-put-batch/async-put", async_put_batch / async_put);
 
   CHECK(mdbx_env_close(env));
   env = NULL;
