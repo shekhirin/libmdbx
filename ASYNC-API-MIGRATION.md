@@ -2868,3 +2868,21 @@ Additional async replace-batch API checkpoint:
   versus per-item async submission. The reduced run nearly matches blocking
   replace, and the larger forced no-map sample improves async replace throughput
   by 26.1% over per-item async replace.
+
+Additional async API audit accounting checkpoint:
+
+- updated `mdbx_async_api_audit` to track actual public async declarations
+  separately from their mapped blocking counterparts. This keeps the existing
+  pass/fail rule for blocking API coverage while making async-only public
+  helpers visible in the report.
+- the audit now reports async-only additions such as the batch helpers instead
+  of hiding them behind the blocking-name coverage count.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h`: `blocking=171 async-declared=177 async-covered=132 async-only=45 exempt=39 missing=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the public async surface now has an explicit audit signal for
+  both blocking counterparts and async-only API growth, which makes future
+  coverage work less ambiguous.

@@ -162,7 +162,30 @@ static const char *extract_mdbx_name(const char *begin, const char *end, const c
   return NULL;
 }
 
-static int collect_public_apis(const char *header, struct name_list *blocking, struct name_list *async_map) {
+static int add_async_mapping(struct name_list *async_map, const char *name, const char *name_end) {
+  const char async_prefix[] = "mdbx_async_";
+  const size_t async_prefix_len = sizeof(async_prefix) - 1;
+  const size_t suffix_len = (size_t)(name_end - name - async_prefix_len);
+  char *const full = malloc(suffix_len + 6);
+  if (!full)
+    return -1;
+  strcpy(full, "mdbx_");
+  memcpy(full + 5, name + async_prefix_len, suffix_len);
+  full[suffix_len + 5] = '\0';
+  if (!list_contains(async_map, full)) {
+    if (async_map->count >= MAX_API_NAMES) {
+      free(full);
+      return -1;
+    }
+    async_map->items[async_map->count++] = full;
+  } else {
+    free(full);
+  }
+  return 0;
+}
+
+static int collect_public_apis(const char *header, struct name_list *blocking, struct name_list *async_declared,
+                               struct name_list *async_map) {
   const char marker[] = "LIBMDBX_API";
   const size_t marker_len = sizeof(marker) - 1;
   const char *p = header;
@@ -176,22 +199,8 @@ static int collect_public_apis(const char *header, struct name_list *blocking, s
       const char async_prefix[] = "mdbx_async_";
       const size_t async_prefix_len = sizeof(async_prefix) - 1;
       if ((size_t)(name_end - name) > async_prefix_len && memcmp(name, async_prefix, async_prefix_len) == 0) {
-        const size_t suffix_len = (size_t)(name_end - name - async_prefix_len);
-        char *const full = malloc(suffix_len + 6);
-        if (!full)
+        if (list_add_unique(async_declared, name, name_end) != 0 || add_async_mapping(async_map, name, name_end) != 0)
           return -1;
-        strcpy(full, "mdbx_");
-        memcpy(full + 5, name + async_prefix_len, suffix_len);
-        full[suffix_len + 5] = '\0';
-        if (!list_contains(async_map, full)) {
-          if (async_map->count >= MAX_API_NAMES) {
-            free(full);
-            return -1;
-          }
-          async_map->items[async_map->count++] = full;
-        } else {
-          free(full);
-        }
       } else if (list_add_unique(blocking, name, name_end) != 0) {
         return -1;
       }
@@ -211,12 +220,14 @@ int main(int argc, char **argv) {
   }
 
   struct name_list blocking = {{0}, 0};
+  struct name_list async_declared = {{0}, 0};
   struct name_list async_map = {{0}, 0};
-  const int collect_rc = collect_public_apis(header, &blocking, &async_map);
+  const int collect_rc = collect_public_apis(header, &blocking, &async_declared, &async_map);
   free(header);
   if (collect_rc != 0) {
     fprintf(stderr, "async-api-audit: failed to collect API names\n");
     free_names(&blocking);
+    free_names(&async_declared);
     free_names(&async_map);
     return 2;
   }
@@ -236,10 +247,16 @@ int main(int argc, char **argv) {
     }
   }
 
-  printf("async-api-audit: blocking=%zu async-covered=%zu exempt=%zu missing=%zu\n", blocking.count, covered,
-         exempt, missing);
+  size_t async_only = 0;
+  for (size_t i = 0; i < async_map.count; ++i)
+    if (!list_contains(&blocking, async_map.items[i]))
+      async_only += 1;
+
+  printf("async-api-audit: blocking=%zu async-declared=%zu async-covered=%zu async-only=%zu exempt=%zu missing=%zu\n",
+         blocking.count, async_declared.count, covered, async_only, exempt, missing);
 
   free_names(&blocking);
+  free_names(&async_declared);
   free_names(&async_map);
   return missing == 0 ? 0 : 1;
 }
