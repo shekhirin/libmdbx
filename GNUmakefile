@@ -335,7 +335,7 @@ ifneq ($(CMAKE),"")
 TEST_TARGETS += ctest
 TEST_BUILD_TARGETS += cmake-build
 endif
-TEST_TARGETS += mdbx_legacy_example mdbx_migration_smoke mdbx_async_api_smoke \
+TEST_TARGETS += mdbx_legacy_example mdbx_migration_smoke mdbx_async_api_smoke mdbx_async_api_audit \
 	$(call select_by,MDBX_BUILD_CXX,mdbx_modern_example,)
 
 .PHONY: ninja-assertions ninja-debug ninja $(TEST_TARGETS) $(TEST_BUILD_TARGETS) \
@@ -429,6 +429,10 @@ mdbx_migration_smoke: mdbx.h ut_and_examples/migration-smoke.c libmdbx.$(SO_SUFF
 mdbx_async_api_smoke: mdbx.h ut_and_examples/async-api-smoke.c libmdbx.$(SO_SUFFIX)
 	@echo '  CC+LD $@'
 	$(QUIET)$(CC) $(CFLAGS) -I. ut_and_examples/async-api-smoke.c ./libmdbx.$(SO_SUFFIX) -o $@
+
+mdbx_async_api_audit: mdbx.h ut_and_examples/async-api-audit.c
+	@echo '  CC+LD $@'
+	$(QUIET)$(CC) $(CFLAGS) -I. ut_and_examples/async-api-audit.c -o $@
 
 mdbx_async_api_smoke_nommap: mdbx_async_api_smoke
 	@echo '  RUN $@'

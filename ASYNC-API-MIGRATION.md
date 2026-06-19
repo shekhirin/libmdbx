@@ -1560,3 +1560,31 @@ Additional extended GET-batch API checkpoint:
   already hold arrays of lookup work; it does not change storage internals, and
   existing benchmark labels remain a guard against regressions in the parallel
   plain-GET paths
+
+Additional async API coverage audit checkpoint:
+
+- added `mdbx_async_api_audit`, a small public-header audit tool that scans
+  exported `LIBMDBX_API` blocking C functions in `mdbx.h`, maps exported
+  `mdbx_async_*` declarations back to their blocking names, and fails when a
+  blocking API has neither a name-compatible async wrapper nor an explicit
+  exemption
+- wired the audit into CMake/CTest as `async_api_audit`, so the public CTest
+  gate now protects the additive async surface from silently losing coverage
+- wired the audit into the GNUmake test target list as `mdbx_async_api_audit`
+- the current audit result is `blocking=171 async-covered=132 exempt=39
+  missing=0`
+- exemptions are limited to pure conversion/limits helpers, error-string and
+  formatting helpers, global debug/panic setup, assertion/module hooks,
+  post-fork recovery, and integrity-check helper functions where async executor
+  offload would not add useful behavior
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_audit mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_audit mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: this slice does not change libmdbx runtime behavior or storage
+  internals, but it makes the "async API should cover the blocking API" part of
+  the migration objective mechanically checkable in the normal public test gate

@@ -32,6 +32,8 @@ target_link_libraries(mdbx_migration_smoke ${MDBX_LIBRARY})
 add_executable(mdbx_async_api_smoke async-api-smoke.c)
 target_link_libraries(mdbx_async_api_smoke ${MDBX_LIBRARY})
 
+add_executable(mdbx_async_api_audit async-api-audit.c)
+
 if(UNIX)
   add_executable(mdbx_async_api_bench async-api-bench.c)
   target_link_libraries(mdbx_async_api_bench ${MDBX_LIBRARY} Threads::Threads)
@@ -79,6 +81,7 @@ else()
   set_tests_properties(async_api async_api_nommap PROPERTIES RESOURCE_LOCK mdbx_async_api_database)
   set_tests_properties(async_api_nommap PROPERTIES ENVIRONMENT
                                                    "MDBX_FORCE_NO_DATA_MMAP=1;MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K")
+  add_test(NAME async_api_audit COMMAND mdbx_async_api_audit ${CMAKE_SOURCE_DIR}/mdbx.h)
   add_test(NAME migration_smoke COMMAND mdbx_migration_smoke)
   add_test(NAME migration_smoke_nommap COMMAND mdbx_migration_smoke)
   set_tests_properties(migration_smoke_nommap PROPERTIES ENVIRONMENT "MDBX_FORCE_NO_DATA_MMAP=1")
