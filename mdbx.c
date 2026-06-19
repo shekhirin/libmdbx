@@ -23440,191 +23440,46 @@ static dxb_write_result_t defrag_write_page(dfc_t *dfc, pgno_t pgno, const page_
 }
 
 #if MDBX_USE_COPYFILERANGE
-typedef struct dxb_defrag_extent_copy_submit_io {
-  dfc_t *dfc;
-  MDBX_txn *txn;
-  dxb_storage_t *storage;
-  pgno_t src_pgno;
-  pgno_t dst_pgno;
-  size_t npages;
-  pgno_t first_unallocated;
-  size_t defrag_edge;
-  dxb_page_io_t src_pages;
-  dxb_page_io_t dst_pages;
-  dxb_data_copy_io_t copy;
-  dxb_data_copy_submit_io_t submit;
-} dxb_defrag_extent_copy_submit_io_t;
-
 static inline dxb_copy_result_t defrag_copy_result_error(int err) {
   const dxb_copy_result_t result = {err, 0, false, false, false, false, false};
   return result;
 }
 
-static inline int defrag_make_extent_copy_submit_io(dfc_t *dfc, pgno_t src_pgno, pgno_t dst_pgno,
-                                                    size_t npages,
-                                                    dxb_defrag_extent_copy_submit_io_t *io) {
-  if (unlikely(!dfc || !dfc->txn || !io || npages == 0))
-    return MDBX_EINVAL;
+static dxb_copy_result_t defrag_copy_extent(dfc_t *dfc, pgno_t src_pgno, pgno_t dst_pgno, size_t npages) {
+  if (unlikely(!dfc || !dfc->txn || npages == 0))
+    return defrag_copy_result_error(MDBX_EINVAL);
+
   MDBX_txn *const txn = dfc->txn;
   dxb_storage_t *const storage = &txn->env->dxb_storage;
-  if (unlikely(src_pgno < NUM_METAS || dst_pgno < NUM_METAS ||
-               src_pgno > txn->geo.first_unallocated ||
-               npages > (size_t)(txn->geo.first_unallocated - src_pgno) ||
-               (size_t)dst_pgno > dfc->defrag_edge || npages > dfc->defrag_edge - (size_t)dst_pgno))
-    return MDBX_EINVAL;
+  const pgno_t first_unallocated = txn->geo.first_unallocated;
+  const size_t defrag_edge = dfc->defrag_edge;
+  if (unlikely(src_pgno < NUM_METAS || dst_pgno < NUM_METAS || src_pgno >= first_unallocated ||
+               npages > (size_t)(first_unallocated - src_pgno) || (size_t)dst_pgno > defrag_edge ||
+               npages > defrag_edge - (size_t)dst_pgno))
+    return defrag_copy_result_error(MDBX_EINVAL);
 
   dxb_page_io_t src_pages;
   int rc = dxb_storage_page_io(storage, src_pgno, npages, &src_pages);
   if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+    return defrag_copy_result_error(rc);
   dxb_page_io_t dst_pages;
   rc = dxb_storage_page_io(storage, dst_pgno, npages, &dst_pages);
   if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+    return defrag_copy_result_error(rc);
   dxb_data_copy_io_t copy;
   rc = dxb_storage_make_data_copy_io(storage, &src_pages, &dst_pages, &copy);
   if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+    return defrag_copy_result_error(rc);
   dxb_data_copy_submit_io_t submit;
   rc = dxb_storage_make_data_copy_submit_io(storage, &copy, &submit);
   if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  io->dfc = dfc;
-  io->txn = txn;
-  io->storage = storage;
-  io->src_pgno = src_pgno;
-  io->dst_pgno = dst_pgno;
-  io->npages = npages;
-  io->first_unallocated = txn->geo.first_unallocated;
-  io->defrag_edge = dfc->defrag_edge;
-  io->src_pages = src_pages;
-  io->dst_pages = dst_pages;
-  io->copy = copy;
-  io->submit = submit;
-  return MDBX_SUCCESS;
-}
-
-static inline int defrag_extent_copy_submit_io_validate(const dxb_defrag_extent_copy_submit_io_t *io) {
-  if (unlikely(!io || !io->dfc || !io->txn || !io->storage || io->dfc->txn != io->txn ||
-               io->storage != &io->txn->env->dxb_storage || io->npages == 0))
-    return MDBX_EINVAL;
-  if (unlikely(io->src_pgno < NUM_METAS || io->dst_pgno < NUM_METAS ||
-               io->src_pgno > io->txn->geo.first_unallocated ||
-               io->npages > (size_t)(io->txn->geo.first_unallocated - io->src_pgno) ||
-               io->first_unallocated != io->txn->geo.first_unallocated ||
-               (size_t)io->dst_pgno > io->dfc->defrag_edge ||
-               io->npages > io->dfc->defrag_edge - (size_t)io->dst_pgno ||
-               io->defrag_edge != io->dfc->defrag_edge))
-    return MDBX_EINVAL;
-
-  int rc = dxb_storage_page_io_validate(io->storage, &io->src_pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_page_io_validate(io->storage, &io->dst_pages);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_data_copy_io_validate(io->storage, &io->copy);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_storage_data_copy_submit_io_validate(io->storage, &io->submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(io->src_pages.pgno != io->src_pgno || io->src_pages.npages != io->npages ||
-               io->dst_pages.pgno != io->dst_pgno || io->dst_pages.npages != io->npages ||
-               io->copy.src_pages.pgno != io->src_pages.pgno ||
-               io->copy.src_pages.end_pgno != io->src_pages.end_pgno ||
-               io->copy.src_pages.npages != io->src_pages.npages ||
-               io->copy.src_pages.offset != io->src_pages.offset ||
-               io->copy.src_pages.bytes != io->src_pages.bytes ||
-               io->copy.dst_pages.pgno != io->dst_pages.pgno ||
-               io->copy.dst_pages.end_pgno != io->dst_pages.end_pgno ||
-               io->copy.dst_pages.npages != io->dst_pages.npages ||
-               io->copy.dst_pages.offset != io->dst_pages.offset ||
-               io->copy.dst_pages.bytes != io->dst_pages.bytes ||
-               io->submit.copy.src_pages.pgno != io->copy.src_pages.pgno ||
-               io->submit.copy.src_pages.end_pgno != io->copy.src_pages.end_pgno ||
-               io->submit.copy.src_pages.npages != io->copy.src_pages.npages ||
-               io->submit.copy.src_pages.offset != io->copy.src_pages.offset ||
-               io->submit.copy.src_pages.bytes != io->copy.src_pages.bytes ||
-               io->submit.copy.dst_pages.pgno != io->copy.dst_pages.pgno ||
-               io->submit.copy.dst_pages.end_pgno != io->copy.dst_pages.end_pgno ||
-               io->submit.copy.dst_pages.npages != io->copy.dst_pages.npages ||
-               io->submit.copy.dst_pages.offset != io->copy.dst_pages.offset ||
-               io->submit.copy.dst_pages.bytes != io->copy.dst_pages.bytes ||
-               !dxb_copy_cache_invalidate_copy_io_equal(&io->submit.invalidate.copy, &io->copy) ||
-               !dxb_copy_cache_invalidate_page_io_equal(&io->submit.invalidate.invalidate.pages,
-                                                        &io->dst_pages) ||
-               io->submit.invalidate.invalidate.include_reusable ||
-               !dxb_copy_cache_invalidate_io_equal(&io->submit.invalidate.invalidate,
-                                                   &io->submit.invalidate.submit.invalidate)))
-    return MDBX_EINVAL;
-
-  dxb_defrag_extent_copy_submit_io_t checked;
-  rc = defrag_make_extent_copy_submit_io(io->dfc, io->src_pgno, io->dst_pgno, io->npages, &checked);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  if (unlikely(checked.dfc != io->dfc || checked.txn != io->txn || checked.storage != io->storage ||
-               checked.src_pgno != io->src_pgno || checked.dst_pgno != io->dst_pgno ||
-               checked.npages != io->npages || checked.first_unallocated != io->first_unallocated ||
-               checked.defrag_edge != io->defrag_edge ||
-               checked.src_pages.pgno != io->src_pages.pgno ||
-               checked.src_pages.end_pgno != io->src_pages.end_pgno ||
-               checked.src_pages.npages != io->src_pages.npages ||
-               checked.src_pages.offset != io->src_pages.offset ||
-               checked.src_pages.bytes != io->src_pages.bytes ||
-               checked.dst_pages.pgno != io->dst_pages.pgno ||
-               checked.dst_pages.end_pgno != io->dst_pages.end_pgno ||
-               checked.dst_pages.npages != io->dst_pages.npages ||
-               checked.dst_pages.offset != io->dst_pages.offset ||
-               checked.dst_pages.bytes != io->dst_pages.bytes ||
-               checked.copy.src_pages.pgno != io->copy.src_pages.pgno ||
-               checked.copy.src_pages.end_pgno != io->copy.src_pages.end_pgno ||
-               checked.copy.src_pages.npages != io->copy.src_pages.npages ||
-               checked.copy.src_pages.offset != io->copy.src_pages.offset ||
-               checked.copy.src_pages.bytes != io->copy.src_pages.bytes ||
-               checked.copy.dst_pages.pgno != io->copy.dst_pages.pgno ||
-               checked.copy.dst_pages.end_pgno != io->copy.dst_pages.end_pgno ||
-               checked.copy.dst_pages.npages != io->copy.dst_pages.npages ||
-               checked.copy.dst_pages.offset != io->copy.dst_pages.offset ||
-               checked.copy.dst_pages.bytes != io->copy.dst_pages.bytes ||
-               checked.copy.src_bytes.offset != io->copy.src_bytes.offset ||
-               checked.copy.src_bytes.bytes != io->copy.src_bytes.bytes ||
-               checked.copy.dst_bytes.offset != io->copy.dst_bytes.offset ||
-               checked.copy.dst_bytes.bytes != io->copy.dst_bytes.bytes ||
-               checked.submit.copy.src_pages.pgno != io->submit.copy.src_pages.pgno ||
-               checked.submit.copy.src_pages.end_pgno != io->submit.copy.src_pages.end_pgno ||
-               checked.submit.copy.src_pages.npages != io->submit.copy.src_pages.npages ||
-               checked.submit.copy.src_pages.offset != io->submit.copy.src_pages.offset ||
-               checked.submit.copy.src_pages.bytes != io->submit.copy.src_pages.bytes ||
-               checked.submit.copy.dst_pages.pgno != io->submit.copy.dst_pages.pgno ||
-               checked.submit.copy.dst_pages.end_pgno != io->submit.copy.dst_pages.end_pgno ||
-               checked.submit.copy.dst_pages.npages != io->submit.copy.dst_pages.npages ||
-               checked.submit.copy.dst_pages.offset != io->submit.copy.dst_pages.offset ||
-               checked.submit.copy.dst_pages.bytes != io->submit.copy.dst_pages.bytes ||
-               checked.submit.copy.src_bytes.offset != io->submit.copy.src_bytes.offset ||
-               checked.submit.copy.src_bytes.bytes != io->submit.copy.src_bytes.bytes ||
-               checked.submit.copy.dst_bytes.offset != io->submit.copy.dst_bytes.offset ||
-               checked.submit.copy.dst_bytes.bytes != io->submit.copy.dst_bytes.bytes ||
-               !dxb_copy_cache_invalidate_copy_io_equal(&checked.submit.invalidate.copy,
-                                                        &io->submit.invalidate.copy) ||
-               !dxb_copy_cache_invalidate_io_equal(&checked.submit.invalidate.invalidate,
-                                                   &io->submit.invalidate.invalidate) ||
-               !dxb_copy_cache_invalidate_io_equal(&checked.submit.invalidate.submit.invalidate,
-                                                   &io->submit.invalidate.submit.invalidate)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static dxb_copy_result_t defrag_copy_extent(dfc_t *dfc, pgno_t src_pgno, pgno_t dst_pgno, size_t npages) {
-  dxb_defrag_extent_copy_submit_io_t submit;
-  int rc = defrag_make_extent_copy_submit_io(dfc, src_pgno, dst_pgno, npages, &submit);
+    return defrag_copy_result_error(rc);
+  rc = dxb_storage_data_copy_submit_io_validate(storage, &submit);
   if (unlikely(rc != MDBX_SUCCESS))
     return defrag_copy_result_error(rc);
-  rc = defrag_extent_copy_submit_io_validate(&submit);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return defrag_copy_result_error(rc);
-  return dxb_storage_submit_copy_data(submit.storage, &submit.submit);
+  if (unlikely(dfc->txn != txn || txn->geo.first_unallocated != first_unallocated || dfc->defrag_edge != defrag_edge))
+    return defrag_copy_result_error(MDBX_EINVAL);
+  return dxb_storage_submit_copy_data(storage, &submit);
 }
 #endif /* MDBX_USE_COPYFILERANGE */
 

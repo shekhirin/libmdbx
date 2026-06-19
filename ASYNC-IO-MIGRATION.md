@@ -14189,6 +14189,27 @@ six focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.118` batch, `1.133` crud, `1.197`
 iterate, `0.925` get, and `1.069` delete.
 
+A later defrag extent-copy descriptor cleanup removed
+`dxb_defrag_extent_copy_submit_io_t`,
+`defrag_make_extent_copy_submit_io()`, and
+`defrag_extent_copy_submit_io_validate()` from `mdbx.c`.
+`defrag_copy_extent()` now validates its defrag context, source/destination
+page ranges, defrag edge, and transaction geometry directly, builds the
+existing storage `dxb_data_copy_submit_io_t` descriptor, validates that storage
+request, rechecks the defrag/transaction snapshot, and submits through
+`dxb_storage_submit_copy_data()`. This keeps copy-file-range defrag moves on
+the storage copy boundary without a defrag-local mirror descriptor.
+Verification passed `git diff --check`, a source scan proving the removed
+defrag extent-copy descriptor helpers are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.115`
+batch, `1.130` crud, `1.075` iterate, `0.959` get, and `1.066` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
