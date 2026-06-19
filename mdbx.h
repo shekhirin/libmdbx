@@ -5785,6 +5785,21 @@ LIBMDBX_API int mdbx_async_estimate_range(MDBX_async *async, const MDBX_txn *txn
 LIBMDBX_API int mdbx_async_cursor_put(MDBX_async *async, MDBX_cursor *cursor, const MDBX_val *key, MDBX_val *data,
                                       MDBX_put_flags_t flags, MDBX_async_op **op);
 
+/** \brief Asynchronously store a batch of items through a cursor.
+ * \ingroup c_async
+ * \details The `keys`, key bytes, `data`, data bytes, and `results` arrays must
+ *          remain valid until completion. Each `results` slot receives the
+ *          corresponding \ref mdbx_cursor_put() result code. The async
+ *          operation result is \ref MDBX_SUCCESS when the batch has run and
+ *          per-item results have been stored. The wrapper rejects
+ *          \ref MDBX_RESERVE and \ref MDBX_MULTIPLE because those modes require
+ *          caller-managed in-place memory.
+ * \see mdbx_cursor_put() */
+LIBMDBX_API int mdbx_async_cursor_put_batch(MDBX_async *async, MDBX_cursor *cursor,
+                                            const MDBX_val keys[], MDBX_val data[],
+                                            int results[], size_t count, MDBX_put_flags_t flags,
+                                            MDBX_async_op **op);
+
 /** \brief Asynchronously delete the current item through a cursor.
  * \ingroup c_async
  * \see mdbx_cursor_del() */

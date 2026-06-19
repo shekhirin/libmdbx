@@ -2940,3 +2940,37 @@ Additional async API implementation audit checkpoint:
 - conclusion: the public async API audit now verifies declaration coverage and
   implementation presence, reducing the chance that future async API expansion
   leaves a header-only stub behind.
+
+Additional async cursor-put batch API checkpoint:
+
+- added `mdbx_async_cursor_put_batch()` as a public async-only batch helper for
+  repeated `mdbx_cursor_put()` operations through one cursor. The blocking API
+  is unchanged.
+- the helper follows the existing batch contract: caller-owned `keys`, `data`,
+  and `results` arrays and pointed-to bytes must remain valid until
+  completion, each `results` slot receives the corresponding cursor-put result,
+  and the async operation result is `MDBX_SUCCESS` after the batch has run. It
+  rejects `MDBX_RESERVE` and `MDBX_MULTIPLE`, matching the single async cursor
+  put and DBI put-batch constraints.
+- added smoke coverage that inserts two new records with
+  `mdbx_async_cursor_put_batch()` and reads them back through the same cursor.
+- extended `ut_and_examples/async-api-bench.c` with blocking cursor put,
+  per-item async cursor put, and async cursor-put batch measurements.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking cursor put 3.905 Mops/s,
+  async cursor put 2.380 Mops/s, async cursor batch put 3.703 Mops/s,
+  async-cursor-put-batch/block 0.948, and
+  async-cursor-put-batch/async 1.556.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=179 async-covered=132 async-only=47 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: cursor writes now have a batched async API. The reduced benchmark
+  shows the batch form nearly reaches blocking cursor-put throughput and
+  improves throughput by 55.6% versus per-item async cursor puts.

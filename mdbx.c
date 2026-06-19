@@ -15139,6 +15139,7 @@ enum mdbx_async_opcode {
   async_op_cmp,
   async_op_dcmp,
   async_op_cursor_put,
+  async_op_cursor_put_batch,
   async_op_cursor_del,
   async_op_cursor_delete_range,
   async_op_cursor_bunch_delete,
@@ -15747,6 +15748,14 @@ struct MDBX_async_op {
       MDBX_val *data;
       MDBX_put_flags_t flags;
     } cursor_put;
+    struct {
+      MDBX_cursor *cursor;
+      const MDBX_val *keys;
+      MDBX_val *data;
+      int *results;
+      size_t count;
+      MDBX_put_flags_t flags;
+    } cursor_put_batch;
     struct {
       MDBX_cursor *cursor;
       MDBX_put_flags_t flags;
@@ -16695,6 +16704,17 @@ static int async_op_execute(MDBX_async_op *op) {
       *op->args.cursor_put.data = data;
     return rc;
   }
+  case async_op_cursor_put_batch:
+    for (size_t i = 0; i < op->args.cursor_put_batch.count; ++i) {
+      MDBX_val data = op->args.cursor_put_batch.data[i];
+      const int rc =
+          mdbx_cursor_put(op->args.cursor_put_batch.cursor, &op->args.cursor_put_batch.keys[i], &data,
+                          op->args.cursor_put_batch.flags);
+      if (rc == MDBX_KEYEXIST)
+        op->args.cursor_put_batch.data[i] = data;
+      op->args.cursor_put_batch.results[i] = rc;
+    }
+    return MDBX_SUCCESS;
   case async_op_cursor_del:
     return mdbx_cursor_del(op->args.cursor_del.cursor, op->args.cursor_del.flags);
   case async_op_cursor_delete_range:
@@ -20103,6 +20123,30 @@ int mdbx_async_cursor_put(MDBX_async *async, MDBX_cursor *cursor, const MDBX_val
   }
   if (unlikely(rc != MDBX_SUCCESS)) {
     async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_cursor_put_batch(MDBX_async *async, MDBX_cursor *cursor, const MDBX_val keys[], MDBX_val data[],
+                                int results[], size_t count, MDBX_put_flags_t flags, MDBX_async_op **out) {
+  if (unlikely(!cursor || !keys || !data || !results || !count))
+    return LOG_IFERR(MDBX_EINVAL);
+  if (unlikely(flags & (MDBX_RESERVE | MDBX_MULTIPLE)))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_put_batch);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cursor_put_batch.cursor = cursor;
+  op->args.cursor_put_batch.keys = keys;
+  op->args.cursor_put_batch.data = data;
+  op->args.cursor_put_batch.results = results;
+  op->args.cursor_put_batch.count = count;
+  op->args.cursor_put_batch.flags = flags;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;
     osal_free(op);
   }

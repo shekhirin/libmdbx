@@ -1850,6 +1850,29 @@ int main(void) {
   REQUIRE(cursor != NULL, "write cursor was not returned");
   CHECK(mdbx_async_cursor_put(async, cursor, &cursor_extra_key_value, &cursor_extra_put_value, 0, &op));
   CHECK_OP(op);
+  uint64_t cursor_batch_keys[] = {ITEM_COUNT + 1, ITEM_COUNT + 2};
+  uint64_t cursor_batch_values[] = {expected_value(ITEM_COUNT + 1), expected_value(ITEM_COUNT + 2)};
+  MDBX_val cursor_batch_key_values[] = {
+      val(&cursor_batch_keys[0], sizeof(cursor_batch_keys[0])),
+      val(&cursor_batch_keys[1], sizeof(cursor_batch_keys[1]))};
+  MDBX_val cursor_batch_put_values[] = {
+      val(&cursor_batch_values[0], sizeof(cursor_batch_values[0])),
+      val(&cursor_batch_values[1], sizeof(cursor_batch_values[1]))};
+  memset(op_results, 0, sizeof(op_results));
+  CHECK(mdbx_async_cursor_put_batch(async, cursor, cursor_batch_key_values, cursor_batch_put_values, op_results, 2,
+                                    0, &op));
+  CHECK_OP(op);
+  for (size_t i = 0; i < 2; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_cursor_put_batch", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
+    MDBX_val batch_key = cursor_batch_key_values[i];
+    MDBX_val batch_data = val(NULL, 0);
+    CHECK(mdbx_async_cursor_get(async, cursor, &batch_key, &batch_data, MDBX_SET_KEY, &op));
+    CHECK_OP(op);
+    CHECK(expect_payload(&batch_data, cursor_batch_values[i], __FILE__, __LINE__));
+  }
   MDBX_val delete_key = key_values[0];
   MDBX_val delete_data = val(NULL, 0);
   CHECK(mdbx_async_cursor_get(async, cursor, &delete_key, &delete_data, MDBX_SET_KEY, &op));
