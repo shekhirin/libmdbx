@@ -820,3 +820,20 @@ Additional GC information checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean rerun of `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.072, async-batch/blocking-parallel ratio 1.076, and async-cursor/blocking-parallel ratio 0.800
+
+Additional environment defrag checkpoint:
+
+- added `mdbx_async_env_defrag()` for asynchronous environment defragmentation
+  using the full blocking API parameter set
+- optional progress callback/context and result storage remain live until
+  completion; progress callbacks run on the async executor worker thread
+- smoke coverage now runs a bounded async defrag after all async transactions are
+  closed and verifies the result does not report an error stop reason
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.230, async-batch/blocking-parallel ratio 1.282, and async-cursor/blocking-parallel ratio 0.693

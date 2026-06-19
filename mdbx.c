@@ -15002,6 +15002,7 @@ enum mdbx_async_opcode {
   async_op_env_get_maxvalsize,
   async_op_env_get_pairsize4page,
   async_op_env_get_valsize4page,
+  async_op_env_defrag,
   async_op_reader_list,
   async_op_reader_check,
   async_op_thread_register,
@@ -15218,6 +15219,17 @@ struct MDBX_async_op {
       MDBX_db_flags_t flags;
       int *size;
     } env_get_size;
+    struct {
+      size_t defrag_atleast;
+      size_t time_atleast_dot16;
+      size_t defrag_enough;
+      size_t time_limit_dot16;
+      intptr_t acceptable_backlash;
+      intptr_t preferred_batch;
+      MDBX_defrag_notify_func progress_callback;
+      void *ctx;
+      MDBX_defrag_result_t *result;
+    } env_defrag;
     struct {
       MDBX_reader_list_func func;
       void *ctx;
@@ -15784,6 +15796,12 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_env_get_valsize4page:
     *op->args.env_get_size.size = mdbx_env_get_valsize4page_max(op->async->env, op->args.env_get_size.flags);
     return MDBX_SUCCESS;
+  case async_op_env_defrag:
+    return mdbx_env_defrag(op->async->env, op->args.env_defrag.defrag_atleast,
+                           op->args.env_defrag.time_atleast_dot16, op->args.env_defrag.defrag_enough,
+                           op->args.env_defrag.time_limit_dot16, op->args.env_defrag.acceptable_backlash,
+                           op->args.env_defrag.preferred_batch, op->args.env_defrag.progress_callback,
+                           op->args.env_defrag.ctx, op->args.env_defrag.result);
   case async_op_reader_list:
     return mdbx_reader_list(op->async->env, op->args.reader.func, op->args.reader.ctx);
   case async_op_reader_check:
@@ -16919,6 +16937,31 @@ int mdbx_async_env_get_pairsize4page_max(MDBX_async *async, MDBX_db_flags_t flag
 
 int mdbx_async_env_get_valsize4page_max(MDBX_async *async, MDBX_db_flags_t flags, int *size, MDBX_async_op **out) {
   return async_env_get_size_submit(async, flags, size, async_op_env_get_valsize4page, out);
+}
+
+int mdbx_async_env_defrag(MDBX_async *async, size_t defrag_atleast, size_t time_atleast_dot16, size_t defrag_enough,
+                          size_t time_limit_dot16, intptr_t acceptable_backlash, intptr_t preferred_batch,
+                          MDBX_defrag_notify_func progress_callback, void *ctx, MDBX_defrag_result_t *result,
+                          MDBX_async_op **out) {
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_env_defrag);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.env_defrag.defrag_atleast = defrag_atleast;
+  op->args.env_defrag.time_atleast_dot16 = time_atleast_dot16;
+  op->args.env_defrag.defrag_enough = defrag_enough;
+  op->args.env_defrag.time_limit_dot16 = time_limit_dot16;
+  op->args.env_defrag.acceptable_backlash = acceptable_backlash;
+  op->args.env_defrag.preferred_batch = preferred_batch;
+  op->args.env_defrag.progress_callback = progress_callback;
+  op->args.env_defrag.ctx = ctx;
+  op->args.env_defrag.result = result;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
 }
 
 static int async_env_noarg_submit(MDBX_async *async, enum mdbx_async_opcode opcode, MDBX_async_op **out) {

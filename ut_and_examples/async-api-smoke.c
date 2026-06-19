@@ -1343,6 +1343,14 @@ int main(void) {
   CHECK_OP(op);
   txn = NULL;
 
+  MDBX_defrag_result_t defrag_result;
+  memset(&defrag_result, 0, sizeof(defrag_result));
+  CHECK(mdbx_async_env_defrag(async, 0, 0, 0, 0, -1, 8, NULL, NULL, &defrag_result, &op));
+  CHECK(wait_result("mdbx_async_env_defrag", &op, &env_operation_result, __FILE__, __LINE__));
+  REQUIRE(env_operation_result == MDBX_SUCCESS || env_operation_result == MDBX_RESULT_TRUE,
+          "unexpected async defrag result");
+  REQUIRE((defrag_result.stopping_reasons & MDBX_defrag_error) == 0, "async defrag reported an error stop reason");
+
   CHECK(mdbx_async_destroy(async, true));
   async = NULL;
   CHECK(mdbx_env_close(env));

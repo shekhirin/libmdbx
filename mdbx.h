@@ -8525,6 +8525,18 @@ LIBMDBX_API int mdbx_env_defrag(MDBX_env *env, size_t defrag_atleast, size_t tim
                                 size_t time_limit_dot16, intptr_t acceptable_backlash, intptr_t preferred_batch,
                                 MDBX_defrag_notify_func progress_callback, void *ctx, MDBX_defrag_result_t *result);
 
+/** \brief Asynchronously perform database defragmentation.
+ * \ingroup c_async
+ * \details The optional progress callback/context and result storage must
+ *          remain valid until completion. Progress callbacks run on the async
+ *          executor worker thread.
+ * \see mdbx_env_defrag() */
+LIBMDBX_API int mdbx_async_env_defrag(MDBX_async *async, size_t defrag_atleast, size_t time_atleast_dot16,
+                                      size_t defrag_enough, size_t time_limit_dot16,
+                                      intptr_t acceptable_backlash, intptr_t preferred_batch,
+                                      MDBX_defrag_notify_func progress_callback, void *ctx,
+                                      MDBX_defrag_result_t *result, MDBX_async_op **op);
+
 /** end of c_api @} */
 
 #ifdef __cplusplus
