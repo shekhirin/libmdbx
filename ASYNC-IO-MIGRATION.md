@@ -13348,6 +13348,33 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.111` batch, `1.163` crud, `0.974` iterate,
 `0.961` get, and `1.058` delete.
 
+A later environment-service submit-boundary cleanup removed the one-call
+`env_submit_storage_init()`, `env_submit_storage_deinit()`,
+`env_submit_close_sync_stat()`, `env_submit_sysinfo()`,
+`env_submit_data_reset()`, `env_submit_check_fstat()`,
+`env_submit_sysv_lock_stat()`, and `env_submit_lck_readonly_probe()` helpers
+from `mdbx.c`, leaving only the Windows overlapped open/park environment
+submit helpers. Environment creation/destruction, close-time linked-file
+checks, public environment info sysinfo fetches, preopen and after-fork storage
+resets, DXB `fstat()` validation, SysV lock initialization stat pickup, and
+read-only lock-file probes now validate their prepared descriptors at the
+local policy site, then submit directly through the matching storage operation.
+This keeps ownership of close-sync suppression, public-info field assignment,
+reset error propagation, lock setup decisions, and after-fork reset reporting
+at the callers while moving these service operations onto explicit storage
+request boundaries. Verification passed `git diff --check`, source scans
+proving the removed environment-service submit helpers are absent from
+`mdbx.c` and the public/internal headers, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, forced
+tiny-cache fault injection, the ASAN build (`cmake --build @cmake-asan-build`),
+and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.110`
+batch, `1.132` crud, `0.885` iterate, `1.056` get, and `1.064` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
