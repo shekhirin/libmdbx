@@ -13572,6 +13572,27 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.104` batch, `1.134` crud, `1.186` iterate,
 `0.966` get, and `1.063` delete.
 
+A later cursor push/pop submit-boundary cleanup removed the one-call
+`cursor_submit_push_pgr()`, `cursor_submit_push_pgr_consume()`,
+`cursor_submit_pop()`, `cursor_submit_pop_keep_ref()`, and
+`cursor_submit_pop_keep_ref_restore()` helpers from `mdbx.c`. Cursor stack
+push, consumed-`pgr_t` push, normal pop, temporary pop-with-ref-retained, and
+temporary-pop restore now validate their prepared descriptors at the local
+helper and then mutate cursor stack state directly. The cursor-full transition,
+value-ref release, page-ref release, and pop/restore top handling remain at the
+same stack ownership boundary where a later async page fetch or completion must
+hand off its pin. Verification passed `git diff --check`, a source scan
+proving the removed cursor push/pop submit helpers are absent from `mdbx.c`,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.107` batch, `1.125` crud, `1.217`
+iterate, `0.970` get, and `1.077` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
