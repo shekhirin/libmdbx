@@ -2561,3 +2561,66 @@ Additional dirty-write queue walk fast-path checkpoint:
   keep the gates passing and improve CRUD/delete averages versus the prior
   checkpoint. Batch remains below the pre-migration baseline and regressed in
   this repeat sample, so the write-heavy migration gap is still open.
+
+Additional sync-submit validation checkpoint:
+
+- added a trusted sync-submit path for `dxb_sync_io_t` descriptors that were
+  just built by `dxb_storage_make_sync_io()` or
+  `dxb_storage_make_meta_sync_io()`.
+- commit, pre-sync, and meta-sync paths now avoid immediately revalidating the
+  freshly constructed sync descriptor and its submit wrapper before issuing
+  `osal_ioring_fsync()`.
+- the old validating submit wrapper was removed after all internal callers were
+  converted to the trusted path.
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_migration_smoke mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|migration_smoke)'`: passed 9/9
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench mdbx_migration_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check reported
+  async/blocking-parallel 1.086, async-many/blocking-parallel 1.077,
+  async-thread/blocking-parallel 1.039,
+  async-thread-many/blocking-parallel 1.054,
+  async-thread-batch/blocking-parallel 1.082,
+  async-batch/blocking-parallel 1.088,
+  async-batch-callback/blocking-parallel 1.088,
+  async-loop/blocking-parallel 1.049, and
+  async-thread-loop/blocking-parallel 1.070. Cursor samples were below
+  blocking-parallel in this run.
+- `make -f GNUmakefile mdbx_migration_bench_lazy`: passed with default
+  explicit batch 961.813 ops/s, crud 50.920 Kops/s, iterate 31.169 Mops/s,
+  get 468.513 Kops/s, delete 59.141 Kops/s; forced no-map batch
+  959.590 ops/s, crud 50.388 Kops/s, iterate 31.603 Mops/s,
+  get 471.354 Kops/s, delete 59.238 Kops/s. Forced/default ratios were batch
+  0.998, crud 0.990, iterate 1.014, get 1.006, delete 1.002.
+- two `make -f GNUmakefile mdbx_migration_bench_lazy_repeat` attempts failed
+  first on forced/default iterate 0.693, then on forced/default iterate 0.696,
+  both just below the 0.700 gate. A third repeat run passed all three paired
+  samples. The passing repeat averages for current explicit default were:
+
+| phase | earlier mapped avg | current explicit default avg | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1033.245 ops/s | 939.804 ops/s | 0.910 |
+| crud | 55.675 Kops/s | 50.782 Kops/s | 0.912 |
+| iterate | 26.143 Mops/s | 28.618 Mops/s | 1.095 |
+| get | 279.409 Kops/s | 468.312 Kops/s | 1.676 |
+| delete | 66.398 Kops/s | 59.014 Kops/s | 0.889 |
+
+- passing repeat averages for current explicit forced no-map against the
+  earlier no-map baseline were:
+
+| phase | earlier no-map avg | current explicit forced avg | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1089.750 ops/s | 968.925 ops/s | 0.889 |
+| crud | 59.787 Kops/s | 50.989 Kops/s | 0.853 |
+| iterate | 25.827 Mops/s | 29.178 Mops/s | 1.130 |
+| get | 274.039 Kops/s | 462.668 Kops/s | 1.688 |
+| delete | 69.067 Kops/s | 59.142 Kops/s | 0.856 |
+
+- conclusion: sync-submit validation overhead is lower and all functional gates
+  pass. The write-heavy benchmark remains in the same noisy band: forced batch
+  improved versus the prior checkpoint, but CRUD/delete remain below the
+  pre-migration baseline and the repeat gate showed near-threshold iterate
+  noise before a passing run.
