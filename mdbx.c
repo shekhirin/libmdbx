@@ -45268,77 +45268,25 @@ static inline bool suitable4loose(const MDBX_txn *txn, pgno_t pgno) {
           txn->geo.first_unallocated <= txn->env->options.dp_loose_limit);
 }
 
-typedef struct dxb_page_retire_page_get_submit_io {
-  MDBX_cursor *cursor;
-  MDBX_txn *txn;
-  pgno_t pgno;
-  txnid_t front;
-  dxb_cursor_page_get_submit_io_t get;
-  unsigned pageflags;
-  bool check_pageflags;
-} dxb_page_retire_page_get_submit_io_t;
-
-static inline int page_retire_make_page_get_submit_io(MDBX_cursor *mc, pgno_t pgno, unsigned pageflags,
-                                                      bool check_pageflags,
-                                                      dxb_page_retire_page_get_submit_io_t *io) {
-  if (unlikely(!mc || !mc->txn || !io))
-    return MDBX_EINVAL;
-  if (unlikely(check_pageflags && !pageflags))
-    return MDBX_EINVAL;
-
-  dxb_cursor_page_get_submit_io_t get;
-  int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS, pgno, mc->txn->front_txnid, &get);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  io->cursor = mc;
-  io->txn = mc->txn;
-  io->pgno = get.get.request.pgno;
-  io->front = get.get.front;
-  io->get = get;
-  io->pageflags = pageflags;
-  io->check_pageflags = check_pageflags;
-  return MDBX_SUCCESS;
-}
-
-static inline int page_retire_page_get_submit_io_validate(const dxb_page_retire_page_get_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->txn || io->cursor->txn != io->txn))
-    return MDBX_EINVAL;
-  if (unlikely(io->front != io->txn->front_txnid || (io->check_pageflags && !io->pageflags)))
-    return MDBX_EINVAL;
-
-  dxb_page_retire_page_get_submit_io_t checked;
-  int err = page_retire_make_page_get_submit_io(io->cursor, io->pgno, io->pageflags, io->check_pageflags, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.txn != io->txn || checked.pgno != io->pgno ||
-               checked.front != io->front || checked.pageflags != io->pageflags ||
-               checked.get.cursor != io->get.cursor || checked.get.ill != io->get.ill ||
-               checked.get.get.request.pgno != io->get.get.request.pgno ||
-               checked.get.get.request.end_pgno != io->get.get.request.end_pgno ||
-               checked.get.get.request.npages != io->get.get.request.npages ||
-               checked.get.get.request.offset != io->get.get.request.offset ||
-               checked.get.get.request.bytes != io->get.get.request.bytes ||
-               checked.get.get.front != io->get.get.front ||
-               checked.get.get.track_private != io->get.get.track_private ||
-               checked.check_pageflags != io->check_pageflags))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
 static inline pgr_t page_retire_page_get(MDBX_cursor *mc, pgno_t pgno, unsigned pageflags, bool check_pageflags) {
-  dxb_page_retire_page_get_submit_io_t submit;
-  int err = page_retire_make_page_get_submit_io(mc, pgno, pageflags, check_pageflags, &submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-  err = page_retire_page_get_submit_io_validate(&submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
+  if (unlikely(!mc || !mc->txn))
+    return pgr_error(MDBX_EINVAL);
+  if (unlikely(check_pageflags && !pageflags))
+    return pgr_error(MDBX_EINVAL);
 
-  pgr_t pgr = page_submit_cursor_get(&submit.get);
-  if (likely(pgr.err == MDBX_SUCCESS) && submit.check_pageflags) {
-    cASSERT0(submit.txn, ((unsigned)pgr.page->flags & ~P_SPILLED) == (submit.pageflags & ~P_FROZEN));
-    cASSERT0(submit.txn, !(submit.pageflags & P_FROZEN) || is_frozen(submit.txn, pgr.page));
+  MDBX_txn *const txn = mc->txn;
+  const txnid_t front = txn->front_txnid;
+  dxb_cursor_page_get_submit_io_t get;
+  int err = page_make_cursor_get_submit_io(mc, P_ILL_BITS, pgno, front, &get);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+  if (unlikely(mc->txn != txn || front != txn->front_txnid))
+    return pgr_error(MDBX_EINVAL);
+
+  pgr_t pgr = page_submit_cursor_get(&get);
+  if (likely(pgr.err == MDBX_SUCCESS) && check_pageflags) {
+    cASSERT0(txn, ((unsigned)pgr.page->flags & ~P_SPILLED) == (pageflags & ~P_FROZEN));
+    cASSERT0(txn, !(pageflags & P_FROZEN) || is_frozen(txn, pgr.page));
   }
   return pgr;
 }
