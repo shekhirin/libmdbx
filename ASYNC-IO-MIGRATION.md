@@ -14403,6 +14403,30 @@ The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
 of `1.129` batch, `1.146` crud, `1.285` iterate, `0.949` get, and `1.057`
 delete.
 
+A later setup descriptor cleanup removed
+`dxb_setup_storage_size_submit_io_t`,
+`dxb_setup_make_storage_size_submit_io()`,
+`dxb_setup_storage_size_submit_io_validate()`,
+`dxb_setup_pagesize_state_submit_io_t`,
+`dxb_setup_make_pagesize_state_submit_io()`,
+`dxb_setup_pagesize_state_submit_io_validate()`,
+`dxb_setup_newdb_filesize_submit_io_t`,
+`dxb_setup_make_newdb_filesize_submit_io()`,
+`dxb_setup_newdb_filesize_submit_io_validate()`, and the now-unused
+`dxb_filesize_set_current_submit_io_equal()` helper from `mdbx.c`.
+`dxb_setup()` now builds, validates, and submits storage descriptors directly
+for page-size state, new-database file-size/current state, and data-file setup
+size. Verification passed `git diff --check`, a source scan proving the
+removed setup descriptor helpers are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.132`
+batch, `1.144` crud, `0.798` iterate, `1.023` get, and `1.070` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
