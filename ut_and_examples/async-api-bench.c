@@ -146,6 +146,12 @@ struct async_thread_worker {
   bool many;
 };
 
+enum async_thread_loop_kind {
+  async_thread_loop_get,
+  async_thread_loop_get_ex,
+  async_thread_loop_lowerbound
+};
+
 struct async_thread_loop_worker {
   struct async_worker worker;
   struct async_get_loop_check check;
@@ -155,6 +161,7 @@ struct async_thread_loop_worker {
   size_t offset;
   size_t completed;
   int rc;
+  enum async_thread_loop_kind kind;
 };
 
 struct async_thread_cursor_get_loop_worker {
@@ -3217,9 +3224,24 @@ static void *async_thread_loop_worker_main(void *arg) {
   worker->check.checked = 0;
   worker->check.key = 0;
   worker->completed = 0;
-  worker->rc = mdbx_async_get_loop(worker->worker.async, worker->worker.txn, worker->dbi, worker->ops,
-                                   async_get_loop_key_func, async_get_loop_result_func, &worker->check,
-                                   &worker->completed, &worker->worker.ops[0]);
+  switch (worker->kind) {
+  case async_thread_loop_get:
+    worker->rc = mdbx_async_get_loop(worker->worker.async, worker->worker.txn, worker->dbi, worker->ops,
+                                     async_get_loop_key_func, async_get_loop_result_func, &worker->check,
+                                     &worker->completed, &worker->worker.ops[0]);
+    break;
+  case async_thread_loop_get_ex:
+    worker->rc = mdbx_async_get_ex_loop(worker->worker.async, worker->worker.txn, worker->dbi, worker->ops,
+                                        async_get_loop_key_func, async_get_ex_loop_result_func,
+                                        &worker->check, &worker->completed, &worker->worker.ops[0]);
+    break;
+  case async_thread_loop_lowerbound:
+    worker->rc = mdbx_async_get_equal_or_great_loop(
+        worker->worker.async, worker->worker.txn, worker->dbi, worker->ops, async_get_loop_key_func,
+        NULL, async_lowerbound_loop_result_func, &worker->check, &worker->completed,
+        &worker->worker.ops[0]);
+    break;
+  }
   if (worker->rc == MDBX_SUCCESS) {
     worker->worker.pending = 1;
     worker->rc = wait_success(&worker->worker.ops[0], NULL, __FILE__, __LINE__);
@@ -3235,7 +3257,8 @@ static void *async_thread_loop_worker_main(void *arg) {
   return NULL;
 }
 
-static double async_threaded_loop_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops, size_t workers_count) {
+static double async_threaded_loop_get_impl(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops,
+                                           size_t workers_count, enum async_thread_loop_kind kind) {
   pthread_t *threads = calloc(workers_count, sizeof(*threads));
   struct async_thread_loop_worker *workers = calloc(workers_count, sizeof(*workers));
   if (!threads || !workers) {
@@ -3258,6 +3281,7 @@ static double async_threaded_loop_get(MDBX_env *env, MDBX_dbi dbi, size_t items,
     workers[i].ops = base_ops + (i < extra_ops);
     workers[i].offset = offset;
     offset += workers[i].ops;
+    workers[i].kind = kind;
     initialized_count = i + 1;
     if (async_worker_init(env, &workers[i].worker, dbi, 1) != MDBX_SUCCESS) {
       failed = 1;
@@ -3297,6 +3321,21 @@ bailout:
   if (failed || finish <= start)
     return -1.0;
   return (double)ops * 1000000000.0 / (double)(finish - start);
+}
+
+static double async_threaded_loop_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops,
+                                      size_t workers_count) {
+  return async_threaded_loop_get_impl(env, dbi, items, ops, workers_count, async_thread_loop_get);
+}
+
+static double async_threaded_get_ex_loop_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops,
+                                             size_t workers_count) {
+  return async_threaded_loop_get_impl(env, dbi, items, ops, workers_count, async_thread_loop_get_ex);
+}
+
+static double async_threaded_lowerbound_loop_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops,
+                                                 size_t workers_count) {
+  return async_threaded_loop_get_impl(env, dbi, items, ops, workers_count, async_thread_loop_lowerbound);
 }
 
 static double async_batch_parallel_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops, size_t workers_count,
@@ -4891,6 +4930,10 @@ int main(void) {
   const double async_get_ex_loop_parallel = async_get_ex_loop_get(env, dbi, items, ops, workers);
   const double async_lowerbound_loop_parallel = async_lowerbound_loop_get(env, dbi, items, ops, workers);
   const double async_threaded_loop_parallel = async_threaded_loop_get(env, dbi, items, ops, workers);
+  const double async_threaded_get_ex_loop_parallel =
+      async_threaded_get_ex_loop_get(env, dbi, items, ops, workers);
+  const double async_threaded_lowerbound_loop_parallel =
+      async_threaded_lowerbound_loop_get(env, dbi, items, ops, workers);
   const double blocking_cursor_get_serial = blocking_serial_cursor_get(env, dbi, items, cursor_pairs);
   const double blocking_cursor_get_parallel = blocking_parallel_cursor_get(env, dbi, items, cursor_pairs, workers);
   const double async_cursor_get_parallel = async_parallel_cursor_get(env, dbi, items, cursor_pairs, workers);
@@ -4995,6 +5038,8 @@ int main(void) {
   print_rate("async get_ex loop", async_get_ex_loop_parallel);
   print_rate("async lowerbound loop", async_lowerbound_loop_parallel);
   print_rate("async threaded get loop", async_threaded_loop_parallel);
+  print_rate("async threaded get_ex loop", async_threaded_get_ex_loop_parallel);
+  print_rate("async threaded lower loop", async_threaded_lowerbound_loop_parallel);
   print_rate("blocking cursor get", blocking_cursor_get_serial);
   print_rate("parallel cursor get", blocking_cursor_get_parallel);
   print_rate("async cursor get", async_cursor_get_parallel);
@@ -5075,6 +5120,12 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-lower-loop/par", async_lowerbound_loop_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_threaded_loop_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-loop/par", async_threaded_loop_parallel / blocking_parallel);
+  if (blocking_parallel > 0.0 && async_threaded_get_ex_loop_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-get-ex-loop/par",
+           async_threaded_get_ex_loop_parallel / blocking_parallel);
+  if (blocking_parallel > 0.0 && async_threaded_lowerbound_loop_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-lower-loop/par",
+           async_threaded_lowerbound_loop_parallel / blocking_parallel);
   if (async_parallel > 0.0 && async_many_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-many/async", async_many_parallel / async_parallel);
   if (async_threaded_parallel > 0.0 && async_threaded_many_parallel > 0.0)
@@ -5086,12 +5137,18 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-get-ex-batch/many", async_get_ex_batch_parallel / async_get_ex_many_parallel);
   if (async_get_ex_loop_parallel > 0.0 && async_get_ex_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-get-ex-batch/loop", async_get_ex_batch_parallel / async_get_ex_loop_parallel);
+  if (async_get_ex_loop_parallel > 0.0 && async_threaded_get_ex_loop_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-get-ex-loop/loop",
+           async_threaded_get_ex_loop_parallel / async_get_ex_loop_parallel);
   if (async_batch_parallel > 0.0 && async_lowerbound_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-lower-batch/batch", async_lowerbound_batch_parallel / async_batch_parallel);
   if (async_lowerbound_many_parallel > 0.0 && async_lowerbound_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-lower-batch/many", async_lowerbound_batch_parallel / async_lowerbound_many_parallel);
   if (async_lowerbound_loop_parallel > 0.0 && async_lowerbound_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-lower-batch/loop", async_lowerbound_batch_parallel / async_lowerbound_loop_parallel);
+  if (async_lowerbound_loop_parallel > 0.0 && async_threaded_lowerbound_loop_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-lower-loop/loop",
+           async_threaded_lowerbound_loop_parallel / async_lowerbound_loop_parallel);
   if (blocking_serial > 0.0 && async_parallel > 0.0)
     printf("%-28s %8.3f\n", "async/blocking serial", async_parallel / blocking_serial);
   if (blocking_serial > 0.0 && async_many_parallel > 0.0)
@@ -5122,6 +5179,12 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-lower-loop/ser", async_lowerbound_loop_parallel / blocking_serial);
   if (blocking_serial > 0.0 && async_threaded_loop_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-loop/ser", async_threaded_loop_parallel / blocking_serial);
+  if (blocking_serial > 0.0 && async_threaded_get_ex_loop_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-get-ex-loop/ser",
+           async_threaded_get_ex_loop_parallel / blocking_serial);
+  if (blocking_serial > 0.0 && async_threaded_lowerbound_loop_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-lower-loop/ser",
+           async_threaded_lowerbound_loop_parallel / blocking_serial);
   if (blocking_cursor_get_parallel > 0.0 && async_cursor_get_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-cursor-get/par", async_cursor_get_parallel / blocking_cursor_get_parallel);
   if (blocking_cursor_get_serial > 0.0 && async_cursor_get_parallel > 0.0)

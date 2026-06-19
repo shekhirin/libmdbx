@@ -3760,3 +3760,48 @@ Additional threaded cursor-batch benchmark checkpoint:
   submission and now have benchmark evidence above blocking pthread-parallel
   cursor batch. The threaded cursor batch-loop helper remains the faster coarse
   async cursor-batch shape in this sample.
+
+Additional threaded point-GET-loop benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` so the existing threaded
+  point-GET loop runner also benchmarks `mdbx_async_get_ex_loop()` and
+  `mdbx_async_get_equal_or_great_loop()`. Each application pthread owns its
+  async executor and read transaction, then submits one coarse loop operation
+  for its assigned key range.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking parallel get
+  885.925 Kops/s, async get loop 1.097 Mops/s, async get_ex loop
+  1.120 Mops/s, async lowerbound loop 921.331 Kops/s, async threaded get loop
+  1.019 Mops/s, async threaded get_ex loop 1.100 Mops/s, and async threaded
+  lower loop 1.105 Mops/s.
+- ratios were async-loop/blocking par 1.238, async-get-ex-loop/par 1.265,
+  async-lower-loop/par 1.040, async-thread-loop/par 1.150,
+  async-thread-get-ex-loop/par 1.242, async-thread-lower-loop/par 1.248,
+  async-thread-get-ex-loop/loop 0.982, and async-thread-lower-loop/loop 1.200.
+- direct comparison with the previous threaded cursor-batch checkpoint's
+  point-GET numbers: blocking parallel get moved 691.521 -> 885.925 Kops/s,
+  async get loop moved 863.019 Kops/s -> 1.097 Mops/s, async get_ex loop
+  621.682 Kops/s -> 1.120 Mops/s, async lowerbound loop 805.026 ->
+  921.331 Kops/s, and async threaded get loop 1.007 -> 1.019 Mops/s. The new
+  threaded get_ex and lowerbound loop measurements are both above the current
+  blocking pthread-parallel point-GET baseline.
+- comparison against the pre-async ioarena baseline at the top of this log is
+  still not apples-to-apples: the original baseline measures storage-level
+  ioarena phases, while this benchmark measures public async API overhead on an
+  in-process seeded workload. This checkpoint strengthens the API-level
+  parallel read evidence, but it does not close or remeasure the separate
+  storage/ioarena migration gap.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=188 async-covered=132 async-only=56 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the point-GET family now has multi-application-thread loop
+  benchmark coverage for plain get, get_ex, and lower-bound reads. In this
+  reduced run all three threaded loop shapes beat the current blocking
+  pthread-parallel point-GET baseline.
