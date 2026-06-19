@@ -711,3 +711,28 @@ Additional transaction utility/lifecycle checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.075, async-batch/blocking-parallel ratio 1.079, and async-cursor/blocking-parallel ratio 1.126
+
+Additional DBI/data utility checkpoint:
+
+- added async wrappers for DBI handle close, named-table enumeration, cached
+  gets (`mdbx_cache_get()` and `mdbx_cache_get_SingleThreaded()`), and
+  preservation-callback replacement via `mdbx_replace_ex()`
+- cache-get wrappers copy the submitted key before enqueueing and write both
+  the returned data descriptor and full `MDBX_cache_result_t` after the worker
+  finishes; the caller-owned cache entry and output storage remain live until
+  completion
+- `mdbx_async_replace()` and `mdbx_async_replace_ex()` now share the same
+  enqueue helper, preserving the existing async restrictions on `MDBX_RESERVE`
+  and `MDBX_MULTIPLE` while letting the worker invoke the requested blocking
+  replacement function
+- smoke coverage now verifies async table enumeration callbacks, successful
+  async DBI handle close after a committed open, async cached read refresh plus
+  single-thread cache hit, and a dirty-page `replace_ex` preservation callback
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.089, async-batch/blocking-parallel ratio 1.088, and async-cursor/blocking-parallel ratio 0.649

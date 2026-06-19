@@ -16,6 +16,15 @@ struct async_probe {
   unsigned calls;
 };
 
+struct enum_probe {
+  unsigned calls;
+  bool saw_target;
+};
+
+struct preserve_probe {
+  unsigned calls;
+};
+
 static int fail_rc(const char *expr, int rc, const char *file, int line) {
   fprintf(stderr, "%s:%d: %s failed: (%d) %s\n", file, line, expr, rc, mdbx_strerror(rc));
   return rc ? rc : MDBX_PROBLEM;
@@ -66,6 +75,38 @@ static int async_probe_func(MDBX_env *env, void *context) {
   if (!env || !probe)
     return MDBX_EINVAL;
   probe->calls += 1;
+  return MDBX_SUCCESS;
+}
+
+static int enum_probe_func(void *ctx, const MDBX_txn *txn, const MDBX_val *name, MDBX_db_flags_t flags,
+                           const struct MDBX_stat *stat, MDBX_dbi dbi) {
+  (void)txn;
+  (void)flags;
+  static const char target[] = "async-enum-target";
+  struct enum_probe *const probe = (struct enum_probe *)ctx;
+  if (!probe || !name)
+    return MDBX_EINVAL;
+  probe->calls += 1;
+  if (name->iov_len == sizeof(target) - 1 && memcmp(name->iov_base, target, sizeof(target) - 1) == 0) {
+    probe->saw_target = true;
+    if (!stat || stat->ms_entries != 1 || dbi == 0)
+      return MDBX_PROBLEM;
+  }
+  return MDBX_SUCCESS;
+}
+
+static int preserve_probe_func(void *context, MDBX_val *target, const void *src, size_t bytes) {
+  struct preserve_probe *const probe = (struct preserve_probe *)context;
+  if (!probe || !target || !src)
+    return MDBX_EINVAL;
+  probe->calls += 1;
+  if (target->iov_len < bytes) {
+    target->iov_base = NULL;
+    target->iov_len = bytes;
+    return MDBX_RESULT_TRUE;
+  }
+  memcpy(target->iov_base, src, bytes);
+  target->iov_len = bytes;
   return MDBX_SUCCESS;
 }
 
@@ -147,6 +188,8 @@ int main(void) {
   MDBX_cursor *cursor2 = NULL;
   MDBX_async_op *op = NULL;
   MDBX_dbi dbi = 0;
+  MDBX_dbi enum_dbi = 0;
+  MDBX_dbi close_dbi = 0;
   MDBX_dbi drop_dbi = 0;
   MDBX_dbi rename_dbi = 0;
   MDBX_dbi range_dbi = 0;
@@ -162,6 +205,7 @@ int main(void) {
   uint64_t amend_key = ITEM_COUNT + 102;
   uint64_t amend_value = expected_value(amend_key);
   uint64_t replacement_value = expected_value(1) + UINT64_C(1000);
+  uint64_t replace_ex_dirty_value = expected_value(2) + UINT64_C(2000);
   MDBX_val key_values[ITEM_COUNT];
   MDBX_val delete_keys[ITEM_COUNT];
   MDBX_val put_values[ITEM_COUNT];
@@ -178,6 +222,7 @@ int main(void) {
   MDBX_val amend_key_value = val(&amend_key, sizeof(amend_key));
   MDBX_val amend_put_value = val(&amend_value, sizeof(amend_value));
   MDBX_val replacement_put_value = val(&replacement_value, sizeof(replacement_value));
+  MDBX_val replace_ex_dirty_put_value = val(&replace_ex_dirty_value, sizeof(replace_ex_dirty_value));
   MDBX_val get_values[ITEM_COUNT];
   MDBX_async_op *ops[ITEM_COUNT];
   int op_results[ITEM_COUNT];
@@ -193,7 +238,7 @@ int main(void) {
   }
 
   CHECK(mdbx_env_create(&env));
-  CHECK(mdbx_env_set_maxdbs(env, 8));
+  CHECK(mdbx_env_set_maxdbs(env, 12));
   CHECK(mdbx_env_open(env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM, 0664));
   CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
   REQUIRE(mdbx_async_env(async) == env, "async executor returned wrong environment");
@@ -389,6 +434,18 @@ int main(void) {
     put_values[i] = val(&values[i], sizeof(values[i]));
   }
 
+  CHECK(mdbx_async_dbi_open(async, txn, "async-enum-target", MDBX_CREATE, &enum_dbi, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put(async, txn, enum_dbi, &key_values[2], &put_values[2], 0, &op));
+  CHECK_OP(op);
+  struct enum_probe enum_probe = {0, false};
+  CHECK(mdbx_async_enumerate_tables(async, txn, enum_probe_func, &enum_probe, &op));
+  CHECK_OP(op);
+  REQUIRE(enum_probe.calls > 0 && enum_probe.saw_target, "async enumerate did not see target table");
+  CHECK(mdbx_async_drop(async, txn, enum_dbi, true, &op));
+  CHECK_OP(op);
+  enum_dbi = 0;
+
   CHECK(mdbx_async_dbi_open(async, txn, "async-drop-target", MDBX_CREATE, &drop_dbi, &op));
   CHECK_OP(op);
   CHECK(mdbx_async_put(async, txn, drop_dbi, &key_values[0], &put_values[0], 0, &op));
@@ -515,6 +572,27 @@ int main(void) {
   CHECK(mdbx_async_env_stat_ex(async, NULL, &env_stat, sizeof(env_stat), &op));
   CHECK_OP(op);
   REQUIRE(env_stat.ms_entries == ITEM_COUNT, "unexpected async environment stat entries after commit");
+
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_dbi_open(async, txn, "async-close-target", MDBX_CREATE, &close_dbi, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  CHECK_OP(op);
+  txn = NULL;
+  CHECK(mdbx_async_dbi_close(async, close_dbi, &op));
+  CHECK_OP(op);
+  close_dbi = 0;
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_dbi_open(async, txn, "async-close-target", MDBX_DB_DEFAULTS, &close_dbi, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_drop(async, txn, close_dbi, true, &op));
+  CHECK_OP(op);
+  close_dbi = 0;
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  CHECK_OP(op);
+  txn = NULL;
 
   CHECK(mdbx_txn_begin(env, NULL, MDBX_TXN_RDONLY, &origin_txn));
   CHECK(mdbx_async_txn_clone(async, origin_txn, &clone_txn, &txn_userctx_a, &op));
@@ -653,6 +731,25 @@ int main(void) {
     }
     CHECK(expect_value(&get_values[i], keys[i], __FILE__, __LINE__));
   }
+
+  MDBX_cache_entry_t cache_entry;
+  mdbx_cache_init(&cache_entry);
+  MDBX_cache_result_t cache_result = {MDBX_SUCCESS, MDBX_CACHE_ERROR};
+  MDBX_val cache_data = val(NULL, 0);
+  CHECK(mdbx_async_cache_get(async, txn, dbi, &key_values[4], &cache_data, &cache_entry, &cache_result, &op));
+  CHECK_OP(op);
+  REQUIRE(cache_result.errcode == MDBX_SUCCESS && cache_result.status != MDBX_CACHE_ERROR,
+          "unexpected async cache get result");
+  CHECK(expect_value(&cache_data, keys[4], __FILE__, __LINE__));
+
+  MDBX_cache_result_t cache_hit_result = {MDBX_SUCCESS, MDBX_CACHE_ERROR};
+  MDBX_val cache_hit_data = val(NULL, 0);
+  CHECK(mdbx_async_cache_get_SingleThreaded(async, txn, dbi, &key_values[4], &cache_hit_data, &cache_entry,
+                                            &cache_hit_result, &op));
+  CHECK_OP(op);
+  REQUIRE(cache_hit_result.errcode == MDBX_SUCCESS && cache_hit_result.status == MDBX_CACHE_HIT,
+          "unexpected async single-thread cache get result");
+  CHECK(expect_value(&cache_hit_data, keys[4], __FILE__, __LINE__));
 
   int userctx_a = 1;
   int userctx_b = 2;
@@ -957,6 +1054,17 @@ int main(void) {
   CHECK(mdbx_async_cursor_close(async, cursor, &op));
   CHECK_OP(op);
   cursor = NULL;
+
+  CHECK(mdbx_async_put(async, txn, dbi, &key_values[2], &replace_ex_dirty_put_value, MDBX_CURRENT, &op));
+  CHECK_OP(op);
+  struct preserve_probe preserve_probe = {0};
+  uint64_t replace_ex_old_buffer = 0;
+  MDBX_val replace_ex_old_value = val(&replace_ex_old_buffer, sizeof(replace_ex_old_buffer));
+  CHECK(mdbx_async_replace_ex(async, txn, dbi, &key_values[2], &put_values[2], &replace_ex_old_value, 0,
+                              preserve_probe_func, &preserve_probe, &op));
+  CHECK_OP(op);
+  REQUIRE(preserve_probe.calls == 1, "async replace_ex preserver was not called");
+  CHECK(expect_payload(&replace_ex_old_value, replace_ex_dirty_value, __FILE__, __LINE__));
 
   uint64_t replace_old_buffer = 0;
   MDBX_val replace_old_value = val(&replace_old_buffer, sizeof(replace_old_buffer));

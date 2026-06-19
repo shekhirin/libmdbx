@@ -15023,16 +15023,21 @@ enum mdbx_async_opcode {
   async_op_dbi_flags_ex,
   async_op_dbi_dupsort_depthmask,
   async_op_dbi_sequence,
+  async_op_dbi_close,
+  async_op_enumerate_tables,
   async_op_drop,
   async_op_canary_put,
   async_op_canary_get,
   async_op_get,
   async_op_get_ex,
   async_op_get_equal_or_great,
+  async_op_cache_get,
+  async_op_cache_get_singlethreaded,
   async_op_get_batch,
   async_op_put,
   async_op_put_batch,
   async_op_replace,
+  async_op_replace_ex,
   async_op_del,
   async_op_del_batch,
   async_op_cursor_create,
@@ -15269,6 +15274,14 @@ struct MDBX_async_op {
       uint64_t increment;
     } dbi_sequence;
     struct {
+      MDBX_dbi dbi;
+    } dbi_close;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_table_enum_func func;
+      void *ctx;
+    } enumerate_tables;
+    struct {
       MDBX_txn *txn;
       MDBX_dbi dbi;
       bool del;
@@ -15303,6 +15316,13 @@ struct MDBX_async_op {
     struct {
       const MDBX_txn *txn;
       MDBX_dbi dbi;
+      MDBX_val *data;
+      volatile MDBX_cache_entry_t *entry;
+      MDBX_cache_result_t *result;
+    } cache_get;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_dbi dbi;
       const MDBX_val *keys;
       MDBX_val *data;
       int *results;
@@ -15328,6 +15348,8 @@ struct MDBX_async_op {
       MDBX_dbi dbi;
       MDBX_val *old_data;
       MDBX_put_flags_t flags;
+      MDBX_preserve_func preserver;
+      void *preserver_context;
       bool has_new_data;
       bool old_data_copied;
     } replace;
@@ -15732,6 +15754,11 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_dbi_sequence:
     return mdbx_dbi_sequence(op->args.dbi_sequence.txn, op->args.dbi_sequence.dbi,
                              op->args.dbi_sequence.result, op->args.dbi_sequence.increment);
+  case async_op_dbi_close:
+    return mdbx_dbi_close(op->async->env, op->args.dbi_close.dbi);
+  case async_op_enumerate_tables:
+    return mdbx_enumerate_tables(op->args.enumerate_tables.txn, op->args.enumerate_tables.func,
+                                 op->args.enumerate_tables.ctx);
   case async_op_drop:
     return mdbx_drop(op->args.drop.txn, op->args.drop.dbi, op->args.drop.del);
   case async_op_canary_put:
@@ -15768,6 +15795,28 @@ static int async_op_execute(MDBX_async_op *op) {
     }
     return rc;
   }
+  case async_op_cache_get:
+  case async_op_cache_get_singlethreaded: {
+    MDBX_val data = {nullptr, 0};
+    MDBX_cache_result_t result = (op->opcode == async_op_cache_get)
+                                     ? mdbx_cache_get(op->args.cache_get.txn, op->args.cache_get.dbi,
+                                                      &op->key, &data, op->args.cache_get.entry)
+                                     : mdbx_cache_get_SingleThreaded(op->args.cache_get.txn,
+                                                                     op->args.cache_get.dbi, &op->key,
+                                                                     &data,
+                                                                     (MDBX_cache_entry_t *)op->args.cache_get.entry);
+    if (op->args.cache_get.result)
+      *op->args.cache_get.result = result;
+    if (op->args.cache_get.data) {
+      if (result.errcode == MDBX_SUCCESS) {
+        *op->args.cache_get.data = data;
+      } else {
+        op->args.cache_get.data->iov_base = nullptr;
+        op->args.cache_get.data->iov_len = 0;
+      }
+    }
+    return result.errcode;
+  }
   case async_op_get_batch:
     for (size_t i = 0; i < op->args.get_batch.count; ++i) {
       MDBX_val data = {nullptr, 0};
@@ -15799,12 +15848,19 @@ static int async_op_execute(MDBX_async_op *op) {
       op->args.put_batch.results[i] = rc;
     }
     return MDBX_SUCCESS;
-  case async_op_replace: {
+  case async_op_replace:
+  case async_op_replace_ex: {
     MDBX_val new_data = op->data;
     MDBX_val old_data = op->args.replace.old_data_copied ? op->old_data : *op->args.replace.old_data;
-    const int rc = mdbx_replace(op->args.replace.txn, op->args.replace.dbi, &op->key,
-                                op->args.replace.has_new_data ? &new_data : nullptr, &old_data,
-                                op->args.replace.flags);
+    const int rc =
+        (op->opcode == async_op_replace)
+            ? mdbx_replace(op->args.replace.txn, op->args.replace.dbi, &op->key,
+                           op->args.replace.has_new_data ? &new_data : nullptr, &old_data,
+                           op->args.replace.flags)
+            : mdbx_replace_ex(op->args.replace.txn, op->args.replace.dbi, &op->key,
+                              op->args.replace.has_new_data ? &new_data : nullptr, &old_data,
+                              op->args.replace.flags, op->args.replace.preserver,
+                              op->args.replace.preserver_context);
     if (!op->args.replace.old_data_copied)
       *op->args.replace.old_data = old_data;
     return rc;
@@ -17134,6 +17190,39 @@ int mdbx_async_dbi_sequence(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, uint
   return LOG_IFERR(rc);
 }
 
+int mdbx_async_dbi_close(MDBX_async *async, MDBX_dbi dbi, MDBX_async_op **out) {
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_dbi_close);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.dbi_close.dbi = dbi;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_enumerate_tables(MDBX_async *async, const MDBX_txn *txn, MDBX_table_enum_func func, void *ctx,
+                                MDBX_async_op **out) {
+  if (unlikely(!txn || !func))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_enumerate_tables);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.enumerate_tables.txn = txn;
+  op->args.enumerate_tables.func = func;
+  op->args.enumerate_tables.ctx = ctx;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
 int mdbx_async_drop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, bool del, MDBX_async_op **out) {
   if (unlikely(!txn))
     return LOG_IFERR(MDBX_EINVAL);
@@ -17262,6 +17351,43 @@ int mdbx_async_get_equal_or_great(MDBX_async *async, const MDBX_txn *txn, MDBX_d
   return LOG_IFERR(rc);
 }
 
+static int async_cache_get_submit(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
+                                  MDBX_val *data, volatile MDBX_cache_entry_t *entry, MDBX_cache_result_t *result,
+                                  enum mdbx_async_opcode opcode, MDBX_async_op **out) {
+  if (unlikely(!txn || !data || !entry || !result))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, opcode);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, key);
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.cache_get.txn = txn;
+    op->args.cache_get.dbi = dbi;
+    op->args.cache_get.data = data;
+    op->args.cache_get.entry = entry;
+    op->args.cache_get.result = result;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_cache_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *data,
+                         volatile MDBX_cache_entry_t *entry, MDBX_cache_result_t *result, MDBX_async_op **out) {
+  return async_cache_get_submit(async, txn, dbi, key, data, entry, result, async_op_cache_get, out);
+}
+
+int mdbx_async_cache_get_SingleThreaded(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
+                                        MDBX_val *data, MDBX_cache_entry_t *entry, MDBX_cache_result_t *result,
+                                        MDBX_async_op **out) {
+  return async_cache_get_submit(async, txn, dbi, key, data, entry, result, async_op_cache_get_singlethreaded, out);
+}
+
 int mdbx_async_get_batch(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[], MDBX_val data[],
                          int results[], size_t count, MDBX_async_op **out) {
   if (unlikely(!txn || !keys || !data || !results || !count))
@@ -17337,8 +17463,10 @@ int mdbx_async_put_batch(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const M
   return LOG_IFERR(rc);
 }
 
-int mdbx_async_replace(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *new_data,
-                       MDBX_val *old_data, MDBX_put_flags_t flags, MDBX_async_op **out) {
+static int async_replace_submit(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
+                                MDBX_val *new_data, MDBX_val *old_data, MDBX_put_flags_t flags,
+                                MDBX_preserve_func preserver, void *preserver_context,
+                                enum mdbx_async_opcode opcode, MDBX_async_op **out) {
   if (unlikely(!txn || !old_data || old_data == new_data))
     return LOG_IFERR(MDBX_EINVAL);
   if (unlikely(flags & (MDBX_RESERVE | MDBX_MULTIPLE)))
@@ -17348,7 +17476,7 @@ int mdbx_async_replace(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDB
     return LOG_IFERR(MDBX_EINVAL);
 
   MDBX_async_op *op = nullptr;
-  int rc = async_op_alloc(async, &op, async_op_replace);
+  int rc = async_op_alloc(async, &op, opcode);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, key);
@@ -17361,6 +17489,8 @@ int mdbx_async_replace(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDB
     op->args.replace.dbi = dbi;
     op->args.replace.old_data = old_data;
     op->args.replace.flags = flags;
+    op->args.replace.preserver = preserver;
+    op->args.replace.preserver_context = preserver_context;
     op->args.replace.has_new_data = new_data != nullptr;
     op->args.replace.old_data_copied = old_data_is_selector;
     rc = async_op_enqueue(async, op, out);
@@ -17371,6 +17501,19 @@ int mdbx_async_replace(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDB
     osal_free(op);
   }
   return LOG_IFERR(rc);
+}
+
+int mdbx_async_replace(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *new_data,
+                       MDBX_val *old_data, MDBX_put_flags_t flags, MDBX_async_op **out) {
+  return async_replace_submit(async, txn, dbi, key, new_data, old_data, flags, nullptr, nullptr, async_op_replace,
+                              out);
+}
+
+int mdbx_async_replace_ex(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *new_data,
+                          MDBX_val *old_data, MDBX_put_flags_t flags, MDBX_preserve_func preserver,
+                          void *preserver_context, MDBX_async_op **out) {
+  return async_replace_submit(async, txn, dbi, key, new_data, old_data, flags, preserver, preserver_context,
+                              async_op_replace_ex, out);
 }
 
 int mdbx_async_del(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, const MDBX_val *data,

@@ -4941,6 +4941,11 @@ LIBMDBX_API int mdbx_async_dbi_dupsort_depthmask(MDBX_async *async, const MDBX_t
 LIBMDBX_API int mdbx_async_dbi_sequence(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, uint64_t *result,
                                         uint64_t increment, MDBX_async_op **op);
 
+/** \brief Asynchronously close a table handle on the executor's environment.
+ * \ingroup c_async
+ * \see mdbx_dbi_close() */
+LIBMDBX_API int mdbx_async_dbi_close(MDBX_async *async, MDBX_dbi dbi, MDBX_async_op **op);
+
 /** \brief Asynchronously purge or delete a table.
  * \ingroup c_async
  * \see mdbx_drop() */
@@ -5704,6 +5709,13 @@ typedef int (*MDBX_table_enum_func)(void *ctx, const MDBX_txn *txn, const MDBX_v
  * \returns A non-zero error value on failure and 0 on success. */
 LIBMDBX_API int mdbx_enumerate_tables(const MDBX_txn *txn, MDBX_table_enum_func func, void *ctx);
 
+/** \brief Asynchronously enumerate user's named tables in a database.
+ * \ingroup c_async
+ * \details The callback runs on the async executor worker thread.
+ * \see mdbx_enumerate_tables() */
+LIBMDBX_API int mdbx_async_enumerate_tables(MDBX_async *async, const MDBX_txn *txn, MDBX_table_enum_func func,
+                                            void *ctx, MDBX_async_op **op);
+
 /** \defgroup value2key Value-to-Key functions
  * \brief Value-to-Key functions to
  * \ref avoid_custom_comparators "avoid using custom comparators"
@@ -6103,6 +6115,15 @@ typedef struct MDBX_cache_result {
 LIBMDBX_API MDBX_cache_result_t mdbx_cache_get(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *data,
                                                volatile MDBX_cache_entry_t *entry);
 
+/** \brief Asynchronously get an item using a cache entry.
+ * \ingroup c_async
+ * \details The key bytes are copied during submission. The `data`, `entry`,
+ *          and `result` outputs must remain valid until completion.
+ * \see mdbx_cache_get() */
+LIBMDBX_API int mdbx_async_cache_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
+                                     MDBX_val *data, volatile MDBX_cache_entry_t *entry,
+                                     MDBX_cache_result_t *result, MDBX_async_op **op);
+
 /** \brief Gets items from a table using cache within single-thread cases only.
  * \ingroup c_crud
  * \details The essence of this "caching" is using a cached information to check as quickly as possible whether the data
@@ -6129,6 +6150,16 @@ LIBMDBX_API MDBX_cache_result_t mdbx_cache_get(const MDBX_txn *txn, MDBX_dbi dbi
  * and the cache entry processing both. */
 LIBMDBX_API MDBX_cache_result_t mdbx_cache_get_SingleThreaded(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
                                                               MDBX_val *data, MDBX_cache_entry_t *entry);
+
+/** \brief Asynchronously get an item using a single-threaded cache entry.
+ * \ingroup c_async
+ * \details The key bytes are copied during submission. The `data`, `entry`,
+ *          and `result` outputs must remain valid until completion.
+ * \see mdbx_cache_get_SingleThreaded() */
+LIBMDBX_API int mdbx_async_cache_get_SingleThreaded(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                                    const MDBX_val *key, MDBX_val *data,
+                                                    MDBX_cache_entry_t *entry, MDBX_cache_result_t *result,
+                                                    MDBX_async_op **op);
 
 /** \brief Store items into a table.
  * \ingroup c_crud
@@ -6320,6 +6351,17 @@ typedef int (*MDBX_preserve_func)(void *context, MDBX_val *target, const void *s
 LIBMDBX_API int mdbx_replace_ex(MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *new_data,
                                 MDBX_val *old_data, MDBX_put_flags_t flags, MDBX_preserve_func preserver,
                                 void *preserver_context);
+
+/** \brief Asynchronously replace an item using a preservation callback.
+ * \ingroup c_async
+ * \details The key and optional new data bytes are copied during submission.
+ *          The `old_data` storage and preservation callback context must remain
+ *          valid until completion. The preservation callback runs on the async
+ *          executor worker thread.
+ * \see mdbx_replace_ex() */
+LIBMDBX_API int mdbx_async_replace_ex(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
+                                      MDBX_val *new_data, MDBX_val *old_data, MDBX_put_flags_t flags,
+                                      MDBX_preserve_func preserver, void *preserver_context, MDBX_async_op **op);
 
 /** \brief Delete items from a table.
  * \ingroup c_crud
