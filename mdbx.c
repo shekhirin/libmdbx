@@ -26153,7 +26153,7 @@ static dxb_filesize_result_t dxb_storage_submit_set_filesize_bytes(dxb_storage_t
   rc = dxb_fault_inject("setsize");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_filesize_error(rc);
-  rc = osal_fsetsize(dxb_storage_data_fd(storage), setsize->target);
+  rc = osal_ioring_fsetsize((osal_ioring_t *)&storage->ioring, dxb_storage_data_fd(storage), setsize->target);
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_filesize_submitted_error(rc);
   rc = dxb_fault_inject("setsize-complete");
@@ -37173,6 +37173,77 @@ bailout:
 }
 #endif /* AT_EMPTY_PATH && STATX_SIZE */
 
+#if MDBX_USE_FALLOCATE
+#define MDBX_IORING_OP_FALLOCATE 17u /* Stable Linux io_uring ABI opcode value. */
+
+static int osal_ioring_linux_uring_fallocate(osal_ioring_t *ior, mdbx_filehandle_t fd, uint64_t offset,
+                                             uint64_t bytes, unsigned mode) {
+  if (unlikely(!osal_ioring_linux_uring_ready(ior)))
+    return MDBX_EINVAL;
+  if (unlikely(offset > (uint64_t)OFF_T_MAX || bytes > (uint64_t)OFF_T_MAX))
+    return MDBX_EINVAL;
+
+  int rc = osal_ioring_linux_uring_lock(ior);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  const uint32_t sq_entries = *ior->linux_uring_sq_entries;
+  const uint32_t sq_mask = *ior->linux_uring_sq_mask;
+  const uint32_t head = osal_ioring_linux_load(ior->linux_uring_sq_head);
+  uint32_t tail = osal_ioring_linux_load(ior->linux_uring_sq_tail);
+  if (unlikely(tail - head >= sq_entries)) {
+    rc = EBUSY;
+    goto bailout;
+  }
+
+  const uint32_t index = tail & sq_mask;
+  struct io_uring_sqe *const sqe = &ior->linux_uring_sqes[index];
+  memset(sqe, 0, sizeof(*sqe));
+  sqe->opcode = MDBX_IORING_OP_FALLOCATE;
+  sqe->fd = fd;
+  sqe->off = offset;
+  sqe->addr = bytes;
+  sqe->len = mode;
+  sqe->user_data = (uintptr_t)ior;
+  ior->linux_uring_sq_array[index] = index;
+  osal_ioring_linux_store(ior->linux_uring_sq_tail, tail + 1);
+
+  unsigned submitted = 0;
+  rc = osal_ioring_linux_uring_submit(ior, 1, &submitted);
+  if (unlikely(rc != MDBX_SUCCESS || submitted != 1)) {
+    rc = (rc != MDBX_SUCCESS) ? rc : MDBX_EIO;
+    goto bailout;
+  }
+
+  uint32_t cq_head = osal_ioring_linux_load(ior->linux_uring_cq_head);
+  uint32_t cq_tail = osal_ioring_linux_load(ior->linux_uring_cq_tail);
+  while (cq_head == cq_tail) {
+    rc = osal_ioring_linux_enter(ior, 0, 1, IORING_ENTER_GETEVENTS);
+    if (unlikely(rc < 0)) {
+      rc = -rc;
+      goto bailout;
+    }
+    cq_head = osal_ioring_linux_load(ior->linux_uring_cq_head);
+    cq_tail = osal_ioring_linux_load(ior->linux_uring_cq_tail);
+  }
+
+  const uint32_t cq_index = cq_head & *ior->linux_uring_cq_mask;
+  const struct io_uring_cqe *const cqe = &ior->linux_uring_cqes[cq_index];
+  if (unlikely(cqe->user_data != (uintptr_t)ior))
+    rc = MDBX_EINVAL;
+  else if (unlikely(cqe->res < 0))
+    rc = -cqe->res;
+  else if (unlikely(cqe->res != 0))
+    rc = MDBX_EIO;
+  else
+    rc = MDBX_SUCCESS;
+  osal_ioring_linux_store(ior->linux_uring_cq_head, cq_head + 1);
+
+bailout:
+  return osal_ioring_linux_uring_unlock(ior, rc);
+}
+#endif /* MDBX_USE_FALLOCATE */
+
 static int osal_ioring_linux_uring_fsync(osal_ioring_t *ior, mdbx_filehandle_t fd,
                                          enum osal_syncmode_bits mode_bits) {
   uint32_t fsync_flags = 0;
@@ -37719,6 +37790,24 @@ int osal_ioring_filesize(osal_ioring_t *ior, mdbx_filehandle_t fd, uint64_t *len
   (void)ior;
 #endif /* MDBX_HAVE_LINUX_IO_URING && AT_EMPTY_PATH && STATX_SIZE */
   return osal_filesize(fd, length);
+}
+
+int osal_ioring_fsetsize(osal_ioring_t *ior, mdbx_filehandle_t fd, const uint64_t length) {
+#if MDBX_HAVE_LINUX_IO_URING && MDBX_USE_FALLOCATE
+  if (likely(ior && ior->backend == osal_ioring_backend_linux_uring &&
+             osal_ioring_linux_uring_ready(ior))) {
+    uint64_t current = 0;
+    const int size_err = osal_ioring_filesize(ior, fd, &current);
+    if (likely(size_err == MDBX_SUCCESS && length > current)) {
+      const int err = osal_ioring_linux_uring_fallocate(ior, fd, 0, length, 0);
+      if (likely(err == MDBX_SUCCESS))
+        return MDBX_SUCCESS;
+    }
+  }
+#else
+  (void)ior;
+#endif /* MDBX_HAVE_LINUX_IO_URING && MDBX_USE_FALLOCATE */
+  return osal_fsetsize(fd, length);
 }
 
 dxb_queue_op_result_t osal_ioring_reset(osal_ioring_t *ior) {

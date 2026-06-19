@@ -15139,6 +15139,32 @@ The paired `MDBX_EXPLICIT_IO_BACKEND=io_uring make -f GNUmakefile
 mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.220`
 batch, `1.192` crud, `1.082` iterate, `0.996` get, and `1.116` delete.
 
+A later Linux `io_uring` set-size checkpoint routed
+`dxb_storage_submit_set_filesize_bytes()` through `osal_ioring_fsetsize()`.
+Requested/ready Linux rings with `MDBX_USE_FALLOCATE` can use a single
+`IORING_OP_FALLOCATE` SQE for data-file growth after the ring is available.
+The wrapper deliberately falls back to the original `osal_fsetsize()` path for
+shrink, same-size/preallocation semantics, unsupported kernels, allocation
+errors, and non-Linux builds, preserving the existing `ftruncate()`,
+filesystem-workaround, and ENOSPC-on-incore-filesystem behavior. A throwaway
+raw-uring probe on this host confirmed the `FALLOCATE` SQE layout extends a
+file successfully. The forced smoke `strace` showed the initial data-file
+`fallocate()` still occurs before ring setup, and direct `ftruncate()` calls
+remain for the fallback cases above. Verification passed `git diff --check`,
+the GNUmake `mdbx_migration_smoke` build target, direct default, forced
+no-mmap, `MDBX_EXPLICIT_IO_BACKEND=io_uring`, and compatibility
+`MDBX_EXPLICIT_WRITE_BACKEND=io_uring` forced tiny-cache smokes. The Ninja
+build (`cmake --build @cmake-ninja-build`), the ASAN build
+(`cmake --build @cmake-asan-build`), normal and
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` focused `migration_smoke` CTest entries,
+normal and `MDBX_EXPLICIT_IO_BACKEND=io_uring` ASAN focused
+`migration_smoke` CTest entries with `LSAN_OPTIONS=detect_leaks=0`, the normal
+15-test public migration CTest suite, and the
+`MDBX_EXPLICIT_IO_BACKEND=io_uring` public migration CTest suite all passed.
+The paired `MDBX_EXPLICIT_IO_BACKEND=io_uring make -f GNUmakefile
+mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.152`
+batch, `1.115` crud, `0.976` iterate, `0.942` get, and `1.057` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
