@@ -12946,6 +12946,27 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.093`
 batch, `1.151` crud, `1.205` iterate, `0.968` get, and `1.057` delete.
 
+A later post-write invalidation submit-boundary cleanup removed the one-call
+`dxb_storage_submit_write_cache_invalidate()` helper from `mdbx.c`.
+`dxb_storage_submit_write_data()` and `dxb_storage_submit_writev_data()` now
+revalidate their post-write cache-invalidation payloads after successful
+`pwrite()`/`pwritev()` completion and submit the nested
+`dxb_cache_invalidate_submit_io_t` directly through
+`dxb_storage_submit_invalidate_cached_io()`. This preserves completed-write
+error mapping while avoiding a second internal submit wrapper around the
+generic cache invalidation path. Verification passed `git diff --check`, source
+scans proving `dxb_storage_submit_write_cache_invalidate()` is absent from
+`mdbx.c` and the public/internal headers, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.101` batch, `1.146` crud, `0.966` iterate,
+`1.006` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

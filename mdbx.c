@@ -29847,14 +29847,6 @@ static inline int dxb_storage_write_cache_invalidate_submit_io_validate(
   return MDBX_SUCCESS;
 }
 
-static dxb_cache_result_t dxb_storage_submit_write_cache_invalidate(
-    dxb_storage_t *storage, const dxb_write_cache_invalidate_submit_io_t *io) {
-  int rc = dxb_storage_write_cache_invalidate_submit_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_cache_error(rc);
-  return dxb_storage_submit_invalidate_cached_io(storage, &io->submit);
-}
-
 static dxb_write_result_t dxb_storage_submit_write_data(dxb_storage_t *storage, const dxb_write_submit_io_t *io) {
   int rc = dxb_storage_write_submit_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -29870,7 +29862,10 @@ static dxb_write_result_t dxb_storage_submit_write_data(dxb_storage_t *storage, 
   rc = dxb_fault_inject("write-complete");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_submitted_error(rc);
-  dxb_cache_result_t invalidate = dxb_storage_submit_write_cache_invalidate(storage, &io->invalidate);
+  rc = dxb_storage_write_cache_invalidate_submit_io_validate(storage, &io->invalidate);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_write_completed_error(rc, data->bytes.bytes);
+  dxb_cache_result_t invalidate = dxb_storage_submit_invalidate_cached_io(storage, &io->invalidate.submit);
   if (unlikely(invalidate.err != MDBX_SUCCESS))
     return dxb_write_completed_error(invalidate.err, data->bytes.bytes);
   return dxb_write_completed(data->bytes.bytes);
@@ -29926,7 +29921,10 @@ static dxb_write_result_t dxb_storage_submit_writev_data(dxb_storage_t *storage,
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_write_submitted_error(rc);
 
-  dxb_cache_result_t invalidate = dxb_storage_submit_write_cache_invalidate(storage, &io->invalidate);
+  rc = dxb_storage_write_cache_invalidate_submit_io_validate(storage, &io->invalidate);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_write_completed_error(rc, data->bytes.bytes);
+  dxb_cache_result_t invalidate = dxb_storage_submit_invalidate_cached_io(storage, &io->invalidate.submit);
   if (unlikely(invalidate.err != MDBX_SUCCESS))
     return dxb_write_completed_error(invalidate.err, data->bytes.bytes);
   return dxb_write_completed(data->bytes.bytes);
