@@ -29953,23 +29953,6 @@ static inline dxb_filesize_result_t dxb_filesize_completed(uint64_t filesize) {
   return dxb_filesize_result(MDBX_SUCCESS, filesize, true, true);
 }
 
-static dxb_filesize_result_t dxb_storage_submit_set_filesize(const dxb_storage_t *storage,
-                                                             const dxb_filesize_submit_io_t *io) {
-  int rc = dxb_storage_filesize_set_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_error(rc);
-  rc = dxb_fault_inject("setsize");
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_error(rc);
-  rc = osal_fsetsize(dxb_storage_data_fd(storage), io->target);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_submitted_error(rc);
-  rc = dxb_fault_inject("setsize-complete");
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_filesize_submitted_error(rc);
-  return dxb_filesize_completed(io->target);
-}
-
 typedef struct dxb_filesize_shrink_cache_invalidate_submit_io {
   dxb_filesize_submit_io_t setsize;
   uint64_t old_filesize;
@@ -30243,10 +30226,17 @@ static dxb_filesize_result_t dxb_storage_submit_set_filesize_bytes(dxb_storage_t
   int rc = dxb_storage_filesize_set_bytes_submit_io_validate(storage, io);
   if (unlikely(rc != MDBX_SUCCESS || !storage))
     return dxb_filesize_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
-  dxb_filesize_result_t setsize = dxb_storage_submit_set_filesize(storage, &io->setsize);
-  rc = setsize.err;
+  rc = dxb_fault_inject("setsize");
   if (unlikely(rc != MDBX_SUCCESS))
-    return setsize;
+    return dxb_filesize_error(rc);
+  rc = osal_fsetsize(dxb_storage_data_fd(storage), io->setsize.target);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_filesize_submitted_error(rc);
+  rc = dxb_fault_inject("setsize-complete");
+  if (unlikely(rc != MDBX_SUCCESS))
+    return dxb_filesize_submitted_error(rc);
+
+  const dxb_filesize_result_t setsize = dxb_filesize_completed(io->setsize.target);
   if (io->has_shrink_invalidate) {
     dxb_cache_result_t invalidate =
         dxb_storage_submit_filesize_shrink_cache_invalidate(storage, &io->shrink_invalidate);

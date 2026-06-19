@@ -8058,17 +8058,17 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.127` batch, `1.152` crud, `1.204`
 iterate, `0.991` get, and `1.073` delete.
 
-A later filesystem-size submission cleanup added `dxb_filesize_submit_io_t` for
-explicit file-size fetch and set-size operations. Resize setup, grow/shrink,
-open-time meta initialization, checker size import, read-header startup, meta
-validation, and environment info refresh still call the same storage helpers,
-but those helpers now build checked fetch/set submission descriptors before
-calling `dxb_storage_submit_fetch_filesize()` or
-`dxb_storage_submit_set_filesize()`. The raw `osal_filesize()` and
-`osal_fsetsize()` calls are now behind backend-only helpers
+An earlier filesystem-size submission cleanup added `dxb_filesize_submit_io_t`
+for explicit file-size fetch and set-size operations. Resize setup,
+grow/shrink, open-time meta initialization, checker size import, read-header
+startup, meta validation, and environment info refresh still called the same
+storage helpers, but those helpers built checked fetch/set submission
+descriptors before calling `dxb_storage_submit_fetch_filesize()` or the
+then-existing `dxb_storage_submit_set_filesize()`. The raw `osal_filesize()` and
+`osal_fsetsize()` calls were behind backend-only helpers
 (`dxb_storage_fetch_filesize_from_disk()` and
-`dxb_storage_set_filesize_on_disk()`), while completed fetches still update
-storage state and completed shrinks still invalidate stale cached page ranges.
+`dxb_storage_set_filesize_on_disk()`), while completed fetches still updated
+storage state and completed shrinks still invalidated stale cached page ranges.
 Verification passed `git diff --check`, source scans covering
 `dxb_filesize_submit_io_t`,
 `dxb_storage_make_filesize_fetch_submit_io()`,
@@ -12639,15 +12639,15 @@ this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
 passed with forced/default ratios of `1.144` batch, `1.142` crud, `0.996`
 iterate, `1.010` get, and `1.071` delete.
 
-A later file-size submit-boundary cleanup folded the raw
+An earlier file-size submit-boundary cleanup folded the raw
 `dxb_storage_set_filesize_on_disk()` and `dxb_storage_fetch_filesize_from_disk()`
-helpers into `dxb_storage_submit_set_filesize()` and
-`dxb_storage_submit_fetch_filesize()`. The set-size submitter now validates the
-full `dxb_filesize_submit_io_t` payload, runs set-size fault-injection hooks,
-and issues `osal_fsetsize()` directly from the submit boundary. The fetch-size
-submitter now validates the fetch descriptor, runs filesize fault-injection
-hooks, issues `osal_filesize()` directly, and then records the fetched
-file-size state through the existing nested note submission. This leaves
+helpers into the then-existing `dxb_storage_submit_set_filesize()` and
+`dxb_storage_submit_fetch_filesize()`. At that checkpoint, the set-size
+submitter validated the full `dxb_filesize_submit_io_t` payload, ran set-size
+fault-injection hooks, and issued `osal_fsetsize()` directly from the submit
+boundary. The fetch-size submitter validated the fetch descriptor, ran filesize
+fault-injection hooks, issued `osal_filesize()` directly, and then recorded the
+fetched file-size state through the existing nested note submission. This left
 resize/setup file-size I/O with descriptor-shaped storage entry points and no
 parallel raw disk-size helper paths in the C source or public/internal headers.
 Verification passed `git diff --check`, source scans confirming no raw storage
@@ -12882,6 +12882,27 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.113`
 batch, `1.131` crud, `1.019` iterate, `0.992` get, and `1.075` delete.
+
+A later file-size set submit-boundary cleanup removed the one-call
+`dxb_storage_submit_set_filesize()` helper from `mdbx.c`.
+`dxb_storage_submit_set_filesize_bytes()` now validates the full set-bytes
+payload and storage target, runs the set-size fault-injection hooks, issues
+`osal_fsetsize()` directly against the storage-owned data descriptor, then
+continues through shrink-cache invalidation and cached filesize-state
+submission. This leaves set-size file I/O, stale-page invalidation, and cached
+state publication in one descriptor-shaped submit boundary instead of splitting
+the OS resize through a second internal submit helper. Verification passed
+`git diff --check`, source scans proving `dxb_storage_submit_set_filesize()` is
+absent from `mdbx.c` and the public/internal headers, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including tool roundtrips, forced tiny-cache fault
+injection, the ASAN build (`cmake --build @cmake-asan-build`), and the six
+focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for
+this ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.101` batch, `1.137` crud, `0.948`
+iterate, `0.994` get, and `1.065` delete.
 
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
