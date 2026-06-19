@@ -336,17 +336,6 @@ typedef struct dxb_page_touch_redirect_submit_io {
   bool inner;
 } dxb_page_touch_redirect_submit_io_t;
 
-typedef struct dxb_node_read_submit_io {
-  MDBX_cursor *cursor;
-  MDBX_val *data;
-  const node_t *node;
-  const page_t *source;
-  void *node_data;
-  size_t bytes;
-  uint8_t flags;
-  bool bigdata;
-} dxb_node_read_submit_io_t;
-
 typedef struct dxb_cache_materialize_io {
   dxb_data_read_io_t data;
 } dxb_cache_materialize_io_t;
@@ -4603,52 +4592,15 @@ MDBX_NOTHROW_PURE_FUNCTION static inline pgno_t node_largedata_pgno(const node_t
 MDBX_INTERNAL int __must_check_result node_read_bigdata(MDBX_cursor *mc, const node_t *node, MDBX_val *data,
                                                         const page_t *mp);
 
-static inline int node_make_read_submit_io(MDBX_cursor *mc, const node_t *node, MDBX_val *data,
-                                           const page_t *mp, dxb_node_read_submit_io_t *io) {
-  if (unlikely(!mc || !mc->txn || !node || !data || !mp || !io))
+static inline int __must_check_result node_read(MDBX_cursor *mc, const node_t *node, MDBX_val *data,
+                                                const page_t *mp) {
+  if (unlikely(!mc || !mc->txn || !node || !data || !mp))
     return MDBX_EINVAL;
 
   const uint8_t flags = node_flags(node);
-  io->cursor = mc;
-  io->data = data;
-  io->node = node;
-  io->source = mp;
-  io->node_data = node_data(node);
-  io->bytes = node_ds(node);
-  io->flags = flags;
-  io->bigdata = flags == N_BIG;
-  return MDBX_SUCCESS;
-}
-
-static inline int node_read_submit_io_validate(const dxb_node_read_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->data || !io->node || !io->source || !io->node_data))
-    return MDBX_EINVAL;
-
-  dxb_node_read_submit_io_t checked;
-  int err = node_make_read_submit_io(io->cursor, io->node, io->data, io->source, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.data != io->data ||
-               checked.node != io->node || checked.source != io->source ||
-               checked.node_data != io->node_data || checked.bytes != io->bytes ||
-               checked.flags != io->flags || checked.bigdata != io->bigdata))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline int __must_check_result node_read(MDBX_cursor *mc, const node_t *node, MDBX_val *data,
-                                                const page_t *mp) {
-  dxb_node_read_submit_io_t submit;
-  int err = node_make_read_submit_io(mc, node, data, mp, &submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  err = node_read_submit_io_validate(&submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  data->iov_len = submit.bytes;
-  data->iov_base = submit.node_data;
-  if (likely(!submit.bigdata)) {
+  data->iov_len = node_ds(node);
+  data->iov_base = node_data(node);
+  if (likely(flags != N_BIG)) {
 #if 0
     /* This is an example of a code that checks out-of-bounds by an incorrect/bad/crafted node.
      * Such checks look useful, but they are unreasonable really:
@@ -4669,16 +4621,16 @@ static inline int __must_check_result node_read(MDBX_cursor *mc, const node_t *n
      *  - https://github.com/Mithril-mine/libmdbx/pull/306
      */
     const char *data_end = ptr_disp(data->iov_base, data->iov_len);
-    const char *page_tail = (const char *)((intptr_t)submit.source | /* Using the OR operation to get the tail of a real
-                                                                        page in case here is a dupsort nested sub-page
-                                                                        even. */
-                                           (intptr_t)(submit.cursor->txn->env->ps - 1));
+    const char *page_tail = (const char *)((intptr_t)mp | /* Using the OR operation to get the tail of a real
+                                                             page in case here is a dupsort nested sub-page
+                                                             even. */
+                                           (intptr_t)(mc->txn->env->ps - 1));
     if (!MDBX_DISABLE_VALIDATION && unlikely(data_end > page_tail))
-      return bad_page(submit.source, "node-data (size %zu bytes) beyond the end of page", data->iov_len);
+      return bad_page(mp, "node-data (size %zu bytes) beyond the end of page", data->iov_len);
 #endif /* code example */
     return MDBX_SUCCESS;
   }
-  return node_read_bigdata(submit.cursor, submit.node, data, submit.source);
+  return node_read_bigdata(mc, node, data, mp);
 }
 
 /*----------------------------------------------------------------------------*/

@@ -13973,6 +13973,24 @@ including API checks and tool roundtrips, the ASAN build (`cmake --build
 passed with forced/default ratios of `1.147` batch, `1.163` crud, `1.013`
 iterate, `1.005` get, and `1.054` delete.
 
+A later node-read descriptor cleanup removed `dxb_node_read_submit_io_t`,
+`node_make_read_submit_io()`, and `node_read_submit_io_validate()` from
+`mdbx.c`. `node_read()` now validates its cursor/node/data/page arguments,
+extracts inline node payloads directly from the already-pinned page, and
+delegates `N_BIG` values to `node_read_bigdata()` without a submit descriptor
+around local memory access. This keeps submit terminology focused on actual
+storage/cache page requests while preserving overflow value pin handling at the
+bigdata page-get boundary. Verification passed `git diff --check`, a source
+scan proving the removed node-read descriptor helpers are absent from `mdbx.c`,
+the GNUmake `mdbx_migration_smoke` build target, direct `mdbx_migration_smoke`
+default and forced tiny-cache runs, the Ninja build (`cmake --build
+@cmake-ninja-build`), the six focused `migration_smoke` CTest entries, the full
+15-test public migration CTest suite including API checks and tool roundtrips,
+the ASAN build (`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.120`
+batch, `1.135` crud, `1.189` iterate, `0.988` get, and `1.064` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
