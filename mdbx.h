@@ -7076,6 +7076,29 @@ LIBMDBX_API int mdbx_async_replace_ex_batch(MDBX_async *async, MDBX_txn *txn, MD
                                             MDBX_put_flags_t flags, MDBX_preserve_func preserver,
                                             void *preserver_context, MDBX_async_op **op);
 
+/** \brief Asynchronously run a worker-side loop of replace-ex operations.
+ * \ingroup c_async
+ * \details This submits one async operation that invokes `item_func` for each
+ *          index, calls \ref mdbx_replace_ex(), and then invokes `result_func`
+ *          when it is non-NULL. If no result callback is supplied, the first
+ *          non-success \ref mdbx_replace_ex() result stops the loop and
+ *          becomes the async operation result. If `completed` is non-NULL, it
+ *          receives the number of replace attempts completed before the
+ *          operation returned. The shared preservation callback runs on the
+ *          async executor worker thread. The wrapper rejects \ref MDBX_RESERVE
+ *          and \ref MDBX_MULTIPLE because those modes require caller-managed
+ *          in-place memory.
+ * \see mdbx_replace_ex()
+ * \see MDBX_replace_loop_item_func
+ * \see MDBX_replace_loop_result_func
+ * \see MDBX_preserve_func */
+LIBMDBX_API int mdbx_async_replace_ex_loop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, size_t count,
+                                           MDBX_replace_loop_item_func item_func,
+                                           MDBX_replace_loop_result_func result_func,
+                                           void *context, size_t *completed,
+                                           MDBX_put_flags_t flags, MDBX_preserve_func preserver,
+                                           void *preserver_context, MDBX_async_op **op);
+
 /** \brief Delete items from a table.
  * \ingroup c_crud
  *

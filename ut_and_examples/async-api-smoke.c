@@ -104,6 +104,7 @@ struct replace_loop_probe {
   uint64_t keys[3];
   uint64_t new_values[3];
   uint64_t old_buffers[3];
+  uint64_t expected_old[3];
   size_t items;
   size_t results;
 };
@@ -468,7 +469,7 @@ static int replace_loop_result_func(void *context, size_t index, const MDBX_val 
     return MDBX_PROBLEM;
   uint64_t old_value = 0;
   memcpy(&old_value, old_data->iov_base, sizeof(old_value));
-  if (old_value != expected_value(probe->keys[index]))
+  if (old_value != probe->expected_old[index])
     return MDBX_PROBLEM;
   probe->results += 1;
   return MDBX_SUCCESS;
@@ -1302,8 +1303,10 @@ int main(void) {
   struct replace_loop_probe replace_loop_probe;
   memset(&replace_loop_probe, 0, sizeof(replace_loop_probe));
   const size_t replace_loop_count = sizeof(replace_loop_probe.keys) / sizeof(replace_loop_probe.keys[0]);
-  for (size_t i = 0; i < replace_loop_count; ++i)
+  for (size_t i = 0; i < replace_loop_count; ++i) {
     replace_loop_probe.keys[i] = keys[i + 1];
+    replace_loop_probe.expected_old[i] = expected_value(replace_loop_probe.keys[i]);
+  }
   size_t replace_loop_completed = 0;
   CHECK(mdbx_async_replace_loop(async, txn, replace_loop_dbi, replace_loop_count, replace_loop_item_func,
                                 replace_loop_result_func, &replace_loop_probe, &replace_loop_completed, 0, &op));
@@ -2144,6 +2147,47 @@ int main(void) {
       goto bailout;
     }
     CHECK(expect_payload(&replace_ex_batch_old_data[i], replace_ex_batch_dirty_values[i], __FILE__, __LINE__));
+  }
+
+  uint64_t replace_ex_loop_dirty_values[] = {expected_value(8) + UINT64_C(8000),
+                                             expected_value(9) + UINT64_C(9000),
+                                             expected_value(10) + UINT64_C(10000)};
+  MDBX_val replace_ex_loop_dirty_data[] = {
+      val(&replace_ex_loop_dirty_values[0], sizeof(replace_ex_loop_dirty_values[0])),
+      val(&replace_ex_loop_dirty_values[1], sizeof(replace_ex_loop_dirty_values[1])),
+      val(&replace_ex_loop_dirty_values[2], sizeof(replace_ex_loop_dirty_values[2]))};
+  struct replace_loop_probe replace_ex_loop_probe;
+  memset(&replace_ex_loop_probe, 0, sizeof(replace_ex_loop_probe));
+  const size_t replace_ex_loop_count = sizeof(replace_ex_loop_probe.keys) / sizeof(replace_ex_loop_probe.keys[0]);
+  for (size_t i = 0; i < replace_ex_loop_count; ++i) {
+    replace_ex_loop_probe.keys[i] = keys[i + 8];
+    replace_ex_loop_probe.expected_old[i] = replace_ex_loop_dirty_values[i];
+    CHECK(mdbx_async_put(async, txn, dbi, &key_values[i + 8], &replace_ex_loop_dirty_data[i], MDBX_CURRENT, &op));
+    CHECK_OP(op);
+  }
+  struct preserve_probe preserve_loop_probe = {0};
+  size_t replace_ex_loop_completed = 0;
+  CHECK(mdbx_async_replace_ex_loop(async, txn, dbi, replace_ex_loop_count, replace_loop_item_func,
+                                   replace_loop_result_func, &replace_ex_loop_probe, &replace_ex_loop_completed, 0,
+                                   preserve_probe_func, &preserve_loop_probe, &op));
+  CHECK_OP(op);
+  REQUIRE(replace_ex_loop_completed == replace_ex_loop_count, "unexpected async replace_ex loop completion count");
+  REQUIRE(replace_ex_loop_probe.items == replace_ex_loop_count && replace_ex_loop_probe.results == replace_ex_loop_count,
+          "async replace_ex loop callbacks did not cover all items");
+  REQUIRE(preserve_loop_probe.calls == replace_ex_loop_count, "async replace_ex_loop preserver was not called per item");
+  MDBX_val replace_ex_loop_key = val(&replace_ex_loop_probe.keys[2], sizeof(replace_ex_loop_probe.keys[2]));
+  MDBX_val replace_ex_loop_data = val(NULL, 0);
+  CHECK(mdbx_async_get(async, txn, dbi, &replace_ex_loop_key, &replace_ex_loop_data, &op));
+  CHECK_OP(op);
+  CHECK(expect_payload(&replace_ex_loop_data, replace_ex_loop_probe.new_values[2], __FILE__, __LINE__));
+  CHECK(mdbx_async_put_batch(async, txn, dbi, key_values + 8, put_values + 8, op_results, replace_ex_loop_count, 0,
+                             &op));
+  CHECK_OP(op);
+  for (size_t i = 0; i < replace_ex_loop_count; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_put_batch replace_ex loop restore", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
   }
 
   uint64_t replace_old_buffer = 0;

@@ -3335,3 +3335,44 @@ Additional async replace-loop API checkpoint:
   tied with replace-batch and remains just below the blocking replacement
   sample, making `replace_ex` and delete-with-old-value loop coverage the next
   replacement-family gaps.
+
+Additional async replace-ex-loop API checkpoint:
+
+- added `mdbx_async_replace_ex_loop()` as an async-only worker-side loop helper
+  for repeated `mdbx_replace_ex()` calls with a shared preservation callback.
+  The blocking API is unchanged.
+- reused the existing replace-loop callbacks and executor storage, adding a
+  `replace_ex_loop` opcode plus preservation callback fields. The regular
+  replace loop still dispatches to `mdbx_replace()`, while the new opcode
+  dispatches to `mdbx_replace_ex()`.
+- the API rejects `MDBX_RESERVE` and `MDBX_MULTIPLE`, matching the existing
+  async replace wrappers' in-place memory constraints. It still does not cover
+  the `new_data == NULL` delete-with-old-value loop form.
+- extended `ut_and_examples/async-api-smoke.c` to dirty three records, replace
+  them through `mdbx_async_replace_ex_loop()`, verify old-value preservation and
+  callback counts, read one replacement back, then restore the touched records
+  before the later whole-table assertions.
+- extended `ut_and_examples/async-api-bench.c` with async replace-ex-loop
+  timing beside per-item async replace-ex and async replace-ex-batch.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking replace_ex 2.488 Mops/s,
+  async replace_ex 1.761 Mops/s, async batch replace_ex 2.363 Mops/s, and
+  async loop replace_ex 2.446 Mops/s. Ratios were async-replace-ex/blocking
+  0.708, async-repl-ex-batch/block 0.950, async-repl-ex-loop/block 0.983,
+  async-repl-ex-batch/async 1.342, async-repl-ex-loop/async 1.389, and
+  async-repl-ex-loop/batch 1.035.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=184 async-covered=132 async-only=52 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the preservation-callback replacement path now has the same
+  per-item, batch, and worker-loop benchmark shapes as regular replacement.
+  In this reduced run the loop form is the strongest async replace-ex shape and
+  is close to the blocking sample, leaving delete-with-old-value loop coverage
+  as the remaining replacement-family API gap.

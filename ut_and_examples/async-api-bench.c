@@ -2010,6 +2010,53 @@ bailout:
   return (rc == MDBX_SUCCESS) ? rate : -1.0;
 }
 
+static double async_loop_replace_ex(MDBX_env *env, MDBX_dbi dbi, size_t ops) {
+  MDBX_async *async = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_async_op *op = NULL;
+  struct async_replace_loop_check check;
+  int rc = MDBX_SUCCESS;
+  double rate = -1.0;
+
+  if (!ops)
+    return -1.0;
+  memset(&check, 0, sizeof(check));
+  CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+
+  size_t completed = 0;
+  int operation_rc = MDBX_SUCCESS;
+  const uint64_t start = monotime_ns();
+  CHECK(mdbx_async_replace_ex_loop(async, txn, dbi, ops, async_replace_loop_item_func,
+                                   async_replace_loop_result_func, &check, &completed, 0, preserve_value_copy,
+                                   NULL, &op));
+  CHECK(wait_success(&op, &operation_rc, __FILE__, __LINE__));
+  if (operation_rc != MDBX_SUCCESS) {
+    rc = fail_rc("mdbx_async_replace_ex_loop", operation_rc, __FILE__, __LINE__);
+    goto bailout;
+  }
+  if (completed != ops || check.checked != ops) {
+    rc = fail_msg("unexpected async replace_ex loop completion count", __FILE__, __LINE__);
+    goto bailout;
+  }
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  txn = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  const uint64_t finish = monotime_ns();
+  if (finish > start)
+    rate = (double)ops * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  if (async)
+    (void)mdbx_async_destroy(async, true);
+  return (rc == MDBX_SUCCESS) ? rate : -1.0;
+}
+
 static int blocking_cursor_batch_loop(MDBX_cursor *cursor, size_t items, size_t target_pairs, size_t batch_pairs,
                                       size_t *completed_pairs) {
   MDBX_val *pairs = calloc(batch_pairs * 2, sizeof(*pairs));
@@ -3462,6 +3509,8 @@ int main(void) {
   CHECK(seed_database(env, &dbi, items));
   const double async_replace_ex_batch_rate = async_batch_replace_ex(env, dbi, replace_ops, write_batch);
   CHECK(seed_database(env, &dbi, items));
+  const double async_replace_ex_loop_rate = async_loop_replace_ex(env, dbi, replace_ops);
+  CHECK(seed_database(env, &dbi, items));
   const double blocking_del = blocking_delete(env, dbi, delete_ops);
   CHECK(seed_database(env, &dbi, items));
   const double async_del = async_window_delete(env, dbi, delete_ops, window);
@@ -3518,6 +3567,7 @@ int main(void) {
   print_rate("blocking replace_ex", blocking_replace_ex_rate);
   print_rate("async replace_ex", async_replace_ex_rate);
   print_rate("async batch replace_ex", async_replace_ex_batch_rate);
+  print_rate("async loop replace_ex", async_replace_ex_loop_rate);
   print_rate("blocking delete", blocking_del);
   print_rate("async delete", async_del);
   print_rate("async batch delete", async_del_batch);
@@ -3646,8 +3696,14 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-replace-ex/blocking", async_replace_ex_rate / blocking_replace_ex_rate);
   if (blocking_replace_ex_rate > 0.0 && async_replace_ex_batch_rate > 0.0)
     printf("%-28s %8.3f\n", "async-repl-ex-batch/block", async_replace_ex_batch_rate / blocking_replace_ex_rate);
+  if (blocking_replace_ex_rate > 0.0 && async_replace_ex_loop_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-repl-ex-loop/block", async_replace_ex_loop_rate / blocking_replace_ex_rate);
   if (async_replace_ex_rate > 0.0 && async_replace_ex_batch_rate > 0.0)
     printf("%-28s %8.3f\n", "async-repl-ex-batch/async", async_replace_ex_batch_rate / async_replace_ex_rate);
+  if (async_replace_ex_rate > 0.0 && async_replace_ex_loop_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-repl-ex-loop/async", async_replace_ex_loop_rate / async_replace_ex_rate);
+  if (async_replace_ex_batch_rate > 0.0 && async_replace_ex_loop_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-repl-ex-loop/batch", async_replace_ex_loop_rate / async_replace_ex_batch_rate);
   if (blocking_del > 0.0 && async_del > 0.0)
     printf("%-28s %8.3f\n", "async-del/blocking del", async_del / blocking_del);
   if (blocking_del > 0.0 && async_del_batch > 0.0)
