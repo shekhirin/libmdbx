@@ -12967,6 +12967,26 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.101` batch, `1.146` crud, `0.966` iterate,
 `1.006` get, and `1.071` delete.
 
+A later destructive-discard invalidation submit-boundary cleanup removed the
+one-call `dxb_storage_submit_discard_cache_invalidate()` helper from
+`mdbx.c`. `dxb_storage_submit_discard_io()` now revalidates the
+discard-specific cache-invalidation payload at the destructive-discard
+completion points and submits the nested `dxb_cache_invalidate_submit_io_t`
+directly through `dxb_storage_submit_invalidate_cached_io()`. This preserves
+discard error mapping while avoiding a second internal submit wrapper around the
+generic cache invalidation path. Verification passed `git diff --check`, source
+scans proving `dxb_storage_submit_discard_cache_invalidate()` is absent from
+`mdbx.c` and the public/internal headers, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.104` batch, `1.172` crud, `0.960` iterate,
+`0.985` get, and `1.075` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

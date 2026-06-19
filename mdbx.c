@@ -29422,14 +29422,6 @@ static inline int dxb_storage_discard_cache_invalidate_submit_io_validate(
   return MDBX_SUCCESS;
 }
 
-static dxb_cache_result_t dxb_storage_submit_discard_cache_invalidate(
-    dxb_storage_t *storage, const dxb_discard_cache_invalidate_submit_io_t *io) {
-  int rc = dxb_storage_discard_cache_invalidate_submit_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_cache_error(rc);
-  return dxb_storage_submit_invalidate_cached_io(storage, &io->submit);
-}
-
 static dxb_range_result_t dxb_storage_submit_discard_io(dxb_storage_t *storage,
                                                         const dxb_discard_submit_io_t *io) {
   int rc = dxb_storage_discard_submit_io_validate(storage, io);
@@ -29447,7 +29439,9 @@ static dxb_range_result_t dxb_storage_submit_discard_io(dxb_storage_t *storage,
   case dxb_discard_remove: {
     rc = MDBX_RESULT_TRUE;
     if (rc == MDBX_SUCCESS) {
-      rc = dxb_storage_submit_discard_cache_invalidate(storage, &io->invalidate).err;
+      rc = dxb_storage_discard_cache_invalidate_submit_io_validate(storage, &io->invalidate);
+      if (rc == MDBX_SUCCESS)
+        rc = dxb_storage_submit_invalidate_cached_io(storage, &io->invalidate.submit).err;
     }
     if (rc == MDBX_SUCCESS)
       return dxb_range_completed(range->bytes);
@@ -29456,7 +29450,9 @@ static dxb_range_result_t dxb_storage_submit_discard_io(dxb_storage_t *storage,
   case dxb_discard_remove_or_clean: {
     rc = MDBX_RESULT_TRUE;
     if (rc == MDBX_SUCCESS) {
-      rc = dxb_storage_submit_discard_cache_invalidate(storage, &io->invalidate).err;
+      rc = dxb_storage_discard_cache_invalidate_submit_io_validate(storage, &io->invalidate);
+      if (rc == MDBX_SUCCESS)
+        rc = dxb_storage_submit_invalidate_cached_io(storage, &io->invalidate.submit).err;
     }
     if (rc != MDBX_RESULT_TRUE)
       return rc == MDBX_SUCCESS ? dxb_range_completed(range->bytes) : dxb_range_error(rc);
