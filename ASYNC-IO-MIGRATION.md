@@ -13739,6 +13739,26 @@ including API checks and tool roundtrips, the ASAN build (`cmake --build
 passed on rerun with forced/default ratios of `1.017` batch, `0.990` crud,
 `1.035` iterate, `0.972` get, and `0.999` delete.
 
+A later tree-drop cursor stack restore submit-boundary cleanup removed
+`dxb_cursor_tree_drop_stack_restore_submit_io_t`,
+`cursor_make_tree_drop_stack_restore_submit_io()`, and
+`cursor_tree_drop_stack_restore_submit_io_validate()` from `mdbx.c`.
+`cursor_tree_drop_stack_restore()` now snapshots the requested saved-stack
+range, validates each page/ref pair, and restores slots directly through
+`cursor_stack_set_checked()` before resetting the restored key indexes. This
+keeps `tree_drop()` stack unwinding in the same checked cursor-stack layer while
+removing a descriptor that no longer represents independent I/O. Verification
+passed `git diff --check`, a source scan proving the removed tree-drop restore
+submit helper and descriptor type are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.122`
+batch, `1.124` crud, `0.958` iterate, `0.971` get, and `1.066` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

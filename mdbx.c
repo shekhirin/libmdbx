@@ -1847,14 +1847,6 @@ struct MDBX_cursor {
 #endif /* MDBX_DEBUG_SEARCH_DISPATCHING */
 };
 
-typedef struct dxb_cursor_tree_drop_stack_restore_submit_io {
-  MDBX_cursor *cursor;
-  page_t *page[CURSOR_STACK_SIZE];
-  page_ref_t ref[CURSOR_STACK_SIZE];
-  intptr_t first;
-  intptr_t top;
-} dxb_cursor_tree_drop_stack_restore_submit_io_t;
-
 typedef struct dxb_cursor_txn_pins_capture_submit_io {
   MDBX_cursor *cursor;
   MDBX_txn *txn;
@@ -6448,69 +6440,34 @@ static inline void cursor_stack_set(MDBX_cursor *mc, intptr_t i, page_t *mp, pag
   cASSERT0(mc, err == MDBX_SUCCESS);
 }
 
-static inline int cursor_make_tree_drop_stack_restore_submit_io(
-    MDBX_cursor *mc, page_t *const stack[], const page_ref_t stack_ref[], intptr_t first,
-    dxb_cursor_tree_drop_stack_restore_submit_io_t *io) {
-  if (unlikely(!mc || !stack || !stack_ref || !io || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE || first < 0 ||
+static inline int cursor_tree_drop_stack_restore(MDBX_cursor *mc, page_t *const stack[],
+                                                 const page_ref_t stack_ref[], intptr_t first) {
+  if (unlikely(!mc || !stack || !stack_ref || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE || first < 0 ||
                first > mc->top + 1))
     return MDBX_EINVAL;
 
-  io->cursor = mc;
-  io->first = first;
-  io->top = mc->top;
-  for (intptr_t i = first; i <= io->top; ++i) {
+  page_t *page[CURSOR_STACK_SIZE];
+  page_ref_t ref[CURSOR_STACK_SIZE];
+  const intptr_t top = mc->top;
+  for (intptr_t i = first; i <= top; ++i) {
     if (unlikely(!stack[i]))
       return MDBX_EINVAL;
-    if (unlikely(stack_ref[i].page != nullptr && stack_ref[i].page != stack[i]))
-      return MDBX_EINVAL;
-    io->page[i] = stack[i];
-    io->ref[i] = stack_ref[i];
-  }
-  return MDBX_SUCCESS;
-}
-
-static inline int
-cursor_tree_drop_stack_restore_submit_io_validate(const dxb_cursor_tree_drop_stack_restore_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || io->top < 0 || io->top >= CURSOR_STACK_SIZE || io->first < 0 ||
-               io->first > io->top + 1))
-    return MDBX_EINVAL;
-  if (unlikely(io->cursor->top != io->top))
-    return MDBX_EINVAL;
-  for (intptr_t i = io->first; i <= io->top; ++i) {
-    if (unlikely(!io->page[i]))
-      return MDBX_EINVAL;
-    if (unlikely(io->ref[i].page != nullptr && io->ref[i].page != io->page[i]))
+    page[i] = stack[i];
+    ref[i] = stack_ref[i];
+    if (unlikely(ref[i].page != nullptr && ref[i].page != page[i]))
       return MDBX_EINVAL;
   }
 
-  dxb_cursor_tree_drop_stack_restore_submit_io_t checked;
-  int err = cursor_make_tree_drop_stack_restore_submit_io(io->cursor, io->page, io->ref, io->first, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.first != io->first || checked.top != io->top))
+  if (unlikely(mc->top != top))
     return MDBX_EINVAL;
-  for (intptr_t i = io->first; i <= io->top; ++i)
-    if (unlikely(checked.page[i] != io->page[i] || !page_ref_equal(&checked.ref[i], &io->ref[i])))
-      return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline int cursor_tree_drop_stack_restore(MDBX_cursor *mc, page_t *const stack[],
-                                                 const page_ref_t stack_ref[], intptr_t first) {
-  dxb_cursor_tree_drop_stack_restore_submit_io_t submit;
-  int err = cursor_make_tree_drop_stack_restore_submit_io(mc, stack, stack_ref, first, &submit);
-  cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_tree_drop_stack_restore_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      for (intptr_t i = submit.first; i <= submit.top; ++i) {
-        cursor_stack_set(submit.cursor, i, submit.page[i], submit.ref[i]);
-        submit.cursor->ki[i] = 0;
-      }
-    }
+  for (intptr_t i = first; i <= top; ++i) {
+    int err = cursor_stack_set_checked(mc, i, page[i], ref[i]);
     cASSERT0(mc, err == MDBX_SUCCESS);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    mc->ki[i] = 0;
   }
-  return err;
+  return MDBX_SUCCESS;
 }
 
 static inline int cursor_stack_set_ref_consume_checked(MDBX_cursor *mc, intptr_t i, page_t *mp, page_ref_t *ref) {
