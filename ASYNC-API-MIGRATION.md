@@ -1918,3 +1918,32 @@ Additional GET many-submit benchmark split checkpoint:
 - conclusion: the benchmark can now distinguish single-submit GET windows from
   many-submit GET windows; current samples confirm that `mdbx_async_get_many()`
   can reduce submission overhead, while forced no-map/tiny-cache remains noisy
+
+Additional GET many-submit ratio checkpoint:
+
+- added direct `mdbx_async_api_bench` ratios comparing many-submit GET against
+  single-submit GET:
+  `async-many/async` and `async-thread-many/thread`
+- this makes each benchmark run show whether `mdbx_async_get_many()` actually
+  improves the corresponding single-submit shape on that machine/sample,
+  instead of requiring manual division of the blocking-relative ratios
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `env LSAN_OPTIONS=detect_leaks=0 MDBX_ASYNC_BENCH_OPS=1000 LD_LIBRARY_PATH=@cmake-asan-build @cmake-asan-build/mdbx_async_api_bench`: passed with direct ratios
+  async-many/async 1.213 and async-thread-many/thread 1.039
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- default benchmark spot check reported async-many/async 0.989 and
+  async-thread-many/thread 1.019
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check reported
+  async-many/async 0.970 and async-thread-many/thread 0.916
+- larger default `MDBX_ASYNC_BENCH_OPS=1000000` sample reported
+  async-many/async 0.996 and async-thread-many/thread 0.969 while all reported
+  GET paths remained above blocking-parallel
+- conclusion: the direct ratios show `mdbx_async_get_many()` is not a universal
+  per-sample win over single-submit GET; the many-submit API remains useful for
+  reducing submission lock traffic, but benchmark noise and workload shape must
+  be considered explicitly

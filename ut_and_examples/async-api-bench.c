@@ -1345,6 +1345,11 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-loop/blocking par", async_loop_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_threaded_loop_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-loop/par", async_threaded_loop_parallel / blocking_parallel);
+  if (async_parallel > 0.0 && async_many_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-many/async", async_many_parallel / async_parallel);
+  if (async_threaded_parallel > 0.0 && async_threaded_many_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-many/thread",
+           async_threaded_many_parallel / async_threaded_parallel);
   if (blocking_serial > 0.0 && async_parallel > 0.0)
     printf("%-28s %8.3f\n", "async/blocking serial", async_parallel / blocking_serial);
   if (blocking_serial > 0.0 && async_many_parallel > 0.0)
