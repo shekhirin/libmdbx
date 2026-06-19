@@ -14978,8 +14978,13 @@ enum mdbx_async_opcode {
   async_op_txn_begin,
   async_op_txn_commit,
   async_op_txn_abort,
+  async_op_txn_break,
   async_op_txn_reset,
+  async_op_txn_park,
+  async_op_txn_unpark,
   async_op_txn_renew,
+  async_op_txn_refresh,
+  async_op_txn_info,
   async_op_dbi_open,
   async_op_dbi_rename,
   async_op_dbi_stat,
@@ -15074,6 +15079,15 @@ struct MDBX_async_op {
     struct {
       MDBX_txn *txn;
     } txn_reuse;
+    struct {
+      MDBX_txn *txn;
+      bool flag;
+    } txn_toggle;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_txn_info *info;
+      bool scan_rlt;
+    } txn_info;
     struct {
       MDBX_txn *txn;
       MDBX_db_flags_t flags;
@@ -15362,10 +15376,20 @@ static int async_op_execute(MDBX_async_op *op) {
     return mdbx_txn_commit_ex(op->args.txn_end.txn, op->args.txn_end.latency);
   case async_op_txn_abort:
     return mdbx_txn_abort_ex(op->args.txn_end.txn, op->args.txn_end.latency);
+  case async_op_txn_break:
+    return mdbx_txn_break(op->args.txn_reuse.txn);
   case async_op_txn_reset:
     return mdbx_txn_reset(op->args.txn_reuse.txn);
+  case async_op_txn_park:
+    return mdbx_txn_park(op->args.txn_toggle.txn, op->args.txn_toggle.flag);
+  case async_op_txn_unpark:
+    return mdbx_txn_unpark(op->args.txn_toggle.txn, op->args.txn_toggle.flag);
   case async_op_txn_renew:
     return mdbx_txn_renew(op->args.txn_reuse.txn);
+  case async_op_txn_refresh:
+    return mdbx_txn_refresh(op->args.txn_reuse.txn);
+  case async_op_txn_info:
+    return mdbx_txn_info(op->args.txn_info.txn, op->args.txn_info.info, op->args.txn_info.scan_rlt);
   case async_op_dbi_open:
     return mdbx_dbi_open2(op->args.dbi_open.txn, &op->key, op->args.dbi_open.flags, op->args.dbi_open.dbi);
   case async_op_dbi_rename:
@@ -16000,6 +16024,22 @@ int mdbx_async_txn_abort(MDBX_async *async, MDBX_txn *txn, MDBX_commit_latency *
   return rc;
 }
 
+int mdbx_async_txn_break(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **out) {
+  if (unlikely(!txn))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_txn_break);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.txn_reuse.txn = txn;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return rc;
+}
+
 int mdbx_async_txn_reset(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **out) {
   if (unlikely(!txn))
     return LOG_IFERR(MDBX_EINVAL);
@@ -16016,6 +16056,32 @@ int mdbx_async_txn_reset(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **out) 
   return rc;
 }
 
+static int async_txn_toggle_submit(MDBX_async *async, MDBX_txn *txn, bool flag, enum mdbx_async_opcode opcode,
+                                   MDBX_async_op **out) {
+  if (unlikely(!txn))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, opcode);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.txn_toggle.txn = txn;
+  op->args.txn_toggle.flag = flag;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return rc;
+}
+
+int mdbx_async_txn_park(MDBX_async *async, MDBX_txn *txn, bool autounpark, MDBX_async_op **out) {
+  return async_txn_toggle_submit(async, txn, autounpark, async_op_txn_park, out);
+}
+
+int mdbx_async_txn_unpark(MDBX_async *async, MDBX_txn *txn, bool restart_if_ousted, MDBX_async_op **out) {
+  return async_txn_toggle_submit(async, txn, restart_if_ousted, async_op_txn_unpark, out);
+}
+
 int mdbx_async_txn_renew(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **out) {
   if (unlikely(!txn))
     return LOG_IFERR(MDBX_EINVAL);
@@ -16024,6 +16090,41 @@ int mdbx_async_txn_renew(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **out) 
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
   op->args.txn_reuse.txn = txn;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return rc;
+}
+
+int mdbx_async_txn_refresh(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **out) {
+  if (unlikely(!txn))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_txn_refresh);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.txn_reuse.txn = txn;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return rc;
+}
+
+int mdbx_async_txn_info(MDBX_async *async, const MDBX_txn *txn, MDBX_txn_info *info, bool scan_rlt,
+                        MDBX_async_op **out) {
+  if (unlikely(!txn || !info))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_txn_info);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.txn_info.txn = txn;
+  op->args.txn_info.info = info;
+  op->args.txn_info.scan_rlt = scan_rlt;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;

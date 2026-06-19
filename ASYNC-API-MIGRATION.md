@@ -118,6 +118,19 @@ enough to make it a gate. The next optimization target is lowering per-operation
 allocation, key-copy, and condpair signaling overhead so async can also compete
 with hot serial reads and no-map runs.
 
+Transaction management checkpoint:
+
+- added `mdbx_async_txn_break()` for marking async-owned transactions broken
+  before abort
+- added `mdbx_async_txn_park()` and `mdbx_async_txn_unpark()` for read
+  transactions owned by the async executor worker
+- added `mdbx_async_txn_refresh()` for refreshing read transactions on the
+  worker thread
+- added `mdbx_async_txn_info()` for transaction metadata, with caller-owned
+  `MDBX_txn_info` storage valid until completion
+- smoke coverage now checks async transaction info, park/unpark, refresh, and
+  break-before-abort paths
+
 Operation allocation/release checkpoint:
 
 - async operation handles now keep small inline key/data copies, avoiding heap
@@ -594,4 +607,15 @@ Additional cursor distribution checkpoint:
 - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed twice; samples reported async/blocking-parallel ratios 0.890 and 1.067, async-batch/blocking-parallel ratios 0.948 and 1.057, and async-cursor/blocking-parallel ratios 1.023 and 0.902
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional transaction management checkpoint:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed twice; samples reported async/blocking-parallel ratios 0.903 and 1.084, async-batch/blocking-parallel ratios 0.863 and 1.075, and async-cursor/blocking-parallel ratios 1.590 and 1.219
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17

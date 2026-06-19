@@ -334,6 +334,22 @@ int main(void) {
   CHECK_OP(op);
   REQUIRE(txn != NULL, "read transaction was not returned");
 
+  MDBX_txn_info txn_info;
+  memset(&txn_info, 0, sizeof(txn_info));
+  CHECK(mdbx_async_txn_info(async, txn, &txn_info, false, &op));
+  CHECK_OP(op);
+  REQUIRE(txn_info.txn_id != 0, "async txn info returned empty transaction id");
+  REQUIRE(txn_info.txn_space_limit_hard >= txn_info.txn_space_used, "async txn info returned inconsistent geometry");
+
+  CHECK(mdbx_async_txn_park(async, txn, false, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_txn_unpark(async, txn, true, &op));
+  CHECK_OP(op);
+  int refresh_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_txn_refresh(async, txn, &op));
+  CHECK(wait_result("mdbx_async_txn_refresh", &op, &refresh_result, __FILE__, __LINE__));
+  REQUIRE(refresh_result == MDBX_SUCCESS || refresh_result == MDBX_RESULT_TRUE, "unexpected async txn refresh result");
+
   sequence_value = UINT64_MAX;
   CHECK(mdbx_async_dbi_sequence(async, txn, dbi, &sequence_value, 0, &op));
   CHECK_OP(op);
@@ -675,6 +691,8 @@ int main(void) {
       CHECK(expect_value(&get_values[i], keys[i], __FILE__, __LINE__));
     }
   }
+  CHECK(mdbx_async_txn_break(async, txn, &op));
+  CHECK_OP(op);
   CHECK(mdbx_async_txn_abort(async, txn, NULL, &op));
   CHECK_OP(op);
   txn = NULL;

@@ -4678,15 +4678,43 @@ LIBMDBX_API int mdbx_async_txn_commit(MDBX_async *async, MDBX_txn *txn, MDBX_com
 LIBMDBX_API int mdbx_async_txn_abort(MDBX_async *async, MDBX_txn *txn, MDBX_commit_latency *latency,
                                      MDBX_async_op **op);
 
+/** \brief Asynchronously mark a transaction as broken.
+ * \ingroup c_async
+ * \see mdbx_txn_break() */
+LIBMDBX_API int mdbx_async_txn_break(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **op);
+
 /** \brief Asynchronously reset a read-only transaction for later reuse.
  * \ingroup c_async
  * \see mdbx_txn_reset() */
 LIBMDBX_API int mdbx_async_txn_reset(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **op);
 
+/** \brief Asynchronously park a read-only transaction.
+ * \ingroup c_async
+ * \see mdbx_txn_park() */
+LIBMDBX_API int mdbx_async_txn_park(MDBX_async *async, MDBX_txn *txn, bool autounpark, MDBX_async_op **op);
+
+/** \brief Asynchronously unpark a read-only transaction.
+ * \ingroup c_async
+ * \see mdbx_txn_unpark() */
+LIBMDBX_API int mdbx_async_txn_unpark(MDBX_async *async, MDBX_txn *txn, bool restart_if_ousted,
+                                      MDBX_async_op **op);
+
 /** \brief Asynchronously renew a reset read-only transaction.
  * \ingroup c_async
  * \see mdbx_txn_renew() */
 LIBMDBX_API int mdbx_async_txn_renew(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **op);
+
+/** \brief Asynchronously refresh a read-only transaction.
+ * \ingroup c_async
+ * \see mdbx_txn_refresh() */
+LIBMDBX_API int mdbx_async_txn_refresh(MDBX_async *async, MDBX_txn *txn, MDBX_async_op **op);
+
+/** \brief Asynchronously return transaction information.
+ * \ingroup c_async
+ * \details The `info` output must remain valid until completion.
+ * \see mdbx_txn_info() */
+LIBMDBX_API int mdbx_async_txn_info(MDBX_async *async, const MDBX_txn *txn, MDBX_txn_info *info, bool scan_rlt,
+                                    MDBX_async_op **op);
 
 /** \brief Asynchronously open a DBI handle.
  * \ingroup c_async
