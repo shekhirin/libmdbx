@@ -2919,3 +2919,24 @@ Additional async replace-ex batch API checkpoint:
 - conclusion: the async API now has a batched preservation-callback form for
   the remaining replace variant, and the existing replace-batch benchmark stays
   in the same near-parity band after sharing the dispatch path.
+
+Additional async API implementation audit checkpoint:
+
+- extended `mdbx_async_api_audit` with an optional source-file check. When
+  `mdbx.c` is provided, every public `mdbx_async_*` declaration in `mdbx.h`
+  must have a matching function definition in the source, not just a mapped
+  blocking counterpart.
+- wired the CMake `async_api_audit` test to pass both `mdbx.h` and `mdbx.c`,
+  so normal CTest coverage now fails on declared-but-unimplemented async APIs.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=178 async-covered=132 async-only=46 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api_audit$'`: passed 1/1
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the public async API audit now verifies declaration coverage and
+  implementation presence, reducing the chance that future async API expansion
+  leaves a header-only stub behind.

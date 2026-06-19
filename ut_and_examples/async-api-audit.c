@@ -210,8 +210,52 @@ static int collect_public_apis(const char *header, struct name_list *blocking, s
   return 0;
 }
 
+static const char *skip_space(const char *p, const char *end) {
+  while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n'))
+    ++p;
+  return p;
+}
+
+static const char *find_matching_paren(const char *open, const char *end) {
+  int depth = 0;
+  for (const char *p = open; p < end; ++p) {
+    if (*p == '(') {
+      depth += 1;
+    } else if (*p == ')') {
+      depth -= 1;
+      if (depth == 0)
+        return p;
+    }
+  }
+  return NULL;
+}
+
+static bool source_has_function_definition(const char *source, size_t source_bytes, const char *name) {
+  const char *const end = source + source_bytes;
+  const size_t name_len = strlen(name);
+  const char *p = source;
+  while ((p = strstr(p, name)) != NULL) {
+    const bool left_ok = p == source || !is_name_char(p[-1]);
+    const bool right_ok = p + name_len >= end || !is_name_char(p[name_len]);
+    if (left_ok && right_ok) {
+      const char *const args = skip_space(p + name_len, end);
+      if (args < end && *args == '(') {
+        const char *const close = find_matching_paren(args, end);
+        if (close) {
+          const char *const after = skip_space(close + 1, end);
+          if (after < end && *after == '{')
+            return true;
+        }
+      }
+    }
+    p += name_len;
+  }
+  return false;
+}
+
 int main(int argc, char **argv) {
   const char *const header_path = argc > 1 ? argv[1] : "mdbx.h";
+  const char *const source_path = argc > 2 ? argv[2] : NULL;
   size_t header_bytes = 0;
   char *const header = read_file(header_path, &header_bytes);
   if (!header) {
@@ -252,11 +296,35 @@ int main(int argc, char **argv) {
     if (!list_contains(&blocking, async_map.items[i]))
       async_only += 1;
 
-  printf("async-api-audit: blocking=%zu async-declared=%zu async-covered=%zu async-only=%zu exempt=%zu missing=%zu\n",
+  size_t unimplemented = 0;
+  if (source_path) {
+    size_t source_bytes = 0;
+    char *const source = read_file(source_path, &source_bytes);
+    if (!source) {
+      fprintf(stderr, "async-api-audit: unable to read %s\n", source_path);
+      free_names(&blocking);
+      free_names(&async_declared);
+      free_names(&async_map);
+      return 2;
+    }
+    for (size_t i = 0; i < async_declared.count; ++i) {
+      const char *const name = async_declared.items[i];
+      if (!source_has_function_definition(source, source_bytes, name)) {
+        fprintf(stderr, "async-api-audit: missing implementation for %s\n", name);
+        unimplemented += 1;
+      }
+    }
+    free(source);
+  }
+
+  printf("async-api-audit: blocking=%zu async-declared=%zu async-covered=%zu async-only=%zu exempt=%zu missing=%zu",
          blocking.count, async_declared.count, covered, async_only, exempt, missing);
+  if (source_path)
+    printf(" unimplemented=%zu", unimplemented);
+  printf("\n");
 
   free_names(&blocking);
   free_names(&async_declared);
   free_names(&async_map);
-  return missing == 0 ? 0 : 1;
+  return missing == 0 && unimplemented == 0 ? 0 : 1;
 }
