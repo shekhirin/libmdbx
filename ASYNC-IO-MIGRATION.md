@@ -13172,6 +13172,26 @@ ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
 with forced/default ratios of `1.104` batch, `1.148` crud, `0.947` iterate,
 `1.036` get, and `1.090` delete.
 
+A later force-read submit-boundary cleanup removed the one-call
+`warmup_submit_force_read()` and `copy_asis_submit_read()` helpers from
+`mdbx.c`. Forced warmup page scans and portable environment-copy fallback reads
+now validate their prepared read descriptors at the local call site, then
+submit the nested `dxb_read_submit_io_t` directly through
+`dxb_storage_submit_read_data()`. This keeps those read-only bulk paths on the
+same explicit storage read boundary as ordinary page-cache fills without
+adding a helper-local submission layer. Verification passed `git diff
+--check`, source scans proving `warmup_submit_force_read()` and
+`copy_asis_submit_read()` are absent from `mdbx.c` and the public/internal
+headers, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including tool
+roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0` for this ptrace-limited environment. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.102`
+batch, `1.153` crud, `0.937` iterate, `1.030` get, and `1.059` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

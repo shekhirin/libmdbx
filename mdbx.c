@@ -9968,20 +9968,16 @@ static inline int warmup_force_read_submit_io_validate(const dxb_warmup_force_re
   return MDBX_SUCCESS;
 }
 
-static int warmup_submit_force_read(const dxb_warmup_force_read_submit_io_t *io) {
-  int rc = warmup_force_read_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_submit_read_data(io->storage, &io->read).err;
-}
-
 static int warmup_force_read_chunk(const dxb_storage_t *storage, const dxb_page_io_t *pages, void *buffer,
                                    size_t buffer_bytes) {
   dxb_warmup_force_read_submit_io_t submit;
   int rc = warmup_make_force_read_submit_io(storage, pages, buffer, buffer_bytes, &submit);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return warmup_submit_force_read(&submit);
+  rc = warmup_force_read_submit_io_validate(&submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_submit_read_data(submit.storage, &submit.read).err;
 }
 
 static int warmup_force_read(const dxb_storage_t *storage, const dxb_page_io_t *range, uint64_t timeout_monotime) {
@@ -11079,20 +11075,16 @@ static inline int copy_asis_read_submit_io_validate(const dxb_copy_asis_read_sub
   return MDBX_SUCCESS;
 }
 
-static int copy_asis_submit_read(const dxb_copy_asis_read_submit_io_t *io) {
-  int rc = copy_asis_read_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  return dxb_storage_submit_read_data(io->storage, &io->read).err;
-}
-
 static int copy_asis_read_portable_chunk(const dxb_storage_t *storage, const dxb_byte_io_t *source, uint64_t dst_offset,
                                          uint8_t *buffer, size_t buffer_bytes,
                                          dxb_copy_asis_read_submit_io_t *submit) {
   int rc = copy_asis_make_read_submit_io(storage, source, dst_offset, buffer, buffer_bytes, submit);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  return copy_asis_submit_read(submit);
+  rc = copy_asis_read_submit_io_validate(submit);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return dxb_storage_submit_read_data(submit->storage, &submit->read).err;
 }
 
 #if MDBX_USE_SENDFILE || MDBX_USE_COPYFILERANGE
