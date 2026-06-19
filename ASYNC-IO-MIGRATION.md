@@ -12816,6 +12816,26 @@ roundtrips, forced tiny-cache fault injection, the ASAN build (`cmake --build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.129`
 batch, `1.142` crud, `0.984` iterate, `1.032` get, and `1.082` delete.
 
+A later storage close submit-boundary cleanup folded the raw
+`dxb_storage_close_handles()` helper into `dxb_storage_submit_close()`. The
+submitter now validates the full `dxb_close_submit_io_t` payload before closing
+the dsync and data descriptors directly, preserving distinct-versus-shared
+descriptor handling, close-result accounting, and optional reset submission
+through the nested reset payload. This leaves storage close/teardown with a
+single descriptor-shaped entry point and no parallel raw close helper path in
+the C source or public/internal headers. Verification passed `git diff --check`,
+source scans confirming no raw storage close helper remains in
+`mdbx.c` or the public/internal headers, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including tool roundtrips, forced tiny-cache fault injection, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0` for this
+ptrace-limited environment. The paired `mdbx_migration_bench_lazy` gate passed
+with forced/default ratios of `1.115` batch, `1.142` crud, `1.207` iterate,
+`0.976` get, and `1.061` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 

@@ -28286,8 +28286,11 @@ static inline dxb_close_result_t dxb_close_with_reset(dxb_close_result_t result)
   return result;
 }
 
-static dxb_close_result_t dxb_storage_close_handles(dxb_storage_t *storage) {
-  int rc = MDBX_SUCCESS;
+dxb_close_result_t dxb_storage_submit_close(dxb_storage_t *storage, const dxb_close_submit_io_t *io) {
+  int rc = dxb_storage_close_submit_io_validate(io);
+  if (unlikely(rc != MDBX_SUCCESS || !storage))
+    return dxb_close_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
+
   const mdbx_filehandle_t data_fd = storage->data_fd;
   const mdbx_filehandle_t dsync_fd = storage->dsync_fd;
   const bool had_data = data_fd != INVALID_HANDLE_VALUE;
@@ -28312,17 +28315,11 @@ static dxb_close_result_t dxb_storage_close_handles(dxb_storage_t *storage) {
     } else if (rc == MDBX_SUCCESS)
       rc = err;
   }
+
   const bool submitted = had_data || (had_dsync && dsync_fd != data_fd);
   const bool completed = (!had_data || closed_data) && (!had_dsync || closed_dsync);
-  return dxb_close_result(rc, had_data, had_dsync, closed_data, closed_dsync, false, submitted, completed);
-}
-
-dxb_close_result_t dxb_storage_submit_close(dxb_storage_t *storage, const dxb_close_submit_io_t *io) {
-  int rc = dxb_storage_close_submit_io_validate(io);
-  if (unlikely(rc != MDBX_SUCCESS || !storage))
-    return dxb_close_error((rc != MDBX_SUCCESS) ? rc : MDBX_EINVAL);
-
-  dxb_close_result_t result = dxb_storage_close_handles(storage);
+  dxb_close_result_t result =
+      dxb_close_result(rc, had_data, had_dsync, closed_data, closed_dsync, false, submitted, completed);
   if (!io->reset)
     return result;
 
