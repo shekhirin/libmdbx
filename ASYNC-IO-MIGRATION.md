@@ -14473,6 +14473,27 @@ six focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.109` batch, `1.149` crud, `0.978`
 iterate, `1.022` get, and `1.062` delete.
 
+A later resize descriptor cleanup removed
+`dxb_resize_tail_discard_submit_io_t`,
+`dxb_resize_make_tail_discard_submit_io()`,
+`dxb_resize_tail_discard_submit_io_validate()`,
+`dxb_resize_storage_size_submit_io_t`,
+`dxb_resize_make_storage_size_submit_io()`, and
+`dxb_resize_storage_size_submit_io_validate()` from `mdbx.c`. `dxb_resize()`
+now builds, validates, and submits the shrink-tail byte/discard descriptors
+directly before `dxb_storage_submit_discard_io()`, and builds direct
+size/resize descriptors before `dxb_storage_submit_resize_size()`. Verification
+passed `git diff --check`, a source scan proving the removed resize descriptor
+helpers are absent from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build
+target, direct `mdbx_migration_smoke` default and forced tiny-cache runs, the
+Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.089` batch, `1.143` crud, `1.009`
+iterate, `0.979` get, and `1.071` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
