@@ -1847,14 +1847,6 @@ struct MDBX_cursor {
 #endif /* MDBX_DEBUG_SEARCH_DISPATCHING */
 };
 
-typedef struct dxb_cursor_stack_retain_all_submit_io {
-  MDBX_cursor *cursor;
-  page_t *page[CURSOR_STACK_SIZE];
-  page_ref_t pgref[CURSOR_STACK_SIZE];
-  page_ref_t value_ref;
-  int16_t top_and_flags;
-} dxb_cursor_stack_retain_all_submit_io_t;
-
 typedef struct dxb_cursor_tree_drop_stack_restore_submit_io {
   MDBX_cursor *cursor;
   page_t *page[CURSOR_STACK_SIZE];
@@ -6311,62 +6303,27 @@ static int cursor_couple_capture_txn_pins(cursor_couple_t *couple) {
   return MDBX_SUCCESS;
 }
 
-static inline int cursor_make_stack_retain_all_submit_io(MDBX_cursor *mc,
-                                                         dxb_cursor_stack_retain_all_submit_io_t *io) {
-  if (unlikely(!mc || !io))
+static inline int cursor_stack_retain_all_checked(MDBX_cursor *mc) {
+  if (unlikely(!mc))
     return MDBX_EINVAL;
 
-  io->cursor = mc;
-  io->top_and_flags = mc->top_and_flags;
-  io->value_ref = mc->value_ref;
+  page_ref_t pgref[CURSOR_STACK_SIZE];
   for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i) {
-    io->page[i] = mc->pg[i];
-    io->pgref[i] = mc->pgref[i];
-  }
-  return MDBX_SUCCESS;
-}
-
-static inline int cursor_stack_retain_all_submit_io_validate(const dxb_cursor_stack_retain_all_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor))
-    return MDBX_EINVAL;
-
-  MDBX_cursor *const mc = io->cursor;
-  if (unlikely(mc->top_and_flags != io->top_and_flags || !page_ref_equal(&mc->value_ref, &io->value_ref)))
-    return MDBX_EINVAL;
-  for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i) {
-    if (unlikely(io->pgref[i].page != nullptr && io->pgref[i].page != io->page[i]))
-      return MDBX_EINVAL;
-    if (unlikely(mc->pg[i] != io->page[i] || !page_ref_equal(&mc->pgref[i], &io->pgref[i])))
+    pgref[i] = mc->pgref[i];
+    if (unlikely(pgref[i].page != nullptr && pgref[i].page != mc->pg[i]))
       return MDBX_EINVAL;
   }
+  page_ref_t value_ref = mc->value_ref;
 
-  dxb_cursor_stack_retain_all_submit_io_t checked;
-  int err = cursor_make_stack_retain_all_submit_io(mc, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.top_and_flags != io->top_and_flags ||
-               !page_ref_equal(&checked.value_ref, &io->value_ref)))
-    return MDBX_EINVAL;
   for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i)
-    if (unlikely(checked.page[i] != io->page[i] || !page_ref_equal(&checked.pgref[i], &io->pgref[i])))
-      return MDBX_EINVAL;
+    mc->pgref[i] = cursor_ref_retain(mc, pgref[i]);
+  mc->value_ref = cursor_ref_retain(mc, value_ref);
   return MDBX_SUCCESS;
 }
 
 static inline void cursor_stack_retain_all(MDBX_cursor *mc) {
-  dxb_cursor_stack_retain_all_submit_io_t submit;
-  int err = cursor_make_stack_retain_all_submit_io(mc, &submit);
+  int err = cursor_stack_retain_all_checked(mc);
   cASSERT0(mc, err == MDBX_SUCCESS);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = cursor_stack_retain_all_submit_io_validate(&submit);
-    if (likely(err == MDBX_SUCCESS)) {
-      MDBX_cursor *const cursor = submit.cursor;
-      for (intptr_t i = 0; i < CURSOR_STACK_SIZE; ++i)
-        cursor->pgref[i] = cursor_ref_retain(cursor, submit.pgref[i]);
-      cursor->value_ref = cursor_ref_retain(cursor, submit.value_ref);
-    }
-    cASSERT0(mc, err == MDBX_SUCCESS);
-  }
 }
 
 MDBX_MAYBE_UNUSED static inline void inner_gone(MDBX_cursor *mc) {

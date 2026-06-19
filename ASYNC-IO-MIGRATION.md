@@ -13719,6 +13719,26 @@ six focused ASAN `migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`.
 The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios of
 `1.116` batch, `1.135` crud, `0.850` iterate, `1.091` get, and `1.067` delete.
 
+A later cursor stack retain-all submit-boundary cleanup removed
+`dxb_cursor_stack_retain_all_submit_io_t`,
+`cursor_make_stack_retain_all_submit_io()`, and
+`cursor_stack_retain_all_submit_io_validate()` from `mdbx.c`.
+`cursor_stack_retain_all()` now snapshots the shallow-copied stack refs in a
+local array, validates each page/ref pairing, and retains the saved refs
+directly through `cursor_ref_retain()`. This keeps nested-transaction cursor
+shadow pin duplication local to the cursor helper layer without a descriptor
+that no longer represents independent I/O. Verification passed `git diff
+--check`, a source scan proving the removed retain-all submit helper and
+descriptor type are absent from `mdbx.c`, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed on rerun with forced/default ratios of `1.017` batch, `0.990` crud,
+`1.035` iterate, `0.972` get, and `0.999` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
