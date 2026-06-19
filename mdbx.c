@@ -15004,6 +15004,7 @@ enum mdbx_async_opcode {
   async_op_env_get_valsize4page,
   async_op_env_defrag,
   async_op_env_chk,
+  async_op_env_turn_for_recovery,
   async_op_reader_list,
   async_op_reader_check,
   async_op_thread_register,
@@ -15238,6 +15239,9 @@ struct MDBX_async_op {
       MDBX_chk_severity_t verbosity;
       unsigned timeout_seconds_16dot16;
     } env_chk;
+    struct {
+      unsigned target_meta;
+    } env_turn_for_recovery;
     struct {
       MDBX_reader_list_func func;
       void *ctx;
@@ -15814,6 +15818,8 @@ static int async_op_execute(MDBX_async_op *op) {
     return mdbx_env_chk(op->async->env, op->args.env_chk.callbacks, op->args.env_chk.context,
                         op->args.env_chk.flags, op->args.env_chk.verbosity,
                         op->args.env_chk.timeout_seconds_16dot16);
+  case async_op_env_turn_for_recovery:
+    return mdbx_env_turn_for_recovery(op->async->env, op->args.env_turn_for_recovery.target_meta);
   case async_op_reader_list:
     return mdbx_reader_list(op->async->env, op->args.reader.func, op->args.reader.ctx);
   case async_op_reader_check:
@@ -16990,6 +16996,20 @@ int mdbx_async_env_chk(MDBX_async *async, const MDBX_chk_callbacks_t *callbacks,
   op->args.env_chk.flags = flags;
   op->args.env_chk.verbosity = verbosity;
   op->args.env_chk.timeout_seconds_16dot16 = timeout_seconds_16dot16;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_env_turn_for_recovery(MDBX_async *async, unsigned target_meta, MDBX_async_op **out) {
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_env_turn_for_recovery);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.env_turn_for_recovery.target_meta = target_meta;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;

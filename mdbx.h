@@ -7926,6 +7926,13 @@ LIBMDBX_API int mdbx_env_open_for_recoveryW(MDBX_env *env, const wchar_t *pathna
  * leg(s). */
 LIBMDBX_API int mdbx_env_turn_for_recovery(MDBX_env *env, unsigned target_meta);
 
+/** \brief Asynchronously turn database to the specified meta-page.
+ * \ingroup c_async
+ * \details The executor must be associated with an environment opened for
+ *          writable recovery.
+ * \see mdbx_env_turn_for_recovery() */
+LIBMDBX_API int mdbx_async_env_turn_for_recovery(MDBX_async *async, unsigned target_meta, MDBX_async_op **op);
+
 /** \brief Gets basic information about the database without opening it.
  * \ingroup c_opening
  *
