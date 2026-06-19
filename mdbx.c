@@ -23631,74 +23631,28 @@ __cold static int defrag_gc_lookup_page(dfc_t *dfc, pgno_t pgno, txnid_t *id) {
   return rc;
 }
 
-typedef struct dxb_defrag_page_get_submit_io {
-  dfc_t *dfc;
-  MDBX_txn *txn;
-  pgno_t pgno;
-  pgno_t first_unallocated;
-  txnid_t front;
-  dxb_page_get_submit_io_t get;
-} dxb_defrag_page_get_submit_io_t;
-
-static inline int defrag_make_page_get_submit_io(dfc_t *dfc, pgno_t pgno, dxb_defrag_page_get_submit_io_t *io) {
-  if (unlikely(!dfc || !dfc->txn || !io))
-    return MDBX_EINVAL;
+MDBX_MAYBE_UNUSED static pgr_t defrag_get_page(dfc_t *dfc, pgno_t pgno) {
+  if (unlikely(!dfc || !dfc->txn))
+    return pgr_error(MDBX_EINVAL);
 
   MDBX_txn *const txn = dfc->txn;
-  if (unlikely(pgno < NUM_METAS || pgno >= txn->geo.first_unallocated))
-    return MDBX_EINVAL;
+  const pgno_t first_unallocated = txn->geo.first_unallocated;
+  const txnid_t front = txn_basis_snapshot(txn);
+  if (unlikely(pgno < NUM_METAS || pgno >= first_unallocated))
+    return pgr_error(MDBX_EINVAL);
 
   dxb_page_get_submit_io_t get;
-  int err = page_make_get_submit_io(txn, pgno, txn_basis_snapshot(txn), false, &get);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-
-  io->dfc = dfc;
-  io->txn = txn;
-  io->pgno = pgno;
-  io->first_unallocated = txn->geo.first_unallocated;
-  io->front = get.front;
-  io->get = get;
-  return MDBX_SUCCESS;
-}
-
-static inline int defrag_page_get_submit_io_validate(const dxb_defrag_page_get_submit_io_t *io) {
-  if (unlikely(!io || !io->dfc || !io->txn || io->dfc->txn != io->txn))
-    return MDBX_EINVAL;
-  if (unlikely(io->pgno < NUM_METAS || io->pgno >= io->txn->geo.first_unallocated ||
-               io->first_unallocated != io->txn->geo.first_unallocated || io->front != txn_basis_snapshot(io->txn)))
-    return MDBX_EINVAL;
-
-  dxb_defrag_page_get_submit_io_t checked;
-  int err = defrag_make_page_get_submit_io(io->dfc, io->pgno, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.dfc != io->dfc || checked.txn != io->txn || checked.pgno != io->pgno ||
-               checked.first_unallocated != io->first_unallocated || checked.front != io->front ||
-               checked.get.request.pgno != io->get.request.pgno ||
-               checked.get.request.end_pgno != io->get.request.end_pgno ||
-               checked.get.request.npages != io->get.request.npages ||
-               checked.get.request.offset != io->get.request.offset ||
-               checked.get.request.bytes != io->get.request.bytes ||
-               checked.get.front != io->get.front || checked.get.track_private != io->get.track_private))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-MDBX_MAYBE_UNUSED static pgr_t defrag_get_page(dfc_t *dfc, pgno_t pgno) {
-  dxb_defrag_page_get_submit_io_t submit;
-  int err = defrag_make_page_get_submit_io(dfc, pgno, &submit);
+  int err = page_make_get_submit_io(txn, pgno, front, false, &get);
   if (unlikely(err != MDBX_SUCCESS))
     return pgr_error(err);
-  err = defrag_page_get_submit_io_validate(&submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
+  if (unlikely(dfc->txn != txn || txn->geo.first_unallocated != first_unallocated || txn_basis_snapshot(txn) != front))
+    return pgr_error(MDBX_EINVAL);
 
 #if MDBX_ENABLE_PGET_STAT
-  submit.txn->ops_pget += 1;
+  txn->ops_pget += 1;
 #endif /* MDBX_ENABLE_PGET_STAT */
 
-  pgr_t pgr = page_submit_get_unchecked(submit.txn, &submit.get);
+  pgr_t pgr = page_submit_get_unchecked(txn, &get);
   if (likely(pgr.err == MDBX_SUCCESS) && unlikely(pgr.page->flags & ~(P_BRANCH | P_LEAF | P_DUPFIX | P_LARGE)))
     pgr.err = bad_page(pgr.page, "unexpected page flags 0x%x", pgr.page->flags);
   return pgr;

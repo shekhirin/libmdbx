@@ -14055,6 +14055,26 @@ six focused ASAN `migration_smoke` entries with
 passed with forced/default ratios of `1.117` batch, `1.144` crud, `1.243`
 iterate, `0.957` get, and `1.073` delete.
 
+A later defrag fallback page-get descriptor cleanup removed
+`dxb_defrag_page_get_submit_io_t`, `defrag_make_page_get_submit_io()`, and
+`defrag_page_get_submit_io_validate()` from `mdbx.c`. `defrag_get_page()` now
+validates the defrag context/transaction and page range, snapshots the
+transaction basis and first-unallocated pgno, builds the checked page-get
+request directly, rechecks the transaction snapshot and geometry, and submits
+through `page_submit_get_unchecked()`. This keeps defrag fallback page fetches
+on the shared explicit page-get boundary without a descriptor wrapper for a
+single immediate read. Verification passed `git diff --check`, a source scan
+proving the removed defrag page-get descriptor helpers are absent from
+`mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.126` batch, `1.141` crud, `0.995`
+iterate, `1.012` get, and `1.059` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
