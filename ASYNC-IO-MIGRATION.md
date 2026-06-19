@@ -85,7 +85,8 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   `pgr_t` ownership now releases through a checked direct helper instead of a
   local submit descriptor, cursor ref retain/release uses checked direct
   helpers for cache pin accounting instead of cursor-local submit descriptors,
-  cursor value refs are set/released directly, and short-lived page results are
+  cursor value refs are set/released directly, merge-restore top refs are
+  retained from direct cursor snapshots, and short-lived page results are
   released after they are retained by cursor/value stacks or after transient
   validation/copy/retire use. This now covers tree descent,
   sibling movement, root setup/collapse, compacting, defrag, overflow

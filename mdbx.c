@@ -322,15 +322,6 @@ typedef struct dxb_page_get_with_ref_submit_io {
   bool retain_ref;
 } dxb_page_get_with_ref_submit_io_t;
 
-typedef struct dxb_cursor_top_ref_retain_submit_io {
-  MDBX_cursor *cursor;
-  page_t *page;
-  page_ref_t ref;
-  intptr_t top;
-  indx_t ki;
-  uint16_t tree_height;
-} dxb_cursor_top_ref_retain_submit_io_t;
-
 typedef struct dxb_cursor_rebalance_refs_release_submit_io {
   MDBX_cursor *cursor;
   MDBX_cursor *neighbor;
@@ -5885,50 +5876,6 @@ static inline page_ref_t cursor_ref_retain(const MDBX_cursor *mc, page_ref_t ref
   else
     ASSERT(err == MDBX_SUCCESS);
   return likely(err == MDBX_SUCCESS) ? retained : page_ref_empty();
-}
-
-static inline int cursor_make_top_ref_retain_submit_io(MDBX_cursor *mc,
-                                                       dxb_cursor_top_ref_retain_submit_io_t *io) {
-  if (unlikely(!mc || !io || !mc->tree || mc->top < 0 || mc->top >= CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-  if (unlikely(mc->top + 1 > mc->tree->height))
-    return MDBX_EINVAL;
-
-  io->cursor = mc;
-  io->top = mc->top;
-  io->page = mc->pg[mc->top];
-  io->ref = mc->pgref[mc->top];
-  io->ki = mc->ki[mc->top];
-  io->tree_height = mc->tree->height;
-  if (unlikely(!io->page))
-    return MDBX_EINVAL;
-  if (unlikely(io->ref.page != nullptr && io->ref.page != io->page))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
-}
-
-static inline int cursor_top_ref_retain_submit_io_validate(const dxb_cursor_top_ref_retain_submit_io_t *io) {
-  if (unlikely(!io || !io->cursor || !io->cursor->tree || io->top < 0 || io->top >= CURSOR_STACK_SIZE))
-    return MDBX_EINVAL;
-
-  MDBX_cursor *const mc = io->cursor;
-  if (unlikely(mc->top != io->top || mc->tree->height != io->tree_height || mc->top + 1 > mc->tree->height))
-    return MDBX_EINVAL;
-  if (unlikely(!io->page || mc->pg[io->top] != io->page || mc->ki[io->top] != io->ki ||
-               !page_ref_equal(&mc->pgref[io->top], &io->ref)))
-    return MDBX_EINVAL;
-  if (unlikely(io->ref.page != nullptr && io->ref.page != io->page))
-    return MDBX_EINVAL;
-
-  dxb_cursor_top_ref_retain_submit_io_t checked;
-  int err = cursor_make_top_ref_retain_submit_io(mc, &checked);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
-  if (unlikely(checked.cursor != io->cursor || checked.page != io->page || checked.top != io->top ||
-               checked.ki != io->ki || checked.tree_height != io->tree_height ||
-               !page_ref_equal(&checked.ref, &io->ref)))
-    return MDBX_EINVAL;
-  return MDBX_SUCCESS;
 }
 
 static inline int cursor_ref_release_checked(const MDBX_cursor *mc, page_ref_t *ref) {
@@ -51317,22 +51264,21 @@ static int page_merge(MDBX_cursor *csrc, MDBX_cursor *cdst) {
   cASSERT0(cdst, cdst->tree->items > 0);
   cASSERT0(cdst, cdst->top + 1 <= cdst->tree->height);
   cASSERT0(cdst, cdst->top > 0);
-  dxb_cursor_top_ref_retain_submit_io_t top_submit;
-  rc = cursor_make_top_ref_retain_submit_io(cdst, &top_submit);
-  cASSERT0(cdst, rc == MDBX_SUCCESS);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+  if (unlikely(!cdst->tree || cdst->top < 0 || cdst->top >= CURSOR_STACK_SIZE ||
+               cdst->top + 1 > cdst->tree->height))
+    return MDBX_EINVAL;
+  const int save_top = (int)cdst->top;
+  page_t *const top_page = cdst->pg[save_top];
+  page_ref_t top_source_ref = cdst->pgref[save_top];
+  const indx_t top_indx = cdst->ki[save_top];
+  const uint16_t save_height = cdst->tree->height;
+  if (unlikely(!top_page || (top_source_ref.page != nullptr && top_source_ref.page != top_page)))
+    return MDBX_EINVAL;
   page_ref_t top_ref = page_ref_empty();
-  rc = cursor_top_ref_retain_submit_io_validate(&top_submit);
-  if (likely(rc == MDBX_SUCCESS))
-    rc = cursor_ref_retain_checked(top_submit.cursor, top_submit.ref, &top_ref);
+  rc = cursor_ref_retain_checked(cdst, top_source_ref, &top_ref);
   cASSERT0(cdst, rc == MDBX_SUCCESS);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
-  page_t *const top_page = top_submit.page;
-  const indx_t top_indx = top_submit.ki;
-  const uint16_t save_height = top_submit.tree_height;
-  const int save_top = (int)top_submit.top;
   cursor_pop(cdst);
   rc = tree_rebalance(cdst);
   if (unlikely(rc != MDBX_SUCCESS)) {
