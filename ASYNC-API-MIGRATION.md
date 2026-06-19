@@ -1947,3 +1947,34 @@ Additional GET many-submit ratio checkpoint:
   per-sample win over single-submit GET; the many-submit API remains useful for
   reducing submission lock traffic, but benchmark noise and workload shape must
   be considered explicitly
+
+Additional many-submit spare-window checkpoint:
+
+- moved recycled operation-handle preparation in `async_ops_alloc()` outside
+  the executor condition-pair lock; the lock now only detaches the requested
+  spare window and updates the shared spare count
+- this keeps the public async API unchanged, but reduces submission-side mutex
+  hold time for `mdbx_async_get_many()`, `mdbx_async_get_ex_many()`, and
+  `mdbx_async_get_equal_or_great_many()` when multiple caller threads recycle
+  operation windows concurrently
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- default benchmark spot check reported async/blocking-parallel 1.085,
+  async-many/blocking-parallel 1.084,
+  async-thread/blocking-parallel 1.046,
+  async-thread-many/blocking-parallel 1.074,
+  async-many/async 0.999, and async-thread-many/thread 1.027
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check reported
+  async/blocking-parallel 1.097, async-many/blocking-parallel 1.141,
+  async-thread/blocking-parallel 0.988,
+  async-thread-many/blocking-parallel 1.038,
+  async-many/async 1.040, and async-thread-many/thread 1.050
+- conclusion: the change removes avoidable work from the shared submission
+  lock. The local threaded many-submit samples improved versus the immediately
+  preceding spot checks, but this remains a lock-contention cleanup rather than
+  proof that the storage-level pre-migration benchmark gap is closed.

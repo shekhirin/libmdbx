@@ -16756,7 +16756,6 @@ static int async_ops_alloc(MDBX_async *async, MDBX_async_op *ops[], size_t count
     MDBX_async_op *const op = async->spare;
     async->spare = op->next;
     async->spare_count -= 1;
-    async_op_prepare(op, opcode);
     ops[allocated++] = op;
   }
   const int unlock_err = osal_condpair_unlock(&async->condpair);
@@ -16764,6 +16763,9 @@ static int async_ops_alloc(MDBX_async *async, MDBX_async_op *ops[], size_t count
     async_ops_discard(ops, allocated);
     return unlock_err;
   }
+
+  for (size_t i = 0; i < allocated; ++i)
+    async_op_prepare(ops[i], opcode);
 
   while (allocated < count) {
     MDBX_async_op *const op = osal_calloc(1, sizeof(MDBX_async_op));
