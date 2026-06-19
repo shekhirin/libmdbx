@@ -4673,6 +4673,29 @@ LIBMDBX_API int mdbx_async_txn_renew(MDBX_async *async, MDBX_txn *txn, MDBX_asyn
 LIBMDBX_API int mdbx_async_dbi_open(MDBX_async *async, MDBX_txn *txn, const char *name, MDBX_db_flags_t flags,
                                     MDBX_dbi *dbi, MDBX_async_op **op);
 
+/** \brief Asynchronously retrieve statistics for a table.
+ * \ingroup c_async
+ * \details The `stat` output must remain valid until completion.
+ * \see mdbx_dbi_stat() */
+LIBMDBX_API int mdbx_async_dbi_stat(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_stat *stat,
+                                    size_t bytes, MDBX_async_op **op);
+
+/** \brief Asynchronously retrieve DBI flags and state.
+ * \ingroup c_async
+ * \details The `flags` and `state` outputs must remain valid until completion.
+ * \see mdbx_dbi_flags_ex() */
+LIBMDBX_API int mdbx_async_dbi_flags_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, unsigned *flags,
+                                        unsigned *state, MDBX_async_op **op);
+
+/** \brief Asynchronously retrieve dupsort depth-mask information for a table.
+ * \ingroup c_async
+ * \details The `mask` output must remain valid until completion. The async
+ *          operation result preserves \ref mdbx_dbi_dupsort_depthmask(),
+ *          including \ref MDBX_RESULT_TRUE for non-dupsort tables.
+ * \see mdbx_dbi_dupsort_depthmask() */
+LIBMDBX_API int mdbx_async_dbi_dupsort_depthmask(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                                 uint32_t *mask, MDBX_async_op **op);
+
 /** \brief Asynchronously get an item from a table.
  * \ingroup c_async
  * \details The key bytes are copied during submission. Returned value lifetime

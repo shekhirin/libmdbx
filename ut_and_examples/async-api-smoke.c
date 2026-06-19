@@ -5,6 +5,7 @@
 
 #include "mdbx.h"
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -203,6 +204,25 @@ int main(void) {
   CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
   CHECK_OP(op);
   REQUIRE(txn != NULL, "read transaction was not returned");
+
+  MDBX_stat dbi_stat;
+  memset(&dbi_stat, 0, sizeof(dbi_stat));
+  CHECK(mdbx_async_dbi_stat(async, txn, dbi, &dbi_stat, sizeof(dbi_stat), &op));
+  CHECK_OP(op);
+  REQUIRE(dbi_stat.ms_entries == ITEM_COUNT, "unexpected async dbi stat entry count");
+
+  unsigned dbi_flags = UINT_MAX;
+  unsigned dbi_state = UINT_MAX;
+  CHECK(mdbx_async_dbi_flags_ex(async, txn, dbi, &dbi_flags, &dbi_state, &op));
+  CHECK_OP(op);
+  REQUIRE((dbi_flags & MDBX_DUPSORT) == 0, "unexpected async dbi dupsort flag");
+
+  uint32_t depthmask = UINT32_MAX;
+  int depthmask_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_dbi_dupsort_depthmask(async, txn, dbi, &depthmask, &op));
+  CHECK(wait_result("mdbx_async_dbi_dupsort_depthmask", &op, &depthmask_result, __FILE__, __LINE__));
+  REQUIRE(depthmask_result == MDBX_RESULT_TRUE, "non-dupsort dbi did not report MDBX_RESULT_TRUE");
+  REQUIRE(depthmask == 0, "unexpected non-dupsort depthmask");
 
   for (unsigned i = 0; i < ITEM_COUNT; ++i) {
     get_values[i] = val(NULL, 0);

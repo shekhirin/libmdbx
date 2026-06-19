@@ -315,6 +315,16 @@ Cursor utility checkpoint:
 - smoke coverage now checks cursor count/count_ex and state transitions at the
   first and last cursor positions
 
+DBI metadata checkpoint:
+
+- added `mdbx_async_dbi_stat()` for table statistics, with caller-owned
+  `MDBX_stat` output lifetime matching the other async wrappers
+- added `mdbx_async_dbi_flags_ex()` for table flags/state and
+  `mdbx_async_dbi_dupsort_depthmask()` for dupsort depth-mask inspection
+- smoke coverage now verifies async DBI stats after the initial load, checks
+  non-dupsort flags, and preserves the `MDBX_RESULT_TRUE` non-dupsort
+  depth-mask result
+
 ## Validation
 
 Completed for this checkpoint:
@@ -445,4 +455,15 @@ Additional cursor utility checkpoint:
 - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-cursor/blocking-parallel ratio 1.103
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional DBI metadata checkpoint:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.076, async-cursor/blocking-parallel ratio 1.425
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17

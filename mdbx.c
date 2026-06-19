@@ -14981,6 +14981,9 @@ enum mdbx_async_opcode {
   async_op_txn_reset,
   async_op_txn_renew,
   async_op_dbi_open,
+  async_op_dbi_stat,
+  async_op_dbi_flags_ex,
+  async_op_dbi_dupsort_depthmask,
   async_op_get,
   async_op_get_ex,
   async_op_get_equal_or_great,
@@ -15064,6 +15067,23 @@ struct MDBX_async_op {
       MDBX_db_flags_t flags;
       MDBX_dbi *dbi;
     } dbi_open;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_dbi dbi;
+      MDBX_stat *stat;
+      size_t bytes;
+    } dbi_stat;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_dbi dbi;
+      unsigned *flags;
+      unsigned *state;
+    } dbi_flags_ex;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_dbi dbi;
+      uint32_t *mask;
+    } dbi_dupsort_depthmask;
     struct {
       const MDBX_txn *txn;
       MDBX_dbi dbi;
@@ -15258,6 +15278,15 @@ static int async_op_execute(MDBX_async_op *op) {
     return mdbx_txn_renew(op->args.txn_reuse.txn);
   case async_op_dbi_open:
     return mdbx_dbi_open(op->args.dbi_open.txn, op->name_copy, op->args.dbi_open.flags, op->args.dbi_open.dbi);
+  case async_op_dbi_stat:
+    return mdbx_dbi_stat(op->args.dbi_stat.txn, op->args.dbi_stat.dbi, op->args.dbi_stat.stat,
+                         op->args.dbi_stat.bytes);
+  case async_op_dbi_flags_ex:
+    return mdbx_dbi_flags_ex(op->args.dbi_flags_ex.txn, op->args.dbi_flags_ex.dbi,
+                             op->args.dbi_flags_ex.flags, op->args.dbi_flags_ex.state);
+  case async_op_dbi_dupsort_depthmask:
+    return mdbx_dbi_dupsort_depthmask(op->args.dbi_dupsort_depthmask.txn,
+                                      op->args.dbi_dupsort_depthmask.dbi, op->args.dbi_dupsort_depthmask.mask);
   case async_op_get: {
     MDBX_val data = {nullptr, 0};
     const int rc = mdbx_get(op->args.get.txn, op->args.get.dbi, &op->key, &data);
@@ -15905,6 +15934,65 @@ int mdbx_async_dbi_open(MDBX_async *async, MDBX_txn *txn, const char *name, MDBX
     osal_free(op);
   }
   return rc;
+}
+
+int mdbx_async_dbi_stat(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_stat *stat, size_t bytes,
+                        MDBX_async_op **out) {
+  if (unlikely(!txn || !stat))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_dbi_stat);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.dbi_stat.txn = txn;
+  op->args.dbi_stat.dbi = dbi;
+  op->args.dbi_stat.stat = stat;
+  op->args.dbi_stat.bytes = bytes;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_dbi_flags_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, unsigned *flags, unsigned *state,
+                            MDBX_async_op **out) {
+  if (unlikely(!txn || !flags || !state))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_dbi_flags_ex);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.dbi_flags_ex.txn = txn;
+  op->args.dbi_flags_ex.dbi = dbi;
+  op->args.dbi_flags_ex.flags = flags;
+  op->args.dbi_flags_ex.state = state;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_dbi_dupsort_depthmask(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, uint32_t *mask,
+                                     MDBX_async_op **out) {
+  if (unlikely(!txn || !mask))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_dbi_dupsort_depthmask);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.dbi_dupsort_depthmask.txn = txn;
+  op->args.dbi_dupsort_depthmask.dbi = dbi;
+  op->args.dbi_dupsort_depthmask.mask = mask;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
 }
 
 int mdbx_async_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *data,
