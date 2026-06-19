@@ -3726,3 +3726,37 @@ Additional threaded cursor-batch-loop benchmark checkpoint:
   above blocking pthread-parallel cursor batch and above the single-submitter
   async cursor loop, while landing slightly below the direct async cursor batch
   path.
+
+Additional threaded cursor-batch benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` with a threaded
+  `mdbx_async_cursor_get_batch()` benchmark. Each application pthread owns an
+  async executor, read transaction, and cursor, then repeatedly submits direct
+  cursor batches until its assigned pair target is consumed.
+- this complements the threaded `mdbx_async_cursor_get_batches()` measurement:
+  direct batches preserve per-batch cursor progress and restart after EOF,
+  while the batch-loop helper submits one coarse operation per application
+  thread.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking cursor batch
+  213.547 Mops/s, parallel cursor batch 61.741 Mops/s, async cursor batch
+  75.101 Mops/s, async threaded cursor batch 120.163 Mops/s, async cursor loop
+  95.568 Mops/s, and async threaded cursor loop 137.403 Mops/s.
+- ratios were async-cursor/blocking par 1.216,
+  async-thread-cbatch/par 1.946, async-thread-cbatch/ser 0.563,
+  async-thread-cbatch/batch 1.600, async-loop-cursor/par 1.548,
+  async-thread-cursor-loop/par 2.225, and async-thread-cursor/loop 1.438.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=188 async-covered=132 async-only=56 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: direct cursor batches also benefit from multi-application-thread
+  submission and now have benchmark evidence above blocking pthread-parallel
+  cursor batch. The threaded cursor batch-loop helper remains the faster coarse
+  async cursor-batch shape in this sample.
