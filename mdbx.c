@@ -14976,6 +14976,8 @@ enum mdbx_async_opcode {
   async_op_cursor_reset,
   async_op_cursor_renew,
   async_op_cursor_get,
+  async_op_cursor_put,
+  async_op_cursor_del,
   async_op_cursor_close
 };
 
@@ -15091,6 +15093,15 @@ struct MDBX_async_op {
       MDBX_val *data;
       MDBX_cursor_op op;
     } cursor_get;
+    struct {
+      MDBX_cursor *cursor;
+      MDBX_val *data;
+      MDBX_put_flags_t flags;
+    } cursor_put;
+    struct {
+      MDBX_cursor *cursor;
+      MDBX_put_flags_t flags;
+    } cursor_del;
     struct {
       MDBX_cursor *cursor;
     } cursor_close;
@@ -15249,6 +15260,15 @@ static int async_op_execute(MDBX_async_op *op) {
     *op->args.cursor_get.data = data;
     return rc;
   }
+  case async_op_cursor_put: {
+    MDBX_val data = op->data;
+    const int rc = mdbx_cursor_put(op->args.cursor_put.cursor, &op->key, &data, op->args.cursor_put.flags);
+    if (rc == MDBX_KEYEXIST && op->args.cursor_put.data)
+      *op->args.cursor_put.data = data;
+    return rc;
+  }
+  case async_op_cursor_del:
+    return mdbx_cursor_del(op->args.cursor_del.cursor, op->args.cursor_del.flags);
   case async_op_cursor_close:
     return mdbx_cursor_close2(op->args.cursor_close.cursor);
   }
@@ -15997,6 +16017,50 @@ int mdbx_async_cursor_get(MDBX_async *async, MDBX_cursor *cursor, MDBX_val *key,
   op->args.cursor_get.key = key;
   op->args.cursor_get.data = data;
   op->args.cursor_get.op = cursor_op;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return rc;
+}
+
+int mdbx_async_cursor_put(MDBX_async *async, MDBX_cursor *cursor, const MDBX_val *key, MDBX_val *data,
+                          MDBX_put_flags_t flags, MDBX_async_op **out) {
+  if (unlikely(!cursor || !data))
+    return LOG_IFERR(MDBX_EINVAL);
+  if (unlikely(flags & (MDBX_RESERVE | MDBX_MULTIPLE)))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_put);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, key);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = async_copy_val(&op->data, &op->data_copy, op->data_inline, MDBX_ASYNC_INLINE_BYTES, data);
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.cursor_put.cursor = cursor;
+    op->args.cursor_put.data = data;
+    op->args.cursor_put.flags = flags;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_cursor_del(MDBX_async *async, MDBX_cursor *cursor, MDBX_put_flags_t flags, MDBX_async_op **out) {
+  if (unlikely(!cursor))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_del);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cursor_del.cursor = cursor;
+  op->args.cursor_del.flags = flags;
   rc = async_op_enqueue(async, op, out);
   if (unlikely(rc != MDBX_SUCCESS)) {
     op->signature = 0;

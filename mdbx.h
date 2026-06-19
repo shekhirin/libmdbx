@@ -4761,6 +4761,21 @@ LIBMDBX_API int mdbx_async_cursor_renew(MDBX_async *async, MDBX_txn *txn, MDBX_c
 LIBMDBX_API int mdbx_async_cursor_get(MDBX_async *async, MDBX_cursor *cursor, MDBX_val *key, MDBX_val *data,
                                       MDBX_cursor_op cursor_op, MDBX_async_op **op);
 
+/** \brief Asynchronously store an item through a cursor.
+ * \ingroup c_async
+ * \details Key and data bytes are copied during submission. The initial async
+ *          wrapper rejects \ref MDBX_RESERVE and \ref MDBX_MULTIPLE because
+ *          those modes require caller-managed in-place memory.
+ * \see mdbx_cursor_put() */
+LIBMDBX_API int mdbx_async_cursor_put(MDBX_async *async, MDBX_cursor *cursor, const MDBX_val *key, MDBX_val *data,
+                                      MDBX_put_flags_t flags, MDBX_async_op **op);
+
+/** \brief Asynchronously delete the current item through a cursor.
+ * \ingroup c_async
+ * \see mdbx_cursor_del() */
+LIBMDBX_API int mdbx_async_cursor_del(MDBX_async *async, MDBX_cursor *cursor, MDBX_put_flags_t flags,
+                                      MDBX_async_op **op);
+
 /** \brief Asynchronously close a cursor.
  * \ingroup c_async
  * \see mdbx_cursor_close2() */

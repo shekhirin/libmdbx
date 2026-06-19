@@ -141,9 +141,13 @@ int main(void) {
   MDBX_dbi dbi = 0;
   uint64_t keys[ITEM_COUNT];
   uint64_t values[ITEM_COUNT];
+  uint64_t cursor_extra_key = ITEM_COUNT;
+  uint64_t cursor_extra_value = expected_value(ITEM_COUNT);
   MDBX_val key_values[ITEM_COUNT];
   MDBX_val delete_keys[ITEM_COUNT];
   MDBX_val put_values[ITEM_COUNT];
+  MDBX_val cursor_extra_key_value = val(&cursor_extra_key, sizeof(cursor_extra_key));
+  MDBX_val cursor_extra_put_value = val(&cursor_extra_value, sizeof(cursor_extra_value));
   MDBX_val get_values[ITEM_COUNT];
   MDBX_async_op *ops[ITEM_COUNT];
   int op_results[ITEM_COUNT];
@@ -286,10 +290,26 @@ int main(void) {
 
   CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
   CHECK_OP(op);
-  size_t pending = 0;
-  CHECK(mdbx_async_del(async, txn, dbi, &key_values[0], NULL, &op));
+
+  CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor, &op));
   CHECK_OP(op);
-  for (unsigned i = 3; i < ITEM_COUNT; i += 3)
+  REQUIRE(cursor != NULL, "write cursor was not returned");
+  CHECK(mdbx_async_cursor_put(async, cursor, &cursor_extra_key_value, &cursor_extra_put_value, 0, &op));
+  CHECK_OP(op);
+  MDBX_val delete_key = key_values[0];
+  MDBX_val delete_data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, cursor, &delete_key, &delete_data, MDBX_SET_KEY, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_cursor_del(async, cursor, MDBX_CURRENT, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_cursor_close(async, cursor, &op));
+  CHECK_OP(op);
+  cursor = NULL;
+
+  size_t pending = 0;
+  CHECK(mdbx_async_del(async, txn, dbi, &key_values[3], NULL, &op));
+  CHECK_OP(op);
+  for (unsigned i = 6; i < ITEM_COUNT; i += 3)
     delete_keys[pending++] = key_values[i];
   CHECK(mdbx_async_del_batch(async, txn, dbi, delete_keys, NULL, op_results, pending, &op));
   CHECK_OP(op);
