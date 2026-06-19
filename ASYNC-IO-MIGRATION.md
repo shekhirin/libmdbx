@@ -87,8 +87,9 @@ remaining page access on explicit storage plus pinned page-cache buffers:
   helpers for cache pin accounting instead of cursor-local submit descriptors,
   cursor value refs are set/released directly, merge-restore top refs are
   retained from direct cursor snapshots, cursor stack releases clear slots
-  through checked direct helpers, and short-lived page results are released
-  after they are retained by cursor/value stacks or after transient
+  through checked direct helpers, stack slot installs retain/swap/release
+  directly, and short-lived page results are released after they are retained
+  by cursor/value stacks or after transient
   validation/copy/retire use. This now covers tree descent,
   sibling movement, root setup/collapse, compacting, defrag, overflow
   read/validate/delete paths, subtree cutoff, page retirement, page walking, and
