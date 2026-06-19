@@ -15088,6 +15088,7 @@ enum mdbx_async_opcode {
   async_op_cursor_scan_from,
   async_op_cursor_get_batch,
   async_op_cursor_count,
+  async_op_cursor_txn,
   async_op_cursor_dbi,
   async_op_cursor_copy,
   async_op_cursor_compare,
@@ -15552,6 +15553,10 @@ struct MDBX_async_op {
       MDBX_stat *stat;
       size_t bytes;
     } cursor_count;
+    struct {
+      const MDBX_cursor *cursor;
+      MDBX_txn **txn;
+    } cursor_txn;
     struct {
       const MDBX_cursor *cursor;
       MDBX_dbi *dbi;
@@ -16243,6 +16248,9 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_cursor_count:
     return mdbx_cursor_count_ex(op->args.cursor_count.cursor, op->args.cursor_count.count,
                                 op->args.cursor_count.stat, op->args.cursor_count.bytes);
+  case async_op_cursor_txn:
+    *op->args.cursor_txn.txn = mdbx_cursor_txn(op->args.cursor_txn.cursor);
+    return MDBX_SUCCESS;
   case async_op_cursor_dbi:
     *op->args.cursor_dbi.dbi = mdbx_cursor_dbi(op->args.cursor_dbi.cursor);
     return MDBX_SUCCESS;
@@ -18787,6 +18795,23 @@ int mdbx_async_cursor_count_ex(MDBX_async *async, const MDBX_cursor *cursor, siz
     osal_free(op);
   }
   return rc;
+}
+
+int mdbx_async_cursor_txn(MDBX_async *async, const MDBX_cursor *cursor, MDBX_txn **txn, MDBX_async_op **out) {
+  if (unlikely(!txn))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_txn);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cursor_txn.cursor = cursor;
+  op->args.cursor_txn.txn = txn;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
 }
 
 int mdbx_async_cursor_dbi(MDBX_async *async, const MDBX_cursor *cursor, MDBX_dbi *dbi, MDBX_async_op **out) {

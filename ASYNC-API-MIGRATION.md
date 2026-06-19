@@ -996,11 +996,6 @@ Additional custom-comparator DBI open checkpoint:
 - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke`: passed
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
-- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.057, async-batch/blocking-parallel ratio 1.081, and async-cursor/blocking-parallel ratio 1.297
-- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
-- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke`: passed
-- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
-- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.024, async-batch/blocking-parallel ratio 1.027, and async-cursor/blocking-parallel ratio 1.141
 
 Additional transaction extended-name alias checkpoint:
@@ -1034,3 +1029,27 @@ Additional cursor close2 alias checkpoint:
 - `git diff --check`: passed
 - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke`: passed
 - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.057, async-batch/blocking-parallel ratio 1.081, and async-cursor/blocking-parallel ratio 1.297
+
+Additional cursor transaction observer checkpoint:
+
+- added `mdbx_async_cursor_txn()` as the async counterpart to
+  `mdbx_cursor_txn()`, storing the cursor's transaction handle in
+  caller-provided output storage while the async operation result reports
+  wrapper completion
+- smoke coverage now verifies that an async-bound utility cursor reports the
+  expected transaction handle
+- repaired the previous migration-log validation placement so the cursor-close2
+  benchmark sample is recorded under the cursor-close2 checkpoint
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.029, async-batch/blocking-parallel ratio 1.063, and async-cursor/blocking-parallel ratio 1.077

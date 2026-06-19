@@ -5349,6 +5349,13 @@ LIBMDBX_API int mdbx_async_cursor_count(MDBX_async *async, const MDBX_cursor *cu
 LIBMDBX_API int mdbx_async_cursor_count_ex(MDBX_async *async, const MDBX_cursor *cursor, size_t *count,
                                            MDBX_stat *stat, size_t bytes, MDBX_async_op **op);
 
+/** \brief Asynchronously return the cursor's transaction handle.
+ * \ingroup c_async
+ * \details The `txn` output must remain valid until completion.
+ * \see mdbx_cursor_txn() */
+LIBMDBX_API int mdbx_async_cursor_txn(MDBX_async *async, const MDBX_cursor *cursor, MDBX_txn **txn,
+                                      MDBX_async_op **op);
+
 /** \brief Asynchronously return the cursor's table handle.
  * \ingroup c_async
  * \details The `dbi` output must remain valid until completion.

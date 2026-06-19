@@ -1120,6 +1120,10 @@ int main(void) {
   REQUIRE(cursor_context == &userctx_b, "unexpected async cursor updated context");
   CHECK(mdbx_async_cursor_bind(async, txn, utility_cursor, dbi, &op));
   CHECK_OP(op);
+  MDBX_txn *utility_txn = NULL;
+  CHECK(mdbx_async_cursor_txn(async, utility_cursor, &utility_txn, &op));
+  CHECK_OP(op);
+  REQUIRE(utility_txn == txn, "unexpected async cursor transaction");
   MDBX_dbi utility_dbi = UINT32_MAX;
   CHECK(mdbx_async_cursor_dbi(async, utility_cursor, &utility_dbi, &op));
   CHECK_OP(op);
