@@ -13820,6 +13820,27 @@ the ASAN build (`cmake --build @cmake-asan-build`), and the six focused ASAN
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.119`
 batch, `1.142` crud, `1.172` iterate, `0.965` get, and `1.072` delete.
 
+A later cursor transaction-pin capture submit-boundary cleanup removed
+`dxb_cursor_txn_pins_capture_submit_io_t`,
+`cursor_make_txn_pins_capture_submit_io()`, and
+`cursor_txn_pins_capture_submit_io_validate()` from `mdbx.c`.
+`cursor_couple_capture_txn_pins()` now reserves transaction retained-ref
+capacity, snapshots each cursor's value and stack refs in
+`cursor_capture_txn_pins_checked()`, and appends retained refs directly through
+the transaction retained-ref append helper. This keeps nested-transaction cursor
+pin preservation local to the cursor/transaction ownership code without a
+descriptor around in-memory ref-list updates. Verification passed `git diff
+--check`, a source scan proving the removed txn-pin capture submit helper and
+descriptor type are absent from `mdbx.c`, the GNUmake `mdbx_migration_smoke`
+build target, direct `mdbx_migration_smoke` default and forced tiny-cache runs,
+the Ninja build (`cmake --build @cmake-ninja-build`), the six focused
+`migration_smoke` CTest entries, the full 15-test public migration CTest suite
+including API checks and tool roundtrips, the ASAN build (`cmake --build
+@cmake-asan-build`), and the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.083` batch, `1.129` crud, `1.184`
+iterate, `0.955` get, and `1.069` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
