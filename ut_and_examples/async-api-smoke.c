@@ -430,8 +430,18 @@ int main(void) {
   CHECK(mdbx_async_env_create(async, &env, &op));
   CHECK_OP(op);
   REQUIRE(mdbx_async_env(async) == env, "async env create did not bind the executor");
-  CHECK(mdbx_async_env_set_option(async, MDBX_opt_max_db, 12, &op));
+  CHECK(mdbx_async_env_set_maxdbs(async, 12, &op));
   CHECK_OP(op);
+  MDBX_dbi maxdbs = 0;
+  CHECK(mdbx_async_env_get_maxdbs(async, &maxdbs, &op));
+  CHECK_OP(op);
+  REQUIRE(maxdbs == 12, "unexpected async environment maxdbs option");
+  CHECK(mdbx_async_env_set_maxreaders(async, 32, &op));
+  CHECK_OP(op);
+  unsigned maxreaders = 0;
+  CHECK(mdbx_async_env_get_maxreaders(async, &maxreaders, &op));
+  CHECK_OP(op);
+  REQUIRE(maxreaders == 32, "unexpected async environment maxreaders option");
   CHECK(mdbx_async_env_open(async, env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM, 0664, &op));
   CHECK_OP(op);
   REQUIRE(mdbx_async_env(async) == env, "async executor returned wrong environment");
@@ -483,18 +493,23 @@ int main(void) {
   REQUIRE(env_fd >= 0, "unexpected async environment file descriptor");
 #endif
 
-  uint64_t option_value = 0;
-  CHECK(mdbx_async_env_set_option(async, MDBX_opt_sync_bytes, 131072, &op));
+  size_t syncbytes = 0;
+  CHECK(mdbx_async_env_set_syncbytes(async, 131072, &op));
   CHECK_OP(op);
-  CHECK(mdbx_async_env_get_option(async, MDBX_opt_sync_bytes, &option_value, &op));
+  CHECK(mdbx_async_env_get_syncbytes(async, &syncbytes, &op));
   CHECK_OP(op);
-  REQUIRE(option_value == 131072, "unexpected async environment sync-bytes option");
+  REQUIRE(syncbytes == 131072, "unexpected async environment sync-bytes option");
 
-  CHECK(mdbx_async_env_set_option(async, MDBX_opt_sync_period, 65536, &op));
+  CHECK(mdbx_async_env_set_syncperiod(async, 65536, &op));
   CHECK_OP(op);
+  uint64_t option_value = 0;
   CHECK(mdbx_async_env_get_option(async, MDBX_opt_sync_period, &option_value, &op));
   CHECK_OP(op);
-  REQUIRE(option_value != 0, "unexpected async environment sync-period option");
+  REQUIRE(option_value == 65536, "unexpected async generic sync-period option");
+  unsigned syncperiod = 0;
+  CHECK(mdbx_async_env_get_syncperiod(async, &syncperiod, &op));
+  CHECK_OP(op);
+  REQUIRE(syncperiod == 65536, "unexpected async environment sync-period option");
 
   unsigned env_flags = 0;
   CHECK(mdbx_async_env_get_flags(async, &env_flags, &op));

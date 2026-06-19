@@ -4780,6 +4780,26 @@ LIBMDBX_API int mdbx_async_env_set_option(MDBX_async *async, MDBX_option_t optio
 LIBMDBX_API int mdbx_async_env_get_option(MDBX_async *async, MDBX_option_t option, uint64_t *value,
                                           MDBX_async_op **op);
 
+/** \brief Asynchronously set the environment auto-sync byte threshold.
+ * \ingroup c_async
+ * \see mdbx_env_set_syncbytes() */
+LIBMDBX_API int mdbx_async_env_set_syncbytes(MDBX_async *async, size_t threshold, MDBX_async_op **op);
+
+/** \brief Asynchronously get the environment auto-sync byte threshold.
+ * \ingroup c_async
+ * \see mdbx_env_get_syncbytes() */
+LIBMDBX_API int mdbx_async_env_get_syncbytes(MDBX_async *async, size_t *threshold, MDBX_async_op **op);
+
+/** \brief Asynchronously set the environment auto-sync period.
+ * \ingroup c_async
+ * \see mdbx_env_set_syncperiod() */
+LIBMDBX_API int mdbx_async_env_set_syncperiod(MDBX_async *async, unsigned seconds_16dot16, MDBX_async_op **op);
+
+/** \brief Asynchronously get the environment auto-sync period.
+ * \ingroup c_async
+ * \see mdbx_env_get_syncperiod() */
+LIBMDBX_API int mdbx_async_env_get_syncperiod(MDBX_async *async, unsigned *seconds_16dot16, MDBX_async_op **op);
+
 /** \brief Asynchronously set environment flags.
  * \ingroup c_async
  * \see mdbx_env_set_flags() */
@@ -4814,6 +4834,31 @@ LIBMDBX_API int mdbx_async_env_get_fd(MDBX_async *async, mdbx_filehandle_t *fd, 
 LIBMDBX_API int mdbx_async_env_set_geometry(MDBX_async *async, intptr_t size_lower, intptr_t size_now,
                                             intptr_t size_upper, intptr_t growth_step, intptr_t shrink_threshold,
                                             intptr_t pagesize, MDBX_async_op **op);
+
+/** \brief Asynchronously set environment size using the legacy mapsize helper.
+ * \ingroup c_async
+ * \see mdbx_env_set_mapsize() */
+MDBX_DEPRECATED LIBMDBX_API int mdbx_async_env_set_mapsize(MDBX_async *async, size_t size, MDBX_async_op **op);
+
+/** \brief Asynchronously set the maximum number of reader slots.
+ * \ingroup c_async
+ * \see mdbx_env_set_maxreaders() */
+LIBMDBX_API int mdbx_async_env_set_maxreaders(MDBX_async *async, unsigned readers, MDBX_async_op **op);
+
+/** \brief Asynchronously get the maximum number of reader slots.
+ * \ingroup c_async
+ * \see mdbx_env_get_maxreaders() */
+LIBMDBX_API int mdbx_async_env_get_maxreaders(MDBX_async *async, unsigned *readers, MDBX_async_op **op);
+
+/** \brief Asynchronously set the maximum number of named tables.
+ * \ingroup c_async
+ * \see mdbx_env_set_maxdbs() */
+LIBMDBX_API int mdbx_async_env_set_maxdbs(MDBX_async *async, MDBX_dbi dbs, MDBX_async_op **op);
+
+/** \brief Asynchronously get the maximum number of named tables.
+ * \ingroup c_async
+ * \see mdbx_env_get_maxdbs() */
+LIBMDBX_API int mdbx_async_env_get_maxdbs(MDBX_async *async, MDBX_dbi *dbs, MDBX_async_op **op);
 
 /** \brief Asynchronously set the environment user context.
  * \ingroup c_async

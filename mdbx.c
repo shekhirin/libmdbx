@@ -14994,6 +14994,7 @@ enum mdbx_async_opcode {
   async_op_env_close,
   async_op_env_set_option,
   async_op_env_get_option,
+  async_op_env_get_typed_option,
   async_op_env_set_flags,
   async_op_env_get_flags,
   async_op_env_get_path,
@@ -15116,6 +15117,12 @@ enum mdbx_async_cursor_state {
   async_cursor_state_on_last_dup
 };
 
+enum mdbx_async_typed_option {
+  async_typed_option_size_t,
+  async_typed_option_unsigned,
+  async_typed_option_dbi
+};
+
 #define MDBX_ASYNC_INLINE_WORDS 2
 #define MDBX_ASYNC_INLINE_BYTES (MDBX_ASYNC_INLINE_WORDS * sizeof(uint64_t))
 #define MDBX_ASYNC_SPARE_LIMIT 1024
@@ -15213,6 +15220,11 @@ struct MDBX_async_op {
       uint64_t value;
       uint64_t *out;
     } env_option;
+    struct {
+      MDBX_option_t option;
+      enum mdbx_async_typed_option type;
+      void *out;
+    } env_typed_option;
     struct {
       MDBX_env_flags_t flags;
       bool onoff;
@@ -15847,6 +15859,30 @@ static int async_op_execute(MDBX_async_op *op) {
     return mdbx_env_set_option(op->async->env, op->args.env_option.option, op->args.env_option.value);
   case async_op_env_get_option:
     return mdbx_env_get_option(op->async->env, op->args.env_option.option, op->args.env_option.out);
+  case async_op_env_get_typed_option: {
+    uint64_t value = 0;
+    const int rc = mdbx_env_get_option(op->async->env, op->args.env_typed_option.option, &value);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+    switch (op->args.env_typed_option.type) {
+    case async_typed_option_size_t:
+      if (unlikely(value > SIZE_MAX))
+        return MDBX_TOO_LARGE;
+      *(size_t *)op->args.env_typed_option.out = (size_t)value;
+      return MDBX_SUCCESS;
+    case async_typed_option_unsigned:
+      if (unlikely(value > UINT32_MAX))
+        return MDBX_TOO_LARGE;
+      *(unsigned *)op->args.env_typed_option.out = (unsigned)value;
+      return MDBX_SUCCESS;
+    case async_typed_option_dbi:
+      if (unlikely(value > MDBX_MAX_DBI))
+        return MDBX_TOO_LARGE;
+      *(MDBX_dbi *)op->args.env_typed_option.out = (MDBX_dbi)value;
+      return MDBX_SUCCESS;
+    }
+    return MDBX_EINVAL;
+  }
   case async_op_env_set_flags:
     return mdbx_env_set_flags(op->async->env, op->args.env_set_flags.flags, op->args.env_set_flags.onoff);
   case async_op_env_get_flags:
@@ -17003,6 +17039,63 @@ int mdbx_async_env_get_option(MDBX_async *async, MDBX_option_t option, uint64_t 
     osal_free(op);
   }
   return LOG_IFERR(rc);
+}
+
+static int async_env_get_typed_option_submit(MDBX_async *async, MDBX_option_t option,
+                                             enum mdbx_async_typed_option type, void *value,
+                                             MDBX_async_op **out) {
+  if (unlikely(!value))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_env_get_typed_option);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.env_typed_option.option = option;
+  op->args.env_typed_option.type = type;
+  op->args.env_typed_option.out = value;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_env_set_syncbytes(MDBX_async *async, size_t threshold, MDBX_async_op **out) {
+  return mdbx_async_env_set_option(async, MDBX_opt_sync_bytes, threshold, out);
+}
+
+int mdbx_async_env_get_syncbytes(MDBX_async *async, size_t *threshold, MDBX_async_op **out) {
+  return async_env_get_typed_option_submit(async, MDBX_opt_sync_bytes, async_typed_option_size_t, threshold, out);
+}
+
+int mdbx_async_env_set_syncperiod(MDBX_async *async, unsigned seconds_16dot16, MDBX_async_op **out) {
+  return mdbx_async_env_set_option(async, MDBX_opt_sync_period, seconds_16dot16, out);
+}
+
+int mdbx_async_env_get_syncperiod(MDBX_async *async, unsigned *seconds_16dot16, MDBX_async_op **out) {
+  return async_env_get_typed_option_submit(async, MDBX_opt_sync_period, async_typed_option_unsigned,
+                                           seconds_16dot16, out);
+}
+
+int mdbx_async_env_set_mapsize(MDBX_async *async, size_t size, MDBX_async_op **out) {
+  return mdbx_async_env_set_geometry(async, size, size, size, -1, -1, -1, out);
+}
+
+int mdbx_async_env_set_maxreaders(MDBX_async *async, unsigned readers, MDBX_async_op **out) {
+  return mdbx_async_env_set_option(async, MDBX_opt_max_readers, readers, out);
+}
+
+int mdbx_async_env_get_maxreaders(MDBX_async *async, unsigned *readers, MDBX_async_op **out) {
+  return async_env_get_typed_option_submit(async, MDBX_opt_max_readers, async_typed_option_unsigned, readers, out);
+}
+
+int mdbx_async_env_set_maxdbs(MDBX_async *async, MDBX_dbi dbs, MDBX_async_op **out) {
+  return mdbx_async_env_set_option(async, MDBX_opt_max_db, dbs, out);
+}
+
+int mdbx_async_env_get_maxdbs(MDBX_async *async, MDBX_dbi *dbs, MDBX_async_op **out) {
+  return async_env_get_typed_option_submit(async, MDBX_opt_max_db, async_typed_option_dbi, dbs, out);
 }
 
 int mdbx_async_env_set_flags(MDBX_async *async, MDBX_env_flags_t flags, bool onoff, MDBX_async_op **out) {

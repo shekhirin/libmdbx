@@ -935,3 +935,26 @@ Additional environment create checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.081, async-batch/blocking-parallel ratio 1.032, and async-cursor/blocking-parallel ratio 0.655
+
+Additional named environment option checkpoint:
+
+- added async wrappers for the named environment configuration helpers:
+  `mdbx_async_env_set_syncbytes()`, `mdbx_async_env_get_syncbytes()`,
+  `mdbx_async_env_set_syncperiod()`, `mdbx_async_env_get_syncperiod()`,
+  `mdbx_async_env_set_mapsize()`, `mdbx_async_env_set_maxreaders()`,
+  `mdbx_async_env_get_maxreaders()`, `mdbx_async_env_set_maxdbs()`, and
+  `mdbx_async_env_get_maxdbs()`
+- typed option getters now complete through a dedicated async worker case so
+  `size_t`, `unsigned`, and `MDBX_dbi` outputs are written with the correct
+  caller-visible type
+- smoke coverage now uses named async max-DB and max-reader helpers before
+  async open, and named sync-byte/sync-period helpers after open while keeping
+  generic option-get coverage
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.066, async-batch/blocking-parallel ratio 1.079, and async-cursor/blocking-parallel ratio 0.647
