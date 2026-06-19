@@ -14297,6 +14297,29 @@ The paired `mdbx_migration_bench_lazy` gate passed with forced/default ratios
 of `1.121` batch, `1.164` crud, `1.015` iterate, `0.999` get, and `1.065`
 delete.
 
+A later header/filesize descriptor cleanup removed
+`dxb_env_filesize_fetch_submit_io_t`,
+`dxb_env_make_filesize_fetch_submit_io()`,
+`dxb_env_filesize_fetch_submit_io_validate()`,
+`dxb_header_meta_read_submit_io_t`,
+`dxb_header_make_meta_read_submit_io()`, and
+`dxb_header_meta_read_submit_io_validate()` from `mdbx.c`. `dxb_read_header()`
+now builds, validates, and submits the storage filesize-fetch descriptor
+directly, and uses direct storage `dxb_meta_read_submit_io_t` descriptors for
+the initial and retry meta-page reads. The shrink-race refresh in
+`meta_validate()` and the primal transaction setup file-size refresh now use
+the same direct storage filesize-fetch descriptor path. Verification passed
+`git diff --check`, a source scan proving the removed header/filesize
+descriptor helpers are absent from `mdbx.c`, the GNUmake
+`mdbx_migration_smoke` build target, direct `mdbx_migration_smoke` default and
+forced tiny-cache runs, the Ninja build (`cmake --build @cmake-ninja-build`),
+the six focused `migration_smoke` CTest entries, the full 15-test public
+migration CTest suite including API checks and tool roundtrips, the ASAN build
+(`cmake --build @cmake-asan-build`), and the six focused ASAN
+`migration_smoke` entries with `LSAN_OPTIONS=detect_leaks=0`. The paired
+`mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.091`
+batch, `1.139` crud, `1.082` iterate, `0.966` get, and `1.073` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
