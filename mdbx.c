@@ -6574,6 +6574,9 @@ struct iov_ctx {
   dxb_storage_t *storage;
   enum dxb_io_channel channel;
   int err;
+  pgno_t invalidate_begin;
+  pgno_t invalidate_end;
+  bool cache_invalidated;
 #ifndef MDBX_NEED_WRITTEN_RANGE
 #define MDBX_NEED_WRITTEN_RANGE 1
 #endif /* MDBX_NEED_WRITTEN_RANGE */
@@ -6585,6 +6588,8 @@ struct iov_ctx {
 
 MDBX_INTERNAL __must_check_result int iov_init(MDBX_txn *const txn, iov_ctx_t *ctx, size_t items, size_t npages,
                                                enum dxb_io_channel channel);
+
+static void iov_invalidate_range_reset(iov_ctx_t *ctx);
 
 static bool iov_empty(const iov_ctx_t *ctx);
 
@@ -46966,6 +46971,7 @@ int iov_init(MDBX_txn *const txn, iov_ctx_t *ctx, size_t items, size_t npages, e
   if (likely(ctx->err == MDBX_SUCCESS))
     ctx->err = dxb_storage_submit_prepare_write_queue(ctx->storage, &queue_submit).err;
   if (likely(ctx->err == MDBX_SUCCESS)) {
+    iov_invalidate_range_reset(ctx);
 #if MDBX_NEED_WRITTEN_RANGE
     ctx->flush_begin = MAX_PAGENO;
     ctx->flush_end = MIN_PAGENO;
@@ -46977,6 +46983,42 @@ int iov_init(MDBX_txn *const txn, iov_ctx_t *ctx, size_t items, size_t npages, e
 
 static bool iov_empty(const iov_ctx_t *ctx) {
   return dxb_storage_write_queue_is_empty(ctx->storage);
+}
+
+static void iov_invalidate_range_reset(iov_ctx_t *ctx) {
+  ctx->invalidate_begin = MAX_PAGENO;
+  ctx->invalidate_end = MIN_PAGENO;
+  ctx->cache_invalidated = false;
+}
+
+static void iov_invalidate_range_include(iov_ctx_t *ctx, pgno_t pgno, size_t npages) {
+  const pgno_t end = pgno + (pgno_t)npages;
+  ctx->invalidate_begin = (ctx->invalidate_begin < pgno) ? ctx->invalidate_begin : pgno;
+  ctx->invalidate_end = (ctx->invalidate_end > end) ? ctx->invalidate_end : end;
+}
+
+static int iov_invalidate_written_cache(iov_ctx_t *ctx) {
+  if (ctx->invalidate_begin >= ctx->invalidate_end)
+    return MDBX_SUCCESS;
+
+  dxb_page_io_t pages;
+  int err = dxb_storage_page_io(ctx->storage, ctx->invalidate_begin, ctx->invalidate_end - ctx->invalidate_begin,
+                                &pages);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+  dxb_cache_invalidate_io_t invalidate;
+  err = dxb_storage_make_cache_invalidate_io(ctx->storage, &pages, false, &invalidate);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+  if (unlikely(invalidate.include_reusable || !iov_page_io_equal(&pages, &invalidate.pages)))
+    return MDBX_EINVAL;
+
+  dxb_cache_result_t result = dxb_storage_submit_invalidate_cached_io(ctx->storage, &invalidate);
+  if (unlikely(result.err != MDBX_SUCCESS))
+    return result.err;
+  ctx->cache_invalidated = true;
+  return MDBX_SUCCESS;
 }
 
 static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_data_write_io_t *queued, void *data) {
@@ -46991,7 +47033,7 @@ static void iov_callback4dirtypages(iov_ctx_t *ctx, const dxb_data_write_io_t *q
   eASSERT0(env, queued->pages.npages >= (is_largepage(wp) ? wp->pages : 1u));
   eASSERT0(env, (wp->flags & P_ILL_BITS) == 0);
 
-  if (ctx->err == MDBX_SUCCESS) {
+  if (ctx->err == MDBX_SUCCESS && !ctx->cache_invalidated) {
     int err = unlikely(!ctx->env || !ctx->storage || ctx->storage != &ctx->env->dxb_storage ||
                        !dxb_io_channel_is_data(ctx->channel))
                   ? MDBX_EINVAL
@@ -47044,16 +47086,13 @@ static void iov_complete(iov_ctx_t *ctx) {
                 ? MDBX_EINVAL
                 : dxb_storage_make_dirty_write_walk_io(ctx->storage, ctx, iov_callback4dirtypages, &walk_io);
   if (likely(err == MDBX_SUCCESS)) {
-    int walk_err = dxb_storage_dirty_write_walk_io_validate(ctx->storage, &walk_io);
+    if (ctx->err == MDBX_SUCCESS)
+      ctx->err = iov_invalidate_written_cache(ctx);
     dxb_dirty_write_walk_submit_io_t walk_submit;
-    if (likely(walk_err == MDBX_SUCCESS))
-      walk_err = dxb_storage_make_dirty_write_walk_submit_io(ctx->storage, &walk_io, &walk_submit);
-    if (likely(walk_err == MDBX_SUCCESS))
-      walk_err = dxb_storage_dirty_write_walk_submit_io_validate(ctx->storage, &walk_submit);
-    dxb_queue_op_result_t walk =
-        likely(walk_err == MDBX_SUCCESS)
-            ? dxb_storage_submit_walk_write_queue(ctx->storage, &walk_submit)
-            : iov_queue_op_error(walk_err, ctx->storage);
+    const int walk_err = dxb_storage_make_dirty_write_walk_submit_io(ctx->storage, &walk_io, &walk_submit);
+    dxb_queue_op_result_t walk = likely(walk_err == MDBX_SUCCESS)
+                                     ? dxb_storage_submit_walk_write_queue(ctx->storage, &walk_submit)
+                                     : iov_queue_op_error(walk_err, ctx->storage);
     if (unlikely(ctx->err == MDBX_SUCCESS && walk.err != MDBX_SUCCESS))
       ctx->err = walk.err;
   } else if (ctx->err == MDBX_SUCCESS)
@@ -47068,6 +47107,7 @@ static void iov_complete(iov_ctx_t *ctx) {
           : iov_queue_op_error(reset_err, ctx->storage);
   if (unlikely(ctx->err == MDBX_SUCCESS && reset.err != MDBX_SUCCESS))
     ctx->err = reset.err;
+  iov_invalidate_range_reset(ctx);
 }
 
 int iov_write(iov_ctx_t *ctx) {
@@ -47076,11 +47116,6 @@ int iov_write(iov_ctx_t *ctx) {
                             !dxb_io_channel_is_data(ctx->channel))
                        ? MDBX_EINVAL
                        : MDBX_SUCCESS;
-  dxb_queued_write_io_t queued;
-  if (likely(submit_err == MDBX_SUCCESS))
-    submit_err = dxb_storage_make_queued_write_io(ctx->storage, ctx->channel, &queued);
-  if (likely(submit_err == MDBX_SUCCESS))
-    submit_err = dxb_storage_queued_write_io_validate(ctx->storage, ctx->channel, &queued);
   dxb_queue_write_result_t r =
       likely(submit_err == MDBX_SUCCESS) ? dxb_storage_write_queued(ctx->storage, ctx->channel)
                                          : dxb_queue_write_result(submit_err, ctx->channel, 0, 0, 0, 0, false, false);
@@ -47125,22 +47160,9 @@ int iov_page(MDBX_txn *txn, iov_ctx_t *ctx, page_t *dp, size_t npages) {
     err = dxb_storage_make_dirty_queued_write_io(ctx->storage, dp->pgno, npages, dp, &queued);
   if (unlikely(err != MDBX_SUCCESS))
     return ctx->err = err;
-  if (unlikely(err == MDBX_SUCCESS &&
-               (queued.buffer != dp || queued.data.pages.pgno != dp->pgno || queued.data.pages.npages != npages)))
-    err = MDBX_EINVAL;
   dxb_dirty_queued_write_submit_io_t page_submit;
   if (likely(err == MDBX_SUCCESS))
     err = dxb_storage_make_validated_dirty_queued_write_submit_io(&queued, &page_submit);
-  if (unlikely(err == MDBX_SUCCESS &&
-               (page_submit.queued.data.pages.pgno != queued.data.pages.pgno ||
-                page_submit.queued.data.pages.end_pgno != queued.data.pages.end_pgno ||
-                page_submit.queued.data.pages.npages != queued.data.pages.npages ||
-                page_submit.queued.data.pages.offset != queued.data.pages.offset ||
-                page_submit.queued.data.pages.bytes != queued.data.pages.bytes ||
-                page_submit.queued.data.bytes.offset != queued.data.bytes.offset ||
-                page_submit.queued.data.bytes.bytes != queued.data.bytes.bytes ||
-                page_submit.queued.buffer != queued.buffer)))
-    err = MDBX_EINVAL;
   if (likely(err == MDBX_SUCCESS))
     err = dxb_storage_submit_add_validated_queued_write(ctx->storage, &page_submit).err;
   if (unlikely(err != MDBX_SUCCESS)) {
@@ -47165,6 +47187,7 @@ int iov_page(MDBX_txn *txn, iov_ctx_t *ctx, page_t *dp, size_t npages) {
   ctx->flush_begin = (ctx->flush_begin < dp->pgno) ? ctx->flush_begin : dp->pgno;
   ctx->flush_end = (ctx->flush_end > dp->pgno + (pgno_t)npages) ? ctx->flush_end : dp->pgno + (pgno_t)npages;
 #endif /* MDBX_NEED_WRITTEN_RANGE */
+  iov_invalidate_range_include(ctx, dp->pgno, npages);
   return MDBX_SUCCESS;
 }
 
