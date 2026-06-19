@@ -30427,6 +30427,14 @@ static inline int dxb_storage_make_dirty_queued_write_submit_io(
   return MDBX_SUCCESS;
 }
 
+static inline int dxb_storage_make_validated_dirty_queued_write_submit_io(
+    const dxb_dirty_queued_write_io_t *queued, dxb_dirty_queued_write_submit_io_t *io) {
+  if (unlikely(!io || !queued))
+    return MDBX_EINVAL;
+  io->queued = *queued;
+  return MDBX_SUCCESS;
+}
+
 static inline int dxb_storage_dirty_queued_write_submit_io_validate(
     const dxb_storage_t *storage, const dxb_dirty_queued_write_submit_io_t *io) {
   if (unlikely(!io))
@@ -41720,19 +41728,16 @@ static size_t osal_ioring_payload_bytes(const osal_ioring_t *ior) {
 static inline int ior_item_make_merged_io(const ior_item_t *item, const dxb_data_write_io_t *io,
                                           dxb_data_write_io_t *merged) {
   const dxb_data_write_io_t *base = &item->io;
-  int rc = dxb_data_write_io_validate_queued(base, base->bytes.bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-  rc = dxb_data_write_io_validate_queued(io, io->bytes.bytes);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
   if (unlikely(base->bytes.offset > UINT64_MAX - base->bytes.bytes ||
                base->pages.offset > UINT64_MAX - base->pages.bytes))
     return MDBX_EINVAL;
   if (base->bytes.offset + base->bytes.bytes != io->bytes.offset ||
       base->pages.end_pgno != io->pages.pgno || base->pages.offset + base->pages.bytes != io->pages.offset)
     return MDBX_RESULT_TRUE;
+
+  int rc = dxb_data_write_io_validate_queued(base, base->bytes.bytes);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
 
   const size_t base_pagesize = base->pages.bytes / base->pages.npages;
   const size_t io_pagesize = io->pages.bytes / io->pages.npages;
@@ -47136,7 +47141,7 @@ int iov_page(MDBX_txn *txn, iov_ctx_t *ctx, page_t *dp, size_t npages) {
     err = MDBX_EINVAL;
   dxb_dirty_queued_write_submit_io_t page_submit;
   if (likely(err == MDBX_SUCCESS))
-    err = dxb_storage_make_dirty_queued_write_submit_io(ctx->storage, &queued, &page_submit);
+    err = dxb_storage_make_validated_dirty_queued_write_submit_io(&queued, &page_submit);
   if (unlikely(err == MDBX_SUCCESS &&
                (page_submit.queued.data.pages.pgno != queued.data.pages.pgno ||
                 page_submit.queued.data.pages.end_pgno != queued.data.pages.end_pgno ||

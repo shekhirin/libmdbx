@@ -2204,3 +2204,57 @@ Additional dirty-write enqueue validation checkpoint:
   read-heavy wins and slightly improves several write-heavy samples, especially
   forced no-map batch/delete versus the previous checkpoint. It still does not
   close the pre-migration write-heavy baseline gap.
+
+Additional dirty-write enqueue wrapper and merge-probe checkpoint:
+
+- added an internal already-validated dirty-write submit wrapper for `iov_page()`
+  so the just-built dirty queued write is copied into its submit envelope without
+  rebuilding and revalidating the same storage/page range
+- moved cheap adjacency checks ahead of queued-base validation in
+  `ior_item_make_merged_io()`, avoiding descriptor validation when a new dirty
+  write cannot merge with the previous queue item
+- contiguous merges still validate the existing queued base and the merged
+  descriptor; `osal_ioring_add()` still validates each incoming write range
+  before merge/enqueue decisions
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_migration_smoke mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|migration_smoke)'`: passed 9/9
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_audit mdbx_async_api_bench mdbx_migration_smoke`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- forced no-map/tiny-cache `MDBX_ASYNC_BENCH_OPS=300000` spot check reported
+  async/blocking-parallel 1.082, async-many/blocking-parallel 1.109,
+  async-thread/blocking-parallel 1.003,
+  async-thread-many/blocking-parallel 1.055,
+  async-batch/blocking-parallel 1.118,
+  async-batch-callback/blocking-parallel 1.112, and
+  async-loop/blocking-parallel 1.050. The threaded-batch/threaded-loop variants
+  were noisy in this sample.
+- `make -f GNUmakefile mdbx_migration_bench_lazy`: passed twice after the code
+  change; `make -f GNUmakefile mdbx_migration_bench_lazy_repeat`: passed with
+  three paired samples. The repeat averages for current explicit default were:
+
+| phase | earlier mapped avg | current explicit default avg | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1033.245 ops/s | 955.449 ops/s | 0.925 |
+| crud | 55.675 Kops/s | 50.496 Kops/s | 0.907 |
+| iterate | 26.143 Mops/s | 28.262 Mops/s | 1.081 |
+| get | 279.409 Kops/s | 424.746 Kops/s | 1.520 |
+| delete | 66.398 Kops/s | 58.700 Kops/s | 0.884 |
+
+- repeat averages for current explicit forced no-map against the earlier no-map
+  baseline were:
+
+| phase | earlier no-map avg | current explicit forced avg | ratio |
+| --- | ---: | ---: | ---: |
+| batch | 1089.750 ops/s | 954.844 ops/s | 0.876 |
+| crud | 59.787 Kops/s | 50.860 Kops/s | 0.851 |
+| iterate | 25.827 Mops/s | 27.845 Mops/s | 1.078 |
+| get | 274.039 Kops/s | 413.607 Kops/s | 1.509 |
+| delete | 69.067 Kops/s | 58.483 Kops/s | 0.847 |
+
+- conclusion: the lower enqueue/merge validation cleanup preserves the
+  read-heavy average wins and keeps write-heavy phases in the same improved band
+  as the prior checkpoint, but batch, CRUD, and delete remain below the
+  pre-migration baseline.
