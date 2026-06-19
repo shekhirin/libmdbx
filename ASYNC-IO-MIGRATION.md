@@ -14826,6 +14826,26 @@ including API checks and tool roundtrips, the ASAN build (`cmake --build
 passed with forced/default ratios of `1.122` batch, `1.169` crud, `0.848`
 iterate, `1.045` get, and `1.079` delete.
 
+A later filesize-fetch cleanup changed `dxb_storage_submit_fetch_filesize()`
+to submit the direct storage operation without a zero-payload
+`dxb_filesize_submit_io_t` argument. Transaction coherency refresh,
+header-read setup, metadata validation, geometry setup, setup-size handling,
+and resize-size handling now call the fetch submitter directly. The setup and
+resize descriptor validators still validate their retained fetch/set filesize
+fields, so those higher-level request invariants remain explicit while the
+runtime `osal_filesize()` boundary no longer carries an empty submit wrapper.
+Verification passed `git diff --check`, a source scan proving no
+`dxb_storage_submit_fetch_filesize()` call still passes a request argument,
+the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks
+and tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and
+the six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.104` batch, `1.173` crud, `0.987`
+iterate, `1.050` get, and `1.072` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
