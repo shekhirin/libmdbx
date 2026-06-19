@@ -6828,6 +6828,17 @@ typedef int (*MDBX_predicate_func)(void *context, MDBX_val *key, MDBX_val *value
 LIBMDBX_API int mdbx_cursor_scan(MDBX_cursor *cursor, MDBX_predicate_func predicate, void *context,
                                  MDBX_cursor_op start_op, MDBX_cursor_op turn_op, void *arg);
 
+/** \brief Asynchronously scan a table through a cursor using a predicate.
+ * \ingroup c_async
+ * \details The predicate runs on the async executor worker thread. The cursor,
+ *          predicate context, and predicate argument must remain valid until
+ *          completion. The async operation result is the
+ *          \ref mdbx_cursor_scan() return code.
+ * \see mdbx_cursor_scan() */
+LIBMDBX_API int mdbx_async_cursor_scan(MDBX_async *async, MDBX_cursor *cursor, MDBX_predicate_func predicate,
+                                       void *context, MDBX_cursor_op start_op, MDBX_cursor_op turn_op, void *arg,
+                                       MDBX_async_op **op);
+
 /** Scans a table using the given predicate, starting with the given key-value pair,
  *  and reduces an associated overhead.
  * \ingroup c_crud
@@ -6900,6 +6911,18 @@ LIBMDBX_API int mdbx_cursor_scan(MDBX_cursor *cursor, MDBX_predicate_func predic
 LIBMDBX_API int mdbx_cursor_scan_from(MDBX_cursor *cursor, MDBX_predicate_func predicate, void *context,
                                       MDBX_cursor_op from_op, MDBX_val *from_key, MDBX_val *from_value,
                                       MDBX_cursor_op turn_op, void *arg);
+
+/** \brief Asynchronously scan a table from a key/value position through a cursor.
+ * \ingroup c_async
+ * \details Initial key and optional value bytes are copied during submission.
+ *          The predicate runs on the async executor worker thread. The cursor,
+ *          predicate context, predicate argument, and caller-provided key/value
+ *          descriptor outputs must remain valid until completion.
+ * \see mdbx_cursor_scan_from() */
+LIBMDBX_API int mdbx_async_cursor_scan_from(MDBX_async *async, MDBX_cursor *cursor, MDBX_predicate_func predicate,
+                                            void *context, MDBX_cursor_op from_op, MDBX_val *from_key,
+                                            MDBX_val *from_value, MDBX_cursor_op turn_op, void *arg,
+                                            MDBX_async_op **op);
 
 /** \brief Retrieve multiple non-dupsort key/value pairs by cursor.
  * \ingroup c_crud
@@ -7458,6 +7481,13 @@ LIBMDBX_API int mdbx_estimate_range(const MDBX_txn *txn, MDBX_dbi dbi, const MDB
  * \retval OTHERWISE the error code. */
 MDBX_NOTHROW_PURE_FUNCTION LIBMDBX_API int mdbx_is_dirty(const MDBX_txn *txn, const void *ptr);
 
+/** \brief Asynchronously determine whether an address is on a dirty database page.
+ * \ingroup c_async
+ * \details The async operation result is the \ref mdbx_is_dirty() return code.
+ *          The pointer must remain valid until completion.
+ * \see mdbx_is_dirty() */
+LIBMDBX_API int mdbx_async_is_dirty(MDBX_async *async, const MDBX_txn *txn, const void *ptr, MDBX_async_op **op);
+
 /** \brief Sequence generation for a table.
  * \ingroup c_crud
  *
@@ -7498,6 +7528,15 @@ LIBMDBX_API int mdbx_dbi_sequence(MDBX_txn *txn, MDBX_dbi dbi, uint64_t *result,
 MDBX_NOTHROW_PURE_FUNCTION LIBMDBX_API int mdbx_cmp(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *a,
                                                     const MDBX_val *b);
 
+/** \brief Asynchronously compare two keys according to a particular table.
+ * \ingroup c_async
+ * \details Compared key bytes are copied during submission. The signed
+ *          comparison is written to `result`, which must remain valid until
+ *          completion.
+ * \see mdbx_cmp() */
+LIBMDBX_API int mdbx_async_cmp(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *a,
+                               const MDBX_val *b, int *result, MDBX_async_op **op);
+
 /** \brief Returns default internal key's comparator for given table flags.
  * \ingroup c_extra */
 MDBX_NOTHROW_CONST_FUNCTION LIBMDBX_API MDBX_cmp_func mdbx_get_keycmp(MDBX_db_flags_t flags);
@@ -7519,6 +7558,15 @@ MDBX_NOTHROW_CONST_FUNCTION LIBMDBX_API MDBX_cmp_func mdbx_get_keycmp(MDBX_db_fl
  * \returns < 0 if a < b, 0 if a == b, > 0 if a > b */
 MDBX_NOTHROW_PURE_FUNCTION LIBMDBX_API int mdbx_dcmp(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *a,
                                                      const MDBX_val *b);
+
+/** \brief Asynchronously compare two data items according to a particular table.
+ * \ingroup c_async
+ * \details Compared value bytes are copied during submission. The signed
+ *          comparison is written to `result`, which must remain valid until
+ *          completion.
+ * \see mdbx_dcmp() */
+LIBMDBX_API int mdbx_async_dcmp(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *a,
+                                const MDBX_val *b, int *result, MDBX_async_op **op);
 
 /** \brief Returns default internal data's comparator for given table flags
  * \ingroup c_extra */

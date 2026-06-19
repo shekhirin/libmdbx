@@ -736,3 +736,26 @@ Additional DBI/data utility checkpoint:
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
 - clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.089, async-batch/blocking-parallel ratio 1.088, and async-cursor/blocking-parallel ratio 0.649
+
+Additional cursor/read utility checkpoint:
+
+- added async wrappers for predicate cursor scans (`mdbx_cursor_scan()` and
+  `mdbx_cursor_scan_from()`), dirty-page probing with `mdbx_is_dirty()`, and
+  table key/data comparisons with `mdbx_cmp()` and `mdbx_dcmp()`
+- cursor-scan predicates run on the async executor worker thread; scan-from
+  copies the submitted key and optional value bytes before enqueueing and
+  writes final key/value descriptors back when the scan result is not an error
+- comparison wrappers copy both operands before enqueueing and store the signed
+  comparator result in caller-provided output storage while the async operation
+  result reports wrapper completion
+- smoke coverage now verifies async clean-value dirty probing, key/data
+  comparison ordering, predicate scan from first item, and predicate scan from
+  a lower-bound key
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 2/2
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+- clean `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async/blocking-parallel ratio 1.063, async-batch/blocking-parallel ratio 1.073, and async-cursor/blocking-parallel ratio 1.417

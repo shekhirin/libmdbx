@@ -15049,6 +15049,8 @@ enum mdbx_async_opcode {
   async_op_cursor_reset,
   async_op_cursor_renew,
   async_op_cursor_get,
+  async_op_cursor_scan,
+  async_op_cursor_scan_from,
   async_op_cursor_get_batch,
   async_op_cursor_count,
   async_op_cursor_dbi,
@@ -15062,6 +15064,9 @@ enum mdbx_async_opcode {
   async_op_estimate_distance,
   async_op_estimate_move,
   async_op_estimate_range,
+  async_op_is_dirty,
+  async_op_cmp,
+  async_op_dcmp,
   async_op_cursor_put,
   async_op_cursor_del,
   async_op_cursor_delete_range,
@@ -15401,6 +15406,25 @@ struct MDBX_async_op {
     } cursor_get;
     struct {
       MDBX_cursor *cursor;
+      MDBX_predicate_func predicate;
+      void *context;
+      MDBX_cursor_op start_op;
+      MDBX_cursor_op turn_op;
+      void *arg;
+    } cursor_scan;
+    struct {
+      MDBX_cursor *cursor;
+      MDBX_predicate_func predicate;
+      void *context;
+      MDBX_cursor_op from_op;
+      MDBX_val *key;
+      MDBX_val *value;
+      MDBX_cursor_op turn_op;
+      void *arg;
+      bool has_value;
+    } cursor_scan_from;
+    struct {
+      MDBX_cursor *cursor;
       size_t *count;
       MDBX_val *pairs;
       size_t limit;
@@ -15471,6 +15495,15 @@ struct MDBX_async_op {
       const MDBX_val *end_data;
       ptrdiff_t *distance;
     } estimate_range;
+    struct {
+      const MDBX_txn *txn;
+      const void *ptr;
+    } is_dirty;
+    struct {
+      const MDBX_txn *txn;
+      MDBX_dbi dbi;
+      int *result;
+    } cmp;
     struct {
       MDBX_cursor *cursor;
       MDBX_val *data;
@@ -15899,6 +15932,27 @@ static int async_op_execute(MDBX_async_op *op) {
     *op->args.cursor_get.data = data;
     return rc;
   }
+  case async_op_cursor_scan:
+    return mdbx_cursor_scan(op->args.cursor_scan.cursor, op->args.cursor_scan.predicate,
+                            op->args.cursor_scan.context, op->args.cursor_scan.start_op,
+                            op->args.cursor_scan.turn_op, op->args.cursor_scan.arg);
+  case async_op_cursor_scan_from: {
+    MDBX_val key = op->key;
+    MDBX_val value = op->data;
+    MDBX_val *const value_ptr = op->args.cursor_scan_from.has_value ? &value : nullptr;
+    const int rc = mdbx_cursor_scan_from(op->args.cursor_scan_from.cursor,
+                                         op->args.cursor_scan_from.predicate,
+                                         op->args.cursor_scan_from.context,
+                                         op->args.cursor_scan_from.from_op, &key, value_ptr,
+                                         op->args.cursor_scan_from.turn_op,
+                                         op->args.cursor_scan_from.arg);
+    if (!MDBX_IS_ERROR(rc)) {
+      *op->args.cursor_scan_from.key = key;
+      if (op->args.cursor_scan_from.has_value)
+        *op->args.cursor_scan_from.value = value;
+    }
+    return rc;
+  }
   case async_op_cursor_get_batch:
     return mdbx_cursor_get_batch(op->args.cursor_get_batch.cursor, op->args.cursor_get_batch.count,
                                  op->args.cursor_get_batch.pairs, op->args.cursor_get_batch.limit,
@@ -15965,6 +16019,14 @@ static int async_op_execute(MDBX_async_op *op) {
                                op->args.estimate_range.begin_key, op->args.estimate_range.begin_data,
                                op->args.estimate_range.end_key, op->args.estimate_range.end_data,
                                op->args.estimate_range.distance);
+  case async_op_is_dirty:
+    return mdbx_is_dirty(op->args.is_dirty.txn, op->args.is_dirty.ptr);
+  case async_op_cmp:
+    *op->args.cmp.result = mdbx_cmp(op->args.cmp.txn, op->args.cmp.dbi, &op->key, &op->data);
+    return MDBX_SUCCESS;
+  case async_op_dcmp:
+    *op->args.cmp.result = mdbx_dcmp(op->args.cmp.txn, op->args.cmp.dbi, &op->key, &op->data);
+    return MDBX_SUCCESS;
   case async_op_cursor_put: {
     MDBX_val data = op->data;
     const int rc = mdbx_cursor_put(op->args.cursor_put.cursor, &op->key, &data, op->args.cursor_put.flags);
@@ -17723,6 +17785,60 @@ int mdbx_async_cursor_get(MDBX_async *async, MDBX_cursor *cursor, MDBX_val *key,
   return rc;
 }
 
+int mdbx_async_cursor_scan(MDBX_async *async, MDBX_cursor *cursor, MDBX_predicate_func predicate, void *context,
+                           MDBX_cursor_op start_op, MDBX_cursor_op turn_op, void *arg, MDBX_async_op **out) {
+  if (unlikely(!cursor || !predicate))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_scan);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.cursor_scan.cursor = cursor;
+  op->args.cursor_scan.predicate = predicate;
+  op->args.cursor_scan.context = context;
+  op->args.cursor_scan.start_op = start_op;
+  op->args.cursor_scan.turn_op = turn_op;
+  op->args.cursor_scan.arg = arg;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_cursor_scan_from(MDBX_async *async, MDBX_cursor *cursor, MDBX_predicate_func predicate, void *context,
+                                MDBX_cursor_op from_op, MDBX_val *from_key, MDBX_val *from_value,
+                                MDBX_cursor_op turn_op, void *arg, MDBX_async_op **out) {
+  if (unlikely(!cursor || !predicate || !from_key))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_cursor_scan_from);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, from_key);
+  if (likely(rc == MDBX_SUCCESS) && from_value)
+    rc = async_copy_val(&op->data, &op->data_copy, op->data_inline, MDBX_ASYNC_INLINE_BYTES, from_value);
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.cursor_scan_from.cursor = cursor;
+    op->args.cursor_scan_from.predicate = predicate;
+    op->args.cursor_scan_from.context = context;
+    op->args.cursor_scan_from.from_op = from_op;
+    op->args.cursor_scan_from.key = from_key;
+    op->args.cursor_scan_from.value = from_value;
+    op->args.cursor_scan_from.turn_op = turn_op;
+    op->args.cursor_scan_from.arg = arg;
+    op->args.cursor_scan_from.has_value = from_value != nullptr;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
 int mdbx_async_cursor_get_batch(MDBX_async *async, MDBX_cursor *cursor, size_t *count, MDBX_val *pairs, size_t limit,
                                 MDBX_cursor_op cursor_op, MDBX_async_op **out) {
   if (unlikely(!cursor || !count || !pairs))
@@ -18060,6 +18176,58 @@ int mdbx_async_estimate_range(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi d
     osal_free(op);
   }
   return LOG_IFERR(rc);
+}
+
+int mdbx_async_is_dirty(MDBX_async *async, const MDBX_txn *txn, const void *ptr, MDBX_async_op **out) {
+  if (unlikely(!txn || !ptr))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, async_op_is_dirty);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.is_dirty.txn = txn;
+  op->args.is_dirty.ptr = ptr;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+static int async_cmp_submit(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *a,
+                            const MDBX_val *b, int *result, enum mdbx_async_opcode opcode, MDBX_async_op **out) {
+  if (unlikely(!txn || !result))
+    return LOG_IFERR(MDBX_EINVAL);
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, opcode);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  rc = async_copy_val(&op->key, &op->key_copy, op->key_inline, MDBX_ASYNC_INLINE_BYTES, a);
+  if (likely(rc == MDBX_SUCCESS))
+    rc = async_copy_val(&op->data, &op->data_copy, op->data_inline, MDBX_ASYNC_INLINE_BYTES, b);
+  if (likely(rc == MDBX_SUCCESS)) {
+    op->args.cmp.txn = txn;
+    op->args.cmp.dbi = dbi;
+    op->args.cmp.result = result;
+    rc = async_op_enqueue(async, op, out);
+  }
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_op_payload_release(op);
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_cmp(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *a, const MDBX_val *b,
+                   int *result, MDBX_async_op **out) {
+  return async_cmp_submit(async, txn, dbi, a, b, result, async_op_cmp, out);
+}
+
+int mdbx_async_dcmp(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *a, const MDBX_val *b,
+                    int *result, MDBX_async_op **out) {
+  return async_cmp_submit(async, txn, dbi, a, b, result, async_op_dcmp, out);
 }
 
 int mdbx_async_cursor_put(MDBX_async *async, MDBX_cursor *cursor, const MDBX_val *key, MDBX_val *data,

@@ -25,6 +25,11 @@ struct preserve_probe {
   unsigned calls;
 };
 
+struct scan_probe {
+  uint64_t target;
+  unsigned calls;
+};
+
 static int fail_rc(const char *expr, int rc, const char *file, int line) {
   fprintf(stderr, "%s:%d: %s failed: (%d) %s\n", file, line, expr, rc, mdbx_strerror(rc));
   return rc ? rc : MDBX_PROBLEM;
@@ -108,6 +113,21 @@ static int preserve_probe_func(void *context, MDBX_val *target, const void *src,
   memcpy(target->iov_base, src, bytes);
   target->iov_len = bytes;
   return MDBX_SUCCESS;
+}
+
+static int scan_probe_func(void *context, MDBX_val *key, MDBX_val *value, void *arg) {
+  (void)arg;
+  struct scan_probe *const probe = (struct scan_probe *)context;
+  if (!probe || !key || !value || key->iov_len != sizeof(uint64_t) || value->iov_len != sizeof(uint64_t))
+    return MDBX_PROBLEM;
+  uint64_t actual_key = 0;
+  uint64_t actual_value = 0;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  memcpy(&actual_value, value->iov_base, sizeof(actual_value));
+  if (actual_value != expected_value(actual_key))
+    return MDBX_PROBLEM;
+  probe->calls += 1;
+  return actual_key == probe->target ? MDBX_RESULT_TRUE : MDBX_RESULT_FALSE;
 }
 
 static int wait_result(const char *expr, MDBX_async_op **op, int *operation_result, const char *file, int line) {
@@ -732,6 +752,20 @@ int main(void) {
     CHECK(expect_value(&get_values[i], keys[i], __FILE__, __LINE__));
   }
 
+  int dirty_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_is_dirty(async, txn, get_values[4].iov_base, &op));
+  CHECK(wait_result("mdbx_async_is_dirty", &op, &dirty_result, __FILE__, __LINE__));
+  REQUIRE(dirty_result == MDBX_RESULT_FALSE, "clean read value reported dirty");
+
+  int value_comparison = 0;
+  CHECK(mdbx_async_cmp(async, txn, dbi, &key_values[1], &key_values[2], &value_comparison, &op));
+  CHECK_OP(op);
+  REQUIRE(value_comparison < 0, "unexpected async key comparison result");
+  value_comparison = 0;
+  CHECK(mdbx_async_dcmp(async, txn, dbi, &put_values[1], &put_values[2], &value_comparison, &op));
+  CHECK_OP(op);
+  REQUIRE(value_comparison < 0, "unexpected async data comparison result");
+
   MDBX_cache_entry_t cache_entry;
   mdbx_cache_init(&cache_entry);
   MDBX_cache_result_t cache_result = {MDBX_SUCCESS, MDBX_CACHE_ERROR};
@@ -984,6 +1018,26 @@ int main(void) {
     REQUIRE(batch_key == keys[i], "unexpected cursor batch all key");
     CHECK(expect_value(&all_pairs[i * 2 + 1], batch_key, __FILE__, __LINE__));
   }
+
+  struct scan_probe scan_probe = {12, 0};
+  int scan_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_cursor_scan(async, cursor, scan_probe_func, &scan_probe, MDBX_FIRST, MDBX_NEXT, NULL, &op));
+  CHECK(wait_result("mdbx_async_cursor_scan", &op, &scan_result, __FILE__, __LINE__));
+  REQUIRE(scan_result == MDBX_RESULT_TRUE && scan_probe.calls == 13, "unexpected async cursor scan result");
+
+  uint64_t scan_from_key_data = 18;
+  MDBX_val scan_from_key = val(&scan_from_key_data, sizeof(scan_from_key_data));
+  MDBX_val scan_from_data = val(NULL, 0);
+  struct scan_probe scan_from_probe = {20, 0};
+  CHECK(mdbx_async_cursor_scan_from(async, cursor, scan_probe_func, &scan_from_probe, MDBX_SET_LOWERBOUND,
+                                    &scan_from_key, &scan_from_data, MDBX_NEXT, NULL, &op));
+  CHECK(wait_result("mdbx_async_cursor_scan_from", &op, &scan_result, __FILE__, __LINE__));
+  REQUIRE(scan_result == MDBX_RESULT_TRUE && scan_from_probe.calls == 3, "unexpected async cursor scan_from result");
+  REQUIRE(scan_from_key.iov_len == sizeof(uint64_t), "unexpected scan_from key size");
+  uint64_t scan_from_actual_key = 0;
+  memcpy(&scan_from_actual_key, scan_from_key.iov_base, sizeof(scan_from_actual_key));
+  REQUIRE(scan_from_actual_key == scan_from_probe.target, "unexpected scan_from key");
+  CHECK(expect_value(&scan_from_data, scan_from_actual_key, __FILE__, __LINE__));
 
   CHECK(mdbx_async_cursor_reset(async, cursor, &op));
   CHECK_OP(op);
