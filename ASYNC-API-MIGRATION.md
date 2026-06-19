@@ -4187,3 +4187,58 @@ Additional async cache-get-batch-callback checkpoint:
   for one-handle array batches. This improves async API shape and preserves
   better-than-blocking parallel read throughput, while the latest reduced
   sample shows plain cache-batch remains faster than callback batch.
+
+Additional threaded async cache-get-batch benchmark checkpoint:
+
+- extended `ut_and_examples/async-api-bench.c` with application-threaded
+  benchmark rows for `mdbx_async_cache_get_batch()` and
+  `mdbx_async_cache_get_SingleThreaded_batch()`. Each application pthread owns
+  its async executor, read transaction, and stable cache-entry window, then
+  repeatedly submits one cache-batch operation and waits for completion.
+- this does not add new public API. It improves benchmark coverage for the
+  original parallel-GET target by measuring cache-backed async batch reads when
+  submission itself happens from multiple application threads, not only from
+  the main benchmark thread fan-out loop.
+- reduced benchmark sanity check with
+  `MDBX_ASYNC_BENCH_ITEMS=5000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=3000` reported blocking serial get
+  1.832 Mops/s, blocking parallel get 731.192 Kops/s, async many parallel get
+  1.082 Mops/s, async cache many 1.247 Mops/s, async cache st many
+  2.293 Mops/s, async cache batch 2.403 Mops/s, async cache st batch
+  2.267 Mops/s, async cache batch callback 1.856 Mops/s, async cache st batch
+  callback 2.445 Mops/s, async threaded cache batch 2.427 Mops/s, async
+  threaded cache st batch 2.431 Mops/s, async cache loop 1.851 Mops/s, and
+  async cache st loop 2.092 Mops/s.
+- current ratios were async-threaded-cache-batch/blocking-parallel 3.319,
+  async-threaded-cache-st-batch/blocking-parallel 3.324,
+  async-threaded-cache-batch/blocking-serial 1.325,
+  async-threaded-cache-st-batch/blocking-serial 1.327,
+  async-threaded-cache-batch/cache-batch 1.010,
+  async-threaded-cache-st-batch/cache-st-batch 1.072, and
+  async-threaded-cache-st-batch/async-threaded-cache-batch 1.002.
+- comparison with the previous cache-batch-callback checkpoint: threaded
+  cache-batch confirms the cache-backed batch helper stays strong when
+  submitted from multiple application pthreads. In this sample, threaded
+  cache-batch is roughly tied with main-thread cache-batch and stays above both
+  blocking pthread-parallel GET and hot blocking serial GET. The
+  single-threaded cache-batch row is also slightly stronger when submitted from
+  application pthreads in this run.
+- comparison with the pre-async ioarena baseline at the top of this log remains
+  separate: this benchmark covers public async API submission and cache lookup
+  behavior under application-threaded fan-out, not storage-level lazy-mode
+  phases. It strengthens the public async parallel-read evidence but does not
+  remeasure or close the storage/ioarena migration gap.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_audit mdbx.h mdbx.c`: `blocking=171 async-declared=198 async-covered=132 async-only=66 exempt=39 missing=0 unimplemented=0`
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `cmake --build @cmake-asan-build --target mdbx_async_api_bench mdbx_async_api_smoke mdbx_async_api_audit`: passed
+  - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 3/3
+  - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 18/18
+- conclusion: the strongest cache-backed public async point-read shape now has
+  benchmark evidence both from main-thread executor fan-out and from
+  application-threaded submission. The latest reduced sample puts threaded
+  cache-batch at about 3.3x blocking pthread-parallel GET and about 1.3x hot
+  blocking serial GET.

@@ -166,6 +166,17 @@ struct async_thread_loop_worker {
   enum async_thread_loop_kind kind;
 };
 
+struct async_thread_cache_batch_worker {
+  struct async_worker worker;
+  MDBX_dbi dbi;
+  size_t items;
+  size_t ops;
+  size_t offset;
+  size_t window;
+  int rc;
+  bool singlethreaded;
+};
+
 struct async_thread_cursor_get_loop_worker {
   struct async_worker worker;
   struct async_cursor_get_loop_check check;
@@ -3375,6 +3386,142 @@ static double async_threaded_lowerbound_loop_get(MDBX_env *env, MDBX_dbi dbi, si
   return async_threaded_loop_get_impl(env, dbi, items, ops, workers_count, async_thread_loop_lowerbound);
 }
 
+static void *async_thread_cache_batch_worker_main(void *arg) {
+  struct async_thread_cache_batch_worker *const worker = (struct async_thread_cache_batch_worker *)arg;
+  size_t issued = 0;
+  worker->rc = MDBX_SUCCESS;
+  while (worker->rc == MDBX_SUCCESS && issued < worker->ops) {
+    struct async_worker *const async_worker = &worker->worker;
+    async_worker->pending = 0;
+    while (async_worker->pending < worker->window && issued < worker->ops) {
+      const size_t slot = async_worker->pending++;
+      async_worker->keys[slot] = key_for(worker->offset + slot, worker->items);
+      async_worker->key_vals[slot] = val(&async_worker->keys[slot],
+                                         sizeof(async_worker->keys[slot]));
+      async_worker->data[slot] = val(NULL, 0);
+      async_worker->cache_results[slot].errcode = MDBX_PROBLEM;
+      async_worker->cache_results[slot].status = MDBX_CACHE_ERROR;
+      issued += 1;
+    }
+    if (!async_worker->pending)
+      continue;
+
+    worker->rc =
+        worker->singlethreaded
+            ? mdbx_async_cache_get_SingleThreaded_batch(
+                  async_worker->async, async_worker->txn, worker->dbi, async_worker->key_vals,
+                  async_worker->data, async_worker->cache_entries, async_worker->cache_results,
+                  async_worker->pending, &async_worker->ops[0])
+            : mdbx_async_cache_get_batch(async_worker->async, async_worker->txn, worker->dbi,
+                                         async_worker->key_vals, async_worker->data,
+                                         async_worker->cache_entries, async_worker->cache_results,
+                                         async_worker->pending, &async_worker->ops[0]);
+    if (worker->rc != MDBX_SUCCESS)
+      break;
+
+    int batch_rc = MDBX_SUCCESS;
+    worker->rc = wait_success(&async_worker->ops[0], &batch_rc, __FILE__, __LINE__);
+    if (worker->rc == MDBX_SUCCESS && batch_rc != MDBX_SUCCESS)
+      worker->rc = fail_rc(worker->singlethreaded ? "mdbx_async_cache_get_SingleThreaded_batch"
+                                                  : "mdbx_async_cache_get_batch",
+                           batch_rc, __FILE__, __LINE__);
+    if (worker->rc == MDBX_SUCCESS) {
+      for (size_t slot = 0; slot < async_worker->pending; ++slot) {
+        if (async_worker->cache_results[slot].errcode != MDBX_SUCCESS) {
+          worker->rc = fail_rc(worker->singlethreaded ? "mdbx_cache_get_SingleThreaded threaded batch result"
+                                                      : "mdbx_cache_get threaded batch result",
+                               async_worker->cache_results[slot].errcode, __FILE__, __LINE__);
+          break;
+        }
+        worker->rc = expect_value(&async_worker->data[slot], async_worker->keys[slot],
+                                  __FILE__, __LINE__);
+        if (worker->rc != MDBX_SUCCESS)
+          break;
+      }
+    }
+    async_worker->pending = 0;
+  }
+
+  if (worker->rc != MDBX_SUCCESS && worker->worker.pending && worker->worker.ops[0]) {
+    (void)wait_success(&worker->worker.ops[0], NULL, __FILE__, __LINE__);
+    worker->worker.pending = 0;
+  }
+  return NULL;
+}
+
+static double async_threaded_cache_batch_get_impl(MDBX_env *env, MDBX_dbi dbi, size_t items,
+                                                  size_t ops, size_t workers_count,
+                                                  size_t window, bool singlethreaded) {
+  pthread_t *threads = calloc(workers_count, sizeof(*threads));
+  struct async_thread_cache_batch_worker *workers = calloc(workers_count, sizeof(*workers));
+  if (!threads || !workers) {
+    free(threads);
+    free(workers);
+    return -1.0;
+  }
+
+  const size_t base_ops = ops / workers_count;
+  const size_t extra_ops = ops % workers_count;
+  size_t offset = 0;
+  size_t initialized_count = 0;
+  size_t created_count = 0;
+  uint64_t start = 0;
+  uint64_t finish = 0;
+  int failed = 0;
+  for (size_t i = 0; i < workers_count; ++i) {
+    workers[i].dbi = dbi;
+    workers[i].items = items;
+    workers[i].ops = base_ops + (i < extra_ops);
+    workers[i].offset = offset;
+    workers[i].window = window;
+    workers[i].singlethreaded = singlethreaded;
+    offset += workers[i].ops;
+    initialized_count = i + 1;
+    if (async_worker_init(env, &workers[i].worker, dbi, window) != MDBX_SUCCESS) {
+      failed = 1;
+      goto bailout;
+    }
+  }
+
+  start = monotime_ns();
+  for (size_t i = 0; i < workers_count; ++i) {
+    const int rc = pthread_create(&threads[i], NULL, async_thread_cache_batch_worker_main,
+                                  &workers[i]);
+    if (rc != 0) {
+      workers[i].rc = rc;
+      failed = 1;
+      break;
+    }
+    created_count = i + 1;
+  }
+
+  for (size_t i = 0; i < created_count; ++i) {
+    const int rc = pthread_join(threads[i], NULL);
+    if (rc != 0 || workers[i].rc != MDBX_SUCCESS)
+      failed = 1;
+  }
+  finish = monotime_ns();
+
+bailout:
+  for (size_t i = 0; i < initialized_count; ++i)
+    async_worker_destroy(&workers[i].worker);
+  free(threads);
+  free(workers);
+  if (failed || finish <= start)
+    return -1.0;
+  return (double)ops * 1000000000.0 / (double)(finish - start);
+}
+
+static double async_threaded_cache_batch_get(MDBX_env *env, MDBX_dbi dbi, size_t items,
+                                             size_t ops, size_t workers_count, size_t window) {
+  return async_threaded_cache_batch_get_impl(env, dbi, items, ops, workers_count, window, false);
+}
+
+static double async_threaded_cache_st_batch_get(MDBX_env *env, MDBX_dbi dbi, size_t items,
+                                                size_t ops, size_t workers_count, size_t window) {
+  return async_threaded_cache_batch_get_impl(env, dbi, items, ops, workers_count, window, true);
+}
+
 static double async_batch_parallel_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops, size_t workers_count,
                                        size_t window) {
   struct async_worker *workers = calloc(workers_count, sizeof(*workers));
@@ -5415,6 +5562,10 @@ int main(void) {
       async_cache_batch_callback_parallel_get(env, dbi, items, ops, workers, window);
   const double async_cache_st_batch_callback_parallel =
       async_cache_st_batch_callback_parallel_get(env, dbi, items, ops, workers, window);
+  const double async_threaded_cache_batch_parallel =
+      async_threaded_cache_batch_get(env, dbi, items, ops, workers, window);
+  const double async_threaded_cache_st_batch_parallel =
+      async_threaded_cache_st_batch_get(env, dbi, items, ops, workers, window);
   const double async_cache_loop_parallel = async_cache_loop_get(env, dbi, items, ops, workers);
   const double async_cache_st_loop_parallel = async_cache_st_loop_get(env, dbi, items, ops, workers);
   const double async_lowerbound_batch_parallel =
@@ -5541,6 +5692,8 @@ int main(void) {
   print_rate("async cache st batch", async_cache_st_batch_parallel);
   print_rate("async cache batch cb", async_cache_batch_callback_parallel);
   print_rate("async cache st batch cb", async_cache_st_batch_callback_parallel);
+  print_rate("async threaded cache batch", async_threaded_cache_batch_parallel);
+  print_rate("async threaded cache st batch", async_threaded_cache_st_batch_parallel);
   print_rate("async cache loop", async_cache_loop_parallel);
   print_rate("async cache st loop", async_cache_st_loop_parallel);
   print_rate("async lowerbound batch", async_lowerbound_batch_parallel);
@@ -5637,6 +5790,12 @@ int main(void) {
   if (blocking_parallel > 0.0 && async_cache_st_batch_callback_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-cache-st-batch-cb/par",
            async_cache_st_batch_callback_parallel / blocking_parallel);
+  if (blocking_parallel > 0.0 && async_threaded_cache_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-cache-batch/par",
+           async_threaded_cache_batch_parallel / blocking_parallel);
+  if (blocking_parallel > 0.0 && async_threaded_cache_st_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-cache-st-b/par",
+           async_threaded_cache_st_batch_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_cache_loop_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-cache-loop/par", async_cache_loop_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_cache_st_loop_parallel > 0.0)
@@ -5694,6 +5853,15 @@ int main(void) {
   if (async_cache_batch_callback_parallel > 0.0 && async_cache_st_batch_callback_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-cache-st-batch-cb/cb",
            async_cache_st_batch_callback_parallel / async_cache_batch_callback_parallel);
+  if (async_cache_batch_parallel > 0.0 && async_threaded_cache_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-cache-batch/b",
+           async_threaded_cache_batch_parallel / async_cache_batch_parallel);
+  if (async_cache_st_batch_parallel > 0.0 && async_threaded_cache_st_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-cache-st-b/b",
+           async_threaded_cache_st_batch_parallel / async_cache_st_batch_parallel);
+  if (async_threaded_cache_batch_parallel > 0.0 && async_threaded_cache_st_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-cache-st/cache",
+           async_threaded_cache_st_batch_parallel / async_threaded_cache_batch_parallel);
   if (async_cache_batch_parallel > 0.0 && async_cache_loop_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-cache-loop/batch", async_cache_loop_parallel / async_cache_batch_parallel);
   if (async_cache_st_batch_parallel > 0.0 && async_cache_st_loop_parallel > 0.0)
@@ -5748,6 +5916,12 @@ int main(void) {
   if (blocking_serial > 0.0 && async_cache_st_batch_callback_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-cache-st-batch-cb/ser",
            async_cache_st_batch_callback_parallel / blocking_serial);
+  if (blocking_serial > 0.0 && async_threaded_cache_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-cache-batch/ser",
+           async_threaded_cache_batch_parallel / blocking_serial);
+  if (blocking_serial > 0.0 && async_threaded_cache_st_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-cache-st-b/ser",
+           async_threaded_cache_st_batch_parallel / blocking_serial);
   if (blocking_serial > 0.0 && async_cache_loop_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-cache-loop/ser", async_cache_loop_parallel / blocking_serial);
   if (blocking_serial > 0.0 && async_cache_st_loop_parallel > 0.0)
