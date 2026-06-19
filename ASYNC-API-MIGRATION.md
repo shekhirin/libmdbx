@@ -280,6 +280,17 @@ Extended get checkpoint:
 - smoke coverage now checks `mdbx_async_get_ex()` count/data return and both
   exact and greater-key `mdbx_async_get_equal_or_great()` result paths
 
+Cursor batch read checkpoint:
+
+- added `mdbx_async_cursor_get_batch()` so iteration-heavy callers can retrieve
+  multiple key/value descriptors with one async operation
+- the wrapper uses caller-owned `count` and `pairs` storage until completion,
+  matching `mdbx_cursor_get_batch()` without copying returned database-owned
+  key/value bytes
+- smoke coverage now checks a partial cursor batch that completes with
+  `MDBX_SUCCESS` and a full-table cursor batch that reports end-of-data with
+  `MDBX_RESULT_TRUE`
+
 ## Validation
 
 Completed for this checkpoint:
@@ -378,4 +389,14 @@ Additional extended get checkpoint:
 - `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
 - `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
 - `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.096
+- `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17
+
+Additional cursor batch read checkpoint:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 10/10
+- `cmake --build @cmake-asan-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `env LSAN_OPTIONS=detect_leaks=0 ctest --test-dir @cmake-asan-build --output-on-failure -R '^async_api'`: passed 2/2
+- `LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_bench`: passed, async-batch/blocking-parallel ratio 1.115
 - `make -f GNUmakefile mdbx_migration_public_ctest`: passed 17/17

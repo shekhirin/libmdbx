@@ -4782,6 +4782,15 @@ LIBMDBX_API int mdbx_async_cursor_renew(MDBX_async *async, MDBX_txn *txn, MDBX_c
 LIBMDBX_API int mdbx_async_cursor_get(MDBX_async *async, MDBX_cursor *cursor, MDBX_val *key, MDBX_val *data,
                                       MDBX_cursor_op cursor_op, MDBX_async_op **op);
 
+/** \brief Asynchronously get multiple key/value pairs through a cursor.
+ * \ingroup c_async
+ * \details The `count` output and `pairs` array must remain valid until the
+ *          operation completes. Returned key/value lifetime follows
+ *          \ref mdbx_cursor_get_batch() after operation completion.
+ * \see mdbx_cursor_get_batch() */
+LIBMDBX_API int mdbx_async_cursor_get_batch(MDBX_async *async, MDBX_cursor *cursor, size_t *count, MDBX_val *pairs,
+                                            size_t limit, MDBX_cursor_op cursor_op, MDBX_async_op **op);
+
 /** \brief Asynchronously store an item through a cursor.
  * \ingroup c_async
  * \details Key and data bytes are copied during submission. The initial async

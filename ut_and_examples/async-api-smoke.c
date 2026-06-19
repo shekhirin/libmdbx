@@ -280,6 +280,40 @@ int main(void) {
 
   CHECK(mdbx_async_cursor_reset(async, cursor, &op));
   CHECK_OP(op);
+
+  MDBX_val chunk_pairs[8];
+  size_t chunk_count = 0;
+  CHECK(mdbx_async_cursor_get_batch(async, cursor, &chunk_count, chunk_pairs, 8, MDBX_FIRST, &op));
+  CHECK_OP(op);
+  REQUIRE(chunk_count == 8, "unexpected cursor batch chunk count");
+  for (unsigned i = 0; i < chunk_count / 2; ++i) {
+    REQUIRE(chunk_pairs[i * 2].iov_len == sizeof(uint64_t), "unexpected cursor batch key size");
+    uint64_t batch_key = 0;
+    memcpy(&batch_key, chunk_pairs[i * 2].iov_base, sizeof(batch_key));
+    REQUIRE(batch_key == i, "unexpected cursor batch key");
+    CHECK(expect_value(&chunk_pairs[i * 2 + 1], batch_key, __FILE__, __LINE__));
+  }
+
+  CHECK(mdbx_async_cursor_reset(async, cursor, &op));
+  CHECK_OP(op);
+
+  MDBX_val all_pairs[ITEM_COUNT * 2];
+  size_t all_count = 0;
+  int batch_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_cursor_get_batch(async, cursor, &all_count, all_pairs, ITEM_COUNT * 2, MDBX_FIRST, &op));
+  CHECK(wait_result("mdbx_async_cursor_get_batch all", &op, &batch_result, __FILE__, __LINE__));
+  REQUIRE(batch_result == MDBX_RESULT_TRUE, "cursor batch all did not report end of data");
+  REQUIRE(all_count == ITEM_COUNT * 2, "unexpected cursor batch all count");
+  for (unsigned i = 0; i < ITEM_COUNT; ++i) {
+    REQUIRE(all_pairs[i * 2].iov_len == sizeof(uint64_t), "unexpected cursor batch all key size");
+    uint64_t batch_key = 0;
+    memcpy(&batch_key, all_pairs[i * 2].iov_base, sizeof(batch_key));
+    REQUIRE(batch_key == keys[i], "unexpected cursor batch all key");
+    CHECK(expect_value(&all_pairs[i * 2 + 1], batch_key, __FILE__, __LINE__));
+  }
+
+  CHECK(mdbx_async_cursor_reset(async, cursor, &op));
+  CHECK_OP(op);
   cursor_key = val(NULL, 0);
   cursor_data = val(NULL, 0);
   for (;;) {
