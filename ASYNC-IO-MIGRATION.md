@@ -14535,6 +14535,25 @@ migration CTest suite including API checks and tool roundtrips, the ASAN build
 `mdbx_migration_bench_lazy` gate passed with forced/default ratios of `1.108`
 batch, `1.128` crud, `0.946` iterate, `1.001` get, and `1.060` delete.
 
+A later transaction setup storage-state cleanup removed
+`dxb_txn_setup_limit_size_state_submit_io_t`,
+`dxb_txn_setup_make_limit_size_state_submit_io()`, and
+`dxb_txn_setup_limit_size_state_submit_io_validate()` from `mdbx.c`.
+`txn_setup_primal()` now refreshes the explicit storage current/limit/filesize
+state directly when the observed file size is below the process-local current
+size, building and validating `dxb_size_state_submit_io_t` before
+`dxb_storage_submit_size_state()`. Verification passed `git diff --check`, a
+source scan proving the removed transaction setup descriptor helpers are absent
+from `mdbx.c`, the GNUmake `mdbx_migration_smoke` build target, direct
+`mdbx_migration_smoke` default and forced tiny-cache runs, the Ninja build
+(`cmake --build @cmake-ninja-build`), the six focused `migration_smoke` CTest
+entries, the full 15-test public migration CTest suite including API checks and
+tool roundtrips, the ASAN build (`cmake --build @cmake-asan-build`), and the
+six focused ASAN `migration_smoke` entries with
+`LSAN_OPTIONS=detect_leaks=0`. The paired `mdbx_migration_bench_lazy` gate
+passed with forced/default ratios of `1.106` batch, `1.121` crud, `1.240`
+iterate, `0.950` get, and `1.079` delete.
+
 Use larger runs for final decisions; this reduced run is only a quick regression
 smoke.
 
