@@ -5402,6 +5402,25 @@ typedef int (*MDBX_replace_loop_result_func)(void *context, size_t index, const 
                                              const MDBX_val *new_data, MDBX_val *old_data,
                                              int result) MDBX_CXX17_NOEXCEPT;
 
+/** \brief Callback that prepares one delete-with-old-value replacement for
+ *         \ref mdbx_async_replace_delete_loop().
+ * \ingroup c_async
+ * \details The callback runs on the executor worker thread. The key and
+ *          old-data descriptors and pointed-to bytes only need to remain valid
+ *          until the matching result callback returns, or until the next item
+ *          callback when no result callback is supplied. */
+typedef int (*MDBX_replace_delete_loop_item_func)(void *context, size_t index, MDBX_val *key,
+                                                  MDBX_val *old_data) MDBX_CXX17_NOEXCEPT;
+
+/** \brief Callback that consumes one delete-with-old-value loop result.
+ * \ingroup c_async
+ * \details The callback runs on the executor worker thread after one
+ *          \ref mdbx_replace() or \ref mdbx_replace_ex() call with NULL
+ *          `new_data`. Returning a non-success result stops the loop and
+ *          becomes the async operation result. */
+typedef int (*MDBX_replace_delete_loop_result_func)(void *context, size_t index, const MDBX_val *key,
+                                                    MDBX_val *old_data, int result) MDBX_CXX17_NOEXCEPT;
+
 /** \brief Asynchronously get a batch of items from a table.
  * \ingroup c_async
  * \details The `keys`, key bytes, `data`, and `results` arrays must remain
@@ -5616,6 +5635,28 @@ LIBMDBX_API int mdbx_async_replace_loop(MDBX_async *async, MDBX_txn *txn, MDBX_d
                                         MDBX_replace_loop_result_func result_func,
                                         void *context, size_t *completed,
                                         MDBX_put_flags_t flags, MDBX_async_op **op);
+
+/** \brief Asynchronously run a worker-side loop of delete-with-old-value replacements.
+ * \ingroup c_async
+ * \details This submits one async operation that invokes `item_func` for each
+ *          index, calls \ref mdbx_replace() with NULL `new_data`, and then
+ *          invokes `result_func` when it is non-NULL. If no result callback is
+ *          supplied, the first non-success \ref mdbx_replace() result stops
+ *          the loop and becomes the async operation result. If `completed` is
+ *          non-NULL, it receives the number of delete attempts completed
+ *          before the operation returned. Pass \ref MDBX_CURRENT for ordinary
+ *          key deletion, or \ref MDBX_CURRENT with \ref MDBX_NOOVERWRITE when
+ *          `old_data` selects a duplicate value. The wrapper rejects
+ *          \ref MDBX_RESERVE and \ref MDBX_MULTIPLE because those modes require
+ *          caller-managed in-place memory.
+ * \see mdbx_replace()
+ * \see MDBX_replace_delete_loop_item_func
+ * \see MDBX_replace_delete_loop_result_func */
+LIBMDBX_API int mdbx_async_replace_delete_loop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, size_t count,
+                                               MDBX_replace_delete_loop_item_func item_func,
+                                               MDBX_replace_delete_loop_result_func result_func,
+                                               void *context, size_t *completed,
+                                               MDBX_put_flags_t flags, MDBX_async_op **op);
 
 /** \brief Asynchronously delete an item from a table.
  * \ingroup c_async
@@ -7098,6 +7139,31 @@ LIBMDBX_API int mdbx_async_replace_ex_loop(MDBX_async *async, MDBX_txn *txn, MDB
                                            void *context, size_t *completed,
                                            MDBX_put_flags_t flags, MDBX_preserve_func preserver,
                                            void *preserver_context, MDBX_async_op **op);
+
+/** \brief Asynchronously run a worker-side loop of replace-ex delete-with-old-value operations.
+ * \ingroup c_async
+ * \details This submits one async operation that invokes `item_func` for each
+ *          index, calls \ref mdbx_replace_ex() with NULL `new_data`, and then
+ *          invokes `result_func` when it is non-NULL. If no result callback is
+ *          supplied, the first non-success \ref mdbx_replace_ex() result stops
+ *          the loop and becomes the async operation result. If `completed` is
+ *          non-NULL, it receives the number of delete attempts completed
+ *          before the operation returned. Pass \ref MDBX_CURRENT for ordinary
+ *          key deletion, or \ref MDBX_CURRENT with \ref MDBX_NOOVERWRITE when
+ *          `old_data` selects a duplicate value. The shared preservation
+ *          callback runs on the async executor worker thread. The wrapper
+ *          rejects \ref MDBX_RESERVE and \ref MDBX_MULTIPLE because those modes
+ *          require caller-managed in-place memory.
+ * \see mdbx_replace_ex()
+ * \see MDBX_replace_delete_loop_item_func
+ * \see MDBX_replace_delete_loop_result_func
+ * \see MDBX_preserve_func */
+LIBMDBX_API int mdbx_async_replace_ex_delete_loop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, size_t count,
+                                                  MDBX_replace_delete_loop_item_func item_func,
+                                                  MDBX_replace_delete_loop_result_func result_func,
+                                                  void *context, size_t *completed,
+                                                  MDBX_put_flags_t flags, MDBX_preserve_func preserver,
+                                                  void *preserver_context, MDBX_async_op **op);
 
 /** \brief Delete items from a table.
  * \ingroup c_crud

@@ -15109,6 +15109,8 @@ enum mdbx_async_opcode {
   async_op_replace_ex_batch,
   async_op_replace_loop,
   async_op_replace_ex_loop,
+  async_op_replace_delete_loop,
+  async_op_replace_ex_delete_loop,
   async_op_replace_ex,
   async_op_del,
   async_op_del_batch,
@@ -15612,6 +15614,18 @@ struct MDBX_async_op {
       MDBX_preserve_func preserver;
       void *preserver_context;
     } replace_loop;
+    struct {
+      MDBX_txn *txn;
+      MDBX_dbi dbi;
+      size_t count;
+      MDBX_replace_delete_loop_item_func item_func;
+      MDBX_replace_delete_loop_result_func result_func;
+      void *context;
+      size_t *completed;
+      MDBX_put_flags_t flags;
+      MDBX_preserve_func preserver;
+      void *preserver_context;
+    } replace_delete_loop;
     struct {
       MDBX_txn *txn;
       MDBX_dbi dbi;
@@ -16650,6 +16664,34 @@ static int async_op_execute(MDBX_async_op *op) {
                : replace_rc;
       if (op->args.replace_loop.completed)
         *op->args.replace_loop.completed = i + 1;
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+    }
+    return MDBX_SUCCESS;
+  case async_op_replace_delete_loop:
+  case async_op_replace_ex_delete_loop:
+    if (op->args.replace_delete_loop.completed)
+      *op->args.replace_delete_loop.completed = 0;
+    for (size_t i = 0; i < op->args.replace_delete_loop.count; ++i) {
+      MDBX_val key = {nullptr, 0};
+      MDBX_val old_data = {nullptr, 0};
+      int rc = op->args.replace_delete_loop.item_func(op->args.replace_delete_loop.context, i, &key, &old_data);
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+      const int replace_rc =
+          (op->opcode == async_op_replace_delete_loop)
+              ? mdbx_replace(op->args.replace_delete_loop.txn, op->args.replace_delete_loop.dbi, &key, nullptr,
+                             &old_data, op->args.replace_delete_loop.flags)
+              : mdbx_replace_ex(op->args.replace_delete_loop.txn, op->args.replace_delete_loop.dbi, &key, nullptr,
+                                &old_data, op->args.replace_delete_loop.flags,
+                                op->args.replace_delete_loop.preserver,
+                                op->args.replace_delete_loop.preserver_context);
+      rc = op->args.replace_delete_loop.result_func
+               ? op->args.replace_delete_loop.result_func(op->args.replace_delete_loop.context, i, &key, &old_data,
+                                                          replace_rc)
+               : replace_rc;
+      if (op->args.replace_delete_loop.completed)
+        *op->args.replace_delete_loop.completed = i + 1;
       if (unlikely(rc != MDBX_SUCCESS))
         return rc;
     }
@@ -19600,6 +19642,48 @@ int mdbx_async_replace_loop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, size
                                    nullptr, async_op_replace_loop, out);
 }
 
+static int async_replace_delete_loop_submit(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, size_t count,
+                                            MDBX_replace_delete_loop_item_func item_func,
+                                            MDBX_replace_delete_loop_result_func result_func, void *context,
+                                            size_t *completed, MDBX_put_flags_t flags,
+                                            MDBX_preserve_func preserver, void *preserver_context,
+                                            enum mdbx_async_opcode opcode, MDBX_async_op **out) {
+  if (unlikely(!txn || !count || !item_func))
+    return LOG_IFERR(MDBX_EINVAL);
+  if (unlikely(flags & (MDBX_RESERVE | MDBX_MULTIPLE)))
+    return LOG_IFERR(MDBX_EINVAL);
+  if (completed)
+    *completed = 0;
+  MDBX_async_op *op = nullptr;
+  int rc = async_op_alloc(async, &op, opcode);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return LOG_IFERR(rc);
+  op->args.replace_delete_loop.txn = txn;
+  op->args.replace_delete_loop.dbi = dbi;
+  op->args.replace_delete_loop.count = count;
+  op->args.replace_delete_loop.item_func = item_func;
+  op->args.replace_delete_loop.result_func = result_func;
+  op->args.replace_delete_loop.context = context;
+  op->args.replace_delete_loop.completed = completed;
+  op->args.replace_delete_loop.flags = flags;
+  op->args.replace_delete_loop.preserver = preserver;
+  op->args.replace_delete_loop.preserver_context = preserver_context;
+  rc = async_op_enqueue(async, op, out);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    op->signature = 0;
+    osal_free(op);
+  }
+  return LOG_IFERR(rc);
+}
+
+int mdbx_async_replace_delete_loop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, size_t count,
+                                   MDBX_replace_delete_loop_item_func item_func,
+                                   MDBX_replace_delete_loop_result_func result_func, void *context,
+                                   size_t *completed, MDBX_put_flags_t flags, MDBX_async_op **out) {
+  return async_replace_delete_loop_submit(async, txn, dbi, count, item_func, result_func, context, completed, flags,
+                                          nullptr, nullptr, async_op_replace_delete_loop, out);
+}
+
 int mdbx_async_replace_ex(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *new_data,
                           MDBX_val *old_data, MDBX_put_flags_t flags, MDBX_preserve_func preserver,
                           void *preserver_context, MDBX_async_op **out) {
@@ -19621,6 +19705,15 @@ int mdbx_async_replace_ex_loop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, s
                                MDBX_preserve_func preserver, void *preserver_context, MDBX_async_op **out) {
   return async_replace_loop_submit(async, txn, dbi, count, item_func, result_func, context, completed, flags,
                                    preserver, preserver_context, async_op_replace_ex_loop, out);
+}
+
+int mdbx_async_replace_ex_delete_loop(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, size_t count,
+                                      MDBX_replace_delete_loop_item_func item_func,
+                                      MDBX_replace_delete_loop_result_func result_func, void *context,
+                                      size_t *completed, MDBX_put_flags_t flags,
+                                      MDBX_preserve_func preserver, void *preserver_context, MDBX_async_op **out) {
+  return async_replace_delete_loop_submit(async, txn, dbi, count, item_func, result_func, context, completed, flags,
+                                          preserver, preserver_context, async_op_replace_ex_delete_loop, out);
 }
 
 int mdbx_async_del(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, const MDBX_val *data,

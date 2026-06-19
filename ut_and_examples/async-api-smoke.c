@@ -109,6 +109,14 @@ struct replace_loop_probe {
   size_t results;
 };
 
+struct replace_delete_loop_probe {
+  uint64_t keys[3];
+  uint64_t old_buffers[3];
+  uint64_t expected_old[3];
+  size_t items;
+  size_t results;
+};
+
 static int fail_rc(const char *expr, int rc, const char *file, int line) {
   fprintf(stderr, "%s:%d: %s failed: (%d) %s\n", file, line, expr, rc, mdbx_strerror(rc));
   return rc ? rc : MDBX_PROBLEM;
@@ -475,6 +483,36 @@ static int replace_loop_result_func(void *context, size_t index, const MDBX_val 
   return MDBX_SUCCESS;
 }
 
+static int replace_delete_loop_item_func(void *context, size_t index, MDBX_val *key, MDBX_val *old_data) {
+  struct replace_delete_loop_probe *const probe = (struct replace_delete_loop_probe *)context;
+  if (!probe || !key || !old_data || index >= sizeof(probe->keys) / sizeof(probe->keys[0]))
+    return fail_msg("missing async replace delete loop item state", __FILE__, __LINE__);
+  probe->old_buffers[index] = 0;
+  *key = val(&probe->keys[index], sizeof(probe->keys[index]));
+  *old_data = val(&probe->old_buffers[index], sizeof(probe->old_buffers[index]));
+  probe->items += 1;
+  return MDBX_SUCCESS;
+}
+
+static int replace_delete_loop_result_func(void *context, size_t index, const MDBX_val *key, MDBX_val *old_data,
+                                           int result) {
+  struct replace_delete_loop_probe *const probe = (struct replace_delete_loop_probe *)context;
+  if (!probe || !key || !old_data || index >= sizeof(probe->keys) / sizeof(probe->keys[0]))
+    return fail_msg("missing async replace delete loop result state", __FILE__, __LINE__);
+  if (result != MDBX_SUCCESS)
+    return fail_rc("mdbx_async_replace_delete_loop item", result, __FILE__, __LINE__);
+  if (key->iov_base != &probe->keys[index] || key->iov_len != sizeof(probe->keys[index]))
+    return fail_msg("unexpected async replace delete loop key", __FILE__, __LINE__);
+  if (old_data->iov_len != sizeof(probe->old_buffers[index]))
+    return fail_msg("unexpected async replace delete loop old value size", __FILE__, __LINE__);
+  uint64_t old_value = 0;
+  memcpy(&old_value, old_data->iov_base, sizeof(old_value));
+  if (old_value != probe->expected_old[index])
+    return fail_msg("unexpected async replace delete loop old value", __FILE__, __LINE__);
+  probe->results += 1;
+  return MDBX_SUCCESS;
+}
+
 static int get_ex_loop_key_func(void *context, size_t index, MDBX_val *key) {
   struct get_ex_loop_probe *const probe = (struct get_ex_loop_probe *)context;
   if (!probe || !key || index >= ITEM_COUNT)
@@ -726,6 +764,8 @@ int main(void) {
   MDBX_dbi put_loop_dbi = 0;
   MDBX_dbi key_del_loop_dbi = 0;
   MDBX_dbi replace_loop_dbi = 0;
+  MDBX_dbi replace_delete_loop_dbi = 0;
+  MDBX_dbi replace_ex_delete_loop_dbi = 0;
   MDBX_dbi custom_cstr_dbi = 0;
   MDBX_dbi custom_val_dbi = 0;
   uint64_t keys[ITEM_COUNT];
@@ -1322,6 +1362,101 @@ int main(void) {
   CHECK(mdbx_async_drop(async, txn, replace_loop_dbi, true, &op));
   CHECK_OP(op);
   replace_loop_dbi = 0;
+
+  CHECK(mdbx_async_dbi_open(async, txn, "async-replace-delete-loop-target", MDBX_CREATE, &replace_delete_loop_dbi,
+                            &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put_batch(async, txn, replace_delete_loop_dbi, key_values, put_values, op_results, 5, 0, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < 5; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_put_batch replace delete loop", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
+  }
+  struct replace_delete_loop_probe replace_delete_loop_probe;
+  memset(&replace_delete_loop_probe, 0, sizeof(replace_delete_loop_probe));
+  const size_t replace_delete_loop_count =
+      sizeof(replace_delete_loop_probe.keys) / sizeof(replace_delete_loop_probe.keys[0]);
+  for (size_t i = 0; i < replace_delete_loop_count; ++i) {
+    replace_delete_loop_probe.keys[i] = keys[i + 1];
+    replace_delete_loop_probe.expected_old[i] = expected_value(replace_delete_loop_probe.keys[i]);
+  }
+  size_t replace_delete_loop_completed = 0;
+  CHECK(mdbx_async_replace_delete_loop(async, txn, replace_delete_loop_dbi, replace_delete_loop_count,
+                                       replace_delete_loop_item_func, replace_delete_loop_result_func,
+                                       &replace_delete_loop_probe, &replace_delete_loop_completed, MDBX_CURRENT, &op));
+  CHECK_OP(op);
+  REQUIRE(replace_delete_loop_completed == replace_delete_loop_count,
+          "unexpected async replace delete loop completion count");
+  REQUIRE(replace_delete_loop_probe.items == replace_delete_loop_count &&
+              replace_delete_loop_probe.results == replace_delete_loop_count,
+          "async replace delete loop callbacks did not cover all items");
+  MDBX_val replace_delete_loop_key = val(&replace_delete_loop_probe.keys[2], sizeof(replace_delete_loop_probe.keys[2]));
+  MDBX_val replace_delete_loop_data = val(NULL, 0);
+  CHECK(mdbx_async_get(async, txn, replace_delete_loop_dbi, &replace_delete_loop_key, &replace_delete_loop_data, &op));
+  int replace_delete_loop_get_result = MDBX_SUCCESS;
+  CHECK(wait_result("mdbx_async_get replace delete loop", &op, &replace_delete_loop_get_result, __FILE__, __LINE__));
+  REQUIRE(replace_delete_loop_get_result == MDBX_NOTFOUND, "async replace delete loop did not remove key");
+  CHECK(mdbx_async_drop(async, txn, replace_delete_loop_dbi, true, &op));
+  CHECK_OP(op);
+  replace_delete_loop_dbi = 0;
+
+  CHECK(mdbx_async_dbi_open(async, txn, "async-replace-ex-delete-loop-target", MDBX_CREATE,
+                            &replace_ex_delete_loop_dbi, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put_batch(async, txn, replace_ex_delete_loop_dbi, key_values, put_values, op_results, 5, 0, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < 5; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_put_batch replace_ex delete loop", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
+  }
+  uint64_t replace_ex_delete_loop_dirty_values[] = {expected_value(1) + UINT64_C(11000),
+                                                    expected_value(2) + UINT64_C(12000),
+                                                    expected_value(3) + UINT64_C(13000)};
+  MDBX_val replace_ex_delete_loop_dirty_data[] = {
+      val(&replace_ex_delete_loop_dirty_values[0], sizeof(replace_ex_delete_loop_dirty_values[0])),
+      val(&replace_ex_delete_loop_dirty_values[1], sizeof(replace_ex_delete_loop_dirty_values[1])),
+      val(&replace_ex_delete_loop_dirty_values[2], sizeof(replace_ex_delete_loop_dirty_values[2]))};
+  struct replace_delete_loop_probe replace_ex_delete_loop_probe;
+  memset(&replace_ex_delete_loop_probe, 0, sizeof(replace_ex_delete_loop_probe));
+  const size_t replace_ex_delete_loop_count =
+      sizeof(replace_ex_delete_loop_probe.keys) / sizeof(replace_ex_delete_loop_probe.keys[0]);
+  for (size_t i = 0; i < replace_ex_delete_loop_count; ++i) {
+    replace_ex_delete_loop_probe.keys[i] = keys[i + 1];
+    replace_ex_delete_loop_probe.expected_old[i] = replace_ex_delete_loop_dirty_values[i];
+    CHECK(mdbx_async_put(async, txn, replace_ex_delete_loop_dbi, &key_values[i + 1],
+                         &replace_ex_delete_loop_dirty_data[i], MDBX_CURRENT, &op));
+    CHECK_OP(op);
+  }
+  struct preserve_probe preserve_delete_loop_probe = {0};
+  size_t replace_ex_delete_loop_completed = 0;
+  CHECK(mdbx_async_replace_ex_delete_loop(async, txn, replace_ex_delete_loop_dbi, replace_ex_delete_loop_count,
+                                          replace_delete_loop_item_func, replace_delete_loop_result_func,
+                                          &replace_ex_delete_loop_probe, &replace_ex_delete_loop_completed,
+                                          MDBX_CURRENT, preserve_probe_func, &preserve_delete_loop_probe, &op));
+  CHECK_OP(op);
+  REQUIRE(replace_ex_delete_loop_completed == replace_ex_delete_loop_count,
+          "unexpected async replace_ex delete loop completion count");
+  REQUIRE(replace_ex_delete_loop_probe.items == replace_ex_delete_loop_count &&
+              replace_ex_delete_loop_probe.results == replace_ex_delete_loop_count,
+          "async replace_ex delete loop callbacks did not cover all items");
+  REQUIRE(preserve_delete_loop_probe.calls == replace_ex_delete_loop_count,
+          "async replace_ex_delete_loop preserver was not called per item");
+  MDBX_val replace_ex_delete_loop_key =
+      val(&replace_ex_delete_loop_probe.keys[2], sizeof(replace_ex_delete_loop_probe.keys[2]));
+  MDBX_val replace_ex_delete_loop_data = val(NULL, 0);
+  CHECK(mdbx_async_get(async, txn, replace_ex_delete_loop_dbi, &replace_ex_delete_loop_key,
+                       &replace_ex_delete_loop_data, &op));
+  int replace_ex_delete_loop_get_result = MDBX_SUCCESS;
+  CHECK(wait_result("mdbx_async_get replace_ex delete loop", &op, &replace_ex_delete_loop_get_result, __FILE__,
+                    __LINE__));
+  REQUIRE(replace_ex_delete_loop_get_result == MDBX_NOTFOUND, "async replace_ex delete loop did not remove key");
+  CHECK(mdbx_async_drop(async, txn, replace_ex_delete_loop_dbi, true, &op));
+  CHECK_OP(op);
+  replace_ex_delete_loop_dbi = 0;
 
   CHECK(mdbx_async_put(async, txn, dbi, &key_values[0], &put_values[0], 0, &op));
   CHECK_OP(op);

@@ -82,6 +82,12 @@ struct async_replace_loop_check {
   uint64_t old_value;
 };
 
+struct async_replace_delete_loop_check {
+  size_t checked;
+  uint64_t key;
+  uint64_t old_value;
+};
+
 struct async_worker {
   MDBX_async *async;
   MDBX_txn *txn;
@@ -359,6 +365,36 @@ static int async_replace_loop_result_func(void *context, size_t index, const MDB
   if (actual_key != index || actual_new != write_value(actual_key, index, UINT64_C(1101)) ||
       actual_old != expected_value(actual_key))
     return fail_msg("unexpected async replace loop payload", __FILE__, __LINE__);
+  check->checked += 1;
+  return MDBX_SUCCESS;
+}
+
+static int async_replace_delete_loop_item_func(void *context, size_t index, MDBX_val *key, MDBX_val *old_data) {
+  struct async_replace_delete_loop_check *const check = (struct async_replace_delete_loop_check *)context;
+  if (!check || !key || !old_data)
+    return fail_msg("missing async replace delete loop item state", __FILE__, __LINE__);
+  check->key = (uint64_t)index;
+  check->old_value = 0;
+  *key = val(&check->key, sizeof(check->key));
+  *old_data = val(&check->old_value, sizeof(check->old_value));
+  return MDBX_SUCCESS;
+}
+
+static int async_replace_delete_loop_result_func(void *context, size_t index, const MDBX_val *key,
+                                                 MDBX_val *old_data, int result) {
+  struct async_replace_delete_loop_check *const check = (struct async_replace_delete_loop_check *)context;
+  if (!check || !key || !old_data)
+    return fail_msg("missing async replace delete loop result state", __FILE__, __LINE__);
+  if (result != MDBX_SUCCESS)
+    return fail_rc("mdbx_async_replace_delete_loop item", result, __FILE__, __LINE__);
+  if (key->iov_len != sizeof(uint64_t) || old_data->iov_len != sizeof(uint64_t))
+    return fail_msg("unexpected async replace delete loop value size", __FILE__, __LINE__);
+  uint64_t actual_key = 0;
+  uint64_t actual_old = 0;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  memcpy(&actual_old, old_data->iov_base, sizeof(actual_old));
+  if (actual_key != index || actual_old != expected_value(actual_key))
+    return fail_msg("unexpected async replace delete loop payload", __FILE__, __LINE__);
   check->checked += 1;
   return MDBX_SUCCESS;
 }
@@ -1782,6 +1818,250 @@ static double async_loop_replace(MDBX_env *env, MDBX_dbi dbi, size_t ops) {
   }
   if (completed != ops || check.checked != ops) {
     rc = fail_msg("unexpected async replace loop completion count", __FILE__, __LINE__);
+    goto bailout;
+  }
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  txn = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  const uint64_t finish = monotime_ns();
+  if (finish > start)
+    rate = (double)ops * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  if (async)
+    (void)mdbx_async_destroy(async, true);
+  return (rc == MDBX_SUCCESS) ? rate : -1.0;
+}
+
+static double blocking_replace_delete(MDBX_env *env, MDBX_dbi dbi, size_t ops) {
+  MDBX_txn *txn = NULL;
+  int rc = mdbx_txn_begin(env, NULL, 0, &txn);
+  if (rc != MDBX_SUCCESS)
+    return -1.0;
+
+  const uint64_t start = monotime_ns();
+  for (size_t i = 0; i < ops; ++i) {
+    uint64_t key_data = (uint64_t)i;
+    uint64_t old_data_buffer = 0;
+    MDBX_val key = val(&key_data, sizeof(key_data));
+    MDBX_val old_data = val(&old_data_buffer, sizeof(old_data_buffer));
+    rc = mdbx_replace(txn, dbi, &key, NULL, &old_data, MDBX_CURRENT);
+    if (rc != MDBX_SUCCESS)
+      break;
+    rc = expect_value(&old_data, key_data, __FILE__, __LINE__);
+    if (rc != MDBX_SUCCESS)
+      break;
+  }
+  if (rc == MDBX_SUCCESS)
+    rc = mdbx_txn_commit(txn);
+  else
+    (void)mdbx_txn_abort(txn);
+  const uint64_t finish = monotime_ns();
+  if (rc != MDBX_SUCCESS || finish <= start)
+    return -1.0;
+  return (double)ops * 1000000000.0 / (double)(finish - start);
+}
+
+static double async_window_replace_delete(MDBX_env *env, MDBX_dbi dbi, size_t ops, size_t window) {
+  MDBX_async *async = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_async_op *op = NULL;
+  MDBX_async_op **opv = NULL;
+  MDBX_val *keys = NULL;
+  MDBX_val *old_values = NULL;
+  uint64_t *key_data = NULL;
+  uint64_t *old_data = NULL;
+  int *results = NULL;
+  int rc = MDBX_SUCCESS;
+  double rate = -1.0;
+
+  if (!window)
+    window = 1;
+  CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+
+  opv = calloc(window, sizeof(*opv));
+  keys = calloc(window, sizeof(*keys));
+  old_values = calloc(window, sizeof(*old_values));
+  key_data = calloc(window, sizeof(*key_data));
+  old_data = calloc(window, sizeof(*old_data));
+  results = calloc(window, sizeof(*results));
+  if (!opv || !keys || !old_values || !key_data || !old_data || !results) {
+    rc = fail_rc("calloc", MDBX_ENOMEM, __FILE__, __LINE__);
+    goto bailout;
+  }
+
+  const uint64_t start = monotime_ns();
+  for (size_t offset = 0; offset < ops;) {
+    const size_t chunk = (ops - offset < window) ? ops - offset : window;
+    size_t submitted = 0;
+    for (size_t i = 0; i < chunk; ++i) {
+      key_data[i] = (uint64_t)(offset + i);
+      old_data[i] = 0;
+      keys[i] = val(&key_data[i], sizeof(key_data[i]));
+      old_values[i] = val(&old_data[i], sizeof(old_data[i]));
+      rc = mdbx_async_replace(async, txn, dbi, &keys[i], NULL, &old_values[i], MDBX_CURRENT, &opv[i]);
+      if (rc != MDBX_SUCCESS) {
+        rc = fail_rc("mdbx_async_replace delete", rc, __FILE__, __LINE__);
+        if (submitted)
+          (void)mdbx_async_wait_release_all(opv, submitted, results);
+        goto bailout;
+      }
+      submitted += 1;
+    }
+
+    rc = mdbx_async_wait_release_all(opv, submitted, results);
+    if (rc != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_wait_release_all", rc, __FILE__, __LINE__);
+      goto bailout;
+    }
+    for (size_t i = 0; i < submitted; ++i) {
+      if (results[i] != MDBX_SUCCESS) {
+        rc = fail_rc("mdbx_async_replace delete item", results[i], __FILE__, __LINE__);
+        goto bailout;
+      }
+      rc = expect_value(&old_values[i], key_data[i], __FILE__, __LINE__);
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
+    }
+    offset += submitted;
+  }
+
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  txn = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  const uint64_t finish = monotime_ns();
+  if (finish > start)
+    rate = (double)ops * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  if (async)
+    (void)mdbx_async_destroy(async, true);
+  free(results);
+  free(old_data);
+  free(key_data);
+  free(old_values);
+  free(keys);
+  free(opv);
+  return (rc == MDBX_SUCCESS) ? rate : -1.0;
+}
+
+static double async_batch_replace_delete(MDBX_env *env, MDBX_dbi dbi, size_t ops, size_t batch) {
+  MDBX_async *async = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_async_op *op = NULL;
+  MDBX_val *keys = NULL;
+  MDBX_val *old_values = NULL;
+  uint64_t *key_data = NULL;
+  uint64_t *old_data = NULL;
+  int *results = NULL;
+  int rc = MDBX_SUCCESS;
+  double rate = -1.0;
+
+  if (!batch)
+    batch = 1;
+  CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+
+  keys = calloc(batch, sizeof(*keys));
+  old_values = calloc(batch, sizeof(*old_values));
+  key_data = calloc(batch, sizeof(*key_data));
+  old_data = calloc(batch, sizeof(*old_data));
+  results = calloc(batch, sizeof(*results));
+  if (!keys || !old_values || !key_data || !old_data || !results) {
+    rc = fail_rc("calloc", MDBX_ENOMEM, __FILE__, __LINE__);
+    goto bailout;
+  }
+
+  const uint64_t start = monotime_ns();
+  for (size_t offset = 0; offset < ops;) {
+    const size_t chunk = (ops - offset < batch) ? ops - offset : batch;
+    for (size_t i = 0; i < chunk; ++i) {
+      key_data[i] = (uint64_t)(offset + i);
+      old_data[i] = 0;
+      keys[i] = val(&key_data[i], sizeof(key_data[i]));
+      old_values[i] = val(&old_data[i], sizeof(old_data[i]));
+      results[i] = MDBX_SUCCESS;
+    }
+
+    int batch_rc = MDBX_SUCCESS;
+    CHECK(mdbx_async_replace_batch(async, txn, dbi, keys, NULL, old_values, results, chunk, MDBX_CURRENT, &op));
+    CHECK(wait_success(&op, &batch_rc, __FILE__, __LINE__));
+    if (batch_rc != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_replace_batch delete", batch_rc, __FILE__, __LINE__);
+      goto bailout;
+    }
+    for (size_t i = 0; i < chunk; ++i) {
+      if (results[i] != MDBX_SUCCESS) {
+        rc = fail_rc("mdbx_async_replace_batch delete item", results[i], __FILE__, __LINE__);
+        goto bailout;
+      }
+      rc = expect_value(&old_values[i], key_data[i], __FILE__, __LINE__);
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
+    }
+    offset += chunk;
+  }
+
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  txn = NULL;
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+  const uint64_t finish = monotime_ns();
+  if (finish > start)
+    rate = (double)ops * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  if (async)
+    (void)mdbx_async_destroy(async, true);
+  free(results);
+  free(old_data);
+  free(key_data);
+  free(old_values);
+  free(keys);
+  return (rc == MDBX_SUCCESS) ? rate : -1.0;
+}
+
+static double async_loop_replace_delete(MDBX_env *env, MDBX_dbi dbi, size_t ops) {
+  MDBX_async *async = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_async_op *op = NULL;
+  struct async_replace_delete_loop_check check;
+  int rc = MDBX_SUCCESS;
+  double rate = -1.0;
+
+  if (!ops)
+    return -1.0;
+  memset(&check, 0, sizeof(check));
+  CHECK(mdbx_async_create(env, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK(wait_success(&op, NULL, __FILE__, __LINE__));
+
+  size_t completed = 0;
+  int operation_rc = MDBX_SUCCESS;
+  const uint64_t start = monotime_ns();
+  CHECK(mdbx_async_replace_delete_loop(async, txn, dbi, ops, async_replace_delete_loop_item_func,
+                                       async_replace_delete_loop_result_func, &check, &completed, MDBX_CURRENT, &op));
+  CHECK(wait_success(&op, &operation_rc, __FILE__, __LINE__));
+  if (operation_rc != MDBX_SUCCESS) {
+    rc = fail_rc("mdbx_async_replace_delete_loop", operation_rc, __FILE__, __LINE__);
+    goto bailout;
+  }
+  if (completed != ops || check.checked != ops) {
+    rc = fail_msg("unexpected async replace delete loop completion count", __FILE__, __LINE__);
     goto bailout;
   }
   CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
@@ -3511,6 +3791,14 @@ int main(void) {
   CHECK(seed_database(env, &dbi, items));
   const double async_replace_ex_loop_rate = async_loop_replace_ex(env, dbi, replace_ops);
   CHECK(seed_database(env, &dbi, items));
+  const double blocking_replace_delete_rate = blocking_replace_delete(env, dbi, replace_ops);
+  CHECK(seed_database(env, &dbi, items));
+  const double async_replace_delete_rate = async_window_replace_delete(env, dbi, replace_ops, window);
+  CHECK(seed_database(env, &dbi, items));
+  const double async_replace_delete_batch_rate = async_batch_replace_delete(env, dbi, replace_ops, write_batch);
+  CHECK(seed_database(env, &dbi, items));
+  const double async_replace_delete_loop_rate = async_loop_replace_delete(env, dbi, replace_ops);
+  CHECK(seed_database(env, &dbi, items));
   const double blocking_del = blocking_delete(env, dbi, delete_ops);
   CHECK(seed_database(env, &dbi, items));
   const double async_del = async_window_delete(env, dbi, delete_ops, window);
@@ -3568,6 +3856,10 @@ int main(void) {
   print_rate("async replace_ex", async_replace_ex_rate);
   print_rate("async batch replace_ex", async_replace_ex_batch_rate);
   print_rate("async loop replace_ex", async_replace_ex_loop_rate);
+  print_rate("blocking replace delete", blocking_replace_delete_rate);
+  print_rate("async replace delete", async_replace_delete_rate);
+  print_rate("async batch replace del", async_replace_delete_batch_rate);
+  print_rate("async loop replace del", async_replace_delete_loop_rate);
   print_rate("blocking delete", blocking_del);
   print_rate("async delete", async_del);
   print_rate("async batch delete", async_del_batch);
@@ -3704,6 +3996,18 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-repl-ex-loop/async", async_replace_ex_loop_rate / async_replace_ex_rate);
   if (async_replace_ex_batch_rate > 0.0 && async_replace_ex_loop_rate > 0.0)
     printf("%-28s %8.3f\n", "async-repl-ex-loop/batch", async_replace_ex_loop_rate / async_replace_ex_batch_rate);
+  if (blocking_replace_delete_rate > 0.0 && async_replace_delete_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-repl-del/blocking", async_replace_delete_rate / blocking_replace_delete_rate);
+  if (blocking_replace_delete_rate > 0.0 && async_replace_delete_batch_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-repl-del-batch/block", async_replace_delete_batch_rate / blocking_replace_delete_rate);
+  if (blocking_replace_delete_rate > 0.0 && async_replace_delete_loop_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-repl-del-loop/block", async_replace_delete_loop_rate / blocking_replace_delete_rate);
+  if (async_replace_delete_rate > 0.0 && async_replace_delete_batch_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-repl-del-batch/async", async_replace_delete_batch_rate / async_replace_delete_rate);
+  if (async_replace_delete_rate > 0.0 && async_replace_delete_loop_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-repl-del-loop/async", async_replace_delete_loop_rate / async_replace_delete_rate);
+  if (async_replace_delete_batch_rate > 0.0 && async_replace_delete_loop_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-repl-del-loop/batch", async_replace_delete_loop_rate / async_replace_delete_batch_rate);
   if (blocking_del > 0.0 && async_del > 0.0)
     printf("%-28s %8.3f\n", "async-del/blocking del", async_del / blocking_del);
   if (blocking_del > 0.0 && async_del_batch > 0.0)
