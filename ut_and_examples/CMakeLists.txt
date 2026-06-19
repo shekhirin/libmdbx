@@ -29,6 +29,9 @@ target_link_libraries(mdbx_legacy_example ${MDBX_LIBRARY})
 add_executable(mdbx_migration_smoke migration-smoke.c)
 target_link_libraries(mdbx_migration_smoke ${MDBX_LIBRARY})
 
+add_executable(mdbx_async_api_smoke async-api-smoke.c)
+target_link_libraries(mdbx_async_api_smoke ${MDBX_LIBRARY})
+
 add_executable(mdbx_migration_smoke_stress migration-smoke.c)
 target_compile_definitions(mdbx_migration_smoke_stress
                            PRIVATE MULTIPROCESS_STRESS_READERS=4 MULTIPROCESS_STRESS_WRITERS=4
@@ -66,6 +69,11 @@ else()
   set_tests_properties(c_api c_api_nommap PROPERTIES RESOURCE_LOCK mdbx_example_database)
   set_tests_properties(c_api_nommap PROPERTIES ENVIRONMENT
                                                "MDBX_FORCE_NO_DATA_MMAP=1;MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K")
+  add_test(NAME async_api COMMAND mdbx_async_api_smoke)
+  add_test(NAME async_api_nommap COMMAND mdbx_async_api_smoke)
+  set_tests_properties(async_api async_api_nommap PROPERTIES RESOURCE_LOCK mdbx_async_api_database)
+  set_tests_properties(async_api_nommap PROPERTIES ENVIRONMENT
+                                                   "MDBX_FORCE_NO_DATA_MMAP=1;MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K")
   add_test(NAME migration_smoke COMMAND mdbx_migration_smoke)
   add_test(NAME migration_smoke_nommap COMMAND mdbx_migration_smoke)
   set_tests_properties(migration_smoke_nommap PROPERTIES ENVIRONMENT "MDBX_FORCE_NO_DATA_MMAP=1")

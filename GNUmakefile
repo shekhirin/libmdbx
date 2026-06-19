@@ -152,6 +152,7 @@ TIP        := // TIP:
 
 .PHONY: all help options lib libs tools clean install uninstall check_buildflags_tag tools-static run-ut
 .PHONY: mdbx_migration_smoke_nommap mdbx_migration_smoke_nommap_tinycache \
+	mdbx_async_api_smoke_nommap mdbx_async_api_smoke_nommap_tinycache \
 	mdbx_migration_smoke_stress_nommap_tinycache mdbx_migration_smoke_randomized_stress_nommap_tinycache \
 	mdbx_migration_smoke_crash_stress_nommap_tinycache \
 	mdbx_migration_extended_stress_nommap_tinycache \
@@ -218,6 +219,7 @@ help:
 	@echo "  make mdbx_migration_smoke_randomized_stress_nommap_tinycache - run permuted no-map migration stress"
 	@echo "  make mdbx_migration_smoke_crash_stress_nommap_tinycache - run no-map crash/restart stress"
 	@echo "  make mdbx_migration_extended_stress_nommap_tinycache - repeat randomized and crash no-map stress"
+	@echo "  make mdbx_async_api_smoke_nommap_tinycache - run async C API no-map smoke"
 	@echo "  make mdbx_migration_fault_injection_nommap - run no-map explicit I/O fault checks"
 	@echo "  make mdbx_migration_fault_injection_nommap_tinycache - run no-map fault checks with 64K cache"
 	@echo "  make mdbx_migration_public_ctest - run public CTest migration/API gates"
@@ -332,7 +334,8 @@ ifneq ($(CMAKE),"")
 TEST_TARGETS += ctest
 TEST_BUILD_TARGETS += cmake-build
 endif
-TEST_TARGETS += mdbx_legacy_example mdbx_migration_smoke $(call select_by,MDBX_BUILD_CXX,mdbx_modern_example,)
+TEST_TARGETS += mdbx_legacy_example mdbx_migration_smoke mdbx_async_api_smoke \
+	$(call select_by,MDBX_BUILD_CXX,mdbx_modern_example,)
 
 .PHONY: ninja-assertions ninja-debug ninja $(TEST_TARGETS) $(TEST_BUILD_TARGETS) \
 	build-stochastic test-stochastic test-ubsan test-asan test-memcheck test-leak \
@@ -421,6 +424,18 @@ mdbx_modern_example: mdbx.h ut_and_examples/example-mdbx.c++ libmdbx.$(SO_SUFFIX
 mdbx_migration_smoke: mdbx.h ut_and_examples/migration-smoke.c libmdbx.$(SO_SUFFIX)
 	@echo '  CC+LD $@'
 	$(QUIET)$(CC) $(CFLAGS) -I. ut_and_examples/migration-smoke.c ./libmdbx.$(SO_SUFFIX) -o $@
+
+mdbx_async_api_smoke: mdbx.h ut_and_examples/async-api-smoke.c libmdbx.$(SO_SUFFIX)
+	@echo '  CC+LD $@'
+	$(QUIET)$(CC) $(CFLAGS) -I. ut_and_examples/async-api-smoke.c ./libmdbx.$(SO_SUFFIX) -o $@
+
+mdbx_async_api_smoke_nommap: mdbx_async_api_smoke
+	@echo '  RUN $@'
+	$(QUIET)MDBX_FORCE_NO_DATA_MMAP=1 LD_LIBRARY_PATH=. ./mdbx_async_api_smoke
+
+mdbx_async_api_smoke_nommap_tinycache: mdbx_async_api_smoke
+	@echo '  RUN $@'
+	$(QUIET)MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=. ./mdbx_async_api_smoke
 
 mdbx_migration_smoke_nommap: mdbx_migration_smoke
 	@echo '  RUN $@'

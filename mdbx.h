@@ -85,6 +85,7 @@ Please refer to the COPYRIGHT file for explanations license change, credits and 
  \defgroup c_transactions Transactions
  \defgroup c_dbi Tables
  \defgroup c_crud Create/Read/Update/Delete (see Quick Reference in details)
+ \defgroup c_async Asynchronous executor API
 
  \details
  \anchor c_crud_hints
@@ -771,6 +772,22 @@ typedef uint32_t MDBX_dbi;
 typedef struct MDBX_cursor MDBX_cursor;
 #else
 struct MDBX_cursor;
+#endif
+
+/** \brief Opaque asynchronous executor handle.
+ * \ingroup c_async */
+#ifndef __cplusplus
+typedef struct MDBX_async MDBX_async;
+#else
+struct MDBX_async;
+#endif
+
+/** \brief Opaque asynchronous operation handle.
+ * \ingroup c_async */
+#ifndef __cplusplus
+typedef struct MDBX_async_op MDBX_async_op;
+#else
+struct MDBX_async_op;
 #endif
 
 /** \brief Generic structure used for passing keys and data in and out of the table.
@@ -4531,6 +4548,141 @@ LIBMDBX_API int mdbx_txn_abort_ex(MDBX_txn *txn, MDBX_commit_latency *latency);
  *                               by current thread.
  * \retval MDBX_EINVAL           Transaction handle is NULL. */
 LIBMDBX_INLINE_API(int, mdbx_txn_abort, (MDBX_txn * txn)) { return mdbx_txn_abort_ex(txn, NULL); }
+
+/** \brief Asynchronous executor flags.
+ * \ingroup c_async
+ * \details Reserved for future extensions; pass \ref MDBX_ASYNC_DEFAULTS for now. */
+typedef enum MDBX_async_flags {
+  MDBX_ASYNC_DEFAULTS = 0
+} MDBX_async_flags_t;
+DEFINE_ENUM_FLAG_OPERATORS(MDBX_async_flags)
+
+/** \brief Function submitted through \ref mdbx_async_submit().
+ * \ingroup c_async
+ * \details The function runs on the executor worker thread and may call the regular blocking MDBX API there. */
+typedef int (*MDBX_async_func)(MDBX_env *env, void *context);
+
+/** \brief Create an asynchronous executor bound to an open environment.
+ * \ingroup c_async
+ *
+ * Operations submitted to one executor are executed in submission order on a
+ * dedicated worker thread. Transactions and cursors created through the async
+ * API must continue to be used through the same executor unless the environment
+ * and transaction flags explicitly allow otherwise.
+ *
+ * \param [in] env    An open environment handle.
+ * \param [in] flags  Reserved for future extensions, must be \ref MDBX_ASYNC_DEFAULTS.
+ * \param [out] async Address where the executor handle will be stored.
+ *
+ * \returns A non-zero error value on failure and 0 on success. */
+LIBMDBX_API int mdbx_async_create(MDBX_env *env, MDBX_async_flags_t flags, MDBX_async **async);
+
+/** \brief Destroy an asynchronous executor.
+ * \ingroup c_async
+ *
+ * If `drain` is true, the function waits until queued and running operations
+ * complete. In all cases every submitted operation handle must be released with
+ * \ref mdbx_async_op_release() before the executor can be destroyed.
+ *
+ * \returns \ref MDBX_BUSY if operations are pending, running, or unreleased. */
+LIBMDBX_API int mdbx_async_destroy(MDBX_async *async, bool drain);
+
+/** \brief Return the environment associated with an async executor.
+ * \ingroup c_async */
+MDBX_NOTHROW_PURE_FUNCTION LIBMDBX_API MDBX_env *mdbx_async_env(const MDBX_async *async);
+
+/** \brief Submit a user function to an async executor.
+ * \ingroup c_async
+ *
+ * \param [out] op Address where the operation handle will be stored. The handle
+ *                 must be completed with \ref mdbx_async_wait() or observed by
+ *                 \ref mdbx_async_poll(), then released by
+ *                 \ref mdbx_async_op_release(). */
+LIBMDBX_API int mdbx_async_submit(MDBX_async *async, MDBX_async_func func, void *context, MDBX_async_op **op);
+
+/** \brief Poll an async operation for completion.
+ * \ingroup c_async
+ * \returns \ref MDBX_RESULT_TRUE while the operation is still pending, otherwise
+ *          \ref MDBX_SUCCESS and stores the operation result in `result` when non-NULL. */
+LIBMDBX_API int mdbx_async_poll(MDBX_async_op *op, int *result);
+
+/** \brief Wait for an async operation to complete.
+ * \ingroup c_async
+ * \returns \ref MDBX_SUCCESS and stores the operation result in `result` when non-NULL. */
+LIBMDBX_API int mdbx_async_wait(MDBX_async_op *op, int *result);
+
+/** \brief Release a completed async operation handle.
+ * \ingroup c_async
+ * \returns \ref MDBX_BUSY if the operation has not completed yet. */
+LIBMDBX_API int mdbx_async_op_release(MDBX_async_op *op);
+
+/** \brief Asynchronously create a transaction.
+ * \ingroup c_async
+ * \see mdbx_txn_begin_ex() */
+LIBMDBX_API int mdbx_async_txn_begin(MDBX_async *async, MDBX_txn *parent, MDBX_txn_flags_t flags, MDBX_txn **txn,
+                                     void *context, MDBX_async_op **op);
+
+/** \brief Asynchronously commit a transaction.
+ * \ingroup c_async
+ * \see mdbx_txn_commit_ex() */
+LIBMDBX_API int mdbx_async_txn_commit(MDBX_async *async, MDBX_txn *txn, MDBX_commit_latency *latency,
+                                      MDBX_async_op **op);
+
+/** \brief Asynchronously abort a transaction.
+ * \ingroup c_async
+ * \see mdbx_txn_abort_ex() */
+LIBMDBX_API int mdbx_async_txn_abort(MDBX_async *async, MDBX_txn *txn, MDBX_commit_latency *latency,
+                                     MDBX_async_op **op);
+
+/** \brief Asynchronously open a DBI handle.
+ * \ingroup c_async
+ * \see mdbx_dbi_open() */
+LIBMDBX_API int mdbx_async_dbi_open(MDBX_async *async, MDBX_txn *txn, const char *name, MDBX_db_flags_t flags,
+                                    MDBX_dbi *dbi, MDBX_async_op **op);
+
+/** \brief Asynchronously get an item from a table.
+ * \ingroup c_async
+ * \details The key bytes are copied during submission. Returned value lifetime
+ *          follows \ref mdbx_get() after operation completion.
+ * \see mdbx_get() */
+LIBMDBX_API int mdbx_async_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
+                               MDBX_val *data, MDBX_async_op **op);
+
+/** \brief Asynchronously put an item into a table.
+ * \ingroup c_async
+ * \details Key and data bytes are copied during submission. The initial async
+ *          wrapper rejects \ref MDBX_RESERVE and \ref MDBX_MULTIPLE because
+ *          those modes require caller-managed in-place memory.
+ * \see mdbx_put() */
+LIBMDBX_API int mdbx_async_put(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *data,
+                               MDBX_put_flags_t flags, MDBX_async_op **op);
+
+/** \brief Asynchronously delete an item from a table.
+ * \ingroup c_async
+ * \details Key and optional data bytes are copied during submission.
+ * \see mdbx_del() */
+LIBMDBX_API int mdbx_async_del(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
+                               const MDBX_val *data, MDBX_async_op **op);
+
+/** \brief Asynchronously open a cursor.
+ * \ingroup c_async
+ * \see mdbx_cursor_open() */
+LIBMDBX_API int mdbx_async_cursor_open(MDBX_async *async, MDBX_txn *txn, MDBX_dbi dbi, MDBX_cursor **cursor,
+                                       MDBX_async_op **op);
+
+/** \brief Asynchronously get an item through a cursor.
+ * \ingroup c_async
+ * \details The `key` and `data` descriptor objects must remain valid until the
+ *          operation completes. Returned value lifetime follows
+ *          \ref mdbx_cursor_get() after operation completion.
+ * \see mdbx_cursor_get() */
+LIBMDBX_API int mdbx_async_cursor_get(MDBX_async *async, MDBX_cursor *cursor, MDBX_val *key, MDBX_val *data,
+                                      MDBX_cursor_op cursor_op, MDBX_async_op **op);
+
+/** \brief Asynchronously close a cursor.
+ * \ingroup c_async
+ * \see mdbx_cursor_close2() */
+LIBMDBX_API int mdbx_async_cursor_close(MDBX_async *async, MDBX_cursor *cursor, MDBX_async_op **op);
 
 /** \brief Marks transaction as broken to prevent further operations.
  * \ingroup c_transactions
