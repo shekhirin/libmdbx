@@ -2076,6 +2076,40 @@ int main(void) {
     CHECK(expect_value(&cache_many_data[i], keys[i + 2], __FILE__, __LINE__));
   }
 
+  MDBX_cache_entry_t cache_duplicate_entries[4];
+  MDBX_cache_result_t cache_duplicate_results[4];
+  MDBX_val cache_duplicate_keys[4];
+  MDBX_val cache_duplicate_data[4];
+  for (unsigned i = 0; i < 4; ++i) {
+    mdbx_cache_init(&cache_duplicate_entries[i]);
+    cache_duplicate_results[i].errcode = MDBX_PROBLEM;
+    cache_duplicate_results[i].status = MDBX_CACHE_ERROR;
+    cache_duplicate_keys[i] = key_values[4];
+    cache_duplicate_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_cache_get_batch(async, txn, dbi, cache_duplicate_keys, cache_duplicate_data,
+                                   cache_duplicate_entries, cache_duplicate_results, 4, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < 4; ++i) {
+    REQUIRE(cache_duplicate_results[i].errcode == MDBX_SUCCESS &&
+                cache_duplicate_results[i].status != MDBX_CACHE_ERROR,
+            "unexpected async duplicate cache get batch result");
+    CHECK(expect_value(&cache_duplicate_data[i], keys[4], __FILE__, __LINE__));
+    cache_duplicate_results[i].errcode = MDBX_PROBLEM;
+    cache_duplicate_results[i].status = MDBX_CACHE_ERROR;
+    cache_duplicate_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_cache_get_SingleThreaded_batch(async, txn, dbi, cache_duplicate_keys,
+                                                  cache_duplicate_data, cache_duplicate_entries,
+                                                  cache_duplicate_results, 4, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < 4; ++i) {
+    REQUIRE(cache_duplicate_results[i].errcode == MDBX_SUCCESS &&
+                cache_duplicate_results[i].status == MDBX_CACHE_HIT,
+            "unexpected async duplicate single-thread cache batch result");
+    CHECK(expect_value(&cache_duplicate_data[i], keys[4], __FILE__, __LINE__));
+  }
+
   MDBX_cache_entry_t large_cache_entries[LARGE_ITEM_COUNT];
   MDBX_cache_result_t large_cache_results[LARGE_ITEM_COUNT];
   MDBX_val large_cache_data[LARGE_ITEM_COUNT];

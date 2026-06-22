@@ -4981,3 +4981,50 @@ Additional async cursor-get-loop batching checkpoint:
   than a new storage-level async page-read primitive. It keeps moving cursor
   traversal work toward coarser async operations, while the true async I/O goal
   still requires resumable B-tree/page-read continuations below cursor logic.
+
+Additional page-cache duplicate read coalescing checkpoint:
+
+- changed `page_cache_submit_read_batch()` to coalesce duplicate page-cache
+  misses within one batch before submitting storage reads. Equal
+  `dxb_page_cache_read_submit_io_t` descriptors now share one filled cache
+  entry; duplicate results retain that entry through the existing page-cache
+  pin accounting instead of issuing another `io_uring` read for the same page.
+- duplicate detection uses a small per-batch hash table and still verifies full
+  descriptor equality before sharing a result, so hash collisions only add a
+  comparison and do not change correctness. This is a storage-level page-cache
+  improvement and applies below the async cache-get, batched get traversal, and
+  other users of `page_cache_submit_read_batch()`.
+- added smoke coverage for repeated cache entries in a single
+  `mdbx_async_cache_get_SingleThreaded_batch()` materialization pass.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-dup-page-before.txt`,
+    `/tmp/mdbx-async-bench-dup-page-after.txt`,
+    `/tmp/mdbx-async-bench-dup-page-small-before.txt`, and
+    `/tmp/mdbx-async-bench-dup-page-small-after.txt`
+- reduced forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000 MDBX_ASYNC_BENCH_OPS=30000
+  MDBX_ASYNC_BENCH_WRITE_OPS=1000 MDBX_ASYNC_BENCH_LARGE_OPS=5000
+  MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`: async cache batch moved
+  3.769 -> 4.214 Mops/s, async cache st batch 3.855 -> 4.142 Mops/s,
+  async threaded cache batch 4.480 -> 5.199 Mops/s, async cache loop
+  1.998 -> 2.339 Mops/s, and async get loop 3.397 -> 3.448 Mops/s.
+  Async cache many moved 4.337 -> 4.234 Mops/s, async cache batch callback
+  4.015 -> 3.654 Mops/s, and async threaded cache st loop
+  4.749 -> 2.711 Mops/s in this noisy spot sample.
+- a smaller duplicate-heavy sample with `MDBX_ASYNC_BENCH_ITEMS=64`,
+  `MDBX_ASYNC_BENCH_OPS=30000`, `MDBX_ASYNC_BENCH_WRITE_OPS=64`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=16K` reported async cache batch
+  4.618 -> 5.115 Mops/s, async cache st batch 4.544 -> 4.991 Mops/s,
+  async cache batch callback 4.792 -> 5.384 Mops/s, async threaded cache st
+  batch 5.067 -> 6.949 Mops/s, async cache loop 3.133 -> 5.241 Mops/s, and
+  async threaded cache st loop 4.524 -> 6.686 Mops/s. Async cache many moved
+  6.012 -> 4.053 Mops/s and async get loop 6.754 -> 5.790 Mops/s.
+- conclusion: duplicate page-cache misses are now collapsed before the
+  storage-read batch is submitted, which avoids wasting io_uring slots and
+  page-cache buffers on identical reads in duplicate-heavy batches. The effect
+  is workload-sensitive because the benchmark driver mixes many cache shapes,
+  but the duplicate-heavy sample shows the intended batch rows improving.
