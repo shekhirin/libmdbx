@@ -5706,6 +5706,99 @@ bailout:
   return -1.0;
 }
 
+static double async_parallel_cursor_large_get_setkey(MDBX_env *env, MDBX_dbi dbi, size_t items,
+                                                     size_t target_pairs, size_t workers_count,
+                                                     size_t value_bytes) {
+  struct async_worker *workers = calloc(workers_count, sizeof(*workers));
+  size_t *targets = calloc(workers_count, sizeof(*targets));
+  size_t *completed = calloc(workers_count, sizeof(*completed));
+  if (!workers || !targets || !completed) {
+    free(completed);
+    free(targets);
+    free(workers);
+    return -1.0;
+  }
+  for (size_t i = 0; i < workers_count; ++i) {
+    if (async_cursor_scan_worker_init(env, &workers[i], dbi) != MDBX_SUCCESS) {
+      workers_count = i + 1;
+      goto bailout;
+    }
+  }
+
+  const size_t base_pairs = target_pairs / workers_count;
+  const size_t extra_pairs = target_pairs % workers_count;
+  for (size_t i = 0; i < workers_count; ++i)
+    targets[i] = base_pairs + (i < extra_pairs);
+
+  int rc = MDBX_SUCCESS;
+  size_t completed_pairs = 0;
+  const uint64_t start = monotime_ns();
+  while (completed_pairs < target_pairs) {
+    for (size_t i = 0; i < workers_count; ++i) {
+      if (completed[i] >= targets[i])
+        continue;
+      workers[i].keys[0] = key_for(completed[i], items);
+      workers[i].key_vals[0] = val(&workers[i].keys[0], sizeof(workers[i].keys[0]));
+      workers[i].data[0] = val(NULL, 0);
+      rc = mdbx_async_cursor_get(workers[i].async, workers[i].cursor, &workers[i].key_vals[0],
+                                 &workers[i].data[0], MDBX_SET_KEY, &workers[i].ops[0]);
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
+      workers[i].pending = 1;
+    }
+
+    for (size_t i = 0; i < workers_count; ++i) {
+      if (!workers[i].pending)
+        continue;
+      int operation_rc = MDBX_SUCCESS;
+      rc = wait_success(&workers[i].ops[0], &operation_rc, __FILE__, __LINE__);
+      workers[i].pending = 0;
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
+      if (operation_rc != MDBX_SUCCESS) {
+        rc = fail_rc("mdbx_async_cursor_get large set-key", operation_rc, __FILE__, __LINE__);
+        goto bailout;
+      }
+      if (workers[i].key_vals[0].iov_len != sizeof(uint64_t)) {
+        rc = fail_msg("unexpected async large cursor get set-key key size", __FILE__, __LINE__);
+        goto bailout;
+      }
+      uint64_t actual_key = 0;
+      memcpy(&actual_key, workers[i].key_vals[0].iov_base, sizeof(actual_key));
+      if (actual_key != workers[i].keys[0]) {
+        rc = fail_msg("unexpected async large cursor get set-key key", __FILE__, __LINE__);
+        goto bailout;
+      }
+      rc = expect_large_value(&workers[i].data[0], actual_key, value_bytes, __FILE__, __LINE__);
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
+      completed[i] += 1;
+      completed_pairs += 1;
+    }
+  }
+  const uint64_t finish = monotime_ns();
+  for (size_t i = 0; i < workers_count; ++i)
+    async_worker_destroy(&workers[i]);
+  free(completed);
+  free(targets);
+  free(workers);
+  if (completed_pairs == 0 || finish <= start)
+    return -1.0;
+  return (double)completed_pairs * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  for (size_t i = 0; i < workers_count; ++i) {
+    if (workers[i].ops && workers[i].ops[0])
+      (void)wait_success(&workers[i].ops[0], NULL, __FILE__, __LINE__);
+    async_worker_destroy(&workers[i]);
+  }
+  free(completed);
+  free(targets);
+  free(workers);
+  (void)rc;
+  return -1.0;
+}
+
 static double async_loop_cursor_get_impl(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs,
                                          size_t workers_count, bool loop_from) {
   struct async_worker *workers = calloc(workers_count, sizeof(*workers));
@@ -6333,6 +6426,9 @@ int main(void) {
   const double async_cursor_large_batch_parallel =
       async_parallel_cursor_large_batch(env, large_dbi, large_items, large_cursor_pairs, workers,
                                         cursor_batch_pairs, large_value_bytes);
+  const double async_cursor_large_setkey_parallel =
+      async_parallel_cursor_large_get_setkey(env, large_dbi, large_items, large_ops, workers,
+                                             large_value_bytes);
   const double async_threaded_cursor_large_batch_parallel =
       async_threaded_cursor_large_batch(env, large_dbi, large_items, large_cursor_pairs, workers,
                                         cursor_batch_pairs, large_value_bytes);
@@ -6421,6 +6517,7 @@ int main(void) {
   print_rate("blocking cursor large batch", blocking_cursor_large_batch_serial);
   print_rate("parallel cursor large batch", blocking_cursor_large_batch_parallel);
   print_rate("async cursor large batch", async_cursor_large_batch_parallel);
+  print_rate("async cursor large set-key", async_cursor_large_setkey_parallel);
   print_rate("async threaded cursor large", async_threaded_cursor_large_batch_parallel);
   print_rate("async threaded cache batch", async_threaded_cache_batch_parallel);
   print_rate("async threaded cache st batch", async_threaded_cache_st_batch_parallel);
@@ -6541,6 +6638,15 @@ int main(void) {
   if (blocking_cursor_large_batch_serial > 0.0 && async_cursor_large_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-cursor-large/ser",
            async_cursor_large_batch_parallel / blocking_cursor_large_batch_serial);
+  if (blocking_cursor_large_batch_parallel > 0.0 && async_cursor_large_setkey_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-clarge-setkey/par",
+           async_cursor_large_setkey_parallel / blocking_cursor_large_batch_parallel);
+  if (blocking_cursor_large_batch_serial > 0.0 && async_cursor_large_setkey_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-clarge-setkey/ser",
+           async_cursor_large_setkey_parallel / blocking_cursor_large_batch_serial);
+  if (async_cursor_large_batch_parallel > 0.0 && async_cursor_large_setkey_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-clarge-setkey/batch",
+           async_cursor_large_setkey_parallel / async_cursor_large_batch_parallel);
   if (blocking_cursor_large_batch_parallel > 0.0 && async_threaded_cursor_large_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-clarge/par",
            async_threaded_cursor_large_batch_parallel / blocking_cursor_large_batch_parallel);

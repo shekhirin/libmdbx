@@ -2320,6 +2320,23 @@ int main(void) {
     REQUIRE(actual_key == large_keys[i], "unexpected async large cursor key");
     CHECK(expect_large_value(data, large_keys[i], __FILE__, __LINE__));
   }
+  MDBX_val large_cursor_seek_key = large_key_values[1];
+  MDBX_val large_cursor_seek_data = val(NULL, 0);
+  int large_cursor_seek_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_cursor_get(async, cursor, &large_cursor_seek_key,
+                              &large_cursor_seek_data, MDBX_SET_KEY, &op));
+  CHECK(wait_result("mdbx_async_cursor_get large set-key", &op,
+                    &large_cursor_seek_result, __FILE__, __LINE__));
+  REQUIRE(large_cursor_seek_result == MDBX_SUCCESS,
+          "unexpected async large cursor set-key result");
+  REQUIRE(large_cursor_seek_key.iov_len == sizeof(uint64_t),
+          "unexpected async large cursor set-key key size");
+  uint64_t large_cursor_seek_actual = 0;
+  memcpy(&large_cursor_seek_actual, large_cursor_seek_key.iov_base,
+         sizeof(large_cursor_seek_actual));
+  REQUIRE(large_cursor_seek_actual == large_keys[1],
+          "unexpected async large cursor set-key key");
+  CHECK(expect_large_value(&large_cursor_seek_data, large_keys[1], __FILE__, __LINE__));
   CHECK(mdbx_async_cursor_close(async, cursor, &op));
   CHECK_OP(op);
   cursor = NULL;

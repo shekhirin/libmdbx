@@ -20929,7 +20929,9 @@ static int async_cursor_get_batches_execute(MDBX_async_op *op) {
 enum async_cursor_get_batch_first_phase {
   async_cursor_get_batch_first_none,
   async_cursor_get_batch_first_root,
-  async_cursor_get_batch_first_child
+  async_cursor_get_batch_first_child,
+  async_cursor_get_batch_seek_sibling,
+  async_cursor_get_batch_seek_large
 };
 
 typedef struct async_cursor_get_batch_pending {
@@ -21075,6 +21077,8 @@ static int async_cursor_get_batch_finish_first(async_cursor_get_batch_pending_t 
     mc->ki[pending->first_parent_top] = pending->first_parent_ki;
     rc = cursor_push_pgr_consume_checked(mc, &page, 0);
     break;
+  case async_cursor_get_batch_seek_sibling:
+  case async_cursor_get_batch_seek_large:
   case async_cursor_get_batch_first_none:
     pgr_release(mc, &page);
     rc = MDBX_EINVAL;
@@ -21495,9 +21499,13 @@ typedef struct async_cursor_seek_pending {
   MDBX_cursor *cursor;
   MDBX_val key;
   MDBX_val data;
+  alignkey_t aligned;
   MDBX_cursor_op op;
   intptr_t seek_parent_top;
   indx_t seek_parent_ki;
+  size_t large_bytes;
+  pgno_t large_npages;
+  int value_status;
   enum async_cursor_get_batch_first_phase seek_phase;
   bool seek_started;
 } async_cursor_seek_pending_t;
@@ -21552,6 +21560,9 @@ static int async_cursor_seek_prepare(async_cursor_seek_pending_t *seek,
   seek->data = data ? *data : (MDBX_val){nullptr, 0};
   seek->op = op;
   seek->seek_phase = async_cursor_get_batch_first_none;
+  int rc = check_key(mc, &seek->key, &seek->aligned);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
 
   if (unlikely(mc->txn->flags & MDBX_TXN_BLOCKED)) {
     be_poor(mc);
@@ -21574,9 +21585,9 @@ static int async_cursor_seek_prepare(async_cursor_seek_pending_t *seek,
   }
 
   be_poor(mc);
-  int rc = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_LARGE, root,
-                                          tbl_root_txnid(mc->txn, cursor_dbi(mc)),
-                                          &seek->seek_get);
+  rc = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_LARGE, root,
+                                      tbl_root_txnid(mc->txn, cursor_dbi(mc)),
+                                      &seek->seek_get);
   if (unlikely(rc != MDBX_SUCCESS)) {
     be_poor(mc);
     return rc;
@@ -21584,17 +21595,140 @@ static int async_cursor_seek_prepare(async_cursor_seek_pending_t *seek,
   return async_cursor_seek_start_read(seek, async_cursor_get_batch_first_root);
 }
 
+static int async_cursor_seek_capture_result(async_cursor_seek_pending_t *seek,
+                                            int status) {
+  MDBX_cursor *const mc = seek->cursor;
+  cursor_couple_t *const couple = container_of(mc, cursor_couple_t, outer);
+  int rc = cursor_couple_capture_txn_pins(couple);
+  return likely(rc == MDBX_SUCCESS) ? status : rc;
+}
+
+static int async_cursor_seek_prepare_large(async_cursor_seek_pending_t *seek,
+                                           const node_t *leaf,
+                                           const page_t *mp,
+                                           int status) {
+  MDBX_cursor *const mc = seek->cursor;
+  if (unlikely(!leaf || node_flags(leaf) != N_BIG))
+    return MDBX_EINVAL;
+
+  seek->data.iov_len = node_ds(leaf);
+  seek->data.iov_base = node_data(leaf);
+  seek->large_bytes = seek->data.iov_len;
+  seek->large_npages = largechunk_npages(mc->txn->env, seek->large_bytes);
+  seek->value_status = status;
+
+  const pgno_t large_pgno = node_largedata_pgno(leaf);
+  int rc = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_BRANCH | P_LEAF | P_DUPFIX,
+                                          large_pgno, mp->txnid, &seek->seek_get);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  return async_cursor_seek_start_read(seek, async_cursor_get_batch_seek_large);
+}
+
+static int async_cursor_seek_prepare_sibling(async_cursor_seek_pending_t *seek) {
+  MDBX_cursor *const mc = seek->cursor;
+  int rc = cursor_capture_txn_pin(mc, mc->pgref[mc->top]);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  if (mc->top < 1) {
+    cASSERT0(mc, mc->top >= 0);
+    const size_t nkeys = page_numkeys(mc->pg[mc->top]);
+    cASSERT0(mc, nkeys > 0);
+    mc->ki[mc->top] = (indx_t)nkeys - 1;
+    mc->flags = z_eof_soft | z_eof_hard | (mc->flags & z_clear_mask);
+    return MDBX_NOTFOUND;
+  }
+
+  cursor_pop_keep_ref(mc);
+  if (mc->ki[mc->top] + (size_t)1 >= page_numkeys(mc->pg[mc->top])) {
+    rc = cursor_sibling_right(mc);
+    if (unlikely(rc != MDBX_SUCCESS)) {
+      if (rc == MDBX_NOTFOUND) {
+        cursor_restore_pop_keep_ref(mc);
+        cASSERT0(mc, mc->top >= 0);
+        const size_t nkeys = page_numkeys(mc->pg[mc->top]);
+        cASSERT0(mc, nkeys > 0);
+        mc->ki[mc->top] = (indx_t)nkeys - 1;
+        mc->flags = z_eof_soft | z_eof_hard | (mc->flags & z_clear_mask);
+        return MDBX_NOTFOUND;
+      }
+      be_poor(mc);
+      return rc;
+    }
+  } else {
+    mc->ki[mc->top] += 1;
+  }
+
+  if (unlikely(!is_branch(mc->pg[mc->top]))) {
+    be_poor(mc);
+    return MDBX_CORRUPTED;
+  }
+
+  seek->seek_parent_ki = mc->ki[mc->top];
+  rc = cursor_branch_child_prepare_get(mc, seek->seek_parent_ki, &seek->seek_get,
+                                       &seek->seek_parent_top);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    be_poor(mc);
+    return rc;
+  }
+  return async_cursor_seek_start_read(seek, async_cursor_get_batch_seek_sibling);
+}
+
 static int async_cursor_seek_finish_leaf(async_cursor_seek_pending_t *seek) {
   MDBX_cursor *const mc = seek->cursor;
-  int rc = cursor_ops(mc, &seek->key, &seek->data, seek->op);
-  if (likely(rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE)) {
-    const int seek_status = rc;
-    cursor_couple_t *const couple = container_of(mc, cursor_couple_t, outer);
-    rc = cursor_couple_capture_txn_pins(couple);
-    if (likely(rc == MDBX_SUCCESS))
-      rc = seek_status;
+  page_t *const mp = mc->pg[mc->top];
+  if (!MDBX_DISABLE_VALIDATION && unlikely(!check_leaf_type(mc, mp))) {
+    ERROR("unexpected leaf-page #%" PRIaPGNO " type 0x%x seen by cursor",
+          mp->pgno, mp->flags);
+    be_poor(mc);
+    return MDBX_CORRUPTED;
   }
-  return rc;
+
+  sfr_t sr = tree_search_foliage(mc, &seek->aligned.key);
+  node_t *node = sr.node;
+  int status = MDBX_SUCCESS;
+  if (!sr.exact) {
+    if (seek->op == MDBX_SET_KEY) {
+      mc->flags |= z_hollow;
+      return MDBX_NOTFOUND;
+    }
+    status = MDBX_RESULT_TRUE;
+    if (node == nullptr) {
+      int rc = async_cursor_seek_prepare_sibling(seek);
+      if (rc == MDBX_RESULT_TRUE)
+        return rc;
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+      return MDBX_RESULT_TRUE;
+    }
+  }
+
+  cASSERT0(mc, node != nullptr);
+  if (unlikely(node == nullptr)) {
+    be_poor(mc);
+    return MDBX_CORRUPTED;
+  }
+  seek->key = get_key(node);
+  if (unlikely(node_flags(node) & N_DUP)) {
+    int rc = cursor_ops(mc, &seek->key, &seek->data, seek->op);
+    if (likely(rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE))
+      rc = async_cursor_seek_capture_result(seek, rc);
+    return rc;
+  }
+
+  if (node_flags(node) == N_BIG) {
+    const int rc = async_cursor_seek_prepare_large(seek, node, mp, status);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+    return MDBX_RESULT_TRUE;
+  }
+
+  int rc = node_read(mc, node, &seek->data, mp);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  be_filled(mc);
+  return async_cursor_seek_capture_result(seek, status);
 }
 
 static int async_cursor_seek_drive(async_cursor_seek_pending_t *seek,
@@ -21640,6 +21774,24 @@ static int async_cursor_seek_drive(async_cursor_seek_pending_t *seek,
       mc->ki[seek->seek_parent_top] = seek->seek_parent_ki;
       rc = cursor_push_pgr_consume_checked(mc, &page, 0);
       break;
+    case async_cursor_get_batch_seek_sibling:
+      mc->ki[seek->seek_parent_top] = seek->seek_parent_ki;
+      rc = cursor_push_pgr_consume_checked(mc, &page, 0);
+      break;
+    case async_cursor_get_batch_seek_large:
+      cASSERT0(mc, page_type(page.page) == P_LARGE);
+      if (!MDBX_DISABLE_VALIDATION && unlikely(page.page->pages < seek->large_npages)) {
+        rc = bad_page(page.page, "too less n-pages %u for bigdata-node (%zu bytes)",
+                      page.page->pages, seek->large_bytes);
+        pgr_release(mc, &page);
+        break;
+      }
+      cursor_value_set(mc, &page);
+      seek->data.iov_base = page2payload(page.page);
+      seek->data.iov_len = seek->large_bytes;
+      pgr_release(mc, &page);
+      be_filled(mc);
+      return async_cursor_seek_capture_result(seek, seek->value_status);
     case async_cursor_get_batch_first_none:
       pgr_release(mc, &page);
       rc = MDBX_EINVAL;
@@ -21662,7 +21814,7 @@ static int async_cursor_seek_drive(async_cursor_seek_pending_t *seek,
       return async_cursor_seek_finish_leaf(seek);
     }
 
-    const intptr_t ki = tree_search_branch(mc, &seek->key);
+    const intptr_t ki = tree_search_branch(mc, &seek->aligned.key);
     rc = cursor_branch_child_prepare_get(mc, (indx_t)ki, &seek->seek_get,
                                          &seek->seek_parent_top);
     if (unlikely(rc != MDBX_SUCCESS)) {

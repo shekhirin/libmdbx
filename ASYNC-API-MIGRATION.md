@@ -9359,3 +9359,64 @@ The direct async cursor-get row regressed in this noisy cache-hot sample, while
 scan-from improved. The important structural change is that exact positioned
 public cursor seeks can now suspend on root and branch explicit-I/O page reads
 instead of starting with a blocking `mdbx_cursor_get(..., MDBX_SET_KEY)`.
+
+## Public Async Cursor Seek Leaf-Finish Slice
+
+Moved the supported plain-cursor retained seek leaf finish out of
+`cursor_ops()` and into the async seek state. After root/branch descent reaches
+a resident leaf, `async_cursor_seek_pending_t` now performs the plain
+`tree_search_foliage()` search itself, preserves integer-key alignment through
+`check_key()`, and completes `MDBX_SET_KEY` / `MDBX_SET_LOWERBOUND` without a
+mandatory blocking cursor call.
+
+This also adds retained continuations for the two remaining page-read cases in
+the supported plain seek finish:
+
+- inexact lower-bound at the end of a leaf submits the right-sibling leaf read
+  before resuming the leaf search;
+- `N_BIG` overflow values submit and complete the large-page read before
+  returning the value payload.
+
+Unsupported shapes remain conservative. Dupsort nodes, write cursors,
+subcursors, and other cursor operations still use the existing fallback paths.
+
+Smoke coverage now includes an exact `MDBX_SET_KEY` async cursor get over a
+large/overflow value. The benchmark harness also adds
+`async cursor large set-key`, which measures public async cursor exact seeks
+over overflow values directly.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+- Benchmark log: `/tmp/mdbx-async-bench-seek-leaf-retain-after-final.txt`
+
+Reduced forced no-mmap/io_uring benchmark with `MDBX_ASYNC_BENCH_ITEMS=10000`,
+`MDBX_ASYNC_BENCH_OPS=30000`, `MDBX_ASYNC_BENCH_WRITE_OPS=1000`,
+`MDBX_ASYNC_BENCH_LARGE_OPS=30000`, and
+`MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against the previous checkpoint
+`972bcf7`.
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking cursor large batch | 140.999 Kops/s | 140.367 Kops/s |
+| parallel cursor large batch | 467.899 Kops/s | 459.407 Kops/s |
+| async cursor large batch | 144.305 Kops/s | 143.808 Kops/s |
+| async cursor large set-key | n/a | 121.223 Kops/s |
+| async threaded cursor large | 500.774 Kops/s | 497.134 Kops/s |
+| async cursor get | 774.470 Kops/s | 1.162 Mops/s |
+| async cursor get set-key | 644.125 Kops/s | 586.130 Kops/s |
+| async cursor scan_from | 66.294 Mops/s | 66.660 Mops/s |
+| async-cursor-large/par | 0.308 | 0.313 |
+| async-cursor-large/ser | 1.023 | 1.025 |
+| async-clarge-setkey/par | n/a | 0.264 |
+| async-clarge-setkey/ser | n/a | 0.864 |
+| async-clarge-setkey/batch | n/a | 0.843 |
+| async-cget-setkey/get | 0.832 | 0.504 |
+
+As before, cache-hot cursor rows are noisy. The direct structural gain is that
+the supported public cursor seek path can now suspend through root, branch,
+right-sibling, and overflow-value page reads without falling back to a blocking
+`cursor_ops()` finish.
