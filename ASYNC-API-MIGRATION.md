@@ -56,6 +56,50 @@ worker before enqueueing. The first `put` wrapper rejects `MDBX_RESERVE` and
   parallel read operations. It is intentionally not a deterministic pass/fail
   CTest gate.
 
+## True Async Page Read Slice
+
+Implemented a first internal storage-level async read slice for the explicit
+no-mmap page-cache path:
+
+- added `osal_ioring_pread_batch()` and a Linux `io_uring` multi-read path that
+  queues multiple `IORING_OP_READ` SQEs before waiting for completions;
+- added `dxb_storage_submit_read_data_batch()` and `page_cache_submit_read_batch()`
+  so page-cache misses can be looked up, allocated, submitted, completed, and
+  inserted as one ordered batch;
+- wired the fast path into `mdbx_async_cache_get_SingleThreaded_batch()` for
+  confirmed cache-entry hits. Public API signatures remain unchanged; entries
+  that need refresh, invalid entries, large/overflow pages, and unsupported
+  backends fall back to the existing path.
+
+This is intentionally a narrow first slice. It does not yet make B-tree
+traversal resumable, and `mdbx_async_get()` still uses the executor path rather
+than the internal page-read batch engine.
+
+Verification:
+
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`
+  passed.
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`
+  passed 11/11 tests.
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`
+  passed.
+
+Reduced forced no-mmap/io_uring benchmark (`items=10000 ops=30000
+write_ops=1000 page_cache=64K`), compared against a detached worktree at
+`855e9f3`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking parallel get | 662.927 Kops/s | 818.129 Kops/s |
+| async cache st batch | 1.238 Mops/s | 1.958 Mops/s |
+| async-cache-st-batch/par | 1.867 | 2.393 |
+| async-cache-st-batch/many | 0.667 | 1.285 |
+| async-cache-st-batch/batch | 0.677 | 1.115 |
+| async-cache-st-batch/ser | 0.743 | 1.154 |
+
+Single-run benchmark noise is visible in unrelated rows, and callback ratios are
+mixed. The direct single-threaded cache batch path is the target of this slice.
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current
