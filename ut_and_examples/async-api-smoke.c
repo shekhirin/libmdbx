@@ -202,6 +202,22 @@ static bool env_enabled(const char *name) {
          strcmp(value, "FALSE") != 0 && strcmp(value, "no") != 0 && strcmp(value, "NO") != 0;
 }
 
+static int set_env_var(const char *name, const char *value) {
+#if defined(_WIN32) || defined(_WIN64)
+  return _putenv_s(name, value) == 0 ? MDBX_SUCCESS : fail_msg("_putenv_s failed", __FILE__, __LINE__);
+#else
+  return setenv(name, value, 1) == 0 ? MDBX_SUCCESS : fail_rc("setenv", errno, __FILE__, __LINE__);
+#endif
+}
+
+static int unset_env_var(const char *name) {
+#if defined(_WIN32) || defined(_WIN64)
+  return _putenv_s(name, "") == 0 ? MDBX_SUCCESS : fail_msg("_putenv_s failed", __FILE__, __LINE__);
+#else
+  return unsetenv(name) == 0 ? MDBX_SUCCESS : fail_rc("unsetenv", errno, __FILE__, __LINE__);
+#endif
+}
+
 static MDBX_val val(void *base, size_t len) {
   MDBX_val result;
   result.iov_base = base;
@@ -963,6 +979,109 @@ bailout:
   return rc ? rc : fail_msg("async preopen recovery failed", file, line);
 }
 
+static int exercise_async_read_fault(const char *path) {
+  MDBX_async *async = NULL;
+  MDBX_env *env = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_dbi dbi = 0;
+  MDBX_async_op *op = NULL;
+  MDBX_async_read_stats read_stats;
+  int rc = MDBX_SUCCESS;
+  int operation_result = MDBX_SUCCESS;
+  const uint64_t key = 42;
+  const uint64_t payload = expected_value(key);
+  MDBX_val key_value = val((void *)&key, sizeof(key));
+  MDBX_val put_value = val((void *)&payload, sizeof(payload));
+  MDBX_val data = val(NULL, 0);
+
+  if (!env_enabled("MDBX_FORCE_NO_DATA_MMAP")) {
+    rc = fail_msg("async read fault smoke requires MDBX_FORCE_NO_DATA_MMAP=1", __FILE__, __LINE__);
+    goto bailout;
+  }
+
+  rc = mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
+  if (rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE) {
+    rc = fail_rc("mdbx_env_delete", rc, __FILE__, __LINE__);
+    goto bailout;
+  }
+
+  CHECK(mdbx_async_create(NULL, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_env_create(async, &env, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_env_open(async, env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM, 0664, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_txn_begin_ex(async, NULL, 0, &txn, NULL, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_dbi_open(async, txn, NULL, MDBX_DB_DEFAULTS, &dbi, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put(async, txn, dbi, &key_value, &put_value, 0, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  CHECK_OP(op);
+  txn = NULL;
+  CHECK(mdbx_async_env_close_ex(async, false, &op));
+  CHECK(wait_result("mdbx_async_env_close_ex populate", &op, &operation_result, __FILE__, __LINE__));
+  REQUIRE(operation_result == MDBX_SUCCESS, "unexpected async env close result after populate");
+  env = NULL;
+  CHECK(mdbx_async_destroy(async, true));
+  async = NULL;
+
+  CHECK(mdbx_async_create(NULL, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_env_create(async, &env, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_env_open(async, env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM, 0664, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_txn_begin_ex(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
+  CHECK_OP(op);
+  memset(&read_stats, 0, sizeof(read_stats));
+  CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), true));
+
+  CHECK(set_env_var("MDBX_TEST_DXB_FAULT", "read-complete:EIO"));
+  rc = mdbx_async_get(async, txn, dbi, &key_value, &data, &op);
+  if (rc == MDBX_SUCCESS)
+    rc = wait_result("mdbx_async_get injected read-complete fault", &op, &operation_result,
+                     __FILE__, __LINE__);
+  else
+    operation_result = rc;
+  CHECK(unset_env_var("MDBX_TEST_DXB_FAULT"));
+  if (rc != MDBX_SUCCESS)
+    goto bailout;
+  REQUIRE(operation_result == MDBX_EIO, "async get did not propagate injected read-completion failure");
+  REQUIRE(data.iov_base == NULL && data.iov_len == 0, "failed async get returned data");
+
+  CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), false));
+  REQUIRE(read_stats.storage_read_items > 0, "faulted async get did not submit storage reads");
+  REQUIRE(read_stats.storage_read_completed >= read_stats.storage_read_items,
+          "faulted async get did not complete submitted reads");
+  REQUIRE(read_stats.storage_read_errors > 0, "faulted async get did not report read errors");
+
+  CHECK(mdbx_async_txn_abort(async, txn, NULL, &op));
+  CHECK_OP(op);
+  txn = NULL;
+  CHECK(mdbx_async_env_close_ex(async, false, &op));
+  CHECK(wait_result("mdbx_async_env_close_ex read fault", &op, &operation_result, __FILE__, __LINE__));
+  REQUIRE(operation_result == MDBX_SUCCESS, "unexpected async env close result after read fault");
+  env = NULL;
+  CHECK(mdbx_async_env_delete(async, path, MDBX_ENV_JUST_DELETE, &op));
+  CHECK(wait_result("mdbx_async_env_delete read fault", &op, &operation_result, __FILE__, __LINE__));
+  REQUIRE(operation_result == MDBX_SUCCESS || operation_result == MDBX_RESULT_TRUE,
+          "unexpected async env delete result after read fault");
+  CHECK(mdbx_async_destroy(async, true));
+  return MDBX_SUCCESS;
+
+bailout:
+  (void)unset_env_var("MDBX_TEST_DXB_FAULT");
+  if (txn)
+    (void)mdbx_txn_abort(txn);
+  if (async) {
+    if (env)
+      (void)mdbx_async_env_close_ex(async, true, NULL);
+    (void)mdbx_async_destroy(async, true);
+  }
+  (void)mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
+  return rc ? rc : MDBX_PROBLEM;
+}
+
 int main(void) {
   char path[96];
   char copy_env_path[128];
@@ -1047,6 +1166,8 @@ int main(void) {
   snprintf(path, sizeof(path), "./async-api-smoke-%llx", smoke_run_id());
   snprintf(copy_env_path, sizeof(copy_env_path), "./async-api-smoke-copy-env-%llx", smoke_run_id());
   snprintf(copy_txn_path, sizeof(copy_txn_path), "./async-api-smoke-copy-txn-%llx", smoke_run_id());
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_ONLY"))
+    return exercise_async_read_fault(path);
 
   rc = mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
   if (rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE) {

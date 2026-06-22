@@ -103,6 +103,12 @@ else()
   set_tests_properties(migration_smoke_crash_stress_nommap_tinycache
                        PROPERTIES ENVIRONMENT "MDBX_FORCE_NO_DATA_MMAP=1;MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K")
   if(MDBX_ENABLE_DXB_FAULT_INJECTION)
+    add_test(NAME async_api_read_fault_nommap_io_uring COMMAND mdbx_async_api_smoke)
+    set_tests_properties(async_api_read_fault_nommap_io_uring
+                         PROPERTIES
+                           RESOURCE_LOCK mdbx_async_api_database
+                           ENVIRONMENT
+                             "MDBX_ASYNC_SMOKE_READ_FAULT_ONLY=1;MDBX_FORCE_NO_DATA_MMAP=1;MDBX_EXPLICIT_IO_BACKEND=io_uring;MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K")
     add_test(NAME migration_fault_injection_nommap COMMAND mdbx_migration_fault_injection)
     set_tests_properties(migration_fault_injection_nommap PROPERTIES ENVIRONMENT "MDBX_FORCE_NO_DATA_MMAP=1")
     add_test(NAME migration_fault_injection_nommap_tinycache COMMAND mdbx_migration_fault_injection)
