@@ -2782,6 +2782,30 @@ int main(void) {
   REQUIRE(scan_from_actual_key == scan_from_probe.target, "unexpected scan_from key");
   CHECK(expect_value(&scan_from_data, scan_from_actual_key, __FILE__, __LINE__));
 
+  uint64_t scan_lowerbound_seed = 18;
+  uint8_t scan_lowerbound_bytes[sizeof(scan_lowerbound_seed) + 1];
+  memcpy(scan_lowerbound_bytes, &scan_lowerbound_seed, sizeof(scan_lowerbound_seed));
+  scan_lowerbound_bytes[sizeof(scan_lowerbound_seed)] = 0;
+  MDBX_val scan_lowerbound_key = val(scan_lowerbound_bytes, sizeof(scan_lowerbound_bytes));
+  MDBX_val scan_lowerbound_data = val(NULL, 0);
+  struct scan_probe scan_lowerbound_probe = {20, 0};
+  CHECK(mdbx_async_cursor_scan_from(async, cursor, scan_probe_func, &scan_lowerbound_probe,
+                                    MDBX_SET_LOWERBOUND, &scan_lowerbound_key,
+                                    &scan_lowerbound_data, MDBX_NEXT, NULL, &op));
+  CHECK(wait_result("mdbx_async_cursor_scan_from lowerbound", &op, &scan_result,
+                    __FILE__, __LINE__));
+  REQUIRE(scan_result == MDBX_RESULT_TRUE && scan_lowerbound_probe.calls == 2,
+          "unexpected async cursor scan_from lower-bound result");
+  REQUIRE(scan_lowerbound_key.iov_len == sizeof(uint64_t),
+          "unexpected scan_from lower-bound key size");
+  uint64_t scan_lowerbound_actual_key = 0;
+  memcpy(&scan_lowerbound_actual_key, scan_lowerbound_key.iov_base,
+         sizeof(scan_lowerbound_actual_key));
+  REQUIRE(scan_lowerbound_actual_key == scan_lowerbound_probe.target,
+          "unexpected scan_from lower-bound key");
+  CHECK(expect_value(&scan_lowerbound_data, scan_lowerbound_actual_key,
+                     __FILE__, __LINE__));
+
   CHECK(mdbx_async_cursor_reset(async, cursor, &op));
   CHECK_OP(op);
   cursor_key = val(NULL, 0);

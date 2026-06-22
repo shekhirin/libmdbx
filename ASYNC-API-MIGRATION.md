@@ -9248,3 +9248,59 @@ important structural result is that public single cursor lower-bound can now
 suspend on root and branch page reads in the supported read-only plain-cursor
 case. Positioned `loop_from` and `scan_from` starts still contain blocking
 `mdbx_cursor_get(..., MDBX_SET_LOWERBOUND)` islands and remain future work.
+
+## Public Async Cursor Loop/Scan Lower-Bound Start Slice
+
+Refactored the retained public cursor lower-bound descent into a reusable
+`async_cursor_seek_pending_t` state and embedded it in the retained
+`mdbx_async_cursor_get_loop_from()` and `mdbx_async_cursor_scan_from()` state
+machines. For plain read-only non-dupsort cursors, positioned
+`MDBX_SET_LOWERBOUND` starts now submit the root and branch-page reads through
+the explicit page-cache engine, suspend while the page read is in flight, and
+resume into the loop callback or scan predicate once the leaf is resident.
+
+Compatibility boundaries remain conservative. `MDBX_SET_KEY` positioned starts,
+write cursors, dupsort/subcursor shapes, and unsupported cursor forms still use
+the existing blocking fallback. The retained seek still finishes on the
+resident leaf through `cursor_ops(..., MDBX_SET_LOWERBOUND)`, so leaf-local
+search, edge sibling movement, and overflow-value handling inside that final
+operation are not fully coroutine-driven yet.
+
+The smoke test now covers an inexact `mdbx_async_cursor_scan_from(...,
+MDBX_SET_LOWERBOUND)` start in addition to the existing inexact cursor
+`loop_from` and single cursor-get lower-bound checks.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+- Benchmark log: `/tmp/mdbx-async-bench-loop-scan-lowerbound-retain-after.txt`
+
+Reduced forced no-mmap/io_uring benchmark with `MDBX_ASYNC_BENCH_ITEMS=10000`,
+`MDBX_ASYNC_BENCH_OPS=30000`, `MDBX_ASYNC_BENCH_WRITE_OPS=1000`,
+`MDBX_ASYNC_BENCH_LARGE_OPS=30000`, and
+`MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against the previous checkpoint
+`25a6575`.
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async lowerbound loop | 1.123 Mops/s | 1.225 Mops/s |
+| async threaded lower loop | 1.468 Mops/s | 1.081 Mops/s |
+| async cursor get loop_from | 68.560 Mops/s | 53.770 Mops/s |
+| async threaded cget loop_from | 47.094 Mops/s | 53.171 Mops/s |
+| async cursor scan_from | 49.968 Mops/s | 47.863 Mops/s |
+| async-lower-loop/par | 1.564 | 1.660 |
+| async-thread-lower-loop/par | 2.044 | 1.465 |
+| async-cget-loop-from/par | 1.460 | 0.976 |
+| async-cget-loop-from/ser | 1.377 | 1.067 |
+| async-cget-loop-from/scan | 1.372 | 1.123 |
+| async-scan-from/par | 1.064 | 0.869 |
+| async-scan-from/ser | 1.003 | 0.950 |
+| async-scan-from/scan | 0.785 | 0.812 |
+
+The cache-hot loop/scan microbenchmarks remain noisy and mixed. This checkpoint
+is primarily structural: the first positioned lower-bound page descent for
+public loop and scan operations is no longer a mandatory blocking
+`mdbx_cursor_get()` call on the async worker.
