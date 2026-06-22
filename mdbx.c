@@ -20831,6 +20831,11 @@ static MDBX_cache_result_t async_cache_get_one_materialized(const MDBX_txn *txn,
   return result;
 }
 
+static size_t async_cache_get_refresh_ops(const MDBX_txn *txn, MDBX_dbi dbi,
+                                          MDBX_async_op *ops[], MDBX_val data[],
+                                          MDBX_cache_result_t results[], bool handled[],
+                                          bool singlethreaded, size_t count);
+
 static void async_cache_get_ops_batch_sync(MDBX_async_op *ops[], size_t count, bool singlethreaded) {
   if (unlikely(!ops || !count))
     return;
@@ -20865,6 +20870,9 @@ static void async_cache_get_ops_batch_sync(MDBX_async_op *ops[], size_t count, b
     (void)cache_materialize_singlethreaded_batch(txn, data, entries, results, count, handled);
   }
 
+  if (handled)
+    (void)async_cache_get_refresh_ops(txn, dbi, ops, data, results, handled, singlethreaded, count);
+
   for (size_t i = 0; i < count; ++i) {
     MDBX_async_op *const op = ops[i];
     MDBX_val value = {nullptr, 0};
@@ -20895,6 +20903,72 @@ static void async_cache_get_ops_batch_sync(MDBX_async_op *ops[], size_t count, b
   osal_free(results);
   osal_free(data);
   osal_free(entries);
+}
+
+static size_t async_cache_get_refresh_ops(const MDBX_txn *txn, MDBX_dbi dbi,
+                                          MDBX_async_op *ops[], MDBX_val data[],
+                                          MDBX_cache_result_t results[], bool handled[],
+                                          bool singlethreaded, size_t count) {
+  if (unlikely(!txn || !ops || !data || !results || !handled || !count ||
+               count > MDBX_ASYNC_COMPLETE_CHUNK))
+    return 0;
+  if (!async_nodup_read_batchable(txn, dbi))
+    return 0;
+
+  size_t eligible_count = 0;
+  for (size_t i = 0; i < count; ++i)
+    eligible_count += handled[i] ? 0 : 1;
+  if (!eligible_count)
+    return 0;
+
+  MDBX_val keys[MDBX_ASYNC_COMPLETE_CHUNK];
+  MDBX_async_get_cache_slot slot_storage[MDBX_ASYNC_COMPLETE_CHUNK];
+  MDBX_async_get_cache_slot *slots[MDBX_ASYNC_COMPLETE_CHUNK];
+  int tree_results[MDBX_ASYNC_COMPLETE_CHUNK];
+  bool eligible[MDBX_ASYNC_COMPLETE_CHUNK];
+
+  memset(keys, 0, count * sizeof(keys[0]));
+  memset(slot_storage, 0, count * sizeof(slot_storage[0]));
+  memset(slots, 0, count * sizeof(slots[0]));
+  memset(tree_results, 0, count * sizeof(tree_results[0]));
+  memset(eligible, 0, count * sizeof(eligible[0]));
+  for (size_t i = 0; i < count; ++i) {
+    if (handled[i])
+      continue;
+    keys[i] = ops[i]->key;
+    __inline_mdbx_cache_init(&slot_storage[i].entry);
+    slots[i] = &slot_storage[i];
+    tree_results[i] = MDBX_EINVAL;
+    eligible[i] = true;
+  }
+
+  (void)async_batched_get_traverse_stateful(txn, dbi, keys, data, tree_results, handled,
+                                            eligible, slots, nullptr, count);
+
+  size_t handled_count = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (!eligible[i] || !handled[i])
+      continue;
+
+    if (tree_results[i] == MDBX_SUCCESS) {
+      if (slot_storage[i].use_count > 1) {
+        results[i] = cache_result(MDBX_SUCCESS, MDBX_CACHE_REFRESHED);
+        async_cache_publish_refreshed_entry(ops[i]->args.cache_get.entry,
+                                            &slot_storage[i].entry, &results[i],
+                                            singlethreaded);
+      } else {
+        results[i] = cache_result(MDBX_SUCCESS, MDBX_CACHE_UNABLE);
+      }
+    } else {
+      data[i].iov_base = nullptr;
+      data[i].iov_len = 0;
+      results[i] = tree_results[i] == MDBX_NOTFOUND
+                       ? cache_result(MDBX_NOTFOUND, MDBX_CACHE_UNABLE)
+                       : cache_error(LOG_IFERR(tree_results[i]));
+    }
+    ++handled_count;
+  }
+  return handled_count;
 }
 
 typedef struct async_cache_get_ops_pending {
@@ -20938,6 +21012,11 @@ static void async_cache_get_ops_pending_complete(async_cache_get_ops_pending_t *
     (void)async_cache_materialize_batch_finish(&pending->materialize);
     pending->materialize_started = false;
   }
+
+  if (pending->handled)
+    (void)async_cache_get_refresh_ops(pending->txn, pending->dbi, pending->ops,
+                                      pending->data, pending->results, pending->handled,
+                                      pending->singlethreaded, pending->count);
 
   for (size_t i = 0; i < pending->count; ++i) {
     MDBX_async_op *const op = pending->ops[i];
