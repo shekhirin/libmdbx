@@ -322,6 +322,51 @@ The direct large-value single-threaded row is slightly faster in this run and
 now measures the overflow materialization path instead of inferring behavior
 from small 8-byte value rows.
 
+## Batched Committed Page-Get Primitive Slice
+
+Added an internal batch layer below `page_submit_get_unchecked()` for ordinary
+page gets. The single-page public behavior is preserved, but the implementation
+now has a reusable primitive that can:
+
+- validate an array of `dxb_page_get_submit_io_t` requests;
+- satisfy dirty transaction pages immediately without sending them to storage;
+- prepare committed page-cache reads for the remaining requests;
+- submit those committed reads through `page_cache_submit_read_batch()`;
+- return one `pgr_t` per requested page while preserving the existing pgno
+  mismatch checks.
+
+This is preparatory plumbing for the resumable B-tree/cursor traversal work.
+It does not by itself make `mdbx_get()` or cursor movement suspend/resume
+across page misses, but it removes the single-read wrapper as the only internal
+entry point for committed page gets.
+
+Reduced forced no-mmap/io_uring benchmark (`items=1000 ops=10000
+large_items=256 large_ops=10000 large_value=10000 page_cache=64K`), compared
+against previous commit `7ecb503`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.994 Mops/s | 1.898 Mops/s |
+| blocking parallel get | 544.206 Kops/s | 540.657 Kops/s |
+| async parallel get | 1.565 Mops/s | 661.314 Kops/s |
+| async threaded batch get | 825.748 Kops/s | 1.686 Mops/s |
+| async batch parallel get | 784.085 Kops/s | 1.486 Mops/s |
+| async cache st batch | 3.662 Mops/s | 2.202 Mops/s |
+| async large cache st batch | 139.104 Kops/s | 139.826 Kops/s |
+
+The short run is noisy and does not show a clean direct performance signal for
+this plumbing slice. The large-value row is effectively flat, and the ordinary
+get/cache rows move in both directions. This is expected: the new multi-page
+helper is available internally, but existing B-tree traversal still calls the
+single-page wrapper until the resumable traversal layer is added.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current

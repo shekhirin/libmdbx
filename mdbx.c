@@ -48691,6 +48691,56 @@ static inline dxb_cache_page_result_t page_get_committed(MDBX_txn *txn, const dx
   return page_cache_submit_read(txn, &submit.cache);
 }
 
+static int page_get_committed_batch(MDBX_txn *txn, const dxb_committed_page_submit_io_t *ios,
+                                    dxb_cache_page_result_t *results, size_t count) {
+  if (unlikely(!txn || !ios || !results || !count))
+    return MDBX_EINVAL;
+
+  dxb_page_cache_read_submit_io_t *submits = osal_calloc(count, sizeof(submits[0]));
+  dxb_cache_page_result_t *submit_results = osal_calloc(count, sizeof(submit_results[0]));
+  size_t *indices = osal_malloc(count * sizeof(indices[0]));
+  if (unlikely(!submits || !submit_results || !indices)) {
+    osal_free(indices);
+    osal_free(submit_results);
+    osal_free(submits);
+    for (size_t i = 0; i < count; ++i)
+      results[i] = dxb_cache_page_error(MDBX_ENOMEM);
+    return MDBX_ENOMEM;
+  }
+
+  int first_err = MDBX_SUCCESS;
+  size_t eligible = 0;
+  for (size_t i = 0; i < count; ++i) {
+    const int err = page_committed_read_submit_io_validate(txn, &ios[i]);
+    if (unlikely(err != MDBX_SUCCESS)) {
+      results[i] = dxb_cache_page_error(err);
+      if (first_err == MDBX_SUCCESS)
+        first_err = err;
+      continue;
+    }
+    submits[eligible] = ios[i].cache;
+    indices[eligible] = i;
+    ++eligible;
+  }
+
+  if (eligible) {
+    const int err = page_cache_submit_read_batch(txn, submits, submit_results, eligible);
+    if (unlikely(err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
+      first_err = err;
+  }
+
+  for (size_t j = 0; j < eligible; ++j) {
+    results[indices[j]] = submit_results[j];
+    if (unlikely(submit_results[j].page.err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
+      first_err = submit_results[j].page.err;
+  }
+
+  osal_free(indices);
+  osal_free(submit_results);
+  osal_free(submits);
+  return first_err;
+}
+
 static inline int page_make_large_page_read_submit_io(MDBX_txn *txn, const pgr_t *pgr,
                                                       dxb_large_page_read_submit_io_t *io) {
   if (unlikely(!txn || !pgr || !pgr->page || !io))
@@ -48817,13 +48867,10 @@ static inline int page_get_submit_io_validate(MDBX_txn *txn, const dxb_page_get_
   return MDBX_SUCCESS;
 }
 
-static __hot pgr_t page_submit_get_unchecked(MDBX_txn *txn, const dxb_page_get_submit_io_t *io) {
-  int err = page_get_submit_io_validate(txn, io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-
-  const pgno_t pgno = io->request.pgno;
-
+static inline pgr_t page_get_dirty_or_spilled(MDBX_txn *txn, const pgno_t pgno, bool *committed) {
+  if (unlikely(!txn || !committed))
+    return pgr_error(MDBX_EINVAL);
+  *committed = false;
   if ((txn->flags & txn_ro_flat) == 0) {
     const MDBX_txn *spiller = txn;
     do {
@@ -48849,9 +48896,26 @@ static __hot pgr_t page_submit_get_unchecked(MDBX_txn *txn, const dxb_page_get_s
       spiller = spiller->parent;
     } while (unlikely(spiller));
   }
+  *committed = true;
+  return pgr_empty();
+}
+
+static __hot pgr_t page_submit_get_unchecked_one(MDBX_txn *txn, const dxb_page_get_submit_io_t *io) {
+  int err = page_get_submit_io_validate(txn, io);
+  if (unlikely(err != MDBX_SUCCESS))
+    return pgr_error(err);
+
+  const pgno_t pgno = io->request.pgno;
+
+  bool committed_needed;
+  pgr_t r = page_get_dirty_or_spilled(txn, pgno, &committed_needed);
+  if (unlikely(r.err != MDBX_SUCCESS) || !committed_needed) {
+    TRACE("page %u, %p, err %d", pgno, __Wpedantic_format_voidptr(r.page), r.err);
+    return r;
+  }
 
   dxb_cache_page_result_t committed = page_get_committed(txn, &io->request, io->track_private);
-  pgr_t r = committed.page;
+  r = committed.page;
   if (unlikely(r.err != MDBX_SUCCESS))
     return r;
 
@@ -48860,6 +48924,92 @@ static __hot pgr_t page_submit_get_unchecked(MDBX_txn *txn, const dxb_page_get_s
 
   TRACE("page %u, %p, err %d", pgno, __Wpedantic_format_voidptr(r.page), r.err);
   return r;
+}
+
+static int page_submit_get_unchecked_batch(MDBX_txn *txn, const dxb_page_get_submit_io_t *ios,
+                                           pgr_t *results, size_t count) {
+  if (unlikely(!txn || !ios || !results || !count))
+    return MDBX_EINVAL;
+
+  if (count == 1) {
+    results[0] = page_submit_get_unchecked_one(txn, &ios[0]);
+    return results[0].err;
+  }
+
+  dxb_committed_page_submit_io_t *committed_ios = osal_calloc(count, sizeof(committed_ios[0]));
+  dxb_cache_page_result_t *committed_results = osal_calloc(count, sizeof(committed_results[0]));
+  size_t *indices = osal_malloc(count * sizeof(indices[0]));
+  if (unlikely(!committed_ios || !committed_results || !indices)) {
+    osal_free(indices);
+    osal_free(committed_results);
+    osal_free(committed_ios);
+    for (size_t i = 0; i < count; ++i)
+      results[i] = pgr_error(MDBX_ENOMEM);
+    return MDBX_ENOMEM;
+  }
+
+  int first_err = MDBX_SUCCESS;
+  size_t committed_count = 0;
+  for (size_t i = 0; i < count; ++i) {
+    int err = page_get_submit_io_validate(txn, &ios[i]);
+    if (unlikely(err != MDBX_SUCCESS)) {
+      results[i] = pgr_error(err);
+      if (first_err == MDBX_SUCCESS)
+        first_err = err;
+      continue;
+    }
+
+    const pgno_t pgno = ios[i].request.pgno;
+    bool committed_needed;
+    pgr_t dirty = page_get_dirty_or_spilled(txn, pgno, &committed_needed);
+    if (unlikely(dirty.err != MDBX_SUCCESS) || !committed_needed) {
+      results[i] = dirty;
+      TRACE("page %u, %p, err %d", pgno, __Wpedantic_format_voidptr(dirty.page), dirty.err);
+      if (unlikely(dirty.err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
+        first_err = dirty.err;
+      continue;
+    }
+
+    err = page_make_committed_read_submit_io(txn, &ios[i].request, ios[i].track_private,
+                                             &committed_ios[committed_count]);
+    if (unlikely(err != MDBX_SUCCESS)) {
+      results[i] = pgr_error(err);
+      if (first_err == MDBX_SUCCESS)
+        first_err = err;
+      continue;
+    }
+    indices[committed_count] = i;
+    ++committed_count;
+  }
+
+  if (committed_count) {
+    const int err = page_get_committed_batch(txn, committed_ios, committed_results, committed_count);
+    if (unlikely(err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
+      first_err = err;
+  }
+
+  for (size_t j = 0; j < committed_count; ++j) {
+    const size_t i = indices[j];
+    const pgno_t pgno = ios[i].request.pgno;
+    pgr_t r = committed_results[j].page;
+    if (likely(r.err == MDBX_SUCCESS) && unlikely(r.page->pgno != pgno))
+      r.err = bad_page(r.page, "pgno mismatch (%" PRIaPGNO ") != expected (%" PRIaPGNO ")\n", r.page->pgno, pgno);
+    TRACE("page %u, %p, err %d", pgno, __Wpedantic_format_voidptr(r.page), r.err);
+    if (unlikely(r.err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
+      first_err = r.err;
+    results[i] = r;
+  }
+
+  osal_free(indices);
+  osal_free(committed_results);
+  osal_free(committed_ios);
+  return first_err;
+}
+
+static __hot pgr_t page_submit_get_unchecked(MDBX_txn *txn, const dxb_page_get_submit_io_t *io) {
+  pgr_t result = pgr_error(MDBX_EINVAL);
+  const int err = page_submit_get_unchecked_batch(txn, io, &result, 1);
+  return likely(err == result.err) ? result : pgr_error(err);
 }
 
 static inline int page_make_cursor_get_submit_io(const MDBX_cursor *mc, const uint16_t ill,
