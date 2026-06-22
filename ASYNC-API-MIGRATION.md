@@ -579,6 +579,47 @@ Validation:
 - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
 - Release benchmark logs: `/tmp/mdbx-async-bench-getexloop-before.txt`, `/tmp/mdbx-async-bench-getexloop-after.txt`
 
+## Batched Async get_ex Batch/Many Slice
+
+`mdbx_async_get_ex_batch()` now routes already-open non-`MDBX_DUPSORT` tables
+through `async_batched_get_traverse()` instead of calling `mdbx_get_ex()` once
+per key. Successful batched non-dupsort results preserve found-key output,
+store the value, and report `values_count=1`; misses/errors clear the batch
+value slot and report `values_count=0`.
+
+The worker also groups adjacent `async_op_get_ex` items with the same
+transaction and DBI, so `mdbx_async_get_ex()` and `mdbx_async_get_ex_many()` can
+use the same internal batched traversal when the queue contains compatible
+operations. `MDBX_DUPSORT`, stale/invalid DBI, allocation fallback, and any
+unhandled item still use `mdbx_get_ex()` to preserve duplicate-count semantics.
+
+Reduced forced no-mmap/io_uring benchmark (`items=1000 ops=10000
+large_items=256 large_ops=10000 large_value=10000 page_cache=64K`), compared
+against previous commit `a86be8a`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async parallel get | 1.219 Mops/s | 1.220 Mops/s |
+| async many parallel get | 1.421 Mops/s | 2.060 Mops/s |
+| async batch parallel get | 1.912 Mops/s | 1.562 Mops/s |
+| async get_ex batch | 1.130 Mops/s | 1.387 Mops/s |
+| async get_ex many | 1.113 Mops/s | 1.571 Mops/s |
+| async get loop | 1.260 Mops/s | 2.408 Mops/s |
+| async get_ex loop | 1.720 Mops/s | 1.509 Mops/s |
+| async threaded get_ex loop | 1.494 Mops/s | 1.416 Mops/s |
+
+The targeted `get_ex batch` and `get_ex many` rows improved in this run. The
+threaded loop row is not changed by this slice and should be treated as
+run-to-run noise.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+- Release benchmark logs: `/tmp/mdbx-async-bench-getexbatch-before.txt`, `/tmp/mdbx-async-bench-getexbatch-after.txt`
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current
