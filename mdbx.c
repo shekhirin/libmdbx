@@ -22891,7 +22891,7 @@ static int async_cursor_scan_pending_consume(async_cursor_scan_pending_t *pendin
 
   if (unlikely(batch_rc == MDBX_NOTFOUND)) {
     pending->done = true;
-    return MDBX_RESULT_FALSE;
+    return pending->cursor_op == MDBX_FIRST ? MDBX_NOTFOUND : MDBX_RESULT_FALSE;
   }
   if (unlikely(batch_rc != MDBX_SUCCESS && batch_rc != MDBX_RESULT_TRUE))
     return batch_rc;
@@ -23018,11 +23018,24 @@ static async_cursor_scan_pending_t *async_cursor_scan_start(MDBX_async_op *op) {
   }
   pending->op = op;
   pending->from_scan = from_scan;
-  pending->cursor_op = MDBX_NEXT;
+  pending->cursor_op = plain_first_scan ? MDBX_FIRST : MDBX_NEXT;
 
   if (plain_first_scan || positioned_scan) {
-    if (positioned_scan && (start_op == MDBX_SET_LOWERBOUND ||
-                            start_op == MDBX_SET_KEY) &&
+    if (plain_first_scan) {
+      int rc = cursor_check_ro(cursor);
+      if (unlikely(rc != MDBX_SUCCESS)) {
+        op->result = rc;
+        async_cursor_scan_pending_free(pending);
+        return nullptr;
+      }
+      if (unlikely((cursor->txn->flags & txn_ro_both) == 0)) {
+        op->result = async_cursor_scan_execute(op);
+        async_cursor_scan_pending_free(pending);
+        return nullptr;
+      }
+      be_poor(cursor);
+    } else if (positioned_scan && (start_op == MDBX_SET_LOWERBOUND ||
+                                   start_op == MDBX_SET_KEY) &&
         (cursor->txn->flags & txn_ro_both)) {
       int rc = cursor_check_ro(cursor);
       if (unlikely(rc != MDBX_SUCCESS)) {
