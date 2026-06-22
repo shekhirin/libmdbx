@@ -3072,6 +3072,48 @@ static void async_worker_destroy(struct async_worker *worker) {
   free(worker->results);
 }
 
+static double async_single_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops) {
+  struct async_worker worker = {0};
+  if (async_worker_init(env, &worker, dbi, 1) != MDBX_SUCCESS)
+    return -1.0;
+
+  int rc = MDBX_SUCCESS;
+  const uint64_t start = monotime_ns();
+  for (size_t i = 0; i < ops; ++i) {
+    worker.keys[0] = key_for(i, items);
+    worker.key_vals[0] = val(&worker.keys[0], sizeof(worker.keys[0]));
+    worker.data[0] = val(NULL, 0);
+    rc = mdbx_async_get(worker.async, worker.txn, dbi, &worker.key_vals[0], &worker.data[0],
+                        &worker.ops[0]);
+    if (rc != MDBX_SUCCESS)
+      goto bailout;
+
+    int operation_rc = MDBX_SUCCESS;
+    rc = wait_success(&worker.ops[0], &operation_rc, __FILE__, __LINE__);
+    if (rc != MDBX_SUCCESS)
+      goto bailout;
+    if (operation_rc != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_get single", operation_rc, __FILE__, __LINE__);
+      goto bailout;
+    }
+    rc = expect_value(&worker.data[0], worker.keys[0], __FILE__, __LINE__);
+    if (rc != MDBX_SUCCESS)
+      goto bailout;
+  }
+  const uint64_t finish = monotime_ns();
+  async_worker_destroy(&worker);
+  if (finish <= start)
+    return -1.0;
+  return (double)ops * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (worker.ops && worker.ops[0])
+    (void)wait_success(&worker.ops[0], NULL, __FILE__, __LINE__);
+  async_worker_destroy(&worker);
+  (void)rc;
+  return -1.0;
+}
+
 static int async_get_window_loop(struct async_worker *worker, MDBX_dbi dbi, size_t items, size_t ops, size_t offset,
                                  size_t window, bool many) {
   size_t issued = 0;
@@ -5904,6 +5946,7 @@ int main(void) {
          large_items, large_ops, large_value_bytes);
   const double blocking_serial = blocking_serial_get(env, dbi, items, ops);
   const double blocking_parallel = blocking_parallel_get(env, dbi, items, ops, workers);
+  const double async_single = async_single_get(env, dbi, items, ops);
   const double async_parallel = async_parallel_get(env, dbi, items, ops, workers, window);
   const double async_many_parallel = async_many_parallel_get(env, dbi, items, ops, workers, window);
   const double async_threaded_parallel = async_threaded_get(env, dbi, items, ops, workers, window);
@@ -6056,6 +6099,7 @@ int main(void) {
   const double async_cursor_bunch_del = async_cursor_bunch_delete(env, dbi, delete_ops);
   print_rate("blocking serial get", blocking_serial);
   print_rate("blocking parallel get", blocking_parallel);
+  print_rate("async single get", async_single);
   print_rate("async parallel get", async_parallel);
   print_rate("async many parallel get", async_many_parallel);
   print_rate("async threaded get", async_threaded_parallel);
@@ -6141,6 +6185,10 @@ int main(void) {
   print_rate("async cursor range del", async_cursor_range_del);
   print_rate("blocking cursor bunch del", blocking_cursor_bunch_del);
   print_rate("async cursor bunch del", async_cursor_bunch_del);
+  if (blocking_parallel > 0.0 && async_single > 0.0)
+    printf("%-28s %8.3f\n", "async-single/blocking par", async_single / blocking_parallel);
+  if (blocking_serial > 0.0 && async_single > 0.0)
+    printf("%-28s %8.3f\n", "async-single/blocking ser", async_single / blocking_serial);
   if (blocking_parallel > 0.0 && async_parallel > 0.0)
     printf("%-28s %8.3f\n", "async/blocking parallel", async_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_many_parallel > 0.0)

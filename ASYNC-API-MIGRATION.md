@@ -5065,3 +5065,56 @@ Additional duplicate large-materialization read checkpoint:
   io_uring slots for duplicate overflow materialization, but the current
   buffered benchmark does not show a throughput win because saved reads are
   offset by copying the completed buffer into each duplicate destination.
+
+Additional single async-get traversal checkpoint:
+
+- changed single-operation `mdbx_async_get()` execution so eligible read-only,
+  non-dupsort DBIs first try the internal batched get traversal path instead
+  of immediately running blocking `mdbx_get()` inside the async worker. Cache
+  hits still use cached-entry materialization, first-sighting cold keys can now
+  populate the hidden async get cache from the traversal path, and unsupported
+  transaction or DBI shapes fall back to the existing `async_cached_get()`
+  behavior.
+- added a one-item stack-storage path inside `async_batched_get_traverse()` for
+  its temporary arrays. This avoids the heap allocation setup that would
+  otherwise dominate the single-key path while preserving the heap-backed
+  arrays for larger batches.
+- extended `ut_and_examples/async-api-bench.c` with an `async single get` row
+  that submits one `mdbx_async_get()`, waits for it, validates the result, and
+  repeats. This measures the non-windowed public async get path separately from
+  adjacent-operation coalescing and `get_many` batching.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-singleget-before.txt` and
+    `/tmp/mdbx-async-bench-singleget-after.txt`
+- reduced forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=10000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1000`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `4f882ef` with the
+  benchmark row applied:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.528 Mops/s | 1.507 Mops/s |
+| blocking parallel get | 772.909 Kops/s | 826.557 Kops/s |
+| async single get | 311.591 Kops/s | 318.177 Kops/s |
+| async parallel get | 1.121 Mops/s | 1.245 Mops/s |
+| async many parallel get | 1.288 Mops/s | 1.171 Mops/s |
+| async threaded get | 1.259 Mops/s | 1.193 Mops/s |
+| async batch parallel get | 1.289 Mops/s | 1.327 Mops/s |
+| async batch callback get | 1.270 Mops/s | 1.022 Mops/s |
+| async-single/blocking par | 0.403 | 0.385 |
+| async-single/blocking ser | 0.204 | 0.211 |
+
+- conclusion: single `mdbx_async_get()` now exercises the internal explicit-I/O
+  traversal engine for eligible cold point reads instead of only worker
+  offloading `mdbx_get()`. The reduced spot benchmark shows the new single row
+  roughly flat to slightly higher in absolute throughput, but still well below
+  blocking serial GET because each public async operation still pays operation
+  submission and wait overhead. The important semantic movement is that the
+  public async single-get path now reaches the same internal page-read traversal
+  engine as batched async get, while true caller-visible nonblocking progress
+  still requires a resumable continuation API below cursor traversal.

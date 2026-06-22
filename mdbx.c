@@ -16611,15 +16611,33 @@ static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, cons
   if (unlikely(check_txn(txn, MDBX_TXN_BLOCKED) != MDBX_SUCCESS))
     return 0;
 
-  cursor_couple_t *couples = osal_calloc(count, sizeof(couples[0]));
-  bool *initialized = osal_calloc(count, sizeof(initialized[0]));
-  dxb_cursor_page_get_submit_io_t *gets = osal_calloc(count, sizeof(gets[0]));
-  pgr_t *pgrs = osal_calloc(count, sizeof(pgrs[0]));
-  size_t *indices = osal_malloc(count * sizeof(indices[0]));
-  intptr_t *parent_tops = osal_malloc(count * sizeof(parent_tops[0]));
-  indx_t *parent_kis = osal_malloc(count * sizeof(parent_kis[0]));
-  if (unlikely(!couples || !initialized || !gets || !pgrs || !indices || !parent_tops || !parent_kis))
-    goto bailout;
+  cursor_couple_t stack_couples[1];
+  bool stack_initialized[1] = {false};
+  dxb_cursor_page_get_submit_io_t stack_gets[1];
+  pgr_t stack_pgrs[1];
+  size_t stack_indices[1];
+  intptr_t stack_parent_tops[1];
+  indx_t stack_parent_kis[1];
+
+  cursor_couple_t *couples = stack_couples;
+  bool *initialized = stack_initialized;
+  dxb_cursor_page_get_submit_io_t *gets = stack_gets;
+  pgr_t *pgrs = stack_pgrs;
+  size_t *indices = stack_indices;
+  intptr_t *parent_tops = stack_parent_tops;
+  indx_t *parent_kis = stack_parent_kis;
+
+  if (count != 1) {
+    couples = osal_calloc(count, sizeof(couples[0]));
+    initialized = osal_calloc(count, sizeof(initialized[0]));
+    gets = osal_calloc(count, sizeof(gets[0]));
+    pgrs = osal_calloc(count, sizeof(pgrs[0]));
+    indices = osal_malloc(count * sizeof(indices[0]));
+    parent_tops = osal_malloc(count * sizeof(parent_tops[0]));
+    parent_kis = osal_malloc(count * sizeof(parent_kis[0]));
+    if (unlikely(!couples || !initialized || !gets || !pgrs || !indices || !parent_tops || !parent_kis))
+      goto bailout;
+  }
 
   size_t root_count = 0;
   for (size_t i = 0; i < count; ++i) {
@@ -16787,13 +16805,20 @@ bailout:
   if (handled)
     for (size_t i = 0; i < count; ++i)
       handled_count += handled[i] ? 1 : 0;
-  osal_free(parent_kis);
-  osal_free(parent_tops);
-  osal_free(indices);
-  osal_free(pgrs);
-  osal_free(gets);
-  osal_free(initialized);
-  osal_free(couples);
+  if (parent_kis != stack_parent_kis)
+    osal_free(parent_kis);
+  if (parent_tops != stack_parent_tops)
+    osal_free(parent_tops);
+  if (indices != stack_indices)
+    osal_free(indices);
+  if (pgrs != stack_pgrs)
+    osal_free(pgrs);
+  if (gets != stack_gets)
+    osal_free(gets);
+  if (initialized != stack_initialized)
+    osal_free(initialized);
+  if (couples != stack_couples)
+    osal_free(couples);
   return handled_count;
 }
 
@@ -16965,6 +16990,52 @@ bailout:
   osal_free(initialized);
   osal_free(couples);
   return handled_count;
+}
+
+static int async_cached_get_one(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
+                                MDBX_val *data) {
+  if (unlikely(!data))
+    return MDBX_EINVAL;
+  data->iov_base = nullptr;
+  data->iov_len = 0;
+
+  MDBX_async_get_cache_slot *slot = async_get_cache_slot(async, txn, dbi, key);
+  if (!slot)
+    return mdbx_get(txn, dbi, key, data);
+
+  if (async_nodup_read_batchable(txn, dbi)) {
+    MDBX_val keys[1] = {*key};
+    MDBX_val values[1] = {{nullptr, 0}};
+    int results[1] = {MDBX_EINVAL};
+    bool handled[1] = {false};
+    bool cold[1] = {slot->use_count == 0};
+    MDBX_async_get_cache_slot *slots[1] = {slot};
+    MDBX_cache_entry_t entries[1];
+    MDBX_cache_result_t cache_results[1];
+    memset(entries, 0, sizeof(entries));
+    memset(cache_results, 0, sizeof(cache_results));
+
+    if (slot->use_count > 1)
+      entries[0] = slot->entry;
+    (void)cache_materialize_singlethreaded_batch(txn, values, entries, cache_results, 1, handled);
+    (void)async_batched_get_traverse(txn, dbi, keys, values, results, handled, cold, slots, nullptr, 1);
+
+    if (handled[0]) {
+      int rc;
+      if (cold[0]) {
+        if (slot)
+          slot->use_count = slot->use_count ? slot->use_count : 1;
+        rc = results[0];
+      } else {
+        rc = cache_results[0].errcode;
+      }
+      if (rc == MDBX_SUCCESS)
+        *data = values[0];
+      return rc;
+    }
+  }
+
+  return async_cached_get(async, txn, dbi, key, data);
 }
 
 static int async_cached_get_batch(MDBX_async_op *op) {
@@ -17318,7 +17389,7 @@ static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], 
   if (count == 1) {
     MDBX_val data = {nullptr, 0};
     MDBX_async_op *const op = ops[0];
-    const int rc = async_cached_get(async, op->args.get.txn, op->args.get.dbi, &op->key, &data);
+    const int rc = async_cached_get_one(async, op->args.get.txn, op->args.get.dbi, &op->key, &data);
     if (op->args.get.data)
       *op->args.get.data = data;
     op->result = rc;
@@ -18010,7 +18081,7 @@ static int async_op_execute(MDBX_async_op *op) {
     return mdbx_canary_get(op->args.canary_get.txn, op->args.canary_get.canary);
   case async_op_get: {
     MDBX_val data = {nullptr, 0};
-    const int rc = async_cached_get(op->async, op->args.get.txn, op->args.get.dbi, &op->key, &data);
+    const int rc = async_cached_get_one(op->async, op->args.get.txn, op->args.get.dbi, &op->key, &data);
     if (op->args.get.data)
       *op->args.get.data = data;
     return rc;
