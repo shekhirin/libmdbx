@@ -17228,27 +17228,7 @@ static int async_cached_get_batch(MDBX_async_op *op) {
     }
 
     MDBX_val value = {nullptr, 0};
-    int rc;
-    MDBX_async_get_cache_slot *slot = slots ? slots[i] : nullptr;
-    if (slot) {
-      const uint64_t hash = async_get_cache_hash(dbi, &keys[i]);
-      if (!async_get_cache_key_equal(slot, txn->env, dbi, hash, &keys[i]))
-        slot = async_get_cache_slot(op->async, txn, dbi, &keys[i]);
-    }
-    if (slot) {
-      if (slot->use_count == 0) {
-        rc = mdbx_get(txn, dbi, &keys[i], &value);
-        slot->use_count = 1;
-      } else {
-        MDBX_cache_result_t cache_result =
-            mdbx_cache_get_SingleThreaded(txn, dbi, &keys[i], &value, &slot->entry);
-        rc = cache_result.errcode;
-        if (cache_result.errcode == MDBX_SUCCESS || cache_result.errcode == MDBX_NOTFOUND)
-          slot->use_count = 2;
-      }
-    } else {
-      rc = async_cached_get(op->async, txn, dbi, &keys[i], &value);
-    }
+    const int rc = async_cached_get(op->async, txn, dbi, &keys[i], &value);
     results[i] = rc;
     if (rc == MDBX_SUCCESS)
       data[i] = value;
@@ -17629,26 +17609,7 @@ static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], 
       if (rc == MDBX_SUCCESS)
         value = data[i];
     } else {
-      MDBX_async_get_cache_slot *slot = slots ? slots[i] : nullptr;
-      if (slot) {
-        const uint64_t hash = async_get_cache_hash(dbi, &op->key);
-        if (!async_get_cache_key_equal(slot, txn->env, dbi, hash, &op->key))
-          slot = async_get_cache_slot(async, txn, dbi, &op->key);
-      }
-      if (slot) {
-        if (slot->use_count == 0) {
-          rc = mdbx_get(txn, dbi, &op->key, &value);
-          slot->use_count = 1;
-        } else {
-          MDBX_cache_result_t cache_result = mdbx_cache_get_SingleThreaded(txn, dbi, &op->key, &value,
-                                                                           &slot->entry);
-          rc = cache_result.errcode;
-          if (cache_result.errcode == MDBX_SUCCESS || cache_result.errcode == MDBX_NOTFOUND)
-            slot->use_count = 2;
-        }
-      } else {
-        rc = async_cached_get(async, txn, dbi, &op->key, &value);
-      }
+      rc = async_cached_get(async, txn, dbi, &op->key, &value);
     }
 
     if (op->args.get.data) {
