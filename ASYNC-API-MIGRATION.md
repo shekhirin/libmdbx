@@ -6694,3 +6694,79 @@ Additional io_uring read completion-context checkpoint:
   threaded cursor rows improved, while single get/lowerbound, get_ex batch,
   cache many, cache st loop, threaded cache rows, get_ex loop, cursor loop, and
   cursor-loop ratios regressed in this sample.
+
+Additional io_uring read-batch poll checkpoint:
+
+- changed the synchronous Linux io_uring read-batch driver to poll the CQ ring
+  without blocking before entering the wait path.
+- the wrapper still drives all reads to completion before returning, but each
+  loop now follows the intended submit/poll/complete shape: submit as many
+  reads as fit, drain already-completed CQEs, and only call
+  `io_uring_enter(... GETEVENTS)` if no completion was observed and submitted
+  reads remain in flight.
+- this is still an internal stepping stone rather than a full async traversal
+  state machine. It makes the synchronous adapter use the same nonblocking
+  completion primitive that an external/resumable batch state will need later.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-poll-before.txt` and
+    `/tmp/mdbx-async-bench-poll-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `44d9ab8`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.709 Mops/s | 1.727 Mops/s |
+| blocking parallel get | 1.065 Mops/s | 1.050 Mops/s |
+| async single get | 301.029 Kops/s | 371.811 Kops/s |
+| async single get_ex | 279.624 Kops/s | 201.361 Kops/s |
+| async single lowerbound | 245.246 Kops/s | 290.816 Kops/s |
+| async parallel get | 1.735 Mops/s | 2.668 Mops/s |
+| async many parallel get | 2.800 Mops/s | 2.813 Mops/s |
+| async get_ex batch | 2.323 Mops/s | 1.726 Mops/s |
+| async get_ex many | 2.835 Mops/s | 2.536 Mops/s |
+| async cache many | 3.210 Mops/s | 2.353 Mops/s |
+| async cache st many | 4.346 Mops/s | 3.568 Mops/s |
+| async cache batch | 4.319 Mops/s | 4.182 Mops/s |
+| async cache st batch | 3.928 Mops/s | 2.339 Mops/s |
+| async cache loop | 2.328 Mops/s | 2.714 Mops/s |
+| async cache st loop | 3.486 Mops/s | 2.659 Mops/s |
+| async threaded cache loop | 2.714 Mops/s | 4.700 Mops/s |
+| async threaded cache st loop | 2.027 Mops/s | 3.491 Mops/s |
+| async lowerbound batch | 1.334 Mops/s | 1.463 Mops/s |
+| async lowerbound many | 1.581 Mops/s | 1.612 Mops/s |
+| async get loop | 3.444 Mops/s | 2.810 Mops/s |
+| async get_ex loop | 3.400 Mops/s | 2.524 Mops/s |
+| async lowerbound loop | 1.554 Mops/s | 1.589 Mops/s |
+| blocking cursor get | 86.753 Mops/s | 85.961 Mops/s |
+| parallel cursor get | 58.105 Mops/s | 56.687 Mops/s |
+| async cursor get | 1.125 Mops/s | 863.006 Kops/s |
+| async cursor get loop | 68.022 Mops/s | 66.459 Mops/s |
+| async cursor get loop_from | 68.159 Mops/s | 77.372 Mops/s |
+| async threaded cursor get loop | 119.013 Mops/s | 125.893 Mops/s |
+| async threaded cget loop_from | 126.259 Mops/s | 124.547 Mops/s |
+| async/blocking parallel | 1.630 | 2.541 |
+| async-many/blocking par | 2.630 | 2.680 |
+| async-cache-many/par | 3.014 | 2.242 |
+| async-cache-loop/par | 2.187 | 2.585 |
+| async-thread-cache-loop/par | 2.549 | 4.477 |
+| async-lower-batch/par | 1.253 | 1.394 |
+| async-lower-many/par | 1.485 | 1.535 |
+| async-loop/blocking par | 3.234 | 2.677 |
+| async-cursor-get-loop/par | 1.171 | 1.172 |
+| async-cursor-get-loop/get | 60.454 | 77.009 |
+
+- conclusion: this checkpoint changes only when the synchronous driver chooses
+  to block for completions. It improves async parallel get, single get,
+  lowerbound rows, cache loop, threaded cache loop rows, cursor loop-from, and
+  the cursor-loop/get ratio in this run. It regresses get_ex batch/many/loop,
+  cache many/st rows, get loop, async cursor get, and the cursor get-loop
+  absolute row. The result is still consistent with a structural stepping stone:
+  it validates the nonblocking completion path but does not yet create more
+  traversal overlap than the existing wrapper can expose.

@@ -45815,10 +45815,17 @@ static int osal_ioring_linux_uring_read_batch(osal_ioring_t *ior, mdbx_filehandl
     }
 
     if (batch.completed < batch.submitted) {
-      const int complete_err = osal_ioring_linux_uring_read_batch_complete(ior, &batch, true);
-      if (unlikely(complete_err != MDBX_SUCCESS && complete_err != MDBX_RESULT_TRUE &&
-                   batch.first_err == MDBX_SUCCESS))
-        batch.first_err = complete_err;
+      const size_t completed_before_poll = batch.completed;
+      const int poll_err = osal_ioring_linux_uring_read_batch_complete(ior, &batch, false);
+      if (unlikely(poll_err != MDBX_SUCCESS && poll_err != MDBX_RESULT_TRUE && batch.first_err == MDBX_SUCCESS))
+        batch.first_err = poll_err;
+
+      if (batch.completed < batch.submitted && batch.completed == completed_before_poll) {
+        const int complete_err = osal_ioring_linux_uring_read_batch_complete(ior, &batch, true);
+        if (unlikely(complete_err != MDBX_SUCCESS && complete_err != MDBX_RESULT_TRUE &&
+                     batch.first_err == MDBX_SUCCESS))
+          batch.first_err = complete_err;
+      }
     }
     if (unlikely(batch.submitted == submitted_before && batch.completed == completed_before &&
                  batch.completed == batch.submitted)) {
