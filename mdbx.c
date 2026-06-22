@@ -19016,6 +19016,7 @@ static int async_get_ex_loop_pending_prepare(async_get_ex_loop_pending_t *pendin
   enum { get_ex_loop_window = 64 };
   const MDBX_txn *const txn = op->args.get_ex_loop.txn;
   const MDBX_dbi dbi = op->args.get_ex_loop.dbi;
+  const bool batchable = async_get_ex_batchable(txn, dbi);
   const size_t remaining = op->args.get_ex_loop.count - pending->base;
   const size_t chunk = remaining < get_ex_loop_window ? remaining : get_ex_loop_window;
   pending->chunk = chunk;
@@ -19041,21 +19042,26 @@ static int async_get_ex_loop_pending_prepare(async_get_ex_loop_pending_t *pendin
                           sizeof(pending->key_inline[j]), &key);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    pending->slots[j] = async_get_cache_slot(op->async, txn, dbi, &pending->keys[j]);
+    if (batchable)
+      pending->slots[j] = async_get_cache_slot(op->async, txn, dbi, &pending->keys[j]);
   }
 
-  async_get_cache_prepare_batch_slots(txn, dbi, pending->keys, pending->slots, pending->entries,
-                                      pending->cold, chunk);
-  (void)cache_materialize_singlethreaded_batch(txn, pending->data, pending->entries,
-                                               pending->cache_results, chunk, pending->handled);
-  int traverse_rc = async_batched_get_traverse_begin(&pending->traverse, txn, dbi, pending->keys,
-                                                     pending->data, pending->results, pending->handled,
-                                                     pending->cold, pending->slots, nullptr, chunk);
-  pending->traverse_started = true;
-  pending->drive_rc = likely(traverse_rc == MDBX_SUCCESS)
-                          ? async_batched_get_traverse_drive(&pending->traverse, false)
-                          : traverse_rc;
-  return pending->drive_rc;
+  if (batchable) {
+    async_get_cache_prepare_batch_slots(txn, dbi, pending->keys, pending->slots, pending->entries,
+                                        pending->cold, chunk);
+    (void)cache_materialize_singlethreaded_batch(txn, pending->data, pending->entries,
+                                                 pending->cache_results, chunk, pending->handled);
+    int traverse_rc = async_batched_get_traverse_begin(
+        &pending->traverse, txn, dbi, pending->keys, pending->data, pending->results,
+        pending->handled, pending->cold, pending->slots, nullptr, chunk);
+    pending->traverse_started = true;
+    pending->drive_rc = likely(traverse_rc == MDBX_SUCCESS)
+                            ? async_batched_get_traverse_drive(&pending->traverse, false)
+                            : traverse_rc;
+    return pending->drive_rc;
+  }
+
+  return MDBX_SUCCESS;
 }
 
 static int async_get_ex_loop_pending_complete_chunk(async_get_ex_loop_pending_t *pending, bool wait) {

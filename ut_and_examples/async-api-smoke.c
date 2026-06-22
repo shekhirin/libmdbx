@@ -772,6 +772,34 @@ static int async_dupsort_loop_result_func(void *context, size_t index, const MDB
   return MDBX_SUCCESS;
 }
 
+static int async_dupsort_get_ex_loop_result_func(void *context, size_t index, const MDBX_val *key,
+                                                 const MDBX_val *data, size_t values_count,
+                                                 int result) {
+  struct async_dupsort_loop_probe *const probe = (struct async_dupsort_loop_probe *)context;
+  const size_t expected_counts[3] = {2, 0, 1};
+  if (!probe || !key || !data || index >= sizeof(probe->keys) / sizeof(probe->keys[0]) ||
+      result != probe->expected_results[index] || values_count != expected_counts[index])
+    return MDBX_PROBLEM;
+  if (key->iov_len != sizeof(uint64_t))
+    return MDBX_PROBLEM;
+  uint64_t actual_key = UINT64_MAX;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  if (actual_key != probe->keys[index])
+    return MDBX_PROBLEM;
+  if (result == MDBX_SUCCESS) {
+    if (data->iov_len != sizeof(uint64_t))
+      return MDBX_PROBLEM;
+    uint64_t actual_value = UINT64_MAX;
+    memcpy(&actual_value, data->iov_base, sizeof(actual_value));
+    if (actual_value != probe->values[index])
+      return MDBX_PROBLEM;
+  } else if (data->iov_base != NULL || data->iov_len != 0) {
+    return MDBX_PROBLEM;
+  }
+  probe->results_seen += 1;
+  return MDBX_SUCCESS;
+}
+
 static int async_read_lowerbound_loop_data_func(void *context, size_t index, const MDBX_val *key,
                                                 MDBX_val *data) {
   struct async_read_loop_probe *const probe = (struct async_read_loop_probe *)context;
@@ -2743,6 +2771,16 @@ static int exercise_async_dupsort_read_fallback(const char *path) {
   REQUIRE(operation_result == MDBX_SUCCESS, "dupsort async get_loop fallback returned wrong result");
   REQUIRE(completed == 3 && loop_probe.keys_seen == 3 && loop_probe.results_seen == 3,
           "dupsort async get_loop fallback did not visit every item");
+
+  completed = 0;
+  loop_probe.keys_seen = 0;
+  loop_probe.results_seen = 0;
+  CHECK(mdbx_async_get_ex_loop(async, txn, dbi, 3, async_dupsort_loop_key_func,
+                               async_dupsort_get_ex_loop_result_func, &loop_probe, &completed, &op));
+  CHECK(wait_result("mdbx_async_get_ex_loop dupsort fallback", &op, &operation_result, __FILE__, __LINE__));
+  REQUIRE(operation_result == MDBX_SUCCESS, "dupsort async get_ex_loop fallback returned wrong result");
+  REQUIRE(completed == 3 && loop_probe.keys_seen == 3 && loop_probe.results_seen == 3,
+          "dupsort async get_ex_loop fallback did not visit every item");
 
   CHECK(mdbx_async_get_many(async, txn, dbi, keys, values, 3, ops));
   CHECK(wait_many_result("mdbx_async_get_many dupsort fallback", ops, 3, op_results, __FILE__, __LINE__));
