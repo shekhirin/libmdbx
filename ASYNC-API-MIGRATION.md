@@ -8839,3 +8839,60 @@ Async cursor get_loop_from retained sibling-read checkpoint:
   synchronously. The next high-value work is a retained seek/lower-bound state
   so `_from` can suspend before the first positioned item too, followed by
   cursor scan and large/overflow value materialization.
+
+Async cursor scan retained sibling-read checkpoint:
+
+- added `async_cursor_scan_pending_t`, a retained state for the common
+  non-dupsort `mdbx_async_cursor_scan()` shape using `MDBX_FIRST` plus
+  `MDBX_NEXT`, and for `mdbx_async_cursor_scan_from()` using
+  `MDBX_SET_LOWERBOUND` or `MDBX_SET_KEY` plus `MDBX_NEXT`.
+- initial cursor positioning is still synchronous to preserve the exact public
+  scan semantics, including `MDBX_FIRST` repositioning even when the cursor is
+  already filled and the `scan_from` no-value `MDBX_GET_CURRENT` fetch. After
+  the first item is probed, the retained scan drives an embedded
+  `async_cursor_get_batch` operation, skips the already-current pair, and can
+  suspend while later right-sibling page-cache reads are outstanding.
+- predicate result semantics are preserved: `MDBX_RESULT_TRUE` stops with a
+  match, `MDBX_RESULT_FALSE` continues internally or finishes as no-match at
+  EOF, and any other predicate result is returned unchanged. `scan_from`
+  key/value outputs are updated before the predicate call, matching the
+  blocking scan path.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cursorloop-from-retain-after.txt` and
+    `/tmp/mdbx-async-bench-cursorscan-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `03598b4`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking cursor get | 72.447 Mops/s | 72.826 Mops/s |
+| parallel cursor get | 60.408 Mops/s | 78.192 Mops/s |
+| async cursor get loop | 112.291 Mops/s | 66.235 Mops/s |
+| async cursor get loop_from | 63.962 Mops/s | 62.966 Mops/s |
+| async threaded cursor get loop | 61.741 Mops/s | 107.241 Mops/s |
+| async threaded cget loop_from | 103.154 Mops/s | 109.547 Mops/s |
+| blocking cursor scan | 109.857 Mops/s | 114.692 Mops/s |
+| parallel cursor scan | 120.634 Mops/s | 89.846 Mops/s |
+| async cursor scan | 72.009 Mops/s | 104.475 Mops/s |
+| async threaded cursor scan | 116.214 Mops/s | 109.244 Mops/s |
+| blocking cursor scan_from | 112.507 Mops/s | 111.385 Mops/s |
+| parallel cursor scan_from | 69.680 Mops/s | 61.930 Mops/s |
+| async cursor scan_from | 119.065 Mops/s | 79.580 Mops/s |
+| async threaded cursor scan_from | 117.036 Mops/s | 109.479 Mops/s |
+| async-cursor-scan/par | 0.597 | 1.163 |
+| async-cursor-scan/ser | 0.655 | 0.911 |
+
+- conclusion: this checkpoint moves cursor scan continuation into the retained
+  sibling-read scheduler for the main forward scan shapes. It is mixed on
+  throughput: direct async scan improved in this run and now beats the parallel
+  cursor-scan baseline, while direct scan-from and threaded scan rows regressed.
+  The next cursor work remains retained initial seek/lower-bound traversal,
+  duplicate-subcursor scan/loop shapes, reverse scans, and retained
+  large/overflow value materialization.
