@@ -7092,3 +7092,82 @@ Additional storage/OSAL wrapper poll checkpoint:
   lowerbound batch/many, get_ex loop, parallel cursor get, cursor loop-from, and
   threaded cursor loop-from. The important structural result is that the top
   synchronous read adapters now exercise nonblocking progress before waiting.
+
+Additional page-cache storage batch ownership checkpoint:
+
+- changed `page_cache_submit_read_batch()` so page-cache miss handling owns a
+  `dxb_storage_read_batch_t` directly instead of calling the monolithic
+  `dxb_storage_submit_read_data_batch()` compatibility wrapper.
+- the page-cache path now begins a storage read batch, polls it once with
+  `wait=false`, waits while it remains pending, and finishes it before
+  materializing cache entries. Current behavior is still synchronous, but the
+  page-cache miss code now holds the storage read state that a future resumable
+  traversal can keep across suspension.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-pagecache-state-before.txt` and
+    `/tmp/mdbx-async-bench-pagecache-state-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `a729dd2`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.825 Mops/s | 1.828 Mops/s |
+| blocking parallel get | 1.076 Mops/s | 1.090 Mops/s |
+| async single get | 232.437 Kops/s | 377.031 Kops/s |
+| async single get_ex | 348.366 Kops/s | 210.129 Kops/s |
+| async single lowerbound | 322.074 Kops/s | 359.963 Kops/s |
+| async parallel get | 2.506 Mops/s | 2.803 Mops/s |
+| async many parallel get | 2.813 Mops/s | 2.680 Mops/s |
+| async get_ex batch | 2.588 Mops/s | 2.794 Mops/s |
+| async get_ex many | 2.731 Mops/s | 2.686 Mops/s |
+| async cache many | 4.024 Mops/s | 3.648 Mops/s |
+| async cache st many | 4.333 Mops/s | 2.425 Mops/s |
+| async cache batch | 3.873 Mops/s | 3.494 Mops/s |
+| async cache st batch | 4.011 Mops/s | 3.444 Mops/s |
+| async cache loop | 4.924 Mops/s | 4.902 Mops/s |
+| async cache st loop | 2.108 Mops/s | 2.535 Mops/s |
+| async threaded cache loop | 2.230 Mops/s | 3.327 Mops/s |
+| async threaded cache st loop | 4.868 Mops/s | 4.255 Mops/s |
+| async lowerbound batch | 1.416 Mops/s | 1.673 Mops/s |
+| async lowerbound many | 1.719 Mops/s | 1.646 Mops/s |
+| async get loop | 2.955 Mops/s | 3.378 Mops/s |
+| async get_ex loop | 3.483 Mops/s | 3.261 Mops/s |
+| async lowerbound loop | 1.793 Mops/s | 1.869 Mops/s |
+| blocking cursor get | 85.324 Mops/s | 85.863 Mops/s |
+| parallel cursor get | 62.825 Mops/s | 58.188 Mops/s |
+| async cursor get | 951.730 Kops/s | 876.248 Kops/s |
+| async cursor get loop | 89.307 Mops/s | 67.758 Mops/s |
+| async cursor get loop_from | 70.557 Mops/s | 62.161 Mops/s |
+| async threaded cursor get loop | 115.519 Mops/s | 122.594 Mops/s |
+| async threaded cget loop_from | 124.248 Mops/s | 116.963 Mops/s |
+| async/blocking parallel | 2.329 | 2.571 |
+| async-many/blocking par | 2.614 | 2.458 |
+| async-get-ex-batch/par | 2.405 | 2.563 |
+| async-cache-many/par | 3.739 | 3.345 |
+| async-cache-loop/par | 4.576 | 4.496 |
+| async-cache-st-loop/par | 1.959 | 2.325 |
+| async-thread-cache-loop/par | 2.072 | 3.051 |
+| async-lower-batch/par | 1.316 | 1.534 |
+| async-lower-many/par | 1.597 | 1.509 |
+| async-loop/blocking par | 2.746 | 3.098 |
+| async-get-ex-loop/par | 3.237 | 2.990 |
+| async-lower-loop/par | 1.666 | 1.714 |
+| async-cursor-get-loop/par | 1.422 | 1.164 |
+| async-cursor-get-loop/get | 93.836 | 77.328 |
+
+- conclusion: this checkpoint moves ownership of the storage read state into the
+  page-cache miss path. It improves blocking get rows, async single get,
+  lowerbound single/batch/loop, async parallel get, get_ex batch, cache st loop,
+  threaded cache loop, get loop, blocking cursor get, threaded cursor loop, and
+  several normalized ratios in this run. It regresses single get_ex, many get,
+  cache many/st many/batch rows, threaded cache st loop, get_ex loop, cursor
+  rows, and cursor ratios. Since the page-cache path still waits before
+  materializing entries, this remains a structural prerequisite rather than true
+  traversal suspension.

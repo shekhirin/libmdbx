@@ -32678,7 +32678,16 @@ static int page_cache_submit_read_batch(MDBX_txn *txn, const dxb_page_cache_read
   }
 
   if (misses) {
-    const int batch_err = dxb_storage_submit_read_data_batch(storage, reads, read_results, misses);
+    dxb_storage_read_batch_t read_batch;
+    int batch_err = dxb_storage_read_batch_begin(&read_batch, storage, reads, read_results, misses);
+    if (likely(batch_err == MDBX_SUCCESS)) {
+      batch_err = dxb_storage_read_batch_drive(&read_batch, false);
+      while (batch_err == MDBX_RESULT_TRUE)
+        batch_err = dxb_storage_read_batch_drive(&read_batch, true);
+      const int finish_err = dxb_storage_read_batch_finish(&read_batch);
+      if (unlikely(finish_err != MDBX_SUCCESS))
+        batch_err = finish_err;
+    }
     if (unlikely(batch_err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
       first_err = batch_err;
   }
