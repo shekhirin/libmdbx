@@ -2015,6 +2015,69 @@ int main(void) {
   REQUIRE(depthmask_result == MDBX_RESULT_TRUE, "non-dupsort dbi did not report MDBX_RESULT_TRUE");
   REQUIRE(depthmask == 0, "unexpected non-dupsort depthmask");
 
+  CHECK(mdbx_txn_begin(env, NULL, MDBX_TXN_RDONLY, &origin_txn));
+  MDBX_val sync_get_data = val(NULL, 0);
+  CHECK(mdbx_get(origin_txn, dbi, &key_values[3], &sync_get_data));
+  CHECK(expect_value(&sync_get_data, keys[3], __FILE__, __LINE__));
+
+  MDBX_val sync_get_ex_key = key_values[4];
+  MDBX_val sync_get_ex_data = val(NULL, 0);
+  size_t sync_get_ex_count = SIZE_MAX;
+  CHECK(mdbx_get_ex(origin_txn, dbi, &sync_get_ex_key, &sync_get_ex_data, &sync_get_ex_count));
+  REQUIRE(sync_get_ex_count == 1, "blocking get_ex saw wrong value count");
+  REQUIRE(sync_get_ex_key.iov_len == sizeof(uint64_t), "blocking get_ex returned wrong key size");
+  uint64_t sync_actual_key = UINT64_MAX;
+  memcpy(&sync_actual_key, sync_get_ex_key.iov_base, sizeof(sync_actual_key));
+  REQUIRE(sync_actual_key == keys[4], "blocking get_ex returned wrong key");
+  CHECK(expect_value(&sync_get_ex_data, sync_actual_key, __FILE__, __LINE__));
+
+  uint64_t sync_lower_key_data = 5;
+  MDBX_val sync_lower_key = val(&sync_lower_key_data, sizeof(sync_lower_key_data));
+  MDBX_val sync_lower_data = val(NULL, 0);
+  CHECK(mdbx_get_equal_or_great(origin_txn, dbi, &sync_lower_key, &sync_lower_data));
+  REQUIRE(sync_lower_key.iov_len == sizeof(uint64_t), "blocking lowerbound returned wrong key size");
+  memcpy(&sync_actual_key, sync_lower_key.iov_base, sizeof(sync_actual_key));
+  REQUIRE(sync_actual_key == sync_lower_key_data, "blocking lowerbound returned wrong exact key");
+  CHECK(expect_value(&sync_lower_data, sync_actual_key, __FILE__, __LINE__));
+
+  uint8_t sync_greater_probe_bytes[sizeof(uint64_t) + 1];
+  memcpy(sync_greater_probe_bytes, key_values[6].iov_base, sizeof(uint64_t));
+  sync_greater_probe_bytes[sizeof(uint64_t)] = 0;
+  MDBX_val sync_greater_key = val(sync_greater_probe_bytes, sizeof(sync_greater_probe_bytes));
+  MDBX_val sync_greater_data = val(NULL, 0);
+  rc = mdbx_get_equal_or_great(origin_txn, dbi, &sync_greater_key, &sync_greater_data);
+  REQUIRE(rc == MDBX_RESULT_TRUE, "blocking lowerbound did not report greater key");
+  REQUIRE(sync_greater_key.iov_len == sizeof(uint64_t), "blocking greater lowerbound returned wrong key size");
+  memcpy(&sync_actual_key, sync_greater_key.iov_base, sizeof(sync_actual_key));
+  REQUIRE(sync_actual_key == keys[7], "blocking greater lowerbound returned wrong key");
+  CHECK(expect_value(&sync_greater_data, sync_actual_key, __FILE__, __LINE__));
+  rc = MDBX_SUCCESS;
+
+  uint8_t sync_missing_key_bytes[sizeof(uint64_t)];
+  memset(sync_missing_key_bytes, 0xff, sizeof(sync_missing_key_bytes));
+  MDBX_val sync_missing_key = val(sync_missing_key_bytes, sizeof(sync_missing_key_bytes));
+  MDBX_val sync_missing_data = val(NULL, 0);
+  rc = mdbx_get(origin_txn, dbi, &sync_missing_key, &sync_missing_data);
+  REQUIRE(rc == MDBX_NOTFOUND, "blocking get missing key returned wrong result");
+  CHECK(expect_empty_value(&sync_missing_data, __FILE__, __LINE__));
+
+  MDBX_val sync_missing_get_ex_key = sync_missing_key;
+  MDBX_val sync_missing_get_ex_data = val(NULL, 0);
+  sync_get_ex_count = SIZE_MAX;
+  rc = mdbx_get_ex(origin_txn, dbi, &sync_missing_get_ex_key, &sync_missing_get_ex_data, &sync_get_ex_count);
+  REQUIRE(rc == MDBX_NOTFOUND, "blocking get_ex missing key returned wrong result");
+  REQUIRE(sync_get_ex_count == 0, "blocking get_ex missing key returned values");
+  CHECK(expect_empty_value(&sync_missing_get_ex_data, __FILE__, __LINE__));
+
+  MDBX_val sync_missing_lower_key = sync_missing_key;
+  MDBX_val sync_missing_lower_data = val(NULL, 0);
+  rc = mdbx_get_equal_or_great(origin_txn, dbi, &sync_missing_lower_key, &sync_missing_lower_data);
+  REQUIRE(rc == MDBX_NOTFOUND, "blocking lowerbound missing key returned wrong result");
+  CHECK(expect_empty_value(&sync_missing_lower_data, __FILE__, __LINE__));
+  rc = MDBX_SUCCESS;
+  CHECK(mdbx_txn_abort(origin_txn));
+  origin_txn = NULL;
+
   struct async_block_probe block_probe;
   MDBX_val queued_get_data = val(NULL, 0);
   ops[0] = NULL;
