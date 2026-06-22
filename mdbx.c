@@ -17707,7 +17707,13 @@ static int async_cached_get_batch(MDBX_async_op *op) {
     }
     async_get_cache_prepare_batch_slots(txn, dbi, keys, slots, entries, cold, count);
     (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
-    (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, cold, slots, nullptr, count);
+    async_batched_get_traverse_state_t traverse;
+    int traverse_rc = async_batched_get_traverse_begin(&traverse, txn, dbi, keys, data, results,
+                                                       handled, cold, slots, nullptr, count);
+    if (likely(traverse_rc == MDBX_SUCCESS))
+      (void)async_batched_get_traverse_drive_to_completion(&traverse);
+    else
+      (void)async_batched_get_traverse_finish(&traverse);
   }
 
   for (size_t i = 0; i < count; ++i) {
@@ -17772,8 +17778,13 @@ static int async_get_ex_batch_execute(MDBX_async_op *op) {
       }
       async_get_cache_prepare_batch_slots(txn, dbi, keys, slots, entries, cold, count);
       (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
-      (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, cold, slots,
-                                       nullptr, count);
+      async_batched_get_traverse_state_t traverse;
+      int traverse_rc = async_batched_get_traverse_begin(&traverse, txn, dbi, keys, data, results,
+                                                         handled, cold, slots, nullptr, count);
+      if (likely(traverse_rc == MDBX_SUCCESS))
+        (void)async_batched_get_traverse_drive_to_completion(&traverse);
+      else
+        (void)async_batched_get_traverse_finish(&traverse);
     }
   }
 
@@ -17875,8 +17886,13 @@ static void async_get_ex_ops_batch(MDBX_async *async, MDBX_async_op *ops[], size
     }
     async_get_cache_prepare_batch_slots(txn, dbi, keys, slots, entries, cold, count);
     (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
-    (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, cold, slots,
-                                     nullptr, count);
+    async_batched_get_traverse_state_t traverse;
+    int traverse_rc = async_batched_get_traverse_begin(&traverse, txn, dbi, keys, data, results,
+                                                       handled, cold, slots, nullptr, count);
+    if (likely(traverse_rc == MDBX_SUCCESS))
+      (void)async_batched_get_traverse_drive_to_completion(&traverse);
+    else
+      (void)async_batched_get_traverse_finish(&traverse);
   }
 
   for (size_t i = 0; i < count; ++i) {
@@ -17944,8 +17960,13 @@ static int async_get_equal_or_great_batch_execute(MDBX_async_op *op) {
       found_keys[i] = keys[i];
       eligible[i] = true;
     }
-    (void)async_batched_lowerbound_traverse(txn, dbi, keys, data, results, handled, eligible,
-                                            found_keys, count);
+    async_batched_lowerbound_traverse_state_t traverse;
+    int traverse_rc = async_batched_lowerbound_traverse_begin(&traverse, txn, dbi, keys, data, results,
+                                                             handled, eligible, found_keys, count);
+    if (likely(traverse_rc == MDBX_SUCCESS))
+      (void)async_batched_lowerbound_traverse_drive_to_completion(&traverse);
+    else
+      (void)async_batched_lowerbound_traverse_finish(&traverse);
   }
 
   for (size_t i = 0; i < count; ++i) {
@@ -18024,8 +18045,13 @@ static void async_get_equal_or_great_ops_batch(MDBX_async_op *ops[], size_t coun
       data[i] = ops[i]->data;
       eligible[i] = true;
     }
-    (void)async_batched_lowerbound_traverse(txn, dbi, keys, data, results, handled, eligible,
-                                            found_keys, count);
+    async_batched_lowerbound_traverse_state_t traverse;
+    int traverse_rc = async_batched_lowerbound_traverse_begin(&traverse, txn, dbi, keys, data, results,
+                                                             handled, eligible, found_keys, count);
+    if (likely(traverse_rc == MDBX_SUCCESS))
+      (void)async_batched_lowerbound_traverse_drive_to_completion(&traverse);
+    else
+      (void)async_batched_lowerbound_traverse_finish(&traverse);
   }
 
   for (size_t i = 0; i < count; ++i) {
@@ -18087,7 +18113,13 @@ static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], 
     }
     async_get_cache_prepare_batch_slots(txn, dbi, keys, slots, entries, cold, count);
     (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
-    (void)async_batched_get_traverse(txn, dbi, keys, data, tree_results, handled, cold, slots, nullptr, count);
+    async_batched_get_traverse_state_t traverse;
+    int traverse_rc = async_batched_get_traverse_begin(&traverse, txn, dbi, keys, data, tree_results,
+                                                       handled, cold, slots, nullptr, count);
+    if (likely(traverse_rc == MDBX_SUCCESS))
+      (void)async_batched_get_traverse_drive_to_completion(&traverse);
+    else
+      (void)async_batched_get_traverse_finish(&traverse);
   }
 
   for (size_t i = 0; i < count; ++i) {
