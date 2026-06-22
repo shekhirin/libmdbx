@@ -7541,3 +7541,69 @@ Additional batched traversal cursor-page ownership checkpoint:
   lowerbound loop, async cursor get/loops, and cursor loop ratio. The structural
   gain is that batched get/lowerbound traversal now directly owns cursor-page
   read state at root and child read levels.
+
+Additional batched get traversal state-machine checkpoint:
+
+- changed `async_batched_get_traverse()` from a single synchronous traversal
+  body into an explicit `async_batched_get_traverse_state_t` with
+  begin/drive/finish phases.
+- root-page reads, child-page reads, page consumption, child preparation, and
+  final seek completion are now separate resumable phases. The compatibility
+  wrapper still drives the state to completion, preserving existing blocking
+  behavior at the public API boundary.
+- this moves batched exact-key get traversal closer to the requested internal
+  async shape: page-read batches can now be represented as pending traversal
+  state instead of stack-local synchronous control flow.
+- `async_batched_lowerbound_traverse()` still uses the previous direct
+  `dxb_cursor_page_get_batch_t` ownership pattern and has not yet been split
+  into its own begin/drive/finish traversal state machine.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-get-traverse-state-before.txt` and
+    `/tmp/mdbx-async-bench-get-traverse-state-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `ae54b08`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.182 Mops/s | 1.217 Mops/s |
+| blocking parallel get | 1.019 Mops/s | 1.035 Mops/s |
+| async single get | 299.436 Kops/s | 391.771 Kops/s |
+| async single get_ex | 406.115 Kops/s | 372.740 Kops/s |
+| async single lowerbound | 267.957 Kops/s | 317.385 Kops/s |
+| async parallel get | 2.445 Mops/s | 1.984 Mops/s |
+| async many parallel get | 2.269 Mops/s | 2.880 Mops/s |
+| async threaded get | 1.600 Mops/s | 2.784 Mops/s |
+| async batch parallel get | 2.305 Mops/s | 2.760 Mops/s |
+| async batch callback get | 1.844 Mops/s | 2.758 Mops/s |
+| async get_ex batch | 2.043 Mops/s | 2.451 Mops/s |
+| async get_ex many | 2.846 Mops/s | 2.773 Mops/s |
+| async cache many | 2.350 Mops/s | 4.436 Mops/s |
+| async cache batch | 3.003 Mops/s | 4.110 Mops/s |
+| async cache loop | 3.839 Mops/s | 3.441 Mops/s |
+| async cache st loop | 3.486 Mops/s | 4.304 Mops/s |
+| async threaded cache loop | 3.399 Mops/s | 4.936 Mops/s |
+| async lowerbound batch | 1.650 Mops/s | 1.644 Mops/s |
+| async lowerbound many | 1.670 Mops/s | 1.674 Mops/s |
+| async get loop | 3.387 Mops/s | 3.385 Mops/s |
+| async get_ex loop | 2.793 Mops/s | 3.347 Mops/s |
+| async lowerbound loop | 1.647 Mops/s | 1.855 Mops/s |
+| async cursor get | 1.178 Mops/s | 859.415 Kops/s |
+| async cursor get loop | 62.293 Mops/s | 66.108 Mops/s |
+| async cursor batch | 61.610 Mops/s | 124.946 Mops/s |
+| async cursor scan | 72.598 Mops/s | 135.639 Mops/s |
+| async cursor scan_from | 70.978 Mops/s | 67.913 Mops/s |
+
+- conclusion: this checkpoint is mostly structural. It improves many batched,
+  cache, loop, and cursor batch/scan rows in this run, while regressing async
+  parallel get, async single get_ex, async cursor get, and a few cache/scan
+  rows. The important migration gain is not the mixed microbenchmark result;
+  it is that exact-key batched traversal now has an explicit state object that
+  can be driven incrementally instead of being tied to a monolithic blocking
+  function body.
