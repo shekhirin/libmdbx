@@ -12469,6 +12469,9 @@ __cold int mdbx_env_defrag(MDBX_env *env, size_t defrag_atleast, size_t time_atl
 
 static MDBX_cache_result_t cache_get(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *data,
                                      MDBX_cache_entry_t *entry);
+static bool async_cache_get_nommap_refresh(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
+                                           MDBX_val *data, MDBX_cache_entry_t *entry,
+                                           MDBX_cache_result_t *result);
 static inline int page_cache_make_read_submit_io(const MDBX_txn *txn, const dxb_cache_read_io_t *read,
                                                  dxb_page_cache_read_submit_io_t *io);
 static dxb_cache_page_result_t page_cache_submit_read(MDBX_txn *txn, const dxb_page_cache_read_submit_io_t *io);
@@ -13704,6 +13707,12 @@ static MDBX_cache_result_t cache_get_uncached(const MDBX_txn *txn, MDBX_dbi dbi,
 
 static MDBX_cache_result_t cache_get_nommap_refresh(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
                                                     MDBX_val *data, MDBX_cache_entry_t *entry) {
+  if ((txn->flags & txn_ro_both) && async_nodup_read_batchable(txn, dbi)) {
+    MDBX_cache_result_t async_result = cache_result(MDBX_PROBLEM, MDBX_CACHE_ERROR);
+    if (async_cache_get_nommap_refresh(txn, dbi, key, data, entry, &async_result))
+      return async_result;
+  }
+
   cursor_couple_t cx;
   int err = cursor_init(&cx.outer, txn, dbi);
   if (unlikely(err != MDBX_SUCCESS))
@@ -16331,6 +16340,48 @@ struct MDBX_async {
   bool active;
   bool stop;
 };
+
+static bool async_cache_get_nommap_refresh(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
+                                           MDBX_val *data, MDBX_cache_entry_t *entry,
+                                           MDBX_cache_result_t *result) {
+  if (unlikely(!txn || !key || !data || !entry || !result))
+    return false;
+
+  MDBX_async_get_cache_slot slot;
+  memset(&slot, 0, sizeof(slot));
+  __inline_mdbx_cache_init(&slot.entry);
+
+  MDBX_async_get_cache_slot *slots[1] = {&slot};
+  const MDBX_val keys[1] = {*key};
+  MDBX_val values[1] = {{nullptr, 0}};
+  int results[1] = {MDBX_EINVAL};
+  bool handled[1] = {false};
+  const bool eligible[1] = {true};
+
+  (void)async_batched_get_traverse_stateful(txn, dbi, keys, values, results, handled, eligible,
+                                            slots, nullptr, 1);
+  if (!handled[0])
+    return false;
+
+  if (results[0] == MDBX_SUCCESS) {
+    *data = values[0];
+    if (slot.use_count > 1) {
+      *entry = slot.entry;
+      *result = cache_result(MDBX_SUCCESS, MDBX_CACHE_REFRESHED);
+    } else {
+      *result = cache_result(MDBX_SUCCESS, MDBX_CACHE_UNABLE);
+    }
+    return true;
+  }
+
+  data->iov_base = nullptr;
+  data->iov_len = 0;
+  if (results[0] == MDBX_NOTFOUND)
+    *result = cache_result(MDBX_NOTFOUND, MDBX_CACHE_UNABLE);
+  else
+    *result = cache_error(LOG_IFERR(results[0]));
+  return true;
+}
 
 struct MDBX_async_op {
   int32_t signature;

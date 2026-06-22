@@ -2115,7 +2115,7 @@ int main(void) {
   MDBX_val cache_data = val(NULL, 0);
   CHECK(mdbx_async_cache_get(async, txn, dbi, &key_values[4], &cache_data, &cache_entry, &cache_result, &op));
   CHECK_OP(op);
-  REQUIRE(cache_result.errcode == MDBX_SUCCESS && cache_result.status != MDBX_CACHE_ERROR,
+  REQUIRE(cache_result.errcode == MDBX_SUCCESS && cache_result.status == MDBX_CACHE_REFRESHED,
           "unexpected async cache get result");
   CHECK(expect_value(&cache_data, keys[4], __FILE__, __LINE__));
 
@@ -2144,7 +2144,7 @@ int main(void) {
   CHECK(wait_many_success("mdbx_async_cache_get_many", ops, 4, op_results, __FILE__, __LINE__));
   for (unsigned i = 0; i < 4; ++i) {
     REQUIRE(cache_many_results[i].errcode == MDBX_SUCCESS &&
-                cache_many_results[i].status != MDBX_CACHE_ERROR,
+                cache_many_results[i].status == MDBX_CACHE_REFRESHED,
             "unexpected async cache get many result");
     CHECK(expect_value(&cache_many_data[i], keys[i + 2], __FILE__, __LINE__));
   }
@@ -2175,7 +2175,7 @@ int main(void) {
   CHECK_OP(op);
   for (unsigned i = 0; i < 4; ++i) {
     REQUIRE(cache_many_results[i].errcode == MDBX_SUCCESS &&
-                cache_many_results[i].status != MDBX_CACHE_ERROR,
+                cache_many_results[i].status == MDBX_CACHE_REFRESHED,
             "unexpected async cache get batch result");
     CHECK(expect_value(&cache_many_data[i], keys[i + 2], __FILE__, __LINE__));
   }
