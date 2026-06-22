@@ -18289,23 +18289,27 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_cache_get_loop:
   case async_op_cache_get_singlethreaded_loop: {
     enum { cache_get_loop_prefetch_window = 64 };
+    const bool singlethreaded = op->opcode == async_op_cache_get_singlethreaded_loop;
     MDBX_val *prefetch_data = nullptr;
+    MDBX_cache_entry_t *prefetch_entries = nullptr;
     MDBX_cache_result_t *prefetch_results = nullptr;
     bool *prefetch_handled = nullptr;
     size_t prefetch_base = 0;
     size_t prefetch_count = 0;
     int loop_rc = MDBX_SUCCESS;
 
-    if (op->opcode == async_op_cache_get_singlethreaded_loop &&
-        op->args.cache_get_loop.count > 1) {
+    if (op->args.cache_get_loop.count > 1) {
       prefetch_data = osal_calloc(cache_get_loop_prefetch_window, sizeof(prefetch_data[0]));
+      prefetch_entries = osal_calloc(cache_get_loop_prefetch_window, sizeof(prefetch_entries[0]));
       prefetch_results = osal_calloc(cache_get_loop_prefetch_window, sizeof(prefetch_results[0]));
       prefetch_handled = osal_calloc(cache_get_loop_prefetch_window, sizeof(prefetch_handled[0]));
-      if (unlikely(!prefetch_data || !prefetch_results || !prefetch_handled)) {
+      if (unlikely(!prefetch_data || !prefetch_entries || !prefetch_results || !prefetch_handled)) {
         osal_free(prefetch_handled);
         osal_free(prefetch_results);
+        osal_free(prefetch_entries);
         osal_free(prefetch_data);
         prefetch_data = nullptr;
+        prefetch_entries = nullptr;
         prefetch_results = nullptr;
         prefetch_handled = nullptr;
       }
@@ -18330,8 +18334,17 @@ static int async_op_execute(MDBX_async_op *op) {
           prefetch_base = i;
           prefetch_count =
               remaining < cache_get_loop_prefetch_window ? remaining : cache_get_loop_prefetch_window;
+          for (size_t j = 0; j < prefetch_count; ++j) {
+            if (singlethreaded) {
+              prefetch_entries[j] =
+                  ((MDBX_cache_entry_t *)op->args.cache_get_loop.entries)[prefetch_base + j];
+            } else if (!cache_entry_snapshot_volatile(&op->args.cache_get_loop.entries[prefetch_base + j],
+                                                      &prefetch_entries[j])) {
+              memset(&prefetch_entries[j], 0, sizeof(prefetch_entries[j]));
+            }
+          }
           (void)cache_materialize_singlethreaded_batch(op->args.cache_get_loop.txn, prefetch_data,
-                                                       (MDBX_cache_entry_t *)&op->args.cache_get_loop.entries[i],
+                                                       prefetch_entries,
                                                        prefetch_results, prefetch_count, prefetch_handled);
         }
         const size_t slot = i - prefetch_base;
@@ -18342,12 +18355,13 @@ static int async_op_execute(MDBX_async_op *op) {
         }
       }
       if (!prefetched)
-        result = (op->opcode == async_op_cache_get_loop)
-                     ? mdbx_cache_get(op->args.cache_get_loop.txn, op->args.cache_get_loop.dbi, &key, &data,
-                                      &op->args.cache_get_loop.entries[i])
-                     : mdbx_cache_get_SingleThreaded(op->args.cache_get_loop.txn,
-                                                     op->args.cache_get_loop.dbi, &key, &data,
-                                                     (MDBX_cache_entry_t *)&op->args.cache_get_loop.entries[i]);
+        result =
+            singlethreaded
+                ? mdbx_cache_get_SingleThreaded(op->args.cache_get_loop.txn,
+                                                op->args.cache_get_loop.dbi, &key, &data,
+                                                (MDBX_cache_entry_t *)&op->args.cache_get_loop.entries[i])
+                : mdbx_cache_get(op->args.cache_get_loop.txn, op->args.cache_get_loop.dbi, &key, &data,
+                                 &op->args.cache_get_loop.entries[i]);
       rc = op->args.cache_get_loop.result_func
                ? op->args.cache_get_loop.result_func(op->args.cache_get_loop.context, i, &key, &data,
                                                      result)
@@ -18363,6 +18377,7 @@ static int async_op_execute(MDBX_async_op *op) {
   cache_get_loop_bailout:
     osal_free(prefetch_handled);
     osal_free(prefetch_results);
+    osal_free(prefetch_entries);
     osal_free(prefetch_data);
     return loop_rc;
   }

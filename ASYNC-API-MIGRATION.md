@@ -5359,3 +5359,53 @@ Additional get_ex loop cache materialization checkpoint:
   hidden-cache/page-cache materialization path as repeated batch and many reads.
   The direct and threaded loop rows improved in this sample, while unrelated
   get rows moved with normal one-run benchmark noise.
+
+Additional regular cache-get loop prefetch checkpoint:
+
+- changed regular `mdbx_async_cache_get_loop()` so it also uses the bounded
+  64-entry materialization window that was previously limited to
+  `mdbx_async_cache_get_SingleThreaded_loop()`. For regular volatile cache
+  entries the worker snapshots each entry with `cache_entry_snapshot_volatile()`
+  into local storage, then calls `cache_materialize_singlethreaded_batch()`.
+- entries that cannot be snapshotted or materialized still fall back to the
+  existing per-item `mdbx_cache_get()` path, preserving the multi-thread-safe
+  cache-entry semantics. The single-threaded loop keeps the same fast path but
+  now shares the same local window code.
+- this moves the regular cache loop shape onto the internal batched page-cache
+  read/materialization path instead of relying on one cache lookup per item.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cacheloop-prefetch-before.txt` and
+    `/tmp/mdbx-async-bench-cacheloop-prefetch-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `cce8a99`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.749 Mops/s | 1.783 Mops/s |
+| blocking parallel get | 951.500 Kops/s | 771.109 Kops/s |
+| async cache many | 3.002 Mops/s | 4.082 Mops/s |
+| async cache st many | 4.027 Mops/s | 4.173 Mops/s |
+| async cache batch | 3.818 Mops/s | 3.787 Mops/s |
+| async cache st batch | 3.715 Mops/s | 2.747 Mops/s |
+| async cache loop | 1.983 Mops/s | 5.076 Mops/s |
+| async cache st loop | 1.918 Mops/s | 5.076 Mops/s |
+| async threaded cache loop | 3.051 Mops/s | 5.029 Mops/s |
+| async threaded cache st loop | 4.732 Mops/s | 4.921 Mops/s |
+| async-cache-loop/par | 2.084 | 6.583 |
+| async-thread-cache-loop/par | 3.206 | 6.521 |
+| async-cache-loop/batch | 0.519 | 1.340 |
+| async-cache-loop/many | 0.661 | 1.243 |
+| async-thread-cache-loop/loop | 1.539 | 0.991 |
+| async-cache-loop/ser | 1.133 | 2.846 |
+| async-thread-cache-loop/ser | 1.744 | 2.820 |
+
+- conclusion: regular cache loop now benefits from batched cache-entry
+  materialization like the single-threaded loop. The direct regular loop and
+  threaded regular loop rows improved substantially in this sample; nearby
+  cache batch rows were mixed, consistent with normal reduced benchmark noise.
