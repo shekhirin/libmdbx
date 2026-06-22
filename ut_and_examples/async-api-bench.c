@@ -48,6 +48,8 @@ struct cursor_batch_worker {
   size_t target_pairs;
   size_t completed_pairs;
   size_t batch_pairs;
+  size_t value_bytes;
+  bool large_values;
   int rc;
 };
 
@@ -78,6 +80,8 @@ struct cursor_scan_check {
 
 struct async_cursor_batch_check {
   size_t items;
+  size_t value_bytes;
+  bool large_values;
 };
 
 struct async_cursor_get_loop_check {
@@ -220,6 +224,8 @@ struct async_thread_cursor_batch_worker {
   size_t target_pairs;
   size_t completed_pairs;
   size_t batch_pairs;
+  size_t value_bytes;
+  bool large_values;
   int rc;
 };
 
@@ -568,6 +574,24 @@ static int expect_cursor_batch(const MDBX_val *pairs, size_t count, size_t items
   return MDBX_SUCCESS;
 }
 
+static int expect_cursor_large_batch(const MDBX_val *pairs, size_t count, size_t items,
+                                     size_t value_bytes, const char *file, int line) {
+  if (count == 0 || (count & 1))
+    return fail_msg("unexpected large cursor batch count", file, line);
+  for (size_t i = 0; i < count; i += 2) {
+    if (pairs[i].iov_len != sizeof(uint64_t))
+      return fail_msg("unexpected large cursor batch key size", file, line);
+    uint64_t actual_key = 0;
+    memcpy(&actual_key, pairs[i].iov_base, sizeof(actual_key));
+    if (actual_key >= items)
+      return fail_msg("unexpected large cursor batch key", file, line);
+    int rc = expect_large_value(&pairs[i + 1], actual_key, value_bytes, file, line);
+    if (rc != MDBX_SUCCESS)
+      return rc;
+  }
+  return MDBX_SUCCESS;
+}
+
 static int cursor_scan_check_func(void *context, MDBX_val *key, MDBX_val *value, void *arg) {
   (void)arg;
   struct cursor_scan_check *const check = (struct cursor_scan_check *)context;
@@ -590,6 +614,9 @@ static int cursor_scan_check_func(void *context, MDBX_val *key, MDBX_val *value,
 
 static int async_cursor_batch_check_func(void *context, const MDBX_val *pairs, size_t count) {
   const struct async_cursor_batch_check *const check = (const struct async_cursor_batch_check *)context;
+  if (check->large_values)
+    return expect_cursor_large_batch(pairs, count, check->items, check->value_bytes,
+                                     __FILE__, __LINE__);
   return expect_cursor_batch(pairs, count, check->items, __FILE__, __LINE__);
 }
 
@@ -2746,7 +2773,8 @@ static double blocking_parallel_cursor_get(MDBX_env *env, MDBX_dbi dbi, size_t i
 }
 
 static int blocking_cursor_batch_loop(MDBX_cursor *cursor, size_t items, size_t target_pairs, size_t batch_pairs,
-                                      size_t *completed_pairs) {
+                                      size_t *completed_pairs, bool large_values,
+                                      size_t value_bytes) {
   MDBX_val *pairs = calloc(batch_pairs * 2, sizeof(*pairs));
   if (!pairs)
     return MDBX_ENOMEM;
@@ -2762,7 +2790,9 @@ static int blocking_cursor_batch_loop(MDBX_cursor *cursor, size_t items, size_t 
       goto bailout;
     }
     const int operation_rc = rc;
-    rc = expect_cursor_batch(pairs, count, items, __FILE__, __LINE__);
+    rc = large_values ? expect_cursor_large_batch(pairs, count, items, value_bytes,
+                                                  __FILE__, __LINE__)
+                      : expect_cursor_batch(pairs, count, items, __FILE__, __LINE__);
     if (rc != MDBX_SUCCESS)
       goto bailout;
     *completed_pairs += count / 2;
@@ -2774,8 +2804,9 @@ bailout:
   return rc;
 }
 
-static double blocking_serial_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs,
-                                           size_t batch_pairs) {
+static double blocking_serial_cursor_batch_impl(MDBX_env *env, MDBX_dbi dbi, size_t items,
+                                                size_t target_pairs, size_t batch_pairs,
+                                                bool large_values, size_t value_bytes) {
   MDBX_txn *txn = NULL;
   MDBX_cursor *cursor = NULL;
   int rc = mdbx_txn_begin(env, NULL, MDBX_TXN_RDONLY, &txn);
@@ -2789,13 +2820,26 @@ static double blocking_serial_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t i
 
   size_t completed_pairs = 0;
   const uint64_t start = monotime_ns();
-  rc = blocking_cursor_batch_loop(cursor, items, target_pairs, batch_pairs, &completed_pairs);
+  rc = blocking_cursor_batch_loop(cursor, items, target_pairs, batch_pairs, &completed_pairs,
+                                  large_values, value_bytes);
   const uint64_t finish = monotime_ns();
   const int close_rc = mdbx_cursor_close2(cursor);
   const int abort_rc = mdbx_txn_abort(txn);
   if (rc != MDBX_SUCCESS || close_rc != MDBX_SUCCESS || abort_rc != MDBX_SUCCESS || finish <= start)
     return -1.0;
   return (double)completed_pairs * 1000000000.0 / (double)(finish - start);
+}
+
+static double blocking_serial_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs,
+                                           size_t batch_pairs) {
+  return blocking_serial_cursor_batch_impl(env, dbi, items, target_pairs, batch_pairs, false, 0);
+}
+
+static double blocking_serial_cursor_large_batch(MDBX_env *env, MDBX_dbi dbi, size_t items,
+                                                 size_t target_pairs, size_t batch_pairs,
+                                                 size_t value_bytes) {
+  return blocking_serial_cursor_batch_impl(env, dbi, items, target_pairs, batch_pairs, true,
+                                           value_bytes);
 }
 
 static void *cursor_batch_worker_main(void *arg) {
@@ -2808,7 +2852,8 @@ static void *cursor_batch_worker_main(void *arg) {
     worker->rc = mdbx_cursor_open(txn, worker->dbi, &cursor);
   if (worker->rc == MDBX_SUCCESS)
     worker->rc = blocking_cursor_batch_loop(cursor, worker->items, worker->target_pairs, worker->batch_pairs,
-                                            &worker->completed_pairs);
+                                            &worker->completed_pairs, worker->large_values,
+                                            worker->value_bytes);
   if (cursor) {
     const int rc = mdbx_cursor_close2(cursor);
     if (worker->rc == MDBX_SUCCESS)
@@ -2822,8 +2867,10 @@ static void *cursor_batch_worker_main(void *arg) {
   return NULL;
 }
 
-static double blocking_parallel_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs,
-                                             size_t workers_count, size_t batch_pairs) {
+static double blocking_parallel_cursor_batch_impl(MDBX_env *env, MDBX_dbi dbi, size_t items,
+                                                  size_t target_pairs, size_t workers_count,
+                                                  size_t batch_pairs, bool large_values,
+                                                  size_t value_bytes) {
   pthread_t *threads = calloc(workers_count, sizeof(*threads));
   struct cursor_batch_worker *workers = calloc(workers_count, sizeof(*workers));
   if (!threads || !workers) {
@@ -2842,6 +2889,8 @@ static double blocking_parallel_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t
     workers[i].items = items;
     workers[i].target_pairs = base_pairs + (i < extra_pairs);
     workers[i].batch_pairs = batch_pairs;
+    workers[i].large_values = large_values;
+    workers[i].value_bytes = value_bytes;
     const int rc = pthread_create(&threads[i], NULL, cursor_batch_worker_main, &workers[i]);
     if (rc != 0) {
       workers[i].rc = rc;
@@ -2864,6 +2913,19 @@ static double blocking_parallel_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t
   if (failed || completed_pairs == 0 || finish <= start)
     return -1.0;
   return (double)completed_pairs * 1000000000.0 / (double)(finish - start);
+}
+
+static double blocking_parallel_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs,
+                                             size_t workers_count, size_t batch_pairs) {
+  return blocking_parallel_cursor_batch_impl(env, dbi, items, target_pairs, workers_count,
+                                             batch_pairs, false, 0);
+}
+
+static double blocking_parallel_cursor_large_batch(MDBX_env *env, MDBX_dbi dbi, size_t items,
+                                                   size_t target_pairs, size_t workers_count,
+                                                   size_t batch_pairs, size_t value_bytes) {
+  return blocking_parallel_cursor_batch_impl(env, dbi, items, target_pairs, workers_count,
+                                             batch_pairs, true, value_bytes);
 }
 
 static int blocking_cursor_scan_loop(MDBX_cursor *cursor, size_t items, size_t target_pairs,
@@ -5257,8 +5319,10 @@ static double async_threaded_loop_cursor_batch_from(MDBX_env *env, MDBX_dbi dbi,
                                                batch_pairs, true);
 }
 
-static double async_parallel_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs,
-                                          size_t workers_count, size_t batch_pairs) {
+static double async_parallel_cursor_batch_impl(MDBX_env *env, MDBX_dbi dbi, size_t items,
+                                               size_t target_pairs, size_t workers_count,
+                                               size_t batch_pairs, bool large_values,
+                                               size_t value_bytes) {
   struct async_worker *workers = calloc(workers_count, sizeof(*workers));
   if (!workers)
     return -1.0;
@@ -5295,7 +5359,10 @@ static double async_parallel_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t it
         rc = fail_rc("mdbx_async_cursor_get_batch", operation_rc, __FILE__, __LINE__);
         goto bailout;
       }
-      rc = expect_cursor_batch(worker->pairs, worker->count, items, __FILE__, __LINE__);
+      rc = large_values ? expect_cursor_large_batch(worker->pairs, worker->count, items,
+                                                    value_bytes, __FILE__, __LINE__)
+                        : expect_cursor_batch(worker->pairs, worker->count, items,
+                                              __FILE__, __LINE__);
       if (rc != MDBX_SUCCESS)
         goto bailout;
       completed_pairs += worker->count / 2;
@@ -5322,6 +5389,19 @@ bailout:
   return -1.0;
 }
 
+static double async_parallel_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs,
+                                          size_t workers_count, size_t batch_pairs) {
+  return async_parallel_cursor_batch_impl(env, dbi, items, target_pairs, workers_count,
+                                          batch_pairs, false, 0);
+}
+
+static double async_parallel_cursor_large_batch(MDBX_env *env, MDBX_dbi dbi, size_t items,
+                                                size_t target_pairs, size_t workers_count,
+                                                size_t batch_pairs, size_t value_bytes) {
+  return async_parallel_cursor_batch_impl(env, dbi, items, target_pairs, workers_count,
+                                          batch_pairs, true, value_bytes);
+}
+
 static void *async_thread_cursor_batch_worker_main(void *arg) {
   struct async_thread_cursor_batch_worker *const worker = (struct async_thread_cursor_batch_worker *)arg;
   worker->completed_pairs = 0;
@@ -5344,8 +5424,12 @@ static void *async_thread_cursor_batch_worker_main(void *arg) {
     if (worker->rc == MDBX_SUCCESS && worker->worker.count == 0)
       worker->rc = fail_msg("unexpected empty threaded async cursor batch", __FILE__, __LINE__);
     if (worker->rc == MDBX_SUCCESS)
-      worker->rc = expect_cursor_batch(worker->worker.pairs, worker->worker.count, worker->items,
-                                       __FILE__, __LINE__);
+      worker->rc = worker->large_values
+                       ? expect_cursor_large_batch(worker->worker.pairs, worker->worker.count,
+                                                   worker->items, worker->value_bytes,
+                                                   __FILE__, __LINE__)
+                       : expect_cursor_batch(worker->worker.pairs, worker->worker.count,
+                                             worker->items, __FILE__, __LINE__);
     if (worker->rc == MDBX_SUCCESS) {
       worker->completed_pairs += worker->worker.count / 2;
       worker->worker.cursor_started = operation_rc == MDBX_SUCCESS;
@@ -5358,8 +5442,10 @@ static void *async_thread_cursor_batch_worker_main(void *arg) {
   return NULL;
 }
 
-static double async_threaded_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs,
-                                          size_t workers_count, size_t batch_pairs) {
+static double async_threaded_cursor_batch_impl(MDBX_env *env, MDBX_dbi dbi, size_t items,
+                                               size_t target_pairs, size_t workers_count,
+                                               size_t batch_pairs, bool large_values,
+                                               size_t value_bytes) {
   pthread_t *threads = calloc(workers_count, sizeof(*threads));
   struct async_thread_cursor_batch_worker *workers = calloc(workers_count, sizeof(*workers));
   if (!threads || !workers) {
@@ -5381,6 +5467,8 @@ static double async_threaded_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t it
     workers[i].items = items;
     workers[i].target_pairs = base_pairs + (i < extra_pairs);
     workers[i].batch_pairs = batch_pairs;
+    workers[i].large_values = large_values;
+    workers[i].value_bytes = value_bytes;
     initialized_count = i + 1;
     if (async_cursor_batch_worker_init(env, &workers[i].worker, dbi, batch_pairs) != MDBX_SUCCESS) {
       failed = 1;
@@ -5417,6 +5505,19 @@ bailout:
   if (failed || finish <= start)
     return -1.0;
   return (double)completed_pairs * 1000000000.0 / (double)(finish - start);
+}
+
+static double async_threaded_cursor_batch(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t target_pairs,
+                                          size_t workers_count, size_t batch_pairs) {
+  return async_threaded_cursor_batch_impl(env, dbi, items, target_pairs, workers_count,
+                                          batch_pairs, false, 0);
+}
+
+static double async_threaded_cursor_large_batch(MDBX_env *env, MDBX_dbi dbi, size_t items,
+                                                size_t target_pairs, size_t workers_count,
+                                                size_t batch_pairs, size_t value_bytes) {
+  return async_threaded_cursor_batch_impl(env, dbi, items, target_pairs, workers_count,
+                                          batch_pairs, true, value_bytes);
 }
 
 static int async_cursor_scan_worker_init(MDBX_env *env, struct async_worker *worker, MDBX_dbi dbi);
@@ -6128,6 +6229,19 @@ int main(void) {
   const double async_large_cache_st_batch_parallel =
       async_large_cache_st_batch_parallel_get(env, large_dbi, large_items, large_ops, workers, window,
                                               large_value_bytes);
+  const size_t large_cursor_pairs = large_ops < cursor_batch_pairs ? cursor_batch_pairs : large_ops;
+  const double blocking_cursor_large_batch_serial =
+      blocking_serial_cursor_large_batch(env, large_dbi, large_items, large_cursor_pairs,
+                                         cursor_batch_pairs, large_value_bytes);
+  const double blocking_cursor_large_batch_parallel =
+      blocking_parallel_cursor_large_batch(env, large_dbi, large_items, large_cursor_pairs,
+                                           workers, cursor_batch_pairs, large_value_bytes);
+  const double async_cursor_large_batch_parallel =
+      async_parallel_cursor_large_batch(env, large_dbi, large_items, large_cursor_pairs, workers,
+                                        cursor_batch_pairs, large_value_bytes);
+  const double async_threaded_cursor_large_batch_parallel =
+      async_threaded_cursor_large_batch(env, large_dbi, large_items, large_cursor_pairs, workers,
+                                        cursor_batch_pairs, large_value_bytes);
   CHECK(drop_database(env, large_dbi));
   large_dbi = 0;
   const double blocking_put = blocking_write_put(env, dbi, items, write_ops);
@@ -6210,6 +6324,10 @@ int main(void) {
   print_rate("async cache st batch cb", async_cache_st_batch_callback_parallel);
   print_rate("async large cache batch", async_large_cache_batch_parallel);
   print_rate("async large cache st batch", async_large_cache_st_batch_parallel);
+  print_rate("blocking cursor large batch", blocking_cursor_large_batch_serial);
+  print_rate("parallel cursor large batch", blocking_cursor_large_batch_parallel);
+  print_rate("async cursor large batch", async_cursor_large_batch_parallel);
+  print_rate("async threaded cursor large", async_threaded_cursor_large_batch_parallel);
   print_rate("async threaded cache batch", async_threaded_cache_batch_parallel);
   print_rate("async threaded cache st batch", async_threaded_cache_st_batch_parallel);
   print_rate("async cache loop", async_cache_loop_parallel);
@@ -6322,6 +6440,21 @@ int main(void) {
   if (blocking_parallel > 0.0 && async_cache_st_batch_callback_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-cache-st-batch-cb/par",
            async_cache_st_batch_callback_parallel / blocking_parallel);
+  if (blocking_cursor_large_batch_parallel > 0.0 && async_cursor_large_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-cursor-large/par",
+           async_cursor_large_batch_parallel / blocking_cursor_large_batch_parallel);
+  if (blocking_cursor_large_batch_serial > 0.0 && async_cursor_large_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-cursor-large/ser",
+           async_cursor_large_batch_parallel / blocking_cursor_large_batch_serial);
+  if (blocking_cursor_large_batch_parallel > 0.0 && async_threaded_cursor_large_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-clarge/par",
+           async_threaded_cursor_large_batch_parallel / blocking_cursor_large_batch_parallel);
+  if (blocking_cursor_large_batch_serial > 0.0 && async_threaded_cursor_large_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-clarge/ser",
+           async_threaded_cursor_large_batch_parallel / blocking_cursor_large_batch_serial);
+  if (async_cursor_large_batch_parallel > 0.0 && async_threaded_cursor_large_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-thread-clarge/batch",
+           async_threaded_cursor_large_batch_parallel / async_cursor_large_batch_parallel);
   if (blocking_parallel > 0.0 && async_threaded_cache_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-cache-batch/par",
            async_threaded_cache_batch_parallel / blocking_parallel);

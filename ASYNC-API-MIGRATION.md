@@ -8965,3 +8965,58 @@ Async cursor large-value retained page-read checkpoint:
   cursor loop, and retained scan paths no longer have to block on an
   `N_BIG` overflow page read before the worker can collect other retained read
   work. A later benchmark slice should add an explicit cursor-overflow workload.
+
+Async cursor large-value benchmark coverage checkpoint:
+
+- added isolated cursor-overflow benchmark rows to `mdbx_async_api_bench`.
+  The large-value DB is now measured through blocking serial cursor batches,
+  blocking pthread-parallel cursor batches, direct async cursor batches, and
+  threaded async cursor batches before the large DB is dropped.
+- reused the existing large-value payload checker for cursor batch pairs, so
+  the new benchmark verifies every returned overflow payload instead of only
+  measuring cursor movement over ordinary in-page values.
+- added normalized ratios for direct async and threaded async cursor-large
+  batches against the blocking serial/parallel cursor-large baselines.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cursorlarge-retain-after.txt` and
+    `/tmp/mdbx-async-bench-cursorlarge-bench-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `1771c0a`. The
+  cursor-large rows are new in the after run:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async large cache batch | 139.057 Kops/s | 139.301 Kops/s |
+| async large cache st batch | 133.091 Kops/s | 132.311 Kops/s |
+| blocking cursor large batch | n/a | 131.708 Kops/s |
+| parallel cursor large batch | n/a | 246.520 Kops/s |
+| async cursor large batch | n/a | 126.497 Kops/s |
+| async threaded cursor large | n/a | 259.483 Kops/s |
+| blocking cursor batch | 138.732 Mops/s | 137.337 Mops/s |
+| parallel cursor batch | 53.693 Mops/s | 51.485 Mops/s |
+| async cursor batch | 62.973 Mops/s | 59.824 Mops/s |
+| async threaded cursor batch | 59.281 Mops/s | 107.680 Mops/s |
+| async-cursor-large/par | n/a | 0.513 |
+| async-cursor-large/ser | n/a | 0.960 |
+| async-thread-clarge/par | n/a | 1.053 |
+| async-thread-clarge/ser | n/a | 1.970 |
+| async-thread-clarge/batch | n/a | 2.051 |
+| async-cursor-batch/get | 85.648 | 64.335 |
+| async-thread-cbatch/par | 1.104 | 2.092 |
+| async-thread-cbatch/ser | 0.427 | 0.784 |
+| async-thread-cbatch/batch | 0.941 | 1.800 |
+
+- conclusion: this checkpoint does not change library behavior; it adds the
+  missing measurement surface for the retained cursor large-value read path.
+  In this sample, direct async cursor-large batch is slightly below the
+  blocking serial cursor-large row and about half the blocking parallel row,
+  while threaded async cursor-large is slightly above blocking parallel. These
+  rows now give future retained large-value changes direct evidence instead of
+  relying on ordinary cursor rows as an indirect proxy.
