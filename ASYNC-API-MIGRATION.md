@@ -6402,3 +6402,79 @@ Additional singleton storage-read batch-path checkpoint:
   single-thread cache ratios, many/blocking ratio, and threaded cursor get loop
   improved, while single get_ex, lowerbound rows, cache many, get/get_ex loop,
   and cursor loop rows regressed in this sample.
+
+Additional singleton cursor page-get batch-path checkpoint:
+
+- changed `page_submit_cursor_get()` to delegate to
+  `page_submit_cursor_get_batch()` with `count == 1`.
+- removed the one-item bypass inside `page_submit_cursor_get_batch()`, so
+  ordinary cursor child-page fetches now use the same cursor validation,
+  `ops_pget` accounting, raw page batch submit, and cursor completion path as
+  multi-page cursor reads.
+- this extends the singleton batch-path alignment from raw page/cache/storage
+  reads up through cursor page gets. Public cursor APIs still complete
+  synchronously, but their explicit-I/O page fetches now enter the same cursor
+  submit/complete batch layer used by batched traversal.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cursor-single-before.txt` and
+    `/tmp/mdbx-async-bench-cursor-single-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `5bc71d9`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.863 Mops/s | 1.849 Mops/s |
+| blocking parallel get | 1.045 Mops/s | 1.069 Mops/s |
+| async single get | 311.116 Kops/s | 304.976 Kops/s |
+| async single get_ex | 369.002 Kops/s | 316.524 Kops/s |
+| async single lowerbound | 184.938 Kops/s | 261.548 Kops/s |
+| async parallel get | 2.000 Mops/s | 2.167 Mops/s |
+| async many parallel get | 2.846 Mops/s | 1.619 Mops/s |
+| async get_ex batch | 2.702 Mops/s | 2.722 Mops/s |
+| async get_ex many | 2.861 Mops/s | 2.827 Mops/s |
+| async cache many | 4.431 Mops/s | 2.189 Mops/s |
+| async cache st many | 2.389 Mops/s | 4.361 Mops/s |
+| async cache batch | 3.132 Mops/s | 3.435 Mops/s |
+| async cache st batch | 3.248 Mops/s | 3.822 Mops/s |
+| async cache loop | 4.916 Mops/s | 2.800 Mops/s |
+| async cache st loop | 2.697 Mops/s | 2.751 Mops/s |
+| async threaded cache loop | 3.738 Mops/s | 3.645 Mops/s |
+| async threaded cache st loop | 2.769 Mops/s | 4.679 Mops/s |
+| async lowerbound batch | 1.634 Mops/s | 902.225 Kops/s |
+| async lowerbound many | 1.519 Mops/s | 1.663 Mops/s |
+| async get loop | 3.169 Mops/s | 2.888 Mops/s |
+| async get_ex loop | 2.683 Mops/s | 3.335 Mops/s |
+| async lowerbound loop | 1.881 Mops/s | 1.860 Mops/s |
+| blocking cursor get | 82.349 Mops/s | 87.373 Mops/s |
+| parallel cursor get | 61.362 Mops/s | 57.499 Mops/s |
+| async cursor get | 859.144 Kops/s | 873.156 Kops/s |
+| async cursor get loop | 69.122 Mops/s | 68.057 Mops/s |
+| async cursor get loop_from | 67.462 Mops/s | 71.861 Mops/s |
+| async threaded cursor get loop | 121.107 Mops/s | 71.167 Mops/s |
+| async threaded cget loop_from | 128.503 Mops/s | 116.635 Mops/s |
+| async/blocking parallel | 1.914 | 2.026 |
+| async-many/blocking par | 2.722 | 1.514 |
+| async-get-ex-batch/par | 2.585 | 2.546 |
+| async-cache-st-many/par | 2.286 | 4.077 |
+| async-cache-loop/par | 4.703 | 2.618 |
+| async-thread-cache-loop/par | 3.576 | 3.408 |
+| async-lower-batch/par | 1.563 | 0.844 |
+| async-lower-many/par | 1.453 | 1.555 |
+| async-loop/blocking par | 3.031 | 2.701 |
+| async-get-ex-loop/par | 2.567 | 3.119 |
+| async-cursor-get-loop/par | 1.126 | 1.184 |
+| async-cursor-get-loop/get | 80.455 | 77.944 |
+
+- conclusion: this checkpoint removes the last singleton bypass in the cursor
+  page-get submit layer. The one-run benchmark is mixed: async parallel get,
+  single lowerbound, get_ex batch, single-thread cache rows, lowerbound many,
+  get_ex loop, blocking cursor get, async cursor get, and cursor loop-from
+  improved, while many parallel get, regular cache rows, lowerbound batch,
+  get loop, and threaded cursor loop rows regressed in this sample.

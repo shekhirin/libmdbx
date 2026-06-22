@@ -50502,32 +50502,15 @@ static pgr_t page_complete_cursor_get(const dxb_cursor_page_get_submit_io_t *io,
 }
 
 static __always_inline pgr_t page_submit_cursor_get(const dxb_cursor_page_get_submit_io_t *io) {
-  int validate_err = page_cursor_get_submit_io_validate(io);
-  if (unlikely(validate_err != MDBX_SUCCESS)) {
-    if (io && io->cursor && io->cursor->txn)
-      io->cursor->txn->flags |= MDBX_TXN_ERROR;
-    return pgr_error(validate_err);
-  }
-
-  const MDBX_cursor *const mc = io->cursor;
-  MDBX_txn *const txn = mc->txn;
-  cASSERT0(txn, io->get.front <= txn->front_txnid);
-
-#if MDBX_ENABLE_PGET_STAT
-  txn->ops_pget += 1;
-#endif /* MDBX_ENABLE_PGET_STAT */
-
-  return page_complete_cursor_get(io, page_submit_get_unchecked(txn, &io->get));
+  pgr_t result = pgr_error(MDBX_EINVAL);
+  const int err = page_submit_cursor_get_batch(io, &result, 1);
+  return likely(err == result.err) ? result : pgr_error(err);
 }
 
 static int page_submit_cursor_get_batch(const dxb_cursor_page_get_submit_io_t *ios, pgr_t *results,
                                         size_t count) {
   if (unlikely(!ios || !results || !count))
     return MDBX_EINVAL;
-  if (count == 1) {
-    results[0] = page_submit_cursor_get(&ios[0]);
-    return results[0].err;
-  }
 
   MDBX_txn *const txn = likely(ios[0].cursor) ? ios[0].cursor->txn : nullptr;
   if (unlikely(!txn)) {
