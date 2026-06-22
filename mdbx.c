@@ -16892,7 +16892,17 @@ static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, cons
   }
 
   if (root_count) {
-    (void)page_submit_cursor_get_batch(gets, pgrs, root_count);
+    dxb_cursor_page_get_batch_t page_batch;
+    int batch_err = page_cursor_get_batch_begin(&page_batch, gets, pgrs, root_count);
+    if (likely(batch_err == MDBX_SUCCESS)) {
+      batch_err = page_cursor_get_batch_drive(&page_batch, false);
+      while (batch_err == MDBX_RESULT_TRUE)
+        batch_err = page_cursor_get_batch_drive(&page_batch, true);
+      const int finish_err = page_cursor_get_batch_finish(&page_batch);
+      if (unlikely(finish_err != MDBX_SUCCESS))
+        batch_err = finish_err;
+    }
+    (void)batch_err;
     for (size_t j = 0; j < root_count; ++j) {
       const size_t i = indices[j];
       MDBX_cursor *const mc = &couples[i].outer;
@@ -16945,7 +16955,17 @@ static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, cons
     if (!child_count)
       break;
 
-    (void)page_submit_cursor_get_batch(gets, pgrs, child_count);
+    dxb_cursor_page_get_batch_t page_batch;
+    int batch_err = page_cursor_get_batch_begin(&page_batch, gets, pgrs, child_count);
+    if (likely(batch_err == MDBX_SUCCESS)) {
+      batch_err = page_cursor_get_batch_drive(&page_batch, false);
+      while (batch_err == MDBX_RESULT_TRUE)
+        batch_err = page_cursor_get_batch_drive(&page_batch, true);
+      const int finish_err = page_cursor_get_batch_finish(&page_batch);
+      if (unlikely(finish_err != MDBX_SUCCESS))
+        batch_err = finish_err;
+    }
+    (void)batch_err;
     for (size_t j = 0; j < child_count; ++j) {
       const size_t i = indices[j];
       MDBX_cursor *const mc = &couples[i].outer;
@@ -17112,7 +17132,17 @@ static size_t async_batched_lowerbound_traverse(const MDBX_txn *txn, MDBX_dbi db
   }
 
   if (root_count) {
-    (void)page_submit_cursor_get_batch(gets, pgrs, root_count);
+    dxb_cursor_page_get_batch_t page_batch;
+    int batch_err = page_cursor_get_batch_begin(&page_batch, gets, pgrs, root_count);
+    if (likely(batch_err == MDBX_SUCCESS)) {
+      batch_err = page_cursor_get_batch_drive(&page_batch, false);
+      while (batch_err == MDBX_RESULT_TRUE)
+        batch_err = page_cursor_get_batch_drive(&page_batch, true);
+      const int finish_err = page_cursor_get_batch_finish(&page_batch);
+      if (unlikely(finish_err != MDBX_SUCCESS))
+        batch_err = finish_err;
+    }
+    (void)batch_err;
     for (size_t j = 0; j < root_count; ++j) {
       const size_t i = indices[j];
       MDBX_cursor *const mc = &couples[i].outer;
@@ -17165,7 +17195,17 @@ static size_t async_batched_lowerbound_traverse(const MDBX_txn *txn, MDBX_dbi db
     if (!child_count)
       break;
 
-    (void)page_submit_cursor_get_batch(gets, pgrs, child_count);
+    dxb_cursor_page_get_batch_t page_batch;
+    int batch_err = page_cursor_get_batch_begin(&page_batch, gets, pgrs, child_count);
+    if (likely(batch_err == MDBX_SUCCESS)) {
+      batch_err = page_cursor_get_batch_drive(&page_batch, false);
+      while (batch_err == MDBX_RESULT_TRUE)
+        batch_err = page_cursor_get_batch_drive(&page_batch, true);
+      const int finish_err = page_cursor_get_batch_finish(&page_batch);
+      if (unlikely(finish_err != MDBX_SUCCESS))
+        batch_err = finish_err;
+    }
+    (void)batch_err;
     for (size_t j = 0; j < child_count; ++j) {
       const size_t i = indices[j];
       MDBX_cursor *const mc = &couples[i].outer;
