@@ -5310,3 +5310,52 @@ Additional batched get_ex cache materialization checkpoint:
   the same one-run benchmark, so the result should be treated as directional
   for the targeted warm batched `get_ex` path rather than a global performance
   claim.
+
+Additional get_ex loop cache materialization checkpoint:
+
+- changed `mdbx_async_get_ex_loop()` so each bounded loop window uses the hidden
+  async-get cache before traversal. Warm cache entries are now materialized with
+  `cache_materialize_singlethreaded_batch()`, while cold, displaced, or empty
+  slots enter `async_batched_get_traverse()`. Unhandled entries still fall back
+  to `mdbx_get_ex()`.
+- callback ordering and `completed` updates remain unchanged: the worker still
+  collects keys for one window, resolves them, then invokes `result_func` in
+  index order. Exact non-dupsort loop callbacks keep the submitted key
+  descriptor semantics, while fallback paths remain available for unsupported
+  DBI/transaction shapes.
+- this completes the same warm-cache materialization route for the public
+  `get_ex` loop shape that batch and many already use.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-getexloopcache-before.txt` and
+    `/tmp/mdbx-async-bench-getexloopcache-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `e6da00e`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.827 Mops/s | 1.795 Mops/s |
+| blocking parallel get | 663.221 Kops/s | 752.411 Kops/s |
+| async single get | 371.450 Kops/s | 216.048 Kops/s |
+| async single get_ex | 369.567 Kops/s | 395.139 Kops/s |
+| async parallel get | 2.766 Mops/s | 1.867 Mops/s |
+| async many parallel get | 2.574 Mops/s | 2.249 Mops/s |
+| async get_ex batch | 2.284 Mops/s | 2.042 Mops/s |
+| async get_ex many | 2.857 Mops/s | 2.838 Mops/s |
+| async get_ex loop | 1.879 Mops/s | 2.212 Mops/s |
+| async threaded get_ex loop | 1.196 Mops/s | 1.892 Mops/s |
+| async-get-ex-loop/par | 2.833 | 2.940 |
+| async-thread-get-ex-loop/par | 1.803 | 2.514 |
+| async-thread-get-ex-loop/loop | 0.637 | 0.855 |
+| async-get-ex-loop/ser | 1.029 | 1.232 |
+| async-thread-get-ex-loop/ser | 0.655 | 1.054 |
+
+- conclusion: the targeted `get_ex` loop rows now benefit from the same
+  hidden-cache/page-cache materialization path as repeated batch and many reads.
+  The direct and threaded loop rows improved in this sample, while unrelated
+  get rows moved with normal one-run benchmark noise.
