@@ -1925,6 +1925,37 @@ int main(void) {
             "unexpected mixed async cache get result");
     CHECK(expect_value(&mixed_cache_data[i], keys[i + 12], __FILE__, __LINE__));
   }
+
+  MDBX_val same_cursor_pairs[4];
+  size_t same_cursor_count = 0;
+  MDBX_val same_cursor_key = val(NULL, 0);
+  MDBX_val same_cursor_data = val(NULL, 0);
+  get_values[0] = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get_batch(async, cursor, &same_cursor_count,
+                                    same_cursor_pairs, 4, MDBX_NEXT, &ops[0]));
+  CHECK(mdbx_async_cursor_get(async, cursor, &same_cursor_key, &same_cursor_data,
+                              MDBX_NEXT, &ops[1]));
+  CHECK(mdbx_async_get(async, txn, dbi, &key_values[20], &get_values[0], &ops[2]));
+  CHECK(wait_many_success("same cursor queued async reads", ops, 3, op_results,
+                          __FILE__, __LINE__));
+  REQUIRE(same_cursor_count == 4, "same cursor batch returned wrong value count");
+  for (unsigned i = 0; i < 2; ++i) {
+    REQUIRE(same_cursor_pairs[i * 2].iov_len == sizeof(uint64_t),
+            "same cursor batch returned wrong key size");
+    uint64_t actual_key = UINT64_MAX;
+    memcpy(&actual_key, same_cursor_pairs[i * 2].iov_base, sizeof(actual_key));
+    REQUIRE(actual_key == (uint64_t)(i + 1), "same cursor batch returned wrong key");
+    CHECK(expect_value(&same_cursor_pairs[i * 2 + 1], actual_key, __FILE__, __LINE__));
+  }
+  REQUIRE(same_cursor_key.iov_len == sizeof(uint64_t),
+          "same cursor queued get returned wrong key size");
+  uint64_t same_cursor_actual_key = UINT64_MAX;
+  memcpy(&same_cursor_actual_key, same_cursor_key.iov_base,
+         sizeof(same_cursor_actual_key));
+  REQUIRE(same_cursor_actual_key == 4, "same cursor queued get returned wrong key");
+  CHECK(expect_value(&same_cursor_data, same_cursor_actual_key, __FILE__, __LINE__));
+  CHECK(expect_value(&get_values[0], keys[20], __FILE__, __LINE__));
+
   CHECK(mdbx_async_cursor_close(async, cursor, &op));
   CHECK_OP(op);
   cursor = NULL;
