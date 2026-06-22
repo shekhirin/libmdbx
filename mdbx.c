@@ -16735,10 +16735,12 @@ static MDBX_async_get_cache_slot *async_get_cache_slot(MDBX_async *async, const 
 }
 
 static bool async_nodup_read_batchable(const MDBX_txn *txn, MDBX_dbi dbi);
-static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
-                                         MDBX_val data[], int results[], bool handled[],
-                                         const bool eligible[], MDBX_async_get_cache_slot *slots[],
-                                         MDBX_val found_keys[], size_t count);
+static size_t async_batched_get_traverse_stateful(const MDBX_txn *txn, MDBX_dbi dbi,
+                                                  const MDBX_val keys[], MDBX_val data[],
+                                                  int results[], bool handled[],
+                                                  const bool eligible[],
+                                                  MDBX_async_get_cache_slot *slots[],
+                                                  MDBX_val found_keys[], size_t count);
 
 static int async_cached_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
                             MDBX_val *data) {
@@ -16763,7 +16765,8 @@ static int async_cached_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi
       bool cold[1] = {true};
       MDBX_async_get_cache_slot *slots[1] = {slot};
 
-      (void)async_batched_get_traverse(txn, dbi, keys, values, results, handled, cold, slots, nullptr, 1);
+      (void)async_batched_get_traverse_stateful(txn, dbi, keys, values, results, handled, cold, slots,
+                                                nullptr, 1);
       if (handled[0]) {
         slot->use_count = slot->use_count ? slot->use_count : 1;
         if (results[0] == MDBX_SUCCESS)
@@ -17200,16 +17203,26 @@ static size_t async_batched_get_traverse_drive_to_completion(async_batched_get_t
   return async_batched_get_traverse_finish(state);
 }
 
-static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
-                                         MDBX_val data[], int results[], bool handled[],
-                                         const bool eligible[], MDBX_async_get_cache_slot *slots[],
-                                         MDBX_val found_keys[], size_t count) {
+static size_t async_batched_get_traverse_stateful(const MDBX_txn *txn, MDBX_dbi dbi,
+                                                  const MDBX_val keys[], MDBX_val data[],
+                                                  int results[], bool handled[],
+                                                  const bool eligible[],
+                                                  MDBX_async_get_cache_slot *slots[],
+                                                  MDBX_val found_keys[], size_t count) {
   async_batched_get_traverse_state_t state;
   int rc = async_batched_get_traverse_begin(&state, txn, dbi, keys, data, results, handled, eligible,
                                             slots, found_keys, count);
   if (unlikely(rc != MDBX_SUCCESS))
     return async_batched_get_traverse_finish(&state);
   return async_batched_get_traverse_drive_to_completion(&state);
+}
+
+MDBX_MAYBE_UNUSED static size_t async_batched_get_traverse(
+    const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[], MDBX_val data[], int results[],
+    bool handled[], const bool eligible[], MDBX_async_get_cache_slot *slots[], MDBX_val found_keys[],
+    size_t count) {
+  return async_batched_get_traverse_stateful(txn, dbi, keys, data, results, handled, eligible, slots,
+                                             found_keys, count);
 }
 
 enum async_batched_lowerbound_traverse_phase {
@@ -17569,16 +17582,24 @@ static size_t async_batched_lowerbound_traverse_drive_to_completion(
   return async_batched_lowerbound_traverse_finish(state);
 }
 
-static size_t async_batched_lowerbound_traverse(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
-                                                MDBX_val data[], int results[], bool handled[],
-                                                const bool eligible[], MDBX_val found_keys[],
-                                                size_t count) {
+static size_t async_batched_lowerbound_traverse_stateful(const MDBX_txn *txn, MDBX_dbi dbi,
+                                                         const MDBX_val keys[], MDBX_val data[],
+                                                         int results[], bool handled[],
+                                                         const bool eligible[],
+                                                         MDBX_val found_keys[], size_t count) {
   async_batched_lowerbound_traverse_state_t state;
   int rc = async_batched_lowerbound_traverse_begin(&state, txn, dbi, keys, data, results, handled,
                                                    eligible, found_keys, count);
   if (unlikely(rc != MDBX_SUCCESS))
     return async_batched_lowerbound_traverse_finish(&state);
   return async_batched_lowerbound_traverse_drive_to_completion(&state);
+}
+
+MDBX_MAYBE_UNUSED static size_t async_batched_lowerbound_traverse(
+    const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[], MDBX_val data[], int results[],
+    bool handled[], const bool eligible[], MDBX_val found_keys[], size_t count) {
+  return async_batched_lowerbound_traverse_stateful(txn, dbi, keys, data, results, handled, eligible,
+                                                    found_keys, count);
 }
 
 static int async_cached_get_one(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
@@ -17607,7 +17628,8 @@ static int async_cached_get_one(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi
     if (slot->use_count > 1)
       entries[0] = slot->entry;
     (void)cache_materialize_singlethreaded_batch(txn, values, entries, cache_results, 1, handled);
-    (void)async_batched_get_traverse(txn, dbi, keys, values, results, handled, cold, slots, nullptr, 1);
+    (void)async_batched_get_traverse_stateful(txn, dbi, keys, values, results, handled, cold, slots,
+                                              nullptr, 1);
 
     if (handled[0]) {
       int rc;
@@ -17672,8 +17694,8 @@ static int async_get_equal_or_great_one(const MDBX_txn *txn, MDBX_dbi dbi, MDBX_
     bool handled[1] = {false};
     bool eligible[1] = {true};
 
-    (void)async_batched_lowerbound_traverse(txn, dbi, keys, values, results, handled, eligible,
-                                            found_keys, 1);
+    (void)async_batched_lowerbound_traverse_stateful(txn, dbi, keys, values, results, handled, eligible,
+                                                     found_keys, 1);
     if (handled[0]) {
       if (results[0] == MDBX_SUCCESS || results[0] == MDBX_RESULT_TRUE) {
         *key = found_keys[0];

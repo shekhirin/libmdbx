@@ -7779,3 +7779,56 @@ Async batch traversal state ownership checkpoint:
   the previous checkpoints, the structural gain is more important than the
   noisy microbenchmark deltas: multi-item async read operations now hold
   traversal state directly instead of hiding it inside synchronous wrappers.
+
+Single async helper traversal state ownership checkpoint:
+
+- changed the remaining single exact-key and lowerbound helper paths to call
+  stateful traversal helpers that allocate begin/drive/finish state directly.
+- the older compatibility wrappers are now retained only as marked-unused
+  internal helpers; async read call sites no longer use them.
+- this completes the local transition from synchronous traversal wrappers to
+  explicit traversal state across the async get, get_ex, cache-get, batch,
+  grouped-op, and lowerbound read paths. The worker still drives state to
+  completion today; a later scheduler checkpoint can stop after nonblocking
+  drive returns pending and retain the state across completions.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-single-state-before.txt` and
+    `/tmp/mdbx-async-bench-single-state-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `8b112fa`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async single get | 364.203 Kops/s | 366.154 Kops/s |
+| async single get_ex | 315.843 Kops/s | 290.794 Kops/s |
+| async single lowerbound | 290.737 Kops/s | 294.605 Kops/s |
+| async parallel get | 2.764 Mops/s | 2.522 Mops/s |
+| async many parallel get | 2.144 Mops/s | 2.850 Mops/s |
+| async threaded get | 2.438 Mops/s | 2.922 Mops/s |
+| async batch parallel get | 2.538 Mops/s | 2.345 Mops/s |
+| async batch callback get | 2.715 Mops/s | 2.765 Mops/s |
+| async get_ex batch | 2.470 Mops/s | 2.814 Mops/s |
+| async get_ex many | 2.865 Mops/s | 2.864 Mops/s |
+| async cache many | 3.938 Mops/s | 3.838 Mops/s |
+| async cache st many | 4.127 Mops/s | 4.440 Mops/s |
+| async cache loop | 2.792 Mops/s | 4.936 Mops/s |
+| async cache st loop | 3.253 Mops/s | 4.863 Mops/s |
+| async lowerbound batch | 1.676 Mops/s | 1.673 Mops/s |
+| async lowerbound many | 1.422 Mops/s | 1.532 Mops/s |
+| async get loop | 2.815 Mops/s | 2.463 Mops/s |
+| async get_ex loop | 3.383 Mops/s | 3.467 Mops/s |
+| async lowerbound loop | 1.888 Mops/s | 1.874 Mops/s |
+| async threaded lower loop | 1.848 Mops/s | 1.453 Mops/s |
+
+- conclusion: this checkpoint is primarily structural. Single get and single
+  lowerbound were roughly flat, single get_ex regressed in this run, and several
+  unrelated batch/cache/loop rows moved substantially. The important result is
+  that the async read implementation now reaches exact-key and lowerbound
+  traversal through explicit stateful entry points everywhere.
