@@ -16502,7 +16502,8 @@ static int async_cached_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi
 
 static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
                                          MDBX_val data[], int results[], bool handled[],
-                                         const bool eligible[], MDBX_async_get_cache_slot *slots[], size_t count) {
+                                         const bool eligible[], MDBX_async_get_cache_slot *slots[],
+                                         MDBX_val found_keys[], size_t count) {
   if (unlikely(!txn || !keys || !data || !results || !handled || !eligible || !count))
     return 0;
   if (unlikely(check_txn(txn, MDBX_TXN_BLOCKED) != MDBX_SUCCESS))
@@ -16628,7 +16629,7 @@ static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, cons
 
     MDBX_val key = keys[i];
     MDBX_val value = {nullptr, 0};
-    int rc = cursor_seek(&couples[i].outer, &key, &value, MDBX_SET).err;
+    int rc = cursor_seek(&couples[i].outer, &key, &value, found_keys ? MDBX_SET_KEY : MDBX_SET).err;
     if (likely(rc == MDBX_SUCCESS)) {
       MDBX_cursor *const mc = &couples[i].outer;
       MDBX_async_get_cache_slot *const slot = slots ? slots[i] : nullptr;
@@ -16660,9 +16661,11 @@ static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, cons
         rc = cursor_couple_capture_txn_pins(&couples[i]);
     }
     results[i] = rc;
-    if (rc == MDBX_SUCCESS)
+    if (rc == MDBX_SUCCESS) {
+      if (found_keys)
+        found_keys[i] = key;
       data[i] = value;
-    else {
+    } else {
       data[i].iov_base = nullptr;
       data[i].iov_len = 0;
     }
@@ -16718,7 +16721,7 @@ static int async_cached_get_batch(MDBX_async_op *op) {
       }
     }
     (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
-    (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, cold, slots, count);
+    (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, cold, slots, nullptr, count);
   }
 
   for (size_t i = 0; i < count; ++i) {
@@ -16811,7 +16814,7 @@ static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], 
       }
     }
     (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
-    (void)async_batched_get_traverse(txn, dbi, keys, data, tree_results, handled, cold, slots, count);
+    (void)async_batched_get_traverse(txn, dbi, keys, data, tree_results, handled, cold, slots, nullptr, count);
   }
 
   for (size_t i = 0; i < count; ++i) {
@@ -17593,7 +17596,7 @@ static int async_op_execute(MDBX_async_op *op) {
       (void)cache_materialize_singlethreaded_batch(op->args.get_loop.txn, data, entries,
                                                    cache_results, chunk, handled);
       (void)async_batched_get_traverse(op->args.get_loop.txn, op->args.get_loop.dbi, keys, data,
-                                       results, handled, cold, slots, chunk);
+                                       results, handled, cold, slots, nullptr, chunk);
 
       for (size_t j = 0; j < chunk; ++j) {
         const size_t i = base + j;
@@ -17637,23 +17640,94 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_get_ex_loop:
     if (op->args.get_ex_loop.completed)
       *op->args.get_ex_loop.completed = 0;
-    for (size_t i = 0; i < op->args.get_ex_loop.count; ++i) {
-      MDBX_val key = {nullptr, 0};
-      MDBX_val data = {nullptr, 0};
-      size_t values_count = 0;
-      int rc = op->args.get_ex_loop.key_func(op->args.get_ex_loop.context, i, &key);
-      if (unlikely(rc != MDBX_SUCCESS))
-        return rc;
-      const int get_rc = mdbx_get_ex(op->args.get_ex_loop.txn, op->args.get_ex_loop.dbi, &key, &data,
-                                     &values_count);
-      rc = op->args.get_ex_loop.result_func
-               ? op->args.get_ex_loop.result_func(op->args.get_ex_loop.context, i, &key, &data,
-                                                  values_count, get_rc)
-               : get_rc;
-      if (op->args.get_ex_loop.completed)
-        *op->args.get_ex_loop.completed = i + 1;
-      if (unlikely(rc != MDBX_SUCCESS))
-        return rc;
+    {
+      const MDBX_txn *const txn = op->args.get_ex_loop.txn;
+      const MDBX_dbi dbi = op->args.get_ex_loop.dbi;
+      const uint8_t state = likely(check_txn(txn, MDBX_TXN_BLOCKED) == MDBX_SUCCESS) ? dbi_state(txn, dbi) : 0;
+      const bool batchable = (state & (DBI_LINDO | DBI_VALID)) == (DBI_LINDO | DBI_VALID) &&
+                             !dbi_changed(txn, dbi) && !(txn->dbs[dbi].flags & MDBX_DUPSORT);
+
+      for (size_t base = 0; base < op->args.get_ex_loop.count;) {
+        enum { get_ex_loop_window = 64 };
+        const size_t remaining = op->args.get_ex_loop.count - base;
+        const size_t chunk = remaining < get_ex_loop_window ? remaining : get_ex_loop_window;
+        MDBX_val keys[get_ex_loop_window];
+        MDBX_val found_keys[get_ex_loop_window];
+        MDBX_val data[get_ex_loop_window];
+        void *key_copies[get_ex_loop_window];
+        uint64_t key_inline[get_ex_loop_window][MDBX_ASYNC_INLINE_WORDS];
+        int results[get_ex_loop_window];
+        MDBX_async_get_cache_slot *slots[get_ex_loop_window];
+        bool handled[get_ex_loop_window];
+        bool eligible[get_ex_loop_window];
+        int loop_rc = MDBX_SUCCESS;
+
+        memset(keys, 0, chunk * sizeof(keys[0]));
+        memset(found_keys, 0, chunk * sizeof(found_keys[0]));
+        memset(data, 0, chunk * sizeof(data[0]));
+        memset(key_copies, 0, chunk * sizeof(key_copies[0]));
+        memset(results, 0, chunk * sizeof(results[0]));
+        memset(slots, 0, chunk * sizeof(slots[0]));
+        memset(handled, 0, chunk * sizeof(handled[0]));
+        memset(eligible, 0, chunk * sizeof(eligible[0]));
+
+        for (size_t j = 0; j < chunk; ++j) {
+          const size_t i = base + j;
+          MDBX_val key = {nullptr, 0};
+          int rc = op->args.get_ex_loop.key_func(op->args.get_ex_loop.context, i, &key);
+          if (unlikely(rc == MDBX_SUCCESS))
+            rc = async_copy_val(&keys[j], &key_copies[j], key_inline[j], sizeof(key_inline[j]), &key);
+          if (unlikely(rc != MDBX_SUCCESS)) {
+            loop_rc = rc;
+            goto get_ex_loop_bailout;
+          }
+          found_keys[j] = keys[j];
+          eligible[j] = batchable;
+          if (batchable)
+            slots[j] = async_get_cache_slot(op->async, txn, dbi, &keys[j]);
+        }
+
+        if (batchable)
+          (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, eligible, slots,
+                                           found_keys, chunk);
+
+        for (size_t j = 0; j < chunk; ++j) {
+          const size_t i = base + j;
+          MDBX_val key = found_keys[j];
+          MDBX_val value = {nullptr, 0};
+          size_t values_count = 0;
+          int get_rc;
+          if (handled[j]) {
+            get_rc = results[j];
+            if (get_rc == MDBX_SUCCESS) {
+              value = data[j];
+              values_count = 1;
+            }
+          } else {
+            key = keys[j];
+            get_rc = mdbx_get_ex(txn, dbi, &key, &value, &values_count);
+          }
+          int rc = op->args.get_ex_loop.result_func
+                       ? op->args.get_ex_loop.result_func(op->args.get_ex_loop.context, i, &key, &value,
+                                                          values_count, get_rc)
+                       : get_rc;
+          if (op->args.get_ex_loop.completed)
+            *op->args.get_ex_loop.completed = i + 1;
+          if (unlikely(rc != MDBX_SUCCESS)) {
+            loop_rc = rc;
+            goto get_ex_loop_bailout;
+          }
+        }
+        base += chunk;
+        for (size_t j = 0; j < chunk; ++j)
+          osal_free(key_copies[j]);
+        continue;
+
+      get_ex_loop_bailout:
+        for (size_t j = 0; j < chunk; ++j)
+          osal_free(key_copies[j]);
+        return loop_rc;
+      }
     }
     return MDBX_SUCCESS;
   case async_op_get_equal_or_great_loop:

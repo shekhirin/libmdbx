@@ -540,6 +540,45 @@ Validation:
 - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
 - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
 
+## Batched Async get_ex Loop Slice
+
+`mdbx_async_get_ex_loop()` now uses the internal batched exact-get traversal for
+already-open non-`MDBX_DUPSORT` tables. The worker copies each key returned by
+`key_func` into stable 64-item window storage, submits the window through
+`async_batched_get_traverse()`, preserves `mdbx_get_ex()`-style found-key output
+for successful results, reports `values_count=1` on successful non-dupsort
+batched hits, and invokes `result_func` in original index order.
+
+The dupsort path, stale/invalid DBI path, and any item not handled by the
+batched traversal still fall back to `mdbx_get_ex()` so duplicate value counts
+and error behavior remain compatible.
+
+Reduced forced no-mmap/io_uring benchmark (`items=1000 ops=10000
+large_items=256 large_ops=10000 large_value=10000 page_cache=64K`), compared
+against previous commit `c46dc77`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async parallel get | 2.269 Mops/s | 2.302 Mops/s |
+| async many parallel get | 1.619 Mops/s | 2.259 Mops/s |
+| async batch parallel get | 1.858 Mops/s | 1.338 Mops/s |
+| async get_ex batch | 939.407 Kops/s | 645.459 Kops/s |
+| async get_ex many | 1.159 Mops/s | 1.188 Mops/s |
+| async get loop | 2.895 Mops/s | 2.859 Mops/s |
+| async get_ex loop | 1.184 Mops/s | 1.766 Mops/s |
+| async threaded get_ex loop | 1.201 Mops/s | 1.759 Mops/s |
+
+The targeted `get_ex_loop` rows improved in this run. The batch rows are not
+changed by this slice and should be treated as run-to-run noise.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+- Release benchmark logs: `/tmp/mdbx-async-bench-getexloop-before.txt`, `/tmp/mdbx-async-bench-getexloop-after.txt`
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current
