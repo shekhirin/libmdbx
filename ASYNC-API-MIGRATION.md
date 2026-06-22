@@ -8546,3 +8546,57 @@ Async lower-bound loop retained traversal checkpoint:
   lower-bound loop traversal now has a suspension point on explicit page-cache
   misses instead of always driving the traversal window to completion inside the
   worker.
+
+Async cache_get loop retained materialization checkpoint:
+
+- added `async_cache_get_loop_pending_t`, a retained state for one 64-entry
+  `mdbx_async_cache_get_loop()` or
+  `mdbx_async_cache_get_SingleThreaded_loop()` prefetch window. It owns the
+  cache-entry snapshots, materialized values, cache results, handled flags, and
+  `async_cache_materialize_batch_state_t` until explicit page-cache reads
+  complete.
+- changed the worker to route cache-get loop opcodes through the retained read
+  scheduler. The retained window snapshots/cache-materializes entries ahead,
+  but still calls `key_func`, fallback cache-get, `result_func`, and
+  `completed` updates sequentially during completion.
+- unsupported materializer setup before any callback falls back to the existing
+  synchronous executor path; setup failures after partial completion return the
+  setup error rather than rerunning already-completed callbacks.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cacheloop-retain-before.txt` and
+    `/tmp/mdbx-async-bench-cacheloop-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `44d90ac`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.013 Mops/s | 992.120 Kops/s |
+| blocking parallel get | 948.016 Kops/s | 799.594 Kops/s |
+| async cache loop | 5.020 Mops/s | 3.922 Mops/s |
+| async cache st loop | 5.023 Mops/s | 4.941 Mops/s |
+| async threaded cache loop | 4.931 Mops/s | 4.898 Mops/s |
+| async threaded cache st loop | 4.934 Mops/s | 4.995 Mops/s |
+| async-cache-loop/par | 5.295 | 4.905 |
+| async-cache-st-loop/par | 5.298 | 6.179 |
+| async-thread-cache-loop/par | 5.201 | 6.126 |
+| async-thread-cache-st-l/par | 5.205 | 6.247 |
+| async-cache-loop/batch | 1.852 | 0.952 |
+| async-cache-st-loop/batch | 1.260 | 1.203 |
+| async-cache-loop/many | 1.928 | 0.987 |
+| async-cache-st-loop/many | 1.041 | 1.138 |
+
+- conclusion: this checkpoint moves cache-get loop prefetch materialization
+  into the retained page-cache read scheduler, but it is not a warm-cache
+  throughput win in this run. The direct cache-loop row regressed, while
+  single-threaded and threaded loop rows were roughly flat to slightly higher
+  relative to the slower blocking baseline. The semantic improvement is that
+  cache-get loops can now suspend while their prefetch window has explicit
+  page-cache reads outstanding, instead of materializing the window to
+  completion before the worker can collect more retained read work.
