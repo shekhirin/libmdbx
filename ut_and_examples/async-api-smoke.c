@@ -1871,6 +1871,75 @@ int main(void) {
 
   CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
   CHECK_OP(op);
+  REQUIRE(txn != NULL, "abort-order loop read transaction was not returned");
+  struct async_block_probe loop_abort_order_probe;
+  struct get_loop_probe abort_get_loop_probe = {0, 0, 0};
+  struct get_ex_loop_probe abort_get_ex_loop_probe = {0, 0, 0, 0};
+  struct get_equal_or_great_loop_probe abort_lower_loop_probe = {0};
+  struct cache_loop_probe abort_cache_loop_probe = {0, 16, 0, 0, 0};
+  struct cursor_get_loop_probe abort_cursor_loop_probe = {0};
+  MDBX_cache_entry_t abort_cache_loop_entries[4];
+  size_t abort_get_loop_completed = 0;
+  size_t abort_get_ex_loop_completed = 0;
+  size_t abort_lower_loop_completed = 0;
+  size_t abort_cache_loop_completed = 0;
+  size_t abort_cursor_loop_completed = 0;
+  memset(ops, 0, sizeof(ops));
+  for (unsigned i = 0; i < 4; ++i)
+    mdbx_cache_init(&abort_cache_loop_entries[i]);
+  CHECK(async_block_probe_prepare(&loop_abort_order_probe));
+  CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_submit(async, async_block_probe_func, &loop_abort_order_probe, &ops[0]));
+  CHECK(mdbx_async_get_loop(async, txn, dbi, 4, get_loop_key_func,
+                            get_loop_result_func, &abort_get_loop_probe,
+                            &abort_get_loop_completed, &ops[1]));
+  CHECK(mdbx_async_get_ex_loop(async, txn, dbi, 4, get_ex_loop_key_func,
+                               get_ex_loop_result_func, &abort_get_ex_loop_probe,
+                               &abort_get_ex_loop_completed, &ops[2]));
+  CHECK(mdbx_async_get_equal_or_great_loop(async, txn, dbi, 4,
+                                           get_equal_or_great_loop_key_func,
+                                           get_equal_or_great_loop_data_func,
+                                           get_equal_or_great_loop_result_func,
+                                           &abort_lower_loop_probe,
+                                           &abort_lower_loop_completed, &ops[3]));
+  CHECK(mdbx_async_cache_get_loop(async, txn, dbi, 4, cache_loop_key_func,
+                                  abort_cache_loop_entries, cache_loop_result_func,
+                                  &abort_cache_loop_probe,
+                                  &abort_cache_loop_completed, &ops[4]));
+  CHECK(mdbx_async_cursor_get_loop(async, cursor, 4, MDBX_FIRST, MDBX_NEXT,
+                                   cursor_get_loop_probe_func,
+                                   &abort_cursor_loop_probe,
+                                   &abort_cursor_loop_completed, &ops[5]));
+  CHECK(mdbx_async_txn_abort(async, txn, NULL, &ops[6]));
+  txn = NULL;
+  cursor = NULL;
+  CHECK(async_block_probe_release(&loop_abort_order_probe));
+  CHECK(wait_many_success("queued async read loops before txn abort", ops, 7,
+                          op_results, __FILE__, __LINE__));
+  async_block_probe_close(&loop_abort_order_probe);
+  REQUIRE(loop_abort_order_probe.calls == 1,
+          "loop abort-order async blocker did not run exactly once");
+  REQUIRE(abort_get_loop_completed == 4 && abort_get_loop_probe.keys == 4 &&
+              abort_get_loop_probe.results == 4,
+          "queued get loop before abort did not complete");
+  REQUIRE(abort_get_ex_loop_completed == 4 && abort_get_ex_loop_probe.keys == 4 &&
+              abort_get_ex_loop_probe.results == 4 &&
+              abort_get_ex_loop_probe.values == 4,
+          "queued get_ex loop before abort did not complete");
+  REQUIRE(abort_lower_loop_completed == 4 && abort_lower_loop_probe.keys == 4 &&
+              abort_lower_loop_probe.data == 4 &&
+              abort_lower_loop_probe.results == 4 &&
+              abort_lower_loop_probe.greater_results == 2,
+          "queued lowerbound loop before abort did not complete");
+  REQUIRE(abort_cache_loop_completed == 4 && abort_cache_loop_probe.keys == 4 &&
+              abort_cache_loop_probe.results == 4,
+          "queued cache loop before abort did not complete");
+  REQUIRE(abort_cursor_loop_completed == 4 && abort_cursor_loop_probe.calls == 4,
+          "queued cursor loop before abort did not complete");
+
+  CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
+  CHECK_OP(op);
   REQUIRE(txn != NULL, "read transaction was not returned");
 
   memset(&env_stat, 0, sizeof(env_stat));
