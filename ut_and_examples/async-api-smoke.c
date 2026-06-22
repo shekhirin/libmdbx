@@ -983,8 +983,10 @@ bailout:
 
 enum async_read_mode {
   async_read_get,
+  async_read_get_notfound,
   async_read_cursor_get,
   async_read_cache_get,
+  async_read_cache_get_notfound,
   async_read_get_batch,
   async_read_cache_get_batch
 };
@@ -1000,8 +1002,10 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   int rc = MDBX_SUCCESS;
   int operation_result = MDBX_SUCCESS;
   const uint64_t key = 42;
+  const uint64_t missing_key = 43;
   const uint64_t payload = expected_value(key);
   MDBX_val key_value = val((void *)&key, sizeof(key));
+  MDBX_val missing_key_value = val((void *)&missing_key, sizeof(missing_key));
   MDBX_val put_value = val((void *)&payload, sizeof(payload));
   MDBX_val data = val(NULL, 0);
   MDBX_cache_entry_t cache_entry;
@@ -1016,6 +1020,8 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   MDBX_cache_result_t batch_cache_results[ASYNC_READ_BATCH_COUNT];
   uint8_t batch_values[ASYNC_READ_BATCH_COUNT][ASYNC_READ_BATCH_VALUE_BYTES];
   const bool batch_read = mode == async_read_get_batch || mode == async_read_cache_get_batch;
+  const bool notfound_read = mode == async_read_get_notfound || mode == async_read_cache_get_notfound;
+  MDBX_val *read_key_value = notfound_read ? &missing_key_value : &key_value;
 
   if (!env_enabled("MDBX_FORCE_NO_DATA_MMAP")) {
     rc = fail_msg("async read fault smoke requires MDBX_FORCE_NO_DATA_MMAP=1", __FILE__, __LINE__);
@@ -1081,9 +1087,13 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor, &op));
     CHECK_OP(op);
     read_name = "mdbx_async_cursor_get cold single read";
-  } else if (mode == async_read_cache_get) {
+  } else if (mode == async_read_get_notfound) {
+    read_name = "mdbx_async_get cold missing read";
+  } else if (mode == async_read_cache_get || mode == async_read_cache_get_notfound) {
     mdbx_cache_init(&cache_entry);
-    read_name = "mdbx_async_cache_get cold single read";
+    read_name = mode == async_read_cache_get_notfound
+                    ? "mdbx_async_cache_get cold missing read"
+                    : "mdbx_async_cache_get cold single read";
   } else if (mode == async_read_get_batch) {
     read_name = "mdbx_async_get_batch cold read";
   } else if (mode == async_read_cache_get_batch) {
@@ -1096,9 +1106,9 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   if (inject_fault)
     CHECK(set_env_var("MDBX_TEST_DXB_FAULT", "read-complete:EIO"));
   if (mode == async_read_cursor_get)
-    rc = mdbx_async_cursor_get(async, cursor, &key_value, &data, MDBX_SET_KEY, &op);
-  else if (mode == async_read_cache_get)
-    rc = mdbx_async_cache_get(async, txn, dbi, &key_value, &data, &cache_entry, &cache_result, &op);
+    rc = mdbx_async_cursor_get(async, cursor, read_key_value, &data, MDBX_SET_KEY, &op);
+  else if (mode == async_read_cache_get || mode == async_read_cache_get_notfound)
+    rc = mdbx_async_cache_get(async, txn, dbi, read_key_value, &data, &cache_entry, &cache_result, &op);
   else if (mode == async_read_get_batch)
     rc = mdbx_async_get_batch(async, txn, dbi, batch_key_values, batch_data, batch_results,
                               ASYNC_READ_BATCH_COUNT, &op);
@@ -1107,7 +1117,7 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
                                     batch_cache_entries, batch_cache_results,
                                     ASYNC_READ_BATCH_COUNT, &op);
   else
-    rc = mdbx_async_get(async, txn, dbi, &key_value, &data, &op);
+    rc = mdbx_async_get(async, txn, dbi, read_key_value, &data, &op);
   if (rc == MDBX_SUCCESS)
     rc = wait_result(read_name, &op, &operation_result, __FILE__, __LINE__);
   else
@@ -1118,6 +1128,12 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   if (inject_fault) {
     REQUIRE(operation_result == MDBX_EIO, "async get did not propagate injected read-completion failure");
     REQUIRE(data.iov_base == NULL && data.iov_len == 0, "failed async get returned data");
+  } else if (notfound_read) {
+    REQUIRE(operation_result == MDBX_NOTFOUND, "cold async missing read returned wrong result");
+    if (mode == async_read_cache_get_notfound)
+      REQUIRE(cache_result.errcode == MDBX_NOTFOUND && cache_result.status == MDBX_CACHE_UNABLE,
+              "cold async cache missing read returned wrong cache result");
+    CHECK(expect_empty_value(&data, __FILE__, __LINE__));
   } else {
     REQUIRE(operation_result == MDBX_SUCCESS, "cold async read returned wrong result");
     if (mode == async_read_cache_get) {
@@ -1295,10 +1311,14 @@ int main(void) {
   snprintf(copy_txn_path, sizeof(copy_txn_path), "./async-api-smoke-copy-txn-%llx", smoke_run_id());
   if (env_enabled("MDBX_ASYNC_SMOKE_SINGLE_GET_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_get);
+  if (env_enabled("MDBX_ASYNC_SMOKE_SINGLE_GET_NOTFOUND_ONLY"))
+    return exercise_async_read_path(path, false, async_read_get_notfound);
   if (env_enabled("MDBX_ASYNC_SMOKE_CURSOR_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_cursor_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_CACHE_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_cache_get);
+  if (env_enabled("MDBX_ASYNC_SMOKE_CACHE_GET_NOTFOUND_ONLY"))
+    return exercise_async_read_path(path, false, async_read_cache_get_notfound);
   if (env_enabled("MDBX_ASYNC_SMOKE_GET_BATCH_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_get_batch);
   if (env_enabled("MDBX_ASYNC_SMOKE_CACHE_BATCH_READ_ONLY"))
