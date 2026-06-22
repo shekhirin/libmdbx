@@ -32481,76 +32481,6 @@ static dxb_cache_page_result_t dxb_storage_submit_lookup_cached_page(dxb_storage
   return dxb_cache_page_miss();
 }
 
-static dxb_cache_page_result_t dxb_storage_submit_read_cached_page(dxb_storage_t *storage,
-                                                                   const dxb_cache_page_submit_io_t *io) {
-  int err = dxb_storage_cache_page_submit_io_validate(storage, io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return dxb_cache_page_error(err);
-  if (unlikely(!io->fill))
-    return dxb_cache_page_error(MDBX_EINVAL);
-
-  const dxb_cache_read_io_t *const read = &io->read;
-
-  page_cache_entry_t *entry = osal_calloc(1, sizeof(*entry));
-  if (unlikely(!entry))
-    return dxb_cache_page_error(MDBX_ENOMEM);
-
-  const uint8_t pagesize_ln = dxb_storage_pagesize_ln(storage);
-  entry->owner = read->tracked ? &storage->page_cache : nullptr;
-  entry->storage = storage;
-  entry->io = read->data.pages;
-  entry->snapshot_txnid = read->snapshot;
-  entry->pins = 1;
-  entry->pagesize_ln = pagesize_ln;
-  entry->reusable = read->reusable;
-  bool submitted = false;
-  err = osal_memalign_alloc(globals.sys_pagesize, entry->io.bytes, (void **)&entry->page);
-  if (unlikely(err != MDBX_SUCCESS))
-    goto bailout;
-
-  dxb_cache_fill_read_submit_io_t fill_submit;
-  err = dxb_storage_make_cache_fill_read_submit_io(storage, read, entry, &fill_submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    goto bailout;
-
-  err = dxb_storage_cache_fill_read_submit_io_validate(storage, &fill_submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    goto bailout;
-
-  dxb_read_result_t read_result = dxb_storage_submit_read_data(storage, &fill_submit.storage_read);
-  submitted = read_result.submitted;
-  err = read_result.err;
-  if (unlikely(err != MDBX_SUCCESS))
-    goto bailout;
-  if (unlikely(!read_result.submitted || !read_result.completed ||
-               read_result.payload_bytes != read->data.bytes.bytes)) {
-    err = MDBX_EIO;
-    goto bailout;
-  }
-
-  if (read->tracked) {
-    dxb_cache_insert_submit_io_t insert_submit;
-    err = dxb_storage_make_cache_insert_submit_io(storage, read, entry, &insert_submit);
-    if (unlikely(err != MDBX_SUCCESS))
-      goto bailout;
-    dxb_cache_result_t insert_result = dxb_storage_submit_insert_cached_page(storage, &insert_submit);
-    if (unlikely(insert_result.err != MDBX_SUCCESS)) {
-      err = insert_result.err;
-      goto bailout;
-    }
-    submitted = submitted || insert_result.submitted;
-  }
-
-  return dxb_cache_page_result(dxb_storage_make_cached_pgr(entry), read_result.payload_bytes, false, true,
-                               read->tracked, true, true);
-
-bailout:
-  if (entry->page)
-    osal_memalign_free(entry->page);
-  osal_free(entry);
-  return dxb_cache_page_submitted_error(err, submitted);
-}
-
 typedef struct page_cache_batch_fill {
   page_cache_entry_t *entry;
   dxb_cache_page_submit_io_t fill;
@@ -32909,19 +32839,9 @@ static inline int page_cache_read_submit_io_validate(const MDBX_txn *txn,
 }
 
 static dxb_cache_page_result_t page_cache_submit_read(MDBX_txn *txn, const dxb_page_cache_read_submit_io_t *io) {
-  int err = page_cache_read_submit_io_validate(txn, io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return dxb_cache_page_error(err);
-
-  dxb_storage_t *const storage = &txn->env->dxb_storage;
-  dxb_cache_page_result_t cached = dxb_storage_submit_lookup_cached_page(storage, &io->lookup);
-  if (cached.page.err == MDBX_SUCCESS)
-    return cached;
-  if (unlikely(cached.page.err != MDBX_RESULT_TRUE))
-    return cached;
-
-  dxb_cache_page_result_t filled = dxb_storage_submit_read_cached_page(storage, &io->fill);
-  return filled;
+  dxb_cache_page_result_t result = dxb_cache_page_error(MDBX_EINVAL);
+  const int err = page_cache_submit_read_batch(txn, io, &result, 1);
+  return (err == MDBX_SUCCESS || result.page.err != MDBX_EINVAL) ? result : dxb_cache_page_error(err);
 }
 
 static dxb_cache_result_t dxb_storage_submit_materialize_cached_large_page(

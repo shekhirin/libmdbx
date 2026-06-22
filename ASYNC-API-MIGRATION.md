@@ -6239,3 +6239,85 @@ Additional single-page read batch-path checkpoint:
   cache many, lowerbound batch, get loop, lowerbound loop, and cursor loop-from
   improved, while async single get, single lowerbound, threaded cache loop, and
   get_ex loop regressed in this sample.
+
+Additional singleton page-cache submit batch-path checkpoint:
+
+- changed `page_cache_submit_read()` to delegate to
+  `page_cache_submit_read_batch()` with `count == 1`.
+- removed the now-unused `dxb_storage_submit_read_cached_page()` direct fill
+  helper. Singleton page-cache misses now use the same prepare/read/complete
+  path as batched page-cache misses, including `dxb_storage_submit_read_data_batch()`
+  for storage reads.
+- this keeps direct cache-entry materialization on the same page-cache read
+  path as async get/cache/cursor traversal work, reducing another one-off
+  synchronous-looking storage read branch below the public APIs.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-page-cache-single-batch-before.txt` and
+    `/tmp/mdbx-async-bench-page-cache-single-batch-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `6db745d`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.819 Mops/s | 1.846 Mops/s |
+| blocking parallel get | 1.070 Mops/s | 540.928 Kops/s |
+| async single get | 201.406 Kops/s | 392.693 Kops/s |
+| async single get_ex | 202.107 Kops/s | 424.275 Kops/s |
+| async single lowerbound | 360.406 Kops/s | 346.790 Kops/s |
+| async parallel get | 1.494 Mops/s | 2.798 Mops/s |
+| async many parallel get | 2.160 Mops/s | 2.817 Mops/s |
+| async get_ex batch | 2.628 Mops/s | 2.685 Mops/s |
+| async get_ex many | 2.583 Mops/s | 2.449 Mops/s |
+| async cache many | 2.892 Mops/s | 4.307 Mops/s |
+| async cache st many | 2.591 Mops/s | 2.278 Mops/s |
+| async cache batch | 3.793 Mops/s | 3.493 Mops/s |
+| async cache st batch | 4.272 Mops/s | 4.271 Mops/s |
+| async cache loop | 4.933 Mops/s | 4.561 Mops/s |
+| async cache st loop | 4.072 Mops/s | 2.741 Mops/s |
+| async threaded cache loop | 2.602 Mops/s | 3.774 Mops/s |
+| async threaded cache st loop | 2.053 Mops/s | 2.079 Mops/s |
+| async lowerbound batch | 1.348 Mops/s | 1.374 Mops/s |
+| async lowerbound many | 1.659 Mops/s | 1.690 Mops/s |
+| async get loop | 2.292 Mops/s | 2.828 Mops/s |
+| async get_ex loop | 3.165 Mops/s | 3.047 Mops/s |
+| async lowerbound loop | 1.880 Mops/s | 1.190 Mops/s |
+| blocking cursor get | 86.548 Mops/s | 86.008 Mops/s |
+| parallel cursor get | 57.693 Mops/s | 56.200 Mops/s |
+| async cursor get | 864.311 Kops/s | 720.116 Kops/s |
+| async cursor get loop | 69.771 Mops/s | 69.887 Mops/s |
+| async cursor get loop_from | 70.649 Mops/s | 66.450 Mops/s |
+| async threaded cursor get loop | 115.985 Mops/s | 116.020 Mops/s |
+| async threaded cget loop_from | 72.048 Mops/s | 122.279 Mops/s |
+| async-single/blocking par | 0.188 | 0.726 |
+| async-single-ex/par | 0.189 | 0.784 |
+| async-single-lower/par | 0.337 | 0.641 |
+| async/blocking parallel | 1.395 | 5.173 |
+| async-many/blocking par | 2.018 | 5.209 |
+| async-get-ex-batch/par | 2.455 | 4.963 |
+| async-cache-many/par | 2.702 | 7.962 |
+| async-cache-st-many/par | 2.420 | 4.211 |
+| async-cache-loop/par | 4.609 | 8.432 |
+| async-cache-st-loop/par | 3.804 | 5.067 |
+| async-thread-cache-loop/par | 2.431 | 6.978 |
+| async-lower-batch/par | 1.259 | 2.541 |
+| async-lower-many/par | 1.550 | 3.124 |
+| async-loop/blocking par | 2.142 | 5.228 |
+| async-get-ex-loop/par | 2.957 | 5.633 |
+| async-lower-loop/par | 1.756 | 2.201 |
+| async-cursor-get-loop/par | 1.209 | 1.244 |
+| async-cursor-get-loop/get | 80.725 | 97.049 |
+
+- conclusion: this checkpoint removes the direct singleton cached-page fill
+  path and makes direct cache-entry materialization use the same page-cache
+  batch submit machinery as async traversal. The one-run benchmark is noisy but
+  mostly positive for get/cache ratios: single get, single get_ex, parallel get,
+  many get, cache many, threaded cache loop, get loop, and threaded cursor
+  loop-from improved, while lowerbound loop, async cursor get, cache loop, and
+  single-thread cache loop regressed in this sample.
