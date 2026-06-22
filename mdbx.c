@@ -16582,6 +16582,12 @@ static MDBX_async_get_cache_slot *async_get_cache_slot(MDBX_async *async, const 
   return slot;
 }
 
+static bool async_nodup_read_batchable(const MDBX_txn *txn, MDBX_dbi dbi);
+static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
+                                         MDBX_val data[], int results[], bool handled[],
+                                         const bool eligible[], MDBX_async_get_cache_slot *slots[],
+                                         MDBX_val found_keys[], size_t count);
+
 static int async_cached_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
                             MDBX_val *data) {
   MDBX_async_get_cache_slot *const slot = async_get_cache_slot(async, txn, dbi, key);
@@ -16597,6 +16603,26 @@ static int async_cached_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi
   }
 
   if (slot->use_count == 0) {
+    if (async_nodup_read_batchable(txn, dbi)) {
+      MDBX_val keys[1] = {*key};
+      MDBX_val values[1] = {{nullptr, 0}};
+      int results[1] = {MDBX_EINVAL};
+      bool handled[1] = {false};
+      bool cold[1] = {true};
+      MDBX_async_get_cache_slot *slots[1] = {slot};
+
+      (void)async_batched_get_traverse(txn, dbi, keys, values, results, handled, cold, slots, nullptr, 1);
+      if (handled[0]) {
+        slot->use_count = slot->use_count ? slot->use_count : 1;
+        if (results[0] == MDBX_SUCCESS)
+          *data = values[0];
+        else {
+          data->iov_base = nullptr;
+          data->iov_len = 0;
+        }
+        return results[0];
+      }
+    }
     const int rc = mdbx_get(txn, dbi, key, data);
     slot->use_count = 1;
     return rc;

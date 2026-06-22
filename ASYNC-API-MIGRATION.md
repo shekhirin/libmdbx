@@ -5757,3 +5757,61 @@ Additional small async traversal batch stack checkpoint:
   async traversal batches. The reduced benchmark is mixed: single get/get_ex,
   get_ex loop, lowerbound many, and threaded cache/cursor ratios improved in
   this sample, while cache-loop and some many/batch rows regressed.
+
+Additional cold async cached-get traversal fallback checkpoint:
+
+- changed `async_cached_get()` so a cold hidden async-get cache slot first tries
+  the one-key `async_batched_get_traverse()` path when the DBI is eligible for
+  nodup read batching. Only unhandled entries fall back to `mdbx_get()`.
+- this is the shared fallback used by get batches, grouped get ops, and get
+  loops after their first batched attempt cannot handle an item. Moving the
+  cold path here reduces direct dependence on the public blocking get path and
+  keeps more cache-miss work under the internal page-read traversal engine.
+- behavior is unchanged for allocation failure, non-readonly transactions,
+  changed DBIs, dupsort DBIs, unsupported backends, or entries the traversal
+  cannot handle; those still fall back to the existing blocking get path.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-coldget-traverse-before.txt` and
+    `/tmp/mdbx-async-bench-coldget-traverse-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `b9bb60f`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.873 Mops/s | 1.872 Mops/s |
+| blocking parallel get | 534.414 Kops/s | 452.553 Kops/s |
+| async single get | 427.259 Kops/s | 394.080 Kops/s |
+| async single get_ex | 270.385 Kops/s | 319.729 Kops/s |
+| async parallel get | 2.550 Mops/s | 2.621 Mops/s |
+| async many parallel get | 2.828 Mops/s | 2.868 Mops/s |
+| async get_ex batch | 2.611 Mops/s | 1.622 Mops/s |
+| async get_ex many | 2.857 Mops/s | 2.222 Mops/s |
+| async cache many | 4.373 Mops/s | 4.489 Mops/s |
+| async cache loop | 2.670 Mops/s | 2.887 Mops/s |
+| async threaded cache loop | 4.854 Mops/s | 2.626 Mops/s |
+| async lowerbound batch | 1.461 Mops/s | 1.325 Mops/s |
+| async lowerbound many | 1.571 Mops/s | 1.189 Mops/s |
+| async get loop | 2.658 Mops/s | 3.445 Mops/s |
+| async get_ex loop | 2.734 Mops/s | 2.711 Mops/s |
+| async lowerbound loop | 1.548 Mops/s | 1.898 Mops/s |
+| async cursor get loop | 122.680 Mops/s | 65.343 Mops/s |
+| async cursor get loop_from | 67.988 Mops/s | 71.034 Mops/s |
+| async threaded cursor get loop | 113.359 Mops/s | 119.800 Mops/s |
+| async threaded cget loop_from | 117.491 Mops/s | 69.548 Mops/s |
+| async-single-ex/par | 0.506 | 0.706 |
+| async-cache-loop/par | 4.996 | 6.379 |
+| async-thread-cget-loop/get | 104.744 | 110.611 |
+
+- conclusion: this checkpoint is primarily a behavioral alignment change:
+  shared cold async cached gets now try the internal page-read traversal engine
+  before the blocking public get fallback. The reduced benchmark is mixed: get
+  loop, cache many/loop, single get_ex, lowerbound loop, and some cursor ratios
+  improved, while get_ex batch/many, lowerbound batch/many, threaded cache loop,
+  and several cursor rows regressed in this sample.
