@@ -21488,6 +21488,7 @@ static int async_cache_get_loop_pending_finish_materialize(async_cache_get_loop_
   int rc = pending->drive_rc;
   while (rc == MDBX_RESULT_TRUE) {
     rc = async_cache_materialize_batch_drive(&pending->materialize, wait);
+    pending->drive_rc = rc;
     if (rc == MDBX_RESULT_TRUE && !wait)
       return rc;
   }
@@ -21546,6 +21547,7 @@ static int async_cache_get_loop_pending_finish_refresh(async_cache_get_loop_pend
   int rc = pending->refresh_drive_rc;
   while (rc == MDBX_RESULT_TRUE) {
     rc = async_batched_get_traverse_drive(&pending->refresh_traverse, wait);
+    pending->refresh_drive_rc = rc;
     if (rc == MDBX_RESULT_TRUE)
       return rc;
   }
@@ -21687,6 +21689,8 @@ static void async_cache_get_loop_pending_drain_all(async_cache_get_loop_pending_
       const size_t before_base = item->base;
       const bool before_materialize = item->materialize_started;
       const bool before_refresh = item->refresh_started;
+      const int before_drive_rc = item->drive_rc;
+      const int before_refresh_drive_rc = item->refresh_drive_rc;
       const int rc = async_cache_get_loop_pending_step(item, false);
       if (rc == MDBX_RESULT_TRUE) {
         if (again_tail)
@@ -21696,7 +21700,9 @@ static void async_cache_get_loop_pending_drain_all(async_cache_get_loop_pending_
         again_tail = item;
         progressed = progressed || item->base != before_base ||
                      before_materialize != item->materialize_started ||
-                     before_refresh != item->refresh_started;
+                     before_refresh != item->refresh_started ||
+                     before_drive_rc != item->drive_rc ||
+                     before_refresh_drive_rc != item->refresh_drive_rc;
       } else {
         progressed = true;
       }
