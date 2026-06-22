@@ -45655,9 +45655,15 @@ bailout:
   return osal_ioring_linux_uring_unlock(ior, rc);
 }
 
+typedef struct osal_ioring_linux_read_item {
+  const dxb_read_submit_io_t *io;
+  dxb_read_result_t *result;
+} osal_ioring_linux_read_item_t;
+
 typedef struct osal_ioring_linux_read_batch {
   const dxb_read_submit_io_t *ios;
   dxb_read_result_t *results;
+  osal_ioring_linux_read_item_t *items;
   size_t count;
   size_t submitted;
   size_t completed;
@@ -45674,15 +45680,20 @@ static int osal_ioring_linux_uring_read_batch_submit(osal_ioring_t *ior, mdbx_fi
   unsigned prepared = 0;
   while (batch->submitted < batch->count && prepared < space) {
     const dxb_read_submit_io_t *const io = &batch->ios[batch->submitted];
+    dxb_read_result_t *const result = &batch->results[batch->submitted];
     const size_t bytes = io->data.bytes.bytes;
     if (unlikely(bytes > UINT32_MAX)) {
-      batch->results[batch->submitted] = dxb_read_error(MDBX_EINVAL);
+      *result = dxb_read_error(MDBX_EINVAL);
       if (batch->first_err == MDBX_SUCCESS)
         batch->first_err = MDBX_EINVAL;
       ++batch->submitted;
       ++batch->completed;
       continue;
     }
+
+    osal_ioring_linux_read_item_t *const item = &batch->items[batch->submitted];
+    item->io = io;
+    item->result = result;
 
     const uint32_t index = tail & sq_mask;
     struct io_uring_sqe *const sqe = &ior->linux_uring_sqes[index];
@@ -45692,9 +45703,9 @@ static int osal_ioring_linux_uring_read_batch_submit(osal_ioring_t *ior, mdbx_fi
     sqe->off = io->data.bytes.offset;
     sqe->addr = (uintptr_t)io->buffer;
     sqe->len = (uint32_t)bytes;
-    sqe->user_data = (uintptr_t)(batch->submitted + 1);
+    sqe->user_data = (uintptr_t)item;
     ior->linux_uring_sq_array[index] = index;
-    batch->results[batch->submitted] = dxb_read_result(MDBX_SUCCESS, 0, true, false);
+    *result = dxb_read_result(MDBX_SUCCESS, 0, true, false);
     ++tail;
     ++prepared;
     ++batch->submitted;
@@ -45712,7 +45723,7 @@ static int osal_ioring_linux_uring_read_batch_submit(osal_ioring_t *ior, mdbx_fi
       batch->first_err = err;
     const size_t first_failed = batch->submitted - prepared + submitted_now;
     for (size_t i = first_failed; i < batch->submitted; ++i) {
-      batch->results[i] = dxb_read_submitted_error(err);
+      *batch->items[i].result = dxb_read_submitted_error(err);
       ++batch->completed;
     }
     return err;
@@ -45742,26 +45753,22 @@ static int osal_ioring_linux_uring_read_batch_complete(osal_ioring_t *ior,
   while (cq_head != cq_tail) {
     const uint32_t cq_index = cq_head & *ior->linux_uring_cq_mask;
     const struct io_uring_cqe *const cqe = &ior->linux_uring_cqes[cq_index];
-    const size_t slot = (size_t)cqe->user_data;
+    osal_ioring_linux_read_item_t *const item = (osal_ioring_linux_read_item_t *)(uintptr_t)cqe->user_data;
     int err = MDBX_SUCCESS;
     size_t payload_bytes = 0;
-    if (unlikely(slot == 0 || slot > batch->count))
+    if (unlikely(!item || !item->io || !item->result))
       err = MDBX_EINVAL;
     else if (unlikely(cqe->res < 0))
       err = -cqe->res;
     else {
-      const size_t i = slot - 1;
       payload_bytes = (size_t)cqe->res;
-      if (unlikely(payload_bytes != batch->ios[i].data.bytes.bytes))
+      if (unlikely(payload_bytes != item->io->data.bytes.bytes))
         err = MDBX_ENODATA;
     }
 
-    if (likely(slot > 0 && slot <= batch->count)) {
-      const size_t i = slot - 1;
-      batch->results[i] = (err == MDBX_SUCCESS) ? dxb_read_completed(payload_bytes)
-                                                : dxb_read_submitted_error(err);
-      ++batch->completed;
-    }
+    if (likely(item && item->result))
+      *item->result = (err == MDBX_SUCCESS) ? dxb_read_completed(payload_bytes) : dxb_read_submitted_error(err);
+    ++batch->completed;
     if (unlikely(err != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
       batch->first_err = err;
     ++cq_head;
@@ -45778,11 +45785,25 @@ static int osal_ioring_linux_uring_read_batch(osal_ioring_t *ior, mdbx_filehandl
   if (unlikely(count > UINT32_MAX))
     return MDBX_EINVAL;
 
-  int rc = osal_ioring_linux_uring_lock(ior);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+  enum { read_batch_stack_items = 16 };
+  osal_ioring_linux_read_item_t stack_items[read_batch_stack_items];
+  osal_ioring_linux_read_item_t *items = stack_items;
+  if (count > ARRAY_LENGTH(stack_items)) {
+    items = osal_calloc(count, sizeof(items[0]));
+    if (unlikely(!items))
+      return MDBX_ENOMEM;
+  } else {
+    memset(items, 0, count * sizeof(items[0]));
+  }
 
-  osal_ioring_linux_read_batch_t batch = {ios, results, count, 0, 0, MDBX_SUCCESS};
+  int rc = osal_ioring_linux_uring_lock(ior);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    if (items != stack_items)
+      osal_free(items);
+    return rc;
+  }
+
+  osal_ioring_linux_read_batch_t batch = {ios, results, items, count, 0, 0, MDBX_SUCCESS};
   while (batch.completed < count) {
     const size_t submitted_before = batch.submitted;
     const size_t completed_before = batch.completed;
@@ -45807,7 +45828,10 @@ static int osal_ioring_linux_uring_read_batch(osal_ioring_t *ior, mdbx_filehandl
     }
   }
 
-  return osal_ioring_linux_uring_unlock(ior, batch.first_err);
+  rc = osal_ioring_linux_uring_unlock(ior, batch.first_err);
+  if (items != stack_items)
+    osal_free(items);
+  return rc;
 }
 
 static int osal_ioring_linux_uring_write(osal_ioring_t *ior, mdbx_filehandle_t fd, const void *buf, size_t bytes,
