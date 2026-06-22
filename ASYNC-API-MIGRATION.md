@@ -6074,3 +6074,86 @@ Additional async cursor loop batch-start checkpoint:
   semantics. The one-run benchmark is mixed: direct async cursor get loop and
   `async-get-loop/batch` improved substantially, while threaded cursor get loop
   and cache-loop rows regressed in this sample.
+
+Additional async cache-get fallback helper consolidation checkpoint:
+
+- changed the unhandled fallback branches in `async_cache_get_batch_execute()`,
+  `async_cache_get_ops_batch()`, and `async_op_cache_get_loop` to call
+  `async_cache_get_one_materialized()` instead of calling
+  `mdbx_cache_get()` / `mdbx_cache_get_SingleThreaded()` directly.
+- because `async_cache_get_one_materialized()` first snapshots/materializes the
+  cache entry through `cache_materialize_singlethreaded_batch()` before falling
+  back to the public cache-get APIs, batch/grouped/loop fallback cache gets now
+  share the same final materialization path as single cache gets.
+- this keeps fallback behavior unchanged for entries that cannot be safely
+  snapshotted or materialized; those still use the public blocking cache-get
+  fallback inside the helper.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cache-fallback-helper-before.txt` and
+    `/tmp/mdbx-async-bench-cache-fallback-helper-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `8900d2a`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.848 Mops/s | 1.886 Mops/s |
+| blocking parallel get | 793.404 Kops/s | 996.420 Kops/s |
+| async single get | 403.183 Kops/s | 425.836 Kops/s |
+| async single get_ex | 379.400 Kops/s | 277.805 Kops/s |
+| async single lowerbound | 211.276 Kops/s | 306.176 Kops/s |
+| async parallel get | 1.553 Mops/s | 2.156 Mops/s |
+| async many parallel get | 2.213 Mops/s | 1.745 Mops/s |
+| async get_ex batch | 2.442 Mops/s | 2.104 Mops/s |
+| async get_ex many | 2.889 Mops/s | 2.497 Mops/s |
+| async cache many | 4.321 Mops/s | 2.255 Mops/s |
+| async cache st many | 3.094 Mops/s | 4.175 Mops/s |
+| async cache batch | 4.267 Mops/s | 4.244 Mops/s |
+| async cache st batch | 3.628 Mops/s | 4.273 Mops/s |
+| async cache batch cb | 4.272 Mops/s | 2.904 Mops/s |
+| async cache st batch cb | 4.190 Mops/s | 3.765 Mops/s |
+| async large cache batch | 138.775 Kops/s | 137.891 Kops/s |
+| async large cache st batch | 139.597 Kops/s | 134.808 Kops/s |
+| async threaded cache batch | 4.489 Mops/s | 4.219 Mops/s |
+| async threaded cache st batch | 4.234 Mops/s | 2.894 Mops/s |
+| async cache loop | 2.892 Mops/s | 2.803 Mops/s |
+| async cache st loop | 2.720 Mops/s | 5.043 Mops/s |
+| async threaded cache loop | 2.095 Mops/s | 2.255 Mops/s |
+| async threaded cache st loop | 3.438 Mops/s | 2.771 Mops/s |
+| async lowerbound batch | 1.695 Mops/s | 939.680 Kops/s |
+| async lowerbound many | 1.667 Mops/s | 1.673 Mops/s |
+| async get loop | 3.442 Mops/s | 1.886 Mops/s |
+| async get_ex loop | 3.419 Mops/s | 3.388 Mops/s |
+| async lowerbound loop | 1.757 Mops/s | 1.367 Mops/s |
+| async cursor get loop | 70.624 Mops/s | 68.282 Mops/s |
+| async cursor get loop_from | 69.726 Mops/s | 58.216 Mops/s |
+| async threaded cursor get loop | 72.658 Mops/s | 126.095 Mops/s |
+| async threaded cget loop_from | 73.603 Mops/s | 125.120 Mops/s |
+| async-cache-many/par | 5.446 | 2.263 |
+| async-cache-st-many/par | 3.900 | 4.190 |
+| async-cache-batch/par | 5.378 | 4.259 |
+| async-cache-st-batch/par | 4.573 | 4.289 |
+| async-cache-batch-cb/par | 5.385 | 2.915 |
+| async-cache-st-batch-cb/par | 5.281 | 3.778 |
+| async-cache-loop/par | 3.645 | 2.813 |
+| async-cache-st-loop/par | 3.428 | 5.061 |
+| async-thread-cache-loop/par | 2.640 | 2.263 |
+| async-thread-cache-st-l/par | 4.333 | 2.780 |
+| async-cache-loop/batch | 0.678 | 0.660 |
+| async-cache-st-loop/batch | 0.750 | 1.180 |
+| async-cache-loop/many | 0.669 | 1.243 |
+| async-cache-st-loop/many | 0.879 | 1.208 |
+
+- conclusion: this checkpoint consolidates cache-get fallback behavior so
+  batch/grouped/loop paths retry the single materialization helper before the
+  public blocking cache-get fallback. The one-run benchmark is mixed:
+  single-thread cache many/batch/loop and threaded cache loop improved, while
+  regular cache many, cache callback batch, threaded single-thread cache batch,
+  get loop, lowerbound batch/loop, and cursor loop-from regressed in this
+  sample.

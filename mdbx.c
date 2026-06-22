@@ -17633,6 +17633,11 @@ static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], 
   osal_free(slots);
 }
 
+static MDBX_cache_result_t async_cache_get_one_materialized(const MDBX_txn *txn, MDBX_dbi dbi,
+                                                            const MDBX_val *key, MDBX_val *data,
+                                                            volatile MDBX_cache_entry_t *entry,
+                                                            bool singlethreaded);
+
 static int async_cache_get_batch_execute(MDBX_async_op *op) {
   const bool singlethreaded = op->opcode == async_op_cache_get_singlethreaded_batch;
   const MDBX_txn *const txn = op->args.cache_get_batch.txn;
@@ -17659,10 +17664,8 @@ static int async_cache_get_batch_execute(MDBX_async_op *op) {
       continue;
     MDBX_val value = {nullptr, 0};
     MDBX_cache_result_t result =
-        singlethreaded ? mdbx_cache_get_SingleThreaded(txn, dbi, &op->args.cache_get_batch.keys[i], &value,
-                                                       &((MDBX_cache_entry_t *)entries_arg)[i])
-                       : mdbx_cache_get(txn, dbi, &op->args.cache_get_batch.keys[i], &value,
-                                        &entries_arg[i]);
+        async_cache_get_one_materialized(txn, dbi, &op->args.cache_get_batch.keys[i], &value,
+                                         &entries_arg[i], singlethreaded);
     results[i] = result;
     if (result.errcode == MDBX_SUCCESS) {
       data[i] = value;
@@ -17766,9 +17769,8 @@ static void async_cache_get_ops_batch(MDBX_async_op *ops[], size_t count, bool s
       if (result.errcode == MDBX_SUCCESS)
         value = data[i];
     } else {
-      result = singlethreaded ? mdbx_cache_get_SingleThreaded(txn, dbi, &op->key, &value,
-                                                              (MDBX_cache_entry_t *)op->args.cache_get.entry)
-                              : mdbx_cache_get(txn, dbi, &op->key, &value, op->args.cache_get.entry);
+      result = async_cache_get_one_materialized(txn, dbi, &op->key, &value,
+                                                op->args.cache_get.entry, singlethreaded);
     }
 
     if (op->args.cache_get.result)
@@ -18476,13 +18478,9 @@ static int async_op_execute(MDBX_async_op *op) {
         }
       }
       if (!prefetched)
-        result =
-            singlethreaded
-                ? mdbx_cache_get_SingleThreaded(op->args.cache_get_loop.txn,
-                                                op->args.cache_get_loop.dbi, &key, &data,
-                                                (MDBX_cache_entry_t *)&op->args.cache_get_loop.entries[i])
-                : mdbx_cache_get(op->args.cache_get_loop.txn, op->args.cache_get_loop.dbi, &key, &data,
-                                 &op->args.cache_get_loop.entries[i]);
+        result = async_cache_get_one_materialized(op->args.cache_get_loop.txn,
+                                                  op->args.cache_get_loop.dbi, &key, &data,
+                                                  &op->args.cache_get_loop.entries[i], singlethreaded);
       rc = op->args.cache_get_loop.result_func
                ? op->args.cache_get_loop.result_func(op->args.cache_get_loop.context, i, &key, &data,
                                                      result)
