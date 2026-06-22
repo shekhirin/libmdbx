@@ -5456,3 +5456,61 @@ Additional small committed-page batch stack checkpoint:
   get loop and loop-from rows. Other get/cache rows moved in both directions,
   so this should be treated as a plumbing/overhead reduction for common small
   committed-page batches rather than a broad throughput claim.
+
+Additional cache materialization small-batch stack checkpoint:
+
+- changed `cache_materialize_singlethreaded_batch()` to keep the submit/read,
+  page-result, and index work arrays on the stack for batches of up to four
+  cache entries, falling back to heap allocation for larger materialization
+  batches.
+- this is on the async get/cache materialization path used by cache loop,
+  `get_ex` loop, and batched hidden-cache materialization. It reduces allocator
+  overhead for the common one-entry and shallow-window cases without changing
+  page-cache lookup, io_uring submission, large-page materialization, retained
+  page pinning, or fallback behavior.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-materialize-stack-before.txt` and
+    `/tmp/mdbx-async-bench-materialize-stack-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `899c36f`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.835 Mops/s | 1.840 Mops/s |
+| blocking parallel get | 601.555 Kops/s | 942.163 Kops/s |
+| async single get | 287.643 Kops/s | 377.443 Kops/s |
+| async single get_ex | 335.394 Kops/s | 378.680 Kops/s |
+| async parallel get | 2.172 Mops/s | 1.801 Mops/s |
+| async many parallel get | 2.122 Mops/s | 1.866 Mops/s |
+| async get_ex batch | 2.689 Mops/s | 2.740 Mops/s |
+| async get_ex many | 2.523 Mops/s | 2.834 Mops/s |
+| async cache many | 2.929 Mops/s | 3.326 Mops/s |
+| async cache st many | 4.352 Mops/s | 3.712 Mops/s |
+| async cache batch | 3.311 Mops/s | 4.101 Mops/s |
+| async cache st batch | 4.227 Mops/s | 3.675 Mops/s |
+| async cache loop | 2.360 Mops/s | 4.934 Mops/s |
+| async cache st loop | 5.010 Mops/s | 2.147 Mops/s |
+| async threaded cache loop | 4.913 Mops/s | 2.372 Mops/s |
+| async threaded cache st loop | 4.221 Mops/s | 2.353 Mops/s |
+| async get loop | 3.430 Mops/s | 3.455 Mops/s |
+| async get_ex loop | 2.200 Mops/s | 3.166 Mops/s |
+| async cursor get loop | 69.918 Mops/s | 66.247 Mops/s |
+| async cursor get loop_from | 69.396 Mops/s | 114.010 Mops/s |
+| async-cache-loop/par | 3.923 | 5.237 |
+| async-cache-loop/batch | 0.713 | 1.203 |
+| async-cache-loop/many | 0.806 | 1.484 |
+| async-cache-loop/ser | 1.286 | 2.681 |
+
+- conclusion: the direct cache materialization rows that exercise this helper
+  (`async cache loop`, `async get_ex loop`, and cache loop ratios) improved in
+  this sample, while the threaded and single-threaded cache-loop rows regressed.
+  Treat this as a small allocator-overhead reduction in the internal async
+  materialization path; the reduced benchmark remains noisy and should not be
+  used as a broad throughput claim.

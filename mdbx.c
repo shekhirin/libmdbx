@@ -12698,20 +12698,34 @@ static size_t cache_materialize_singlethreaded_batch(const MDBX_txn *txn, MDBX_v
   if (unlikely((txn->flags & txn_ro_both) == 0))
     return 0;
 
-  dxb_page_cache_read_submit_io_t *submits = osal_calloc(count, sizeof(submits[0]));
-  dxb_cache_entry_read_io_t *reads = osal_calloc(count, sizeof(reads[0]));
-  dxb_cache_page_result_t *page_results = osal_calloc(count, sizeof(page_results[0]));
-  size_t *indices = osal_malloc(count * sizeof(indices[0]));
+  dxb_page_cache_read_submit_io_t stack_submits[4];
+  dxb_cache_entry_read_io_t stack_reads[4];
+  dxb_cache_page_result_t stack_page_results[4];
+  size_t stack_indices[4];
+  dxb_page_cache_read_submit_io_t *submits = stack_submits;
+  dxb_cache_entry_read_io_t *reads = stack_reads;
+  dxb_cache_page_result_t *page_results = stack_page_results;
+  size_t *indices = stack_indices;
   cache_large_materialize_batch_item_t *large_items = nullptr;
   dxb_read_submit_io_t *large_reads = nullptr;
   dxb_read_result_t *large_results = nullptr;
   size_t *large_buckets = nullptr;
   size_t *large_next = nullptr;
+  if (count > ARRAY_LENGTH(stack_submits)) {
+    submits = osal_calloc(count, sizeof(submits[0]));
+    reads = osal_calloc(count, sizeof(reads[0]));
+    page_results = osal_calloc(count, sizeof(page_results[0]));
+    indices = osal_malloc(count * sizeof(indices[0]));
+  }
   if (unlikely(!submits || !reads || !page_results || !indices)) {
-    osal_free(indices);
-    osal_free(page_results);
-    osal_free(reads);
-    osal_free(submits);
+    if (indices != stack_indices)
+      osal_free(indices);
+    if (page_results != stack_page_results)
+      osal_free(page_results);
+    if (reads != stack_reads)
+      osal_free(reads);
+    if (submits != stack_submits)
+      osal_free(submits);
     return 0;
   }
 
@@ -12982,10 +12996,14 @@ static size_t cache_materialize_singlethreaded_batch(const MDBX_txn *txn, MDBX_v
   osal_free(large_items);
   osal_free(large_next);
   osal_free(large_buckets);
-  osal_free(indices);
-  osal_free(page_results);
-  osal_free(reads);
-  osal_free(submits);
+  if (indices != stack_indices)
+    osal_free(indices);
+  if (page_results != stack_page_results)
+    osal_free(page_results);
+  if (reads != stack_reads)
+    osal_free(reads);
+  if (submits != stack_submits)
+    osal_free(submits);
   return handled_count;
 }
 
