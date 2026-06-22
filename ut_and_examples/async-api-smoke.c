@@ -986,6 +986,7 @@ enum async_read_mode {
   async_read_get_notfound,
   async_read_get_cache_hit,
   async_read_cursor_get,
+  async_read_cursor_get_batch,
   async_read_cache_get,
   async_read_cache_get_notfound,
   async_read_large_get,
@@ -1029,7 +1030,12 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   MDBX_cache_entry_t batch_cache_entries[ASYNC_READ_BATCH_COUNT];
   MDBX_cache_result_t batch_cache_results[ASYNC_READ_BATCH_COUNT];
   uint8_t batch_values[ASYNC_READ_BATCH_COUNT][ASYNC_READ_BATCH_VALUE_BYTES];
-  const bool batch_read = mode == async_read_get_batch || mode == async_read_cache_get_batch;
+  MDBX_val cursor_batch_pairs[ASYNC_READ_BATCH_COUNT * 2];
+  size_t cursor_batch_count = 0;
+  int cursor_batch_result = MDBX_SUCCESS;
+  const bool cursor_batch_read = mode == async_read_cursor_get_batch;
+  const bool indexed_batch_read = mode == async_read_get_batch || mode == async_read_cache_get_batch;
+  const bool batch_read = indexed_batch_read || cursor_batch_read;
   const bool notfound_read = mode == async_read_get_notfound || mode == async_read_cache_get_notfound;
   const bool large_read = mode == async_read_large_get || mode == async_read_large_cache_get;
   const bool cache_hit_read = mode == async_read_get_cache_hit;
@@ -1107,6 +1113,10 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor, &op));
     CHECK_OP(op);
     read_name = "mdbx_async_cursor_get cold single read";
+  } else if (cursor_batch_read) {
+    CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor, &op));
+    CHECK_OP(op);
+    read_name = "mdbx_async_cursor_get_batch cold read";
   } else if (mode == async_read_get_notfound) {
     read_name = "mdbx_async_get cold missing read";
   } else if (mode == async_read_cache_get || mode == async_read_cache_get_notfound) {
@@ -1162,7 +1172,12 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     REQUIRE(early_destroy_rc == MDBX_BUSY, "async executor destroyed with pending cold read operation");
   } else if (mode == async_read_cursor_get)
     rc = mdbx_async_cursor_get(async, cursor, read_key_value, &data, MDBX_SET_KEY, &op);
-  else if (mode == async_read_cache_get || mode == async_read_cache_get_notfound ||
+  else if (cursor_batch_read) {
+    cursor_batch_count = 0;
+    memset(cursor_batch_pairs, 0, sizeof(cursor_batch_pairs));
+    rc = mdbx_async_cursor_get_batch(async, cursor, &cursor_batch_count, cursor_batch_pairs,
+                                     ASYNC_READ_BATCH_COUNT * 2, MDBX_FIRST, &op);
+  } else if (mode == async_read_cache_get || mode == async_read_cache_get_notfound ||
            mode == async_read_large_cache_get)
     rc = mdbx_async_cache_get(async, txn, dbi, read_key_value, &data, &cache_entry, &cache_result, &op);
   else if (mode == async_read_get_batch)
@@ -1176,9 +1191,14 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     rc = mdbx_async_get(async, txn, dbi, read_key_value, &data, &op);
   if (mode == async_read_abort_order)
     operation_result = MDBX_SUCCESS;
-  else if (rc == MDBX_SUCCESS)
+  else if (rc == MDBX_SUCCESS) {
     rc = wait_result(read_name, &op, &operation_result, __FILE__, __LINE__);
-  else
+    if (cursor_batch_read) {
+      cursor_batch_result = operation_result;
+      if (operation_result == MDBX_RESULT_TRUE)
+        operation_result = MDBX_SUCCESS;
+    }
+  } else
     operation_result = rc;
   CHECK(unset_env_var("MDBX_TEST_DXB_FAULT"));
   if (rc != MDBX_SUCCESS)
@@ -1206,6 +1226,23 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
       CHECK(expect_large_value(&data, key, __FILE__, __LINE__));
     } else if (mode == async_read_abort_order) {
       CHECK(expect_payload(&data, payload, __FILE__, __LINE__));
+    } else if (cursor_batch_read) {
+      REQUIRE(cursor_batch_result == MDBX_SUCCESS || cursor_batch_result == MDBX_RESULT_TRUE,
+              "cold async cursor get batch returned wrong result");
+      REQUIRE(cursor_batch_count == ASYNC_READ_BATCH_COUNT * 2,
+              "cold async cursor get batch returned wrong item count");
+      for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
+        MDBX_val *const batch_key = &cursor_batch_pairs[i * 2];
+        MDBX_val *const batch_data_value = &cursor_batch_pairs[i * 2 + 1];
+        REQUIRE(batch_key->iov_len == sizeof(batch_keys[i]), "cold async cursor get batch returned wrong key size");
+        uint64_t actual_key = UINT64_MAX;
+        memcpy(&actual_key, batch_key->iov_base, sizeof(actual_key));
+        REQUIRE(actual_key == batch_keys[i], "cold async cursor get batch returned wrong key");
+        REQUIRE(batch_data_value->iov_len == sizeof(batch_values[i]),
+                "cold async cursor get batch returned wrong value size");
+        REQUIRE(memcmp(batch_data_value->iov_base, batch_values[i], sizeof(batch_values[i])) == 0,
+                "cold async cursor get batch returned wrong value");
+      }
     } else if (mode == async_read_get_batch) {
       for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
         REQUIRE(batch_results[i] == MDBX_SUCCESS, "cold async get batch returned wrong item result");
@@ -1252,15 +1289,18 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     REQUIRE(read_stats.page_cache_misses > 0, "cold single async read did not report page-cache misses");
     if (batch_read) {
       REQUIRE(read_stats.storage_read_items > 1, "cold async batch read did not submit multiple storage reads");
-      REQUIRE(read_stats.storage_read_max_batch > 1, "cold async batch read did not report multi-read batches");
+      if (indexed_batch_read)
+        REQUIRE(read_stats.storage_read_max_batch > 1, "cold async batch read did not report multi-read batches");
     }
     if (env_enabled("MDBX_ASYNC_SMOKE_EXPECT_IOURING")) {
       REQUIRE(read_stats.iouring_read_items > 0, "cold single async read did not use io_uring reads");
       REQUIRE(read_stats.iouring_read_batches > 0, "cold single async read did not report io_uring read batches");
       if (batch_read) {
         REQUIRE(read_stats.iouring_read_items > 1, "cold async batch read did not submit multiple io_uring reads");
-        REQUIRE(read_stats.iouring_read_max_batch > 1, "cold async batch read did not report io_uring batch depth");
-        REQUIRE(read_stats.iouring_read_max_inflight > 1, "cold async batch read did not report overlapped reads");
+        if (indexed_batch_read) {
+          REQUIRE(read_stats.iouring_read_max_batch > 1, "cold async batch read did not report io_uring batch depth");
+          REQUIRE(read_stats.iouring_read_max_inflight > 1, "cold async batch read did not report overlapped reads");
+        }
       }
     }
     if (env_enabled("MDBX_ASYNC_SMOKE_EXPECT_NO_IOURING")) {
@@ -1305,13 +1345,42 @@ bailout:
       abort_ops[i] = NULL;
     }
   }
-  if (cursor)
-    (void)mdbx_cursor_close(cursor);
-  if (txn)
-    (void)mdbx_txn_abort(txn);
+  if (cursor) {
+    if (async) {
+      MDBX_async_op *cleanup_op = NULL;
+      int ignored = MDBX_SUCCESS;
+      if (mdbx_async_cursor_close(async, cursor, &cleanup_op) == MDBX_SUCCESS && cleanup_op) {
+        (void)mdbx_async_wait(cleanup_op, &ignored);
+        (void)mdbx_async_op_release(cleanup_op);
+      }
+    } else {
+      (void)mdbx_cursor_close(cursor);
+    }
+    cursor = NULL;
+  }
+  if (txn) {
+    if (async) {
+      MDBX_async_op *cleanup_op = NULL;
+      int ignored = MDBX_SUCCESS;
+      if (mdbx_async_txn_abort(async, txn, NULL, &cleanup_op) == MDBX_SUCCESS && cleanup_op) {
+        (void)mdbx_async_wait(cleanup_op, &ignored);
+        (void)mdbx_async_op_release(cleanup_op);
+      }
+    } else {
+      (void)mdbx_txn_abort(txn);
+    }
+    txn = NULL;
+  }
   if (async) {
-    if (env)
-      (void)mdbx_async_env_close_ex(async, true, NULL);
+    if (env) {
+      MDBX_async_op *cleanup_op = NULL;
+      int ignored = MDBX_SUCCESS;
+      if (mdbx_async_env_close_ex(async, true, &cleanup_op) == MDBX_SUCCESS && cleanup_op) {
+        (void)mdbx_async_wait(cleanup_op, &ignored);
+        (void)mdbx_async_op_release(cleanup_op);
+      }
+      env = NULL;
+    }
     (void)mdbx_async_destroy(async, true);
   }
   (void)mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
@@ -1410,6 +1479,8 @@ int main(void) {
     return exercise_async_read_path(path, false, async_read_get_cache_hit);
   if (env_enabled("MDBX_ASYNC_SMOKE_CURSOR_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_cursor_get);
+  if (env_enabled("MDBX_ASYNC_SMOKE_CURSOR_BATCH_READ_ONLY"))
+    return exercise_async_read_path(path, false, async_read_cursor_get_batch);
   if (env_enabled("MDBX_ASYNC_SMOKE_CACHE_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_cache_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_CACHE_GET_NOTFOUND_ONLY"))
