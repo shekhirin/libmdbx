@@ -8457,3 +8457,47 @@ Async get_loop retained traversal checkpoint:
   after-run, and `async-get-loop/batch` regressed because the batch path was
   already heavily optimized in previous checkpoints; this should be revisited
   after `get_ex_loop` and lower-bound loop are moved to retained state too.
+
+Async get_ex_loop retained traversal checkpoint:
+
+- added `async_get_ex_loop_pending_t`, the `mdbx_async_get_ex_loop()` analogue
+  of the retained get-loop state. For batchable DBIs it owns a 64-key window,
+  cache-entry snapshots, cache materialization results, cold-slot flags, and
+  the `async_batched_get_traverse_state_t` continuation across async page-read
+  completion.
+- changed the worker to route `async_op_get_ex_loop` through the retained read
+  scheduler. Non-batchable DBIs and allocation failures fall back to the
+  existing synchronous executor path.
+- result callbacks, `values_count`, and `completed` updates keep the same
+  per-index ordering as the previous loop body. Items not handled by retained
+  traversal fall back through `async_get_ex_one()`.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-getexloop-before.txt` and
+    `/tmp/mdbx-async-bench-getexloop-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `dc146a5`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 972.606 Kops/s | 976.832 Kops/s |
+| blocking parallel get | 880.081 Kops/s | 872.591 Kops/s |
+| async get_ex loop | 3.507 Mops/s | 3.423 Mops/s |
+| async threaded get_ex loop | 3.347 Mops/s | 3.202 Mops/s |
+| async-get-ex-loop/par | 3.984 | 3.922 |
+| async-thread-get-ex-loop/par | 3.803 | 3.670 |
+| async-get-ex-batch/loop | 0.760 | 0.762 |
+| async-thread-get-ex-loop/loop | 0.954 | 0.936 |
+
+- conclusion: this is a structural retained-state checkpoint rather than a
+  warm-cache throughput win. The direct get_ex loop rows were slightly lower in
+  this single run, while the relative rows stayed close. The semantic
+  improvement is that batchable get_ex loops can now suspend on explicit
+  page-cache misses and resume from retained traversal state instead of driving
+  every window to completion inside the executor.
