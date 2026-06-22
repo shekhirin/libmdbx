@@ -7607,3 +7607,65 @@ Additional batched get traversal state-machine checkpoint:
   it is that exact-key batched traversal now has an explicit state object that
   can be driven incrementally instead of being tied to a monolithic blocking
   function body.
+
+Additional batched lowerbound traversal state-machine checkpoint:
+
+- changed `async_batched_lowerbound_traverse()` from monolithic synchronous
+  traversal into `async_batched_lowerbound_traverse_state_t` with
+  begin/drive/finish phases.
+- root-page reads, child-page reads, branch descent, page consumption, and
+  final `MDBX_SET_LOWERBOUND` completion are now explicit phases. The wrapper
+  still drives the state to completion to preserve the current blocking public
+  behavior.
+- this brings lowerbound traversal to the same structural shape as exact-key
+  batched get traversal: page-read batches are now owned by resumable traversal
+  state instead of stack-local synchronous control flow.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-lowerbound-state-before.txt` and
+    `/tmp/mdbx-async-bench-lowerbound-state-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `c676b2e`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.213 Mops/s | 1.198 Mops/s |
+| blocking parallel get | 649.202 Kops/s | 1.028 Mops/s |
+| async single get | 392.079 Kops/s | 358.523 Kops/s |
+| async single get_ex | 372.436 Kops/s | 370.471 Kops/s |
+| async single lowerbound | 241.625 Kops/s | 199.026 Kops/s |
+| async parallel get | 2.704 Mops/s | 2.499 Mops/s |
+| async many parallel get | 1.451 Mops/s | 2.494 Mops/s |
+| async batch parallel get | 1.643 Mops/s | 1.460 Mops/s |
+| async batch callback get | 2.410 Mops/s | 2.582 Mops/s |
+| async get_ex batch | 2.718 Mops/s | 2.780 Mops/s |
+| async get_ex many | 2.422 Mops/s | 1.400 Mops/s |
+| async cache many | 4.493 Mops/s | 2.242 Mops/s |
+| async cache batch | 3.405 Mops/s | 2.550 Mops/s |
+| async cache st batch | 3.949 Mops/s | 4.018 Mops/s |
+| async cache loop | 2.046 Mops/s | 2.103 Mops/s |
+| async cache st loop | 2.354 Mops/s | 3.196 Mops/s |
+| async threaded cache loop | 2.691 Mops/s | 4.890 Mops/s |
+| async lowerbound batch | 1.602 Mops/s | 1.664 Mops/s |
+| async lowerbound many | 1.492 Mops/s | 1.631 Mops/s |
+| async lowerbound loop | 1.267 Mops/s | 1.684 Mops/s |
+| async threaded lower loop | 1.795 Mops/s | 1.270 Mops/s |
+| async cursor get | 1.001 Mops/s | 874.034 Kops/s |
+| async cursor get loop | 64.085 Mops/s | 64.504 Mops/s |
+| async cursor batch | 66.919 Mops/s | 79.968 Mops/s |
+| async cursor loop | 71.550 Mops/s | 57.439 Mops/s |
+| async cursor scan | 72.272 Mops/s | 72.650 Mops/s |
+| async cursor scan_from | 65.306 Mops/s | 68.692 Mops/s |
+
+- conclusion: the lowerbound-specific rows improved for batch, many, and loop
+  forms in this run, while single lowerbound and threaded lower loop regressed.
+  Several unrelated get/cache/cursor rows moved substantially as well, so this
+  benchmark should be read as a checkpoint comparison rather than a stable
+  performance claim. The structural gain is that both exact-key and lowerbound
+  batched traversal now expose resumable internal state for page-read batches.
