@@ -24782,6 +24782,64 @@ static void async_cursor_scan_pending_drain_all(async_cursor_scan_pending_t *pen
   }
 }
 
+static const MDBX_cursor *async_cursor_read_op_cursor(const MDBX_async_op *op) {
+  if (unlikely(!op))
+    return nullptr;
+
+  switch (op->opcode) {
+  case async_op_cursor_get:
+    return op->args.cursor_get.cursor;
+  case async_op_cursor_get_batch:
+    return op->args.cursor_get_batch.cursor;
+  case async_op_cursor_get_batches:
+  case async_op_cursor_get_batches_from:
+    return op->args.cursor_get_batches.cursor;
+  case async_op_cursor_get_loop:
+  case async_op_cursor_get_loop_from:
+    return op->args.cursor_get_loop.cursor;
+  case async_op_cursor_scan:
+    return op->args.cursor_scan.cursor;
+  case async_op_cursor_scan_from:
+    return op->args.cursor_scan_from.cursor;
+  default:
+    return nullptr;
+  }
+}
+
+static bool async_pending_cursor_conflicts(
+    const MDBX_cursor *cursor,
+    const async_cursor_get_pending_t *pending_cursor_get,
+    const async_cursor_get_batch_pending_t *pending_cursor_get_batch,
+    const async_cursor_get_batches_pending_t *pending_cursor_get_batches,
+    const async_cursor_get_loop_pending_t *pending_cursor_get_loop,
+    const async_cursor_scan_pending_t *pending_cursor_scan) {
+  if (!cursor)
+    return false;
+
+  for (const async_cursor_get_pending_t *item = pending_cursor_get; item;
+       item = item->next)
+    if (async_cursor_read_op_cursor(item->op) == cursor)
+      return true;
+  for (const async_cursor_get_batch_pending_t *item = pending_cursor_get_batch; item;
+       item = item->next)
+    if (async_cursor_read_op_cursor(item->op) == cursor)
+      return true;
+  for (const async_cursor_get_batches_pending_t *item = pending_cursor_get_batches; item;
+       item = item->next)
+    if (async_cursor_read_op_cursor(item->op) == cursor)
+      return true;
+  for (const async_cursor_get_loop_pending_t *item = pending_cursor_get_loop; item;
+       item = item->next)
+    if (async_cursor_read_op_cursor(item->op) == cursor)
+      return true;
+  for (const async_cursor_scan_pending_t *item = pending_cursor_scan; item;
+       item = item->next)
+    if (async_cursor_read_op_cursor(item->op) == cursor)
+      return true;
+
+  return false;
+}
+
 static int async_cursor_get_loop_execute(MDBX_async_op *op) {
   const size_t count = op->args.cursor_get_loop.count;
   size_t *const completed = op->args.cursor_get_loop.completed;
@@ -26517,7 +26575,16 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
                                       next->opcode == async_op_cache_get ||
                                       next->opcode == async_op_cache_get_singlethreaded ||
                                       next_cursor_read);
-      const bool pending_accepts_next = !pending_read || (next_read && (!pending_cursor_get_head || !next_cursor_read));
+      const MDBX_cursor *const next_cursor =
+          next_cursor_read ? async_cursor_read_op_cursor(next) : nullptr;
+      const bool pending_cursor_conflict =
+          async_pending_cursor_conflicts(next_cursor, pending_cursor_get_head,
+                                         pending_cursor_get_batch_head,
+                                         pending_cursor_get_batches_head,
+                                         pending_cursor_get_loop_head,
+                                         pending_cursor_scan_head);
+      const bool pending_accepts_next =
+          !pending_read || (next_read && !pending_cursor_conflict);
       if (next && ready_count < MDBX_ASYNC_COMPLETE_CHUNK && pending_accepts_next) {
         op = next;
         continue;
