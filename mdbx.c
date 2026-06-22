@@ -17302,7 +17302,7 @@ static int async_get_ex_batch_execute(MDBX_async_op *op) {
     MDBX_val key = keys[i];
     MDBX_val value = {nullptr, 0};
     size_t values_count = 0;
-    const int rc = mdbx_get_ex(txn, dbi, &key, &value, &values_count);
+    const int rc = async_get_ex_one(op->async, txn, dbi, &key, &value, &values_count);
     results[i] = rc;
     values_counts[i] = values_count;
     if (rc == MDBX_SUCCESS) {
@@ -17402,7 +17402,7 @@ static void async_get_ex_ops_batch(MDBX_async *async, MDBX_async_op *ops[], size
         values_count = 1;
       }
     } else {
-      rc = mdbx_get_ex(txn, dbi, &key, &value, &values_count);
+      rc = async_get_ex_one(async, txn, dbi, &key, &value, &values_count);
     }
 
     if (op->args.get_ex.values_count)
@@ -18609,7 +18609,7 @@ static int async_op_execute(MDBX_async_op *op) {
             }
           } else {
             key = keys[j];
-            get_rc = mdbx_get_ex(txn, dbi, &key, &value, &values_count);
+            get_rc = async_get_ex_one(op->async, txn, dbi, &key, &value, &values_count);
           }
           int rc = op->args.get_ex_loop.result_func
                        ? op->args.get_ex_loop.result_func(op->args.get_ex_loop.context, i, &key, &value,

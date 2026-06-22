@@ -5871,3 +5871,63 @@ Additional async get fallback helper consolidation checkpoint:
   batch/many, cache loop, threaded cache loop, lowerbound many/loop, and direct
   cursor loop rows improved, while cache many, get_ex loop, and threaded cursor
   rows regressed in this sample.
+
+Additional async get_ex fallback helper consolidation checkpoint:
+
+- changed the unhandled fallback branches in `async_get_ex_batch_execute()`,
+  `async_get_ex_ops_batch()`, and `async_op_get_ex_loop` to call
+  `async_get_ex_one()` instead of calling `mdbx_get_ex()` directly.
+- because `async_get_ex_one()` routes eligible nodup DBIs through
+  `async_cached_get_one()`, these fallback paths now get the same
+  traversal-aware cold-cache behavior as single `get_ex` before reaching the
+  public blocking `mdbx_get_ex()` fallback.
+- behavior is unchanged for non-batchable DBIs, dupsort DBIs, changed DBIs,
+  unsupported paths, and allocation failures; those still use the existing
+  blocking `mdbx_get_ex()` fallback inside the helper.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-getex-fallback-helper-before.txt` and
+    `/tmp/mdbx-async-bench-getex-fallback-helper-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `acd87e7`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.852 Mops/s | 1.847 Mops/s |
+| blocking parallel get | 889.399 Kops/s | 808.720 Kops/s |
+| async single get | 411.486 Kops/s | 359.953 Kops/s |
+| async single get_ex | 407.846 Kops/s | 421.998 Kops/s |
+| async parallel get | 2.647 Mops/s | 2.206 Mops/s |
+| async many parallel get | 2.537 Mops/s | 1.896 Mops/s |
+| async get_ex batch | 2.780 Mops/s | 2.736 Mops/s |
+| async get_ex many | 2.893 Mops/s | 2.801 Mops/s |
+| async cache many | 3.553 Mops/s | 2.475 Mops/s |
+| async cache loop | 2.774 Mops/s | 2.681 Mops/s |
+| async threaded cache loop | 2.713 Mops/s | 2.613 Mops/s |
+| async lowerbound batch | 1.637 Mops/s | 1.600 Mops/s |
+| async lowerbound many | 1.669 Mops/s | 1.676 Mops/s |
+| async get loop | 2.010 Mops/s | 3.056 Mops/s |
+| async get_ex loop | 1.686 Mops/s | 3.299 Mops/s |
+| async lowerbound loop | 1.052 Mops/s | 1.858 Mops/s |
+| async cursor get loop | 125.624 Mops/s | 120.503 Mops/s |
+| async cursor get loop_from | 124.537 Mops/s | 66.304 Mops/s |
+| async threaded cursor get loop | 112.204 Mops/s | 124.891 Mops/s |
+| async threaded cget loop_from | 122.630 Mops/s | 131.940 Mops/s |
+| async-single-ex/par | 0.459 | 0.522 |
+| async-get-ex-batch/par | 3.125 | 3.384 |
+| async-cache-loop/par | 3.118 | 3.316 |
+| async-thread-cache-loop/par | 3.050 | 3.232 |
+| async-get-loop/batch | 1.674 | 1.190 |
+| async-cget-loop-from/par | 1.771 | 0.931 |
+
+- conclusion: this checkpoint removes three more direct public `get_ex`
+  fallbacks from async batch/grouped/loop execution. The one-run benchmark is
+  mixed and noisy: single `get_ex`, `get_ex` loop, get loop, lowerbound loop,
+  and threaded cursor rows improved, while many/get cache rows and direct cursor
+  loop-from regressed in this sample.
