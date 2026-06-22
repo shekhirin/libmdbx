@@ -984,6 +984,7 @@ bailout:
 enum async_read_mode {
   async_read_get,
   async_read_get_notfound,
+  async_read_get_cache_hit,
   async_read_cursor_get,
   async_read_cache_get,
   async_read_cache_get_notfound,
@@ -1031,6 +1032,7 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   const bool batch_read = mode == async_read_get_batch || mode == async_read_cache_get_batch;
   const bool notfound_read = mode == async_read_get_notfound || mode == async_read_cache_get_notfound;
   const bool large_read = mode == async_read_large_get || mode == async_read_large_cache_get;
+  const bool cache_hit_read = mode == async_read_get_cache_hit;
   MDBX_val *read_key_value = notfound_read ? &missing_key_value : &key_value;
 
   memset(&abort_probe, 0, sizeof(abort_probe));
@@ -1099,7 +1101,9 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   CHECK_OP(op);
   CHECK(mdbx_async_txn_begin_ex(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
   CHECK_OP(op);
-  if (mode == async_read_cursor_get) {
+  if (cache_hit_read) {
+    read_name = "mdbx_async_get warm page-cache hit";
+  } else if (mode == async_read_cursor_get) {
     CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor, &op));
     CHECK_OP(op);
     read_name = "mdbx_async_cursor_get cold single read";
@@ -1128,6 +1132,18 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   CHECK(unset_env_var("MDBX_TEST_DXB_FAULT"));
   if (inject_fault)
     CHECK(set_env_var("MDBX_TEST_DXB_FAULT", "read-complete:EIO"));
+  if (cache_hit_read) {
+    CHECK(mdbx_async_get(async, txn, dbi, read_key_value, &data, &op));
+    CHECK(wait_result("mdbx_async_get warmup cold read", &op, &operation_result, __FILE__, __LINE__));
+    REQUIRE(operation_result == MDBX_SUCCESS, "warmup cold async get returned wrong result");
+    CHECK(expect_payload(&data, payload, __FILE__, __LINE__));
+    CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), true));
+    REQUIRE(read_stats.storage_read_items > 0, "warmup cold async read did not submit storage reads");
+    REQUIRE(read_stats.page_cache_misses > 0, "warmup cold async read did not report page-cache misses");
+    REQUIRE(read_stats.page_cache_fills > 0, "warmup cold async read did not fill page-cache entries");
+    data = val(NULL, 0);
+    operation_result = MDBX_SUCCESS;
+  }
   if (mode == async_read_abort_order) {
     CHECK(async_block_probe_prepare(&abort_probe));
     abort_probe_prepared = true;
@@ -1213,32 +1229,45 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   }
 
   CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), false));
-  REQUIRE(read_stats.storage_read_items > 0, "cold single async read did not submit storage reads");
-  REQUIRE(read_stats.storage_read_batches > 0, "cold single async read did not start storage read batches");
-  REQUIRE(read_stats.storage_read_completed >= read_stats.storage_read_items,
-          "cold single async read did not complete submitted reads");
-  if (inject_fault)
-    REQUIRE(read_stats.storage_read_errors > 0, "faulted async get did not report read errors");
-  else
-    REQUIRE(read_stats.storage_read_errors == 0, "successful cold single async read reported read errors");
-  REQUIRE(read_stats.page_cache_misses > 0, "cold single async read did not report page-cache misses");
-  if (batch_read) {
-    REQUIRE(read_stats.storage_read_items > 1, "cold async batch read did not submit multiple storage reads");
-    REQUIRE(read_stats.storage_read_max_batch > 1, "cold async batch read did not report multi-read batches");
-  }
-  if (env_enabled("MDBX_ASYNC_SMOKE_EXPECT_IOURING")) {
-    REQUIRE(read_stats.iouring_read_items > 0, "cold single async read did not use io_uring reads");
-    REQUIRE(read_stats.iouring_read_batches > 0, "cold single async read did not report io_uring read batches");
+  if (cache_hit_read) {
+    REQUIRE(read_stats.storage_read_items == 0, "warm async cache-hit read submitted storage reads");
+    REQUIRE(read_stats.storage_read_batches == 0, "warm async cache-hit read started storage read batches");
+    REQUIRE(read_stats.storage_read_completed == 0, "warm async cache-hit read completed unexpected reads");
+    REQUIRE(read_stats.storage_read_errors == 0, "warm async cache-hit read reported read errors");
+    REQUIRE(read_stats.iouring_read_items == 0, "warm async cache-hit read used io_uring reads");
+    REQUIRE(read_stats.iouring_read_batches == 0, "warm async cache-hit read reported io_uring batches");
+    REQUIRE(read_stats.pending_polls == 0, "warm async cache-hit read left reads pending");
+    REQUIRE(read_stats.page_cache_hits > 0, "warm async cache-hit read did not report page-cache hits");
+    REQUIRE(read_stats.page_cache_misses == 0, "warm async cache-hit read reported page-cache misses");
+    REQUIRE(read_stats.page_cache_fills == 0, "warm async cache-hit read filled page-cache entries");
+  } else {
+    REQUIRE(read_stats.storage_read_items > 0, "cold single async read did not submit storage reads");
+    REQUIRE(read_stats.storage_read_batches > 0, "cold single async read did not start storage read batches");
+    REQUIRE(read_stats.storage_read_completed >= read_stats.storage_read_items,
+            "cold single async read did not complete submitted reads");
+    if (inject_fault)
+      REQUIRE(read_stats.storage_read_errors > 0, "faulted async get did not report read errors");
+    else
+      REQUIRE(read_stats.storage_read_errors == 0, "successful cold single async read reported read errors");
+    REQUIRE(read_stats.page_cache_misses > 0, "cold single async read did not report page-cache misses");
     if (batch_read) {
-      REQUIRE(read_stats.iouring_read_items > 1, "cold async batch read did not submit multiple io_uring reads");
-      REQUIRE(read_stats.iouring_read_max_batch > 1, "cold async batch read did not report io_uring batch depth");
-      REQUIRE(read_stats.iouring_read_max_inflight > 1, "cold async batch read did not report overlapped reads");
+      REQUIRE(read_stats.storage_read_items > 1, "cold async batch read did not submit multiple storage reads");
+      REQUIRE(read_stats.storage_read_max_batch > 1, "cold async batch read did not report multi-read batches");
     }
-  }
-  if (env_enabled("MDBX_ASYNC_SMOKE_EXPECT_NO_IOURING")) {
-    REQUIRE(read_stats.iouring_read_items == 0, "fallback cold single async read unexpectedly used io_uring reads");
-    REQUIRE(read_stats.iouring_read_batches == 0, "fallback cold single async read reported io_uring batches");
-    REQUIRE(read_stats.pending_polls == 0, "fallback cold single async read left reads pending");
+    if (env_enabled("MDBX_ASYNC_SMOKE_EXPECT_IOURING")) {
+      REQUIRE(read_stats.iouring_read_items > 0, "cold single async read did not use io_uring reads");
+      REQUIRE(read_stats.iouring_read_batches > 0, "cold single async read did not report io_uring read batches");
+      if (batch_read) {
+        REQUIRE(read_stats.iouring_read_items > 1, "cold async batch read did not submit multiple io_uring reads");
+        REQUIRE(read_stats.iouring_read_max_batch > 1, "cold async batch read did not report io_uring batch depth");
+        REQUIRE(read_stats.iouring_read_max_inflight > 1, "cold async batch read did not report overlapped reads");
+      }
+    }
+    if (env_enabled("MDBX_ASYNC_SMOKE_EXPECT_NO_IOURING")) {
+      REQUIRE(read_stats.iouring_read_items == 0, "fallback cold single async read unexpectedly used io_uring reads");
+      REQUIRE(read_stats.iouring_read_batches == 0, "fallback cold single async read reported io_uring batches");
+      REQUIRE(read_stats.pending_polls == 0, "fallback cold single async read left reads pending");
+    }
   }
 
   if (cursor) {
@@ -1377,6 +1406,8 @@ int main(void) {
     return exercise_async_read_path(path, false, async_read_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_SINGLE_GET_NOTFOUND_ONLY"))
     return exercise_async_read_path(path, false, async_read_get_notfound);
+  if (env_enabled("MDBX_ASYNC_SMOKE_SINGLE_GET_CACHE_HIT_ONLY"))
+    return exercise_async_read_path(path, false, async_read_get_cache_hit);
   if (env_enabled("MDBX_ASYNC_SMOKE_CURSOR_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_cursor_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_CACHE_READ_ONLY"))
