@@ -50196,18 +50196,6 @@ static inline int page_committed_read_submit_io_validate(MDBX_txn *txn,
   return MDBX_SUCCESS;
 }
 
-static inline dxb_cache_page_result_t page_get_committed(MDBX_txn *txn, const dxb_page_io_t *request,
-                                                         const bool track_private) {
-  dxb_committed_page_submit_io_t submit;
-  int err = page_make_committed_read_submit_io(txn, request, track_private, &submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return dxb_cache_page_error(err);
-  err = page_committed_read_submit_io_validate(txn, &submit);
-  if (unlikely(err != MDBX_SUCCESS))
-    return dxb_cache_page_error(err);
-  return page_cache_submit_read(txn, &submit.cache);
-}
-
 static int page_get_committed_batch(MDBX_txn *txn, const dxb_committed_page_submit_io_t *ios,
                                     dxb_cache_page_result_t *results, size_t count) {
   if (unlikely(!txn || !ios || !results || !count))
@@ -50431,41 +50419,10 @@ static inline pgr_t page_get_dirty_or_spilled(MDBX_txn *txn, const pgno_t pgno, 
   return pgr_empty();
 }
 
-static __hot pgr_t page_submit_get_unchecked_one(MDBX_txn *txn, const dxb_page_get_submit_io_t *io) {
-  int err = page_get_submit_io_validate(txn, io);
-  if (unlikely(err != MDBX_SUCCESS))
-    return pgr_error(err);
-
-  const pgno_t pgno = io->request.pgno;
-
-  bool committed_needed;
-  pgr_t r = page_get_dirty_or_spilled(txn, pgno, &committed_needed);
-  if (unlikely(r.err != MDBX_SUCCESS) || !committed_needed) {
-    TRACE("page %u, %p, err %d", pgno, __Wpedantic_format_voidptr(r.page), r.err);
-    return r;
-  }
-
-  dxb_cache_page_result_t committed = page_get_committed(txn, &io->request, io->track_private);
-  r = committed.page;
-  if (unlikely(r.err != MDBX_SUCCESS))
-    return r;
-
-  if (unlikely(r.page->pgno != pgno))
-    r.err = bad_page(r.page, "pgno mismatch (%" PRIaPGNO ") != expected (%" PRIaPGNO ")\n", r.page->pgno, pgno);
-
-  TRACE("page %u, %p, err %d", pgno, __Wpedantic_format_voidptr(r.page), r.err);
-  return r;
-}
-
 static int page_submit_get_unchecked_batch(MDBX_txn *txn, const dxb_page_get_submit_io_t *ios,
                                            pgr_t *results, size_t count) {
   if (unlikely(!txn || !ios || !results || !count))
     return MDBX_EINVAL;
-
-  if (count == 1) {
-    results[0] = page_submit_get_unchecked_one(txn, &ios[0]);
-    return results[0].err;
-  }
 
   dxb_committed_page_submit_io_t stack_committed_ios[4];
   dxb_cache_page_result_t stack_committed_results[4];
