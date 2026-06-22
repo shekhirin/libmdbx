@@ -5931,3 +5931,70 @@ Additional async get_ex fallback helper consolidation checkpoint:
   mixed and noisy: single `get_ex`, `get_ex` loop, get loop, lowerbound loop,
   and threaded cursor rows improved, while many/get cache rows and direct cursor
   loop-from regressed in this sample.
+
+Additional async lower-bound fallback helper consolidation checkpoint:
+
+- changed the unhandled fallback branches in
+  `async_get_equal_or_great_batch_execute()`,
+  `async_get_equal_or_great_ops_batch()`, and
+  `async_op_get_equal_or_great_loop` to call
+  `async_get_equal_or_great_one()` instead of calling
+  `mdbx_get_equal_or_great()` directly.
+- because `async_get_equal_or_great_one()` first tries the one-key internal
+  lower-bound traversal for eligible nodup read DBIs, fallback lower-bound
+  batch/grouped/loop work now uses the same traversal-aware helper as the
+  single lower-bound path before reaching the public blocking fallback.
+- behavior is unchanged for non-batchable DBIs, dupsort DBIs, changed DBIs,
+  unsupported paths, and allocation failures; those still use the existing
+  blocking `mdbx_get_equal_or_great()` fallback inside the helper.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-lowerbound-fallback-helper-before.txt` and
+    `/tmp/mdbx-async-bench-lowerbound-fallback-helper-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `372a5c2`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.862 Mops/s | 1.857 Mops/s |
+| blocking parallel get | 780.639 Kops/s | 732.397 Kops/s |
+| async single get | 420.377 Kops/s | 232.407 Kops/s |
+| async single get_ex | 275.171 Kops/s | 416.615 Kops/s |
+| async single lowerbound | 324.607 Kops/s | 283.053 Kops/s |
+| async parallel get | 2.576 Mops/s | 1.889 Mops/s |
+| async many parallel get | 2.236 Mops/s | 2.801 Mops/s |
+| async get_ex batch | 2.682 Mops/s | 2.681 Mops/s |
+| async get_ex many | 2.802 Mops/s | 2.606 Mops/s |
+| async cache many | 4.359 Mops/s | 3.910 Mops/s |
+| async cache loop | 2.746 Mops/s | 4.904 Mops/s |
+| async threaded cache loop | 4.470 Mops/s | 3.897 Mops/s |
+| async lowerbound batch | 1.468 Mops/s | 1.016 Mops/s |
+| async lowerbound many | 1.657 Mops/s | 947.774 Kops/s |
+| async get loop | 2.571 Mops/s | 1.823 Mops/s |
+| async get_ex loop | 3.340 Mops/s | 1.853 Mops/s |
+| async lowerbound loop | 1.746 Mops/s | 1.411 Mops/s |
+| async cursor get loop | 67.244 Mops/s | 71.186 Mops/s |
+| async cursor get loop_from | 67.801 Mops/s | 69.231 Mops/s |
+| async threaded cursor get loop | 118.430 Mops/s | 117.551 Mops/s |
+| async threaded cget loop_from | 125.603 Mops/s | 127.905 Mops/s |
+| async-single-lower/par | 0.416 | 0.386 |
+| async-lower-batch/par | 1.881 | 1.388 |
+| async-lower-many/par | 2.122 | 1.294 |
+| async-lower-loop/par | 2.236 | 1.926 |
+| async-thread-lower-loop/par | 2.342 | 2.585 |
+| async-cache-loop/par | 3.518 | 6.696 |
+| async-thread-cache-loop/par | 5.726 | 5.321 |
+| async-cget-loop-from/par | 1.073 | 1.030 |
+
+- conclusion: this checkpoint removes three direct public lower-bound fallbacks
+  from async batch/grouped/loop execution and keeps fallback work on the
+  traversal-aware helper where possible. The one-run benchmark is mixed and
+  likely cache-sensitive: cache loop, many parallel get, direct cursor loops,
+  and threaded lower/cursor ratios improved, while lower-bound batch/many/loop,
+  single lowerbound, get loop, and get_ex loop regressed in this sample.

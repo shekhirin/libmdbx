@@ -17465,7 +17465,7 @@ static int async_get_equal_or_great_batch_execute(MDBX_async_op *op) {
 
     MDBX_val key = keys[i];
     MDBX_val value = data[i];
-    const int rc = mdbx_get_equal_or_great(txn, dbi, &key, &value);
+    const int rc = async_get_equal_or_great_one(txn, dbi, &key, &value);
     results[i] = rc;
     if (rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE) {
       keys[i] = key;
@@ -17542,7 +17542,7 @@ static void async_get_equal_or_great_ops_batch(MDBX_async_op *ops[], size_t coun
       if (rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE)
         key = found_keys[i];
     } else {
-      rc = mdbx_get_equal_or_great(txn, dbi, &key, &value);
+      rc = async_get_equal_or_great_one(txn, dbi, &key, &value);
     }
 
     if (rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE) {
@@ -18700,7 +18700,7 @@ static int async_op_execute(MDBX_async_op *op) {
             get_rc = results[j];
           } else {
             key = keys[j];
-            get_rc = mdbx_get_equal_or_great(txn, dbi, &key, &value);
+            get_rc = async_get_equal_or_great_one(txn, dbi, &key, &value);
           }
           int rc = op->args.get_equal_or_great_loop.result_func
                        ? op->args.get_equal_or_great_loop.result_func(
