@@ -1878,6 +1878,57 @@ int main(void) {
     CHECK(expect_value(&get_values[i], keys[i], __FILE__, __LINE__));
   }
 
+  CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor, &op));
+  CHECK_OP(op);
+  MDBX_val mixed_cursor_key = val(NULL, 0);
+  MDBX_val mixed_cursor_data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, cursor, &mixed_cursor_key, &mixed_cursor_data, MDBX_FIRST,
+                              &ops[0]));
+  for (unsigned i = 0; i < 4; ++i) {
+    get_values[i] = val(NULL, 0);
+    CHECK(mdbx_async_get(async, txn, dbi, &key_values[i + 8], &get_values[i], &ops[i + 1]));
+  }
+  CHECK(wait_many_success("mixed cursor get and async gets", ops, 5, op_results, __FILE__, __LINE__));
+  REQUIRE(mixed_cursor_key.iov_len == sizeof(uint64_t), "mixed cursor get returned wrong key size");
+  uint64_t mixed_cursor_actual_key = UINT64_MAX;
+  memcpy(&mixed_cursor_actual_key, mixed_cursor_key.iov_base, sizeof(mixed_cursor_actual_key));
+  REQUIRE(mixed_cursor_actual_key == 0, "mixed cursor get returned wrong first key");
+  CHECK(expect_value(&mixed_cursor_data, mixed_cursor_actual_key, __FILE__, __LINE__));
+  for (unsigned i = 0; i < 4; ++i)
+    CHECK(expect_value(&get_values[i], keys[i + 8], __FILE__, __LINE__));
+
+  MDBX_cache_entry_t mixed_cache_entries[4];
+  MDBX_cache_result_t mixed_cache_results[4];
+  MDBX_val mixed_cache_keys[4];
+  MDBX_val mixed_cache_data[4];
+  mixed_cursor_key = val(NULL, 0);
+  mixed_cursor_data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, cursor, &mixed_cursor_key, &mixed_cursor_data, MDBX_NEXT,
+                              &ops[0]));
+  for (unsigned i = 0; i < 4; ++i) {
+    mdbx_cache_init(&mixed_cache_entries[i]);
+    mixed_cache_results[i].errcode = MDBX_PROBLEM;
+    mixed_cache_results[i].status = MDBX_CACHE_ERROR;
+    mixed_cache_keys[i] = key_values[i + 12];
+    mixed_cache_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_cache_get_many(async, txn, dbi, mixed_cache_keys, mixed_cache_data,
+                                  mixed_cache_entries, mixed_cache_results, 4, &ops[1]));
+  CHECK(wait_many_success("mixed cursor get and cache gets", ops, 5, op_results, __FILE__, __LINE__));
+  REQUIRE(mixed_cursor_key.iov_len == sizeof(uint64_t), "mixed cursor cache returned wrong key size");
+  memcpy(&mixed_cursor_actual_key, mixed_cursor_key.iov_base, sizeof(mixed_cursor_actual_key));
+  REQUIRE(mixed_cursor_actual_key == 1, "mixed cursor cache returned wrong next key");
+  CHECK(expect_value(&mixed_cursor_data, mixed_cursor_actual_key, __FILE__, __LINE__));
+  for (unsigned i = 0; i < 4; ++i) {
+    REQUIRE(mixed_cache_results[i].errcode == MDBX_SUCCESS &&
+                mixed_cache_results[i].status == MDBX_CACHE_REFRESHED,
+            "unexpected mixed async cache get result");
+    CHECK(expect_value(&mixed_cache_data[i], keys[i + 12], __FILE__, __LINE__));
+  }
+  CHECK(mdbx_async_cursor_close(async, cursor, &op));
+  CHECK_OP(op);
+  cursor = NULL;
+
   MDBX_val get_ex_key = key_values[5];
   MDBX_val get_ex_data = val(NULL, 0);
   size_t values_count = 0;
