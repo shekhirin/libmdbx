@@ -989,6 +989,7 @@ enum async_read_mode {
   async_read_cache_get_notfound,
   async_read_large_get,
   async_read_large_cache_get,
+  async_read_abort_order,
   async_read_get_batch,
   async_read_cache_get_batch
 };
@@ -998,11 +999,15 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   MDBX_env *env = NULL;
   MDBX_txn *txn = NULL;
   MDBX_cursor *cursor = NULL;
+  struct async_block_probe abort_probe;
+  bool abort_probe_prepared = false;
   MDBX_dbi dbi = 0;
   MDBX_async_op *op = NULL;
+  MDBX_async_op *abort_ops[3];
   MDBX_async_read_stats read_stats;
   int rc = MDBX_SUCCESS;
   int operation_result = MDBX_SUCCESS;
+  int abort_results[3];
   const uint64_t key = 42;
   const uint64_t missing_key = 43;
   const uint64_t payload = expected_value(key);
@@ -1027,6 +1032,10 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   const bool notfound_read = mode == async_read_get_notfound || mode == async_read_cache_get_notfound;
   const bool large_read = mode == async_read_large_get || mode == async_read_large_cache_get;
   MDBX_val *read_key_value = notfound_read ? &missing_key_value : &key_value;
+
+  memset(&abort_probe, 0, sizeof(abort_probe));
+  memset(abort_ops, 0, sizeof(abort_ops));
+  memset(abort_results, 0, sizeof(abort_results));
 
   if (!env_enabled("MDBX_FORCE_NO_DATA_MMAP")) {
     rc = fail_msg("async read fault smoke requires MDBX_FORCE_NO_DATA_MMAP=1", __FILE__, __LINE__);
@@ -1106,6 +1115,8 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   } else if (mode == async_read_large_cache_get) {
     mdbx_cache_init(&cache_entry);
     read_name = "mdbx_async_cache_get cold large read";
+  } else if (mode == async_read_abort_order) {
+    read_name = "mdbx_async_get cold read before txn abort";
   } else if (mode == async_read_get_batch) {
     read_name = "mdbx_async_get_batch cold read";
   } else if (mode == async_read_cache_get_batch) {
@@ -1117,7 +1128,23 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   CHECK(unset_env_var("MDBX_TEST_DXB_FAULT"));
   if (inject_fault)
     CHECK(set_env_var("MDBX_TEST_DXB_FAULT", "read-complete:EIO"));
-  if (mode == async_read_cursor_get)
+  if (mode == async_read_abort_order) {
+    CHECK(async_block_probe_prepare(&abort_probe));
+    abort_probe_prepared = true;
+    CHECK(mdbx_async_submit(async, async_block_probe_func, &abort_probe, &abort_ops[0]));
+    CHECK(mdbx_async_get(async, txn, dbi, read_key_value, &data, &abort_ops[1]));
+    CHECK(mdbx_async_txn_abort(async, txn, NULL, &abort_ops[2]));
+    txn = NULL;
+    const int early_release_rc = mdbx_async_op_release(abort_ops[1]);
+    const int early_destroy_rc = mdbx_async_destroy(async, false);
+    CHECK(async_block_probe_release(&abort_probe));
+    CHECK(wait_many_success(read_name, abort_ops, 3, abort_results, __FILE__, __LINE__));
+    async_block_probe_close(&abort_probe);
+    abort_probe_prepared = false;
+    REQUIRE(abort_probe.calls == 1, "abort-order async blocker did not run exactly once");
+    REQUIRE(early_release_rc == MDBX_BUSY, "pending cold async read operation was released early");
+    REQUIRE(early_destroy_rc == MDBX_BUSY, "async executor destroyed with pending cold read operation");
+  } else if (mode == async_read_cursor_get)
     rc = mdbx_async_cursor_get(async, cursor, read_key_value, &data, MDBX_SET_KEY, &op);
   else if (mode == async_read_cache_get || mode == async_read_cache_get_notfound ||
            mode == async_read_large_cache_get)
@@ -1131,7 +1158,9 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
                                     ASYNC_READ_BATCH_COUNT, &op);
   else
     rc = mdbx_async_get(async, txn, dbi, read_key_value, &data, &op);
-  if (rc == MDBX_SUCCESS)
+  if (mode == async_read_abort_order)
+    operation_result = MDBX_SUCCESS;
+  else if (rc == MDBX_SUCCESS)
     rc = wait_result(read_name, &op, &operation_result, __FILE__, __LINE__);
   else
     operation_result = rc;
@@ -1159,6 +1188,8 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
       REQUIRE(cache_result.errcode == MDBX_SUCCESS && cache_result.status != MDBX_CACHE_ERROR,
               "cold large async cache read returned wrong cache result");
       CHECK(expect_large_value(&data, key, __FILE__, __LINE__));
+    } else if (mode == async_read_abort_order) {
+      CHECK(expect_payload(&data, payload, __FILE__, __LINE__));
     } else if (mode == async_read_get_batch) {
       for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
         REQUIRE(batch_results[i] == MDBX_SUCCESS, "cold async get batch returned wrong item result");
@@ -1215,9 +1246,11 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     CHECK_OP(op);
     cursor = NULL;
   }
-  CHECK(mdbx_async_txn_abort(async, txn, NULL, &op));
-  CHECK_OP(op);
-  txn = NULL;
+  if (txn) {
+    CHECK(mdbx_async_txn_abort(async, txn, NULL, &op));
+    CHECK_OP(op);
+    txn = NULL;
+  }
   CHECK(mdbx_async_env_close_ex(async, false, &op));
   CHECK(wait_result("mdbx_async_env_close_ex read fault", &op, &operation_result, __FILE__, __LINE__));
   REQUIRE(operation_result == MDBX_SUCCESS, "unexpected async env close result after read fault");
@@ -1231,6 +1264,18 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
 
 bailout:
   (void)unset_env_var("MDBX_TEST_DXB_FAULT");
+  if (abort_probe_prepared) {
+    (void)async_block_probe_release(&abort_probe);
+    async_block_probe_close(&abort_probe);
+  }
+  for (unsigned i = 0; i < 3; ++i) {
+    if (abort_ops[i]) {
+      int ignored = MDBX_SUCCESS;
+      (void)mdbx_async_wait(abort_ops[i], &ignored);
+      (void)mdbx_async_op_release(abort_ops[i]);
+      abort_ops[i] = NULL;
+    }
+  }
   if (cursor)
     (void)mdbx_cursor_close(cursor);
   if (txn)
@@ -1342,6 +1387,8 @@ int main(void) {
     return exercise_async_read_path(path, false, async_read_large_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_LARGE_CACHE_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_large_cache_get);
+  if (env_enabled("MDBX_ASYNC_SMOKE_ABORT_ORDER_READ_ONLY"))
+    return exercise_async_read_path(path, false, async_read_abort_order);
   if (env_enabled("MDBX_ASYNC_SMOKE_GET_BATCH_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_get_batch);
   if (env_enabled("MDBX_ASYNC_SMOKE_CACHE_BATCH_READ_ONLY"))
