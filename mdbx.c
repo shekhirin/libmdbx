@@ -18625,12 +18625,15 @@ static int async_get_loop_pending_prepare(async_get_loop_pending_t *pending) {
   return pending->drive_rc;
 }
 
-static int async_get_loop_pending_complete_chunk(async_get_loop_pending_t *pending) {
+static int async_get_loop_pending_complete_chunk(async_get_loop_pending_t *pending, bool wait) {
   MDBX_async_op *const op = pending->op;
   if (pending->traverse_started) {
     int rc = pending->drive_rc;
-    while (rc == MDBX_RESULT_TRUE)
-      rc = async_batched_get_traverse_drive(&pending->traverse, true);
+    while (rc == MDBX_RESULT_TRUE) {
+      rc = async_batched_get_traverse_drive(&pending->traverse, wait);
+      if (rc == MDBX_RESULT_TRUE && !wait)
+        return rc;
+    }
     (void)async_batched_get_traverse_finish(&pending->traverse);
     pending->traverse_started = false;
   }
@@ -18691,7 +18694,9 @@ static async_get_loop_pending_t *async_get_loop_start(MDBX_async_op *op) {
       async_get_loop_pending_free(pending);
       return nullptr;
     }
-    const int complete_rc = async_get_loop_pending_complete_chunk(pending);
+    const int complete_rc = async_get_loop_pending_complete_chunk(pending, false);
+    if (complete_rc == MDBX_RESULT_TRUE)
+      return pending;
     if (unlikely(complete_rc != MDBX_SUCCESS)) {
       op->result = complete_rc;
       async_get_loop_pending_free(pending);
@@ -18704,39 +18709,79 @@ static async_get_loop_pending_t *async_get_loop_start(MDBX_async_op *op) {
   return nullptr;
 }
 
-static void async_get_loop_pending_complete(async_get_loop_pending_t *pending) {
+static int async_get_loop_pending_step(async_get_loop_pending_t *pending, bool wait) {
   if (unlikely(!pending))
-    return;
+    return MDBX_EINVAL;
   MDBX_async_op *const op = pending->op;
 
-  for (;;) {
-    const int complete_rc = async_get_loop_pending_complete_chunk(pending);
-    if (unlikely(complete_rc != MDBX_SUCCESS)) {
-      op->result = complete_rc;
-      async_get_loop_pending_free(pending);
-      return;
-    }
-    if (pending->base >= op->args.get_loop.count) {
-      op->result = MDBX_SUCCESS;
-      async_get_loop_pending_free(pending);
-      return;
-    }
-
-    const int prepare_rc = async_get_loop_pending_prepare(pending);
-    if (unlikely(prepare_rc != MDBX_SUCCESS && prepare_rc != MDBX_RESULT_TRUE)) {
-      op->result = prepare_rc;
-      async_get_loop_pending_free(pending);
-      return;
-    }
+  const int complete_rc = async_get_loop_pending_complete_chunk(pending, wait);
+  if (complete_rc == MDBX_RESULT_TRUE)
+    return complete_rc;
+  if (unlikely(complete_rc != MDBX_SUCCESS)) {
+    op->result = complete_rc;
+    async_get_loop_pending_free(pending);
+    return complete_rc;
   }
+
+  if (pending->base >= op->args.get_loop.count) {
+    op->result = MDBX_SUCCESS;
+    async_get_loop_pending_free(pending);
+    return MDBX_SUCCESS;
+  }
+
+  const int prepare_rc = async_get_loop_pending_prepare(pending);
+  if (unlikely(prepare_rc != MDBX_SUCCESS && prepare_rc != MDBX_RESULT_TRUE)) {
+    op->result = prepare_rc;
+    async_get_loop_pending_free(pending);
+    return prepare_rc;
+  }
+  return MDBX_RESULT_TRUE;
 }
 
 static void async_get_loop_pending_drain_all(async_get_loop_pending_t *pending) {
   while (pending) {
-    async_get_loop_pending_t *const next = pending->next;
-    pending->next = nullptr;
-    async_get_loop_pending_complete(pending);
-    pending = next;
+    async_get_loop_pending_t *again_head = nullptr;
+    async_get_loop_pending_t *again_tail = nullptr;
+    bool progressed = false;
+
+    while (pending) {
+      async_get_loop_pending_t *const item = pending;
+      pending = item->next;
+      item->next = nullptr;
+
+      const size_t before_base = item->base;
+      const bool before_traverse = item->traverse_started;
+      const int rc = async_get_loop_pending_step(item, false);
+      if (rc == MDBX_RESULT_TRUE) {
+        if (again_tail)
+          again_tail->next = item;
+        else
+          again_head = item;
+        again_tail = item;
+        progressed = progressed || item->base != before_base || before_traverse != item->traverse_started;
+      } else {
+        progressed = true;
+      }
+    }
+
+    if (again_head && !progressed) {
+      async_get_loop_pending_t *const item = again_head;
+      again_head = item->next;
+      if (!again_head)
+        again_tail = nullptr;
+      item->next = nullptr;
+
+      const int rc = async_get_loop_pending_step(item, true);
+      if (rc == MDBX_RESULT_TRUE) {
+        if (again_tail)
+          again_tail->next = item;
+        else
+          again_head = item;
+        again_tail = item;
+      }
+    }
+
+    pending = again_head;
   }
 }
 
