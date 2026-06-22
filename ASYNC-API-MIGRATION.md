@@ -8308,3 +8308,56 @@ Async cache_batch retained page-cache read checkpoint:
   falling back for large-page materialization after the retained page read. A
   later slice should add retained large-page materialization rather than
   bouncing those entries back through the synchronous fallback.
+
+Async cache_get grouped retained page-cache read checkpoint:
+
+- split grouped `async_op_cache_get` and
+  `async_op_cache_get_singlethreaded` worker execution into synchronous
+  fallback plus retained start/complete paths.
+- grouped cache-get now snapshots the submitted cache entries, starts retained
+  page-cache materialization with `async_cache_materialize_batch_drive(...,
+  false)`, and can remain pending while the worker submits later retained read
+  work before publishing completions.
+- ordinary cached-page hits share the retained materializer introduced for
+  explicit cache batches. Large/overflow page materialization still falls back
+  to the existing synchronous cache-get path.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cacheget-retain-before.txt` and
+    `/tmp/mdbx-async-bench-cacheget-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `b17f86a`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking parallel get | 942.698 Kops/s | 685.917 Kops/s |
+| async parallel get | 2.094 Mops/s | 2.329 Mops/s |
+| async many parallel get | 2.851 Mops/s | 2.359 Mops/s |
+| async cache many | 3.668 Mops/s | 3.344 Mops/s |
+| async cache st many | 4.403 Mops/s | 3.681 Mops/s |
+| async cache batch | 4.016 Mops/s | 3.792 Mops/s |
+| async cache st batch | 3.508 Mops/s | 2.935 Mops/s |
+| async cache batch cb | 3.583 Mops/s | 4.156 Mops/s |
+| async cache st batch cb | 3.907 Mops/s | 3.774 Mops/s |
+| async large cache batch | 119.345 Kops/s | 121.771 Kops/s |
+| async large cache st batch | 117.248 Kops/s | 122.973 Kops/s |
+| async threaded cache batch | 5.284 Mops/s | 2.445 Mops/s |
+| async threaded cache st batch | 5.617 Mops/s | 4.518 Mops/s |
+| async cache loop | 2.817 Mops/s | 3.431 Mops/s |
+| async cache st loop | 3.406 Mops/s | 3.742 Mops/s |
+| async threaded cache loop | 2.814 Mops/s | 2.637 Mops/s |
+| async threaded cache st loop | 2.961 Mops/s | 3.894 Mops/s |
+
+- conclusion: this checkpoint is primarily structural. Grouped cache-get now
+  participates in retained page-cache read scheduling, but this single
+  benchmark run is mixed: cache-many and threaded cache-batch regressed, while
+  cache-loop and some callback/large-cache rows improved. The useful semantic
+  change is that adjacent cache-get operations no longer have to materialize
+  all page-cache misses to completion before the worker can collect later
+  retained read work.
