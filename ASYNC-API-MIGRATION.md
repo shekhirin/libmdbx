@@ -9077,3 +9077,64 @@ Single-run noise remains substantial in the cursor microbenchmarks. The direct
 this checkpoint is structural: public async cursor `NEXT` is no longer purely a
 worker-offloaded blocking call when it must fetch a sibling page or overflow
 value from explicit I/O.
+
+## Retained Cursor FIRST Page-Positioning Slice
+
+Moved the `MDBX_FIRST` startup path used by retained cursor batches from the
+blocking `outer_first()` fallback to an internal submit/drive/complete state.
+For a fresh plain non-dupsort read cursor, `async_cursor_get_batch_start()` now
+submits the root page read, consumes it into the cursor stack, then follows the
+leftmost branch child one page at a time through `page_cursor_get_batch_*()`
+until it reaches the first leaf. Once the first leaf is positioned, the existing
+retained cursor-batch loop handles ordinary values, `N_BIG` overflow values,
+and sibling transitions.
+
+This automatically affects higher-level retained cursor APIs that build their
+initial scan from `async_cursor_get_batch_start(MDBX_FIRST)`, including plain
+cursor batch, cursor batch loops, and plain cursor scans. It also fixed the
+retained batch EOF probe so filling the output buffer exactly at the end of the
+last leaf still reports `MDBX_RESULT_TRUE`, matching
+`mdbx_cursor_get_batch()`.
+
+Unsupported cursor shapes still fall back or return the existing errors:
+dupsort cursors, invalid limits, non-readable cursors, and non-`FIRST`/`NEXT`
+batch operations. Positioned lower-bound starts still have a blocking
+`mdbx_cursor_get(..., MDBX_SET_LOWERBOUND)` island and remain future work.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+- Benchmark logs:
+  `/tmp/mdbx-async-bench-cursorget-retain-after.txt` and
+  `/tmp/mdbx-async-bench-cursorfirst-retain-after.txt`
+
+Reduced forced no-mmap/io_uring benchmark with `MDBX_ASYNC_BENCH_ITEMS=10000`,
+`MDBX_ASYNC_BENCH_OPS=30000`, `MDBX_ASYNC_BENCH_WRITE_OPS=1000`,
+`MDBX_ASYNC_BENCH_LARGE_OPS=30000`, and
+`MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against the previous checkpoint
+`f49d824`.
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async cursor get | 1.261 Mops/s | 846.441 Kops/s |
+| async cursor get loop | 72.008 Mops/s | 47.696 Mops/s |
+| async cursor get loop_from | 74.537 Mops/s | 50.718 Mops/s |
+| async threaded cursor get loop | 52.581 Mops/s | 67.437 Mops/s |
+| blocking cursor batch | 72.417 Mops/s | 72.766 Mops/s |
+| async cursor batch | 71.256 Mops/s | 50.193 Mops/s |
+| async threaded cursor batch | 42.443 Mops/s | 47.149 Mops/s |
+| async cursor scan | 50.694 Mops/s | 60.591 Mops/s |
+| async cursor scan_from | 68.969 Mops/s | 56.276 Mops/s |
+| async-cursor-get-loop/get | 57.095 | 56.349 |
+| async-cursor-batch/get | 56.499 | 59.299 |
+| async-cursor-scan/par | 1.055 | 1.313 |
+| async-scan-from/par | 1.314 | 1.065 |
+
+The cache-hot cursor microbenchmarks are mixed and some rows regress, which is
+expected for a first-position state machine that is mainly valuable when the
+root/leftmost descent has real explicit-I/O misses to overlap. The structural
+gain is that retained cursor batch/loop/scan no longer have to block in
+`outer_first()` before the worker can collect other pending read work.

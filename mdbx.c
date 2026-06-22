@@ -20926,6 +20926,12 @@ static int async_cursor_get_batches_execute(MDBX_async_op *op) {
   return rc;
 }
 
+enum async_cursor_get_batch_first_phase {
+  async_cursor_get_batch_first_none,
+  async_cursor_get_batch_first_root,
+  async_cursor_get_batch_first_child
+};
+
 typedef struct async_cursor_get_batch_pending {
   struct async_cursor_get_batch_pending *next;
   MDBX_async_op *op;
@@ -20941,12 +20947,19 @@ typedef struct async_cursor_get_batch_pending {
   dxb_cursor_page_get_batch_t sibling_batch;
   intptr_t sibling_parent_top;
   indx_t sibling_parent_ki;
+  dxb_cursor_page_get_submit_io_t first_get;
+  pgr_t first_pgr;
+  dxb_cursor_page_get_batch_t first_batch;
+  intptr_t first_parent_top;
+  indx_t first_parent_ki;
   dxb_cursor_page_get_submit_io_t large_get;
   pgr_t large_pgr;
   dxb_cursor_page_get_batch_t large_batch;
   size_t large_value_slot;
   size_t large_bytes;
   unsigned large_npages;
+  enum async_cursor_get_batch_first_phase first_phase;
+  bool first_started;
   bool sibling_started;
   bool large_started;
   bool done;
@@ -20962,6 +20975,10 @@ static int async_cursor_get_batch_execute_sync(MDBX_async_op *op) {
 static void async_cursor_get_batch_pending_free(async_cursor_get_batch_pending_t *pending) {
   if (!pending)
     return;
+  if (pending->first_started) {
+    (void)page_cursor_get_batch_finish(&pending->first_batch);
+    pending->first_started = false;
+  }
   if (pending->sibling_started) {
     (void)page_cursor_get_batch_finish(&pending->sibling_batch);
     pending->sibling_started = false;
@@ -20971,6 +20988,135 @@ static void async_cursor_get_batch_pending_free(async_cursor_get_batch_pending_t
     pending->large_started = false;
   }
   osal_free(pending);
+}
+
+static int async_cursor_get_batch_start_first_read(async_cursor_get_batch_pending_t *pending,
+                                                   enum async_cursor_get_batch_first_phase phase) {
+  int rc = page_cursor_get_batch_begin(&pending->first_batch, &pending->first_get,
+                                       &pending->first_pgr, 1);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  pending->first_phase = phase;
+  pending->first_started = true;
+  return MDBX_SUCCESS;
+}
+
+static int async_cursor_get_batch_prepare_first(async_cursor_get_batch_pending_t *pending) {
+  MDBX_cursor *const mc = pending->cursor;
+  if (unlikely(mc->txn->flags & MDBX_TXN_BLOCKED)) {
+    be_poor(mc);
+    return MDBX_BAD_TXN;
+  }
+
+  const size_t dbi = cursor_dbi(mc);
+  if (unlikely(*cursor_dbi_state(mc) & DBI_STALE)) {
+    const int rc = tbl_refresh_absent2baddbi(mc->txn, dbi);
+    if (unlikely(rc != MDBX_SUCCESS)) {
+      be_poor(mc);
+      return rc;
+    }
+  }
+
+  const pgno_t root = mc->tree->root;
+  if (unlikely(root == P_INVALID)) {
+    be_poor(mc);
+    pending->result = MDBX_NOTFOUND;
+    pending->done = true;
+    return MDBX_SUCCESS;
+  }
+
+  be_poor(mc);
+  int rc = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_LARGE, root,
+                                          tbl_root_txnid(mc->txn, cursor_dbi(mc)),
+                                          &pending->first_get);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    be_poor(mc);
+    return rc;
+  }
+  return async_cursor_get_batch_start_first_read(pending,
+                                                 async_cursor_get_batch_first_root);
+}
+
+static int async_cursor_get_batch_finish_first(async_cursor_get_batch_pending_t *pending,
+                                               bool wait) {
+  int rc = page_cursor_get_batch_drive(&pending->first_batch, wait);
+  if (rc == MDBX_RESULT_TRUE)
+    return MDBX_RESULT_TRUE;
+
+  const int finish_err = page_cursor_get_batch_finish(&pending->first_batch);
+  pending->first_started = false;
+  if (unlikely(finish_err != MDBX_SUCCESS && rc == MDBX_SUCCESS))
+    rc = finish_err;
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    be_poor(pending->cursor);
+    return rc;
+  }
+
+  MDBX_cursor *const mc = pending->cursor;
+  pgr_t page = pending->first_pgr;
+  if (unlikely(page.err != MDBX_SUCCESS)) {
+    const int err = page.err;
+    pgr_release(mc, &page);
+    be_poor(mc);
+    return err;
+  }
+
+  switch (pending->first_phase) {
+  case async_cursor_get_batch_first_root:
+    rc = cursor_stack_set_pgr_consume_checked(mc, 0, &page);
+    if (likely(rc == MDBX_SUCCESS)) {
+      mc->top = 0;
+      mc->ki[0] = 0;
+    } else {
+      pgr_release(mc, &page);
+    }
+    break;
+  case async_cursor_get_batch_first_child:
+    mc->ki[pending->first_parent_top] = pending->first_parent_ki;
+    rc = cursor_push_pgr_consume_checked(mc, &page, 0);
+    break;
+  case async_cursor_get_batch_first_none:
+    pgr_release(mc, &page);
+    rc = MDBX_EINVAL;
+    break;
+  }
+  pending->first_phase = async_cursor_get_batch_first_none;
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    be_poor(mc);
+    return rc;
+  }
+
+  page_t *const mp = mc->pg[mc->top];
+  if (is_branch(mp)) {
+    rc = cursor_branch_child_prepare_get(mc, 0, &pending->first_get,
+                                         &pending->first_parent_top);
+    if (unlikely(rc != MDBX_SUCCESS)) {
+      be_poor(mc);
+      return rc;
+    }
+    pending->first_parent_ki = 0;
+    return async_cursor_get_batch_start_first_read(pending,
+                                                   async_cursor_get_batch_first_child);
+  }
+
+  if (!MDBX_DISABLE_VALIDATION && unlikely(!check_leaf_type(mc, mp))) {
+    ERROR("unexpected leaf-page #%" PRIaPGNO " type 0x%x seen by cursor", mp->pgno,
+          mp->flags);
+    be_poor(mc);
+    return MDBX_CORRUPTED;
+  }
+  const size_t nkeys = page_numkeys(mp);
+  if (unlikely(nkeys == 0)) {
+    be_poor(mc);
+    return MDBX_CORRUPTED;
+  }
+
+  pending->mp = mp;
+  pending->nkeys = nkeys;
+  pending->ki = 0;
+  mc->ki[mc->top] = 0;
+  be_filled(mc);
+  return MDBX_SUCCESS;
 }
 
 static int async_cursor_get_batch_prepare_sibling(async_cursor_get_batch_pending_t *pending) {
@@ -21130,7 +21276,20 @@ static int async_cursor_get_batch_finish_large(async_cursor_get_batch_pending_t 
 static int async_cursor_get_batch_pending_drive(async_cursor_get_batch_pending_t *pending,
                                                 bool wait) {
   MDBX_cursor *const mc = pending->cursor;
-  while (!pending->done && pending->produced + 2 <= pending->limit) {
+  while (!pending->done &&
+         (pending->produced + 2 <= pending->limit || pending->ki >= pending->nkeys)) {
+    if (pending->first_started) {
+      const int rc = async_cursor_get_batch_finish_first(pending, wait);
+      if (rc == MDBX_RESULT_TRUE)
+        return rc;
+      if (unlikely(rc != MDBX_SUCCESS)) {
+        pending->result = rc;
+        pending->done = true;
+        break;
+      }
+      continue;
+    }
+
     if (pending->large_started) {
       const int rc = async_cursor_get_batch_finish_large(pending, wait);
       if (rc == MDBX_RESULT_TRUE)
@@ -21257,6 +21416,7 @@ static async_cursor_get_batch_pending_t *async_cursor_get_batch_start(MDBX_async
     return nullptr;
   }
 
+  bool first_start = false;
   switch (op->args.cursor_get_batch.op) {
   case MDBX_NEXT:
     if (unlikely(is_eof(mc))) {
@@ -21265,10 +21425,7 @@ static async_cursor_get_batch_pending_t *async_cursor_get_batch_start(MDBX_async
     }
     break;
   case MDBX_FIRST:
-    if (!is_filled(mc)) {
-      op->result = async_cursor_get_batch_execute_sync(op);
-      return nullptr;
-    }
+    first_start = !is_filled(mc);
     break;
   default:
     op->result = MDBX_EINVAL;
@@ -21284,10 +21441,19 @@ static async_cursor_get_batch_pending_t *async_cursor_get_batch_start(MDBX_async
   pending->cursor = mc;
   pending->pairs = op->args.cursor_get_batch.pairs;
   pending->limit = limit;
-  pending->mp = mc->pg[mc->top];
-  pending->nkeys = page_numkeys(pending->mp);
-  pending->ki = mc->ki[mc->top];
   pending->result = MDBX_SUCCESS;
+
+  if (first_start) {
+    rc = async_cursor_get_batch_prepare_first(pending);
+    if (unlikely(rc != MDBX_SUCCESS)) {
+      pending->result = rc;
+      pending->done = true;
+    }
+  } else {
+    pending->mp = mc->pg[mc->top];
+    pending->nkeys = page_numkeys(pending->mp);
+    pending->ki = mc->ki[mc->top];
+  }
 
   rc = async_cursor_get_batch_pending_drive(pending, false);
   if (rc == MDBX_RESULT_TRUE)
