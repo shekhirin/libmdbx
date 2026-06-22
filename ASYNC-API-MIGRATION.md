@@ -6478,3 +6478,78 @@ Additional singleton cursor page-get batch-path checkpoint:
   get_ex loop, blocking cursor get, async cursor get, and cursor loop-from
   improved, while many parallel get, regular cache rows, lowerbound batch,
   get loop, and threaded cursor loop rows regressed in this sample.
+
+Additional Linux io_uring read submit/complete split checkpoint:
+
+- split `osal_ioring_linux_uring_read_batch()` into an explicit batch state plus
+  `osal_ioring_linux_uring_read_batch_submit()` and
+  `osal_ioring_linux_uring_read_batch_complete()`.
+- the public internal wrapper is still synchronous, but it now drives a real
+  submit/progress/complete state object instead of keeping all io_uring SQ/CQ
+  handling inside one monolithic loop.
+- added a no-progress guard so the synchronous driver reports an I/O error
+  instead of spinning if the ring cannot submit or complete anything.
+- this is plumbing for the requested suspend/resume traversal work: higher
+  layers can now be moved toward retaining an in-flight read batch and polling
+  completions, rather than requiring every page-cache miss to be submitted and
+  waited inside the same helper call.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-read-split-before.txt` and
+    `/tmp/mdbx-async-bench-read-split-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `9a0124a`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.867 Mops/s | 1.818 Mops/s |
+| blocking parallel get | 944.451 Kops/s | 1.083 Mops/s |
+| async single get | 244.401 Kops/s | 425.482 Kops/s |
+| async single get_ex | 203.504 Kops/s | 426.810 Kops/s |
+| async single lowerbound | 304.348 Kops/s | 236.423 Kops/s |
+| async parallel get | 2.364 Mops/s | 2.725 Mops/s |
+| async many parallel get | 2.124 Mops/s | 2.505 Mops/s |
+| async get_ex batch | 2.384 Mops/s | 2.388 Mops/s |
+| async get_ex many | 2.619 Mops/s | 2.903 Mops/s |
+| async cache many | 4.342 Mops/s | 3.716 Mops/s |
+| async cache st many | 3.027 Mops/s | 4.626 Mops/s |
+| async cache batch | 4.165 Mops/s | 3.824 Mops/s |
+| async cache st batch | 3.930 Mops/s | 3.096 Mops/s |
+| async cache batch cb | 4.217 Mops/s | 3.153 Mops/s |
+| async cache st batch cb | 2.370 Mops/s | 3.235 Mops/s |
+| async cache loop | 4.385 Mops/s | 5.061 Mops/s |
+| async cache st loop | 3.937 Mops/s | 4.333 Mops/s |
+| async threaded cache loop | 4.818 Mops/s | 3.868 Mops/s |
+| async threaded cache st loop | 2.753 Mops/s | 3.848 Mops/s |
+| async lowerbound batch | 1.641 Mops/s | 1.571 Mops/s |
+| async lowerbound many | 1.681 Mops/s | 1.638 Mops/s |
+| async get loop | 1.918 Mops/s | 3.388 Mops/s |
+| async get_ex loop | 3.442 Mops/s | 2.563 Mops/s |
+| async lowerbound loop | 1.438 Mops/s | 1.887 Mops/s |
+| blocking cursor get | 87.259 Mops/s | 85.196 Mops/s |
+| parallel cursor get | 55.076 Mops/s | 55.141 Mops/s |
+| async cursor get | 885.343 Kops/s | 1.217 Mops/s |
+| async cursor get loop | 74.682 Mops/s | 72.309 Mops/s |
+| async cursor get loop_from | 67.395 Mops/s | 68.125 Mops/s |
+| async threaded cursor get loop | 117.054 Mops/s | 120.673 Mops/s |
+| async threaded cget loop_from | 126.063 Mops/s | 66.530 Mops/s |
+| async/blocking parallel | 2.504 | 2.516 |
+| async-many/blocking par | 2.249 | 2.313 |
+| async-cache-many/par | 4.598 | 3.431 |
+| async-lower-loop/par | 1.523 | 1.743 |
+| async-cursor-get-loop/get | 84.354 | 59.419 |
+
+- conclusion: this checkpoint introduces the low-level read-batch state needed
+  for submit/poll/complete layering without changing synchronous API behavior.
+  The one-run benchmark is mixed: async single get/get_ex, parallel get, many
+  get, get_ex many, single-thread cache many, cache loops, get loop,
+  lowerbound loop, async cursor get, cursor loop-from, and threaded cursor get
+  loop improved, while cache batch/callback rows, threaded cache loop,
+  lowerbound batch/many, get_ex loop, cursor loop, and threaded cursor
+  loop-from regressed in this sample.
