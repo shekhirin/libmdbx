@@ -1781,6 +1781,96 @@ int main(void) {
 
   CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
   CHECK_OP(op);
+  REQUIRE(txn != NULL, "abort-order batch read transaction was not returned");
+  struct async_block_probe batch_abort_order_probe;
+  MDBX_val abort_get_batch_data[3];
+  int abort_get_batch_results[3];
+  MDBX_val abort_get_ex_batch_keys[3];
+  MDBX_val abort_get_ex_batch_data[3];
+  size_t abort_get_ex_batch_counts[3];
+  int abort_get_ex_batch_results[3];
+  MDBX_val abort_lower_batch_keys[3];
+  MDBX_val abort_lower_batch_data[3];
+  int abort_lower_batch_results[3];
+  MDBX_cache_entry_t abort_cache_entries[3];
+  MDBX_cache_result_t abort_cache_results[3];
+  MDBX_val abort_cache_data[3];
+  MDBX_val abort_cursor_pairs[4];
+  size_t abort_cursor_count = 0;
+  memset(ops, 0, sizeof(ops));
+  CHECK(async_block_probe_prepare(&batch_abort_order_probe));
+  CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_submit(async, async_block_probe_func, &batch_abort_order_probe, &ops[0]));
+  for (unsigned i = 0; i < 3; ++i) {
+    abort_get_batch_data[i] = val(NULL, 0);
+    abort_get_batch_results[i] = MDBX_PROBLEM;
+    abort_get_ex_batch_keys[i] = key_values[i + 2];
+    abort_get_ex_batch_data[i] = val(NULL, 0);
+    abort_get_ex_batch_counts[i] = SIZE_MAX;
+    abort_get_ex_batch_results[i] = MDBX_PROBLEM;
+    abort_lower_batch_keys[i] = key_values[i + 5];
+    abort_lower_batch_data[i] = val(NULL, 0);
+    abort_lower_batch_results[i] = MDBX_PROBLEM;
+    mdbx_cache_init(&abort_cache_entries[i]);
+    abort_cache_results[i].errcode = MDBX_PROBLEM;
+    abort_cache_results[i].status = MDBX_CACHE_ERROR;
+    abort_cache_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_get_batch(async, txn, dbi, key_values, abort_get_batch_data,
+                             abort_get_batch_results, 3, &ops[1]));
+  CHECK(mdbx_async_get_ex_batch(async, txn, dbi, abort_get_ex_batch_keys,
+                                abort_get_ex_batch_data, abort_get_ex_batch_counts,
+                                abort_get_ex_batch_results, 3, &ops[2]));
+  CHECK(mdbx_async_get_equal_or_great_batch(async, txn, dbi, abort_lower_batch_keys,
+                                            abort_lower_batch_data,
+                                            abort_lower_batch_results, 3, &ops[3]));
+  CHECK(mdbx_async_cache_get_batch(async, txn, dbi, &key_values[8],
+                                   abort_cache_data, abort_cache_entries,
+                                   abort_cache_results, 3, &ops[4]));
+  CHECK(mdbx_async_cursor_get_batch(async, cursor, &abort_cursor_count,
+                                    abort_cursor_pairs, 4, MDBX_FIRST, &ops[5]));
+  CHECK(mdbx_async_txn_abort(async, txn, NULL, &ops[6]));
+  txn = NULL;
+  cursor = NULL;
+  CHECK(async_block_probe_release(&batch_abort_order_probe));
+  CHECK(wait_many_success("queued async read batches before txn abort", ops, 7,
+                          op_results, __FILE__, __LINE__));
+  async_block_probe_close(&batch_abort_order_probe);
+  REQUIRE(batch_abort_order_probe.calls == 1,
+          "batch abort-order async blocker did not run exactly once");
+  for (unsigned i = 0; i < 3; ++i) {
+    REQUIRE(abort_get_batch_results[i] == MDBX_SUCCESS,
+            "queued get batch before abort returned wrong result");
+    CHECK(expect_value(&abort_get_batch_data[i], keys[i], __FILE__, __LINE__));
+    REQUIRE(abort_get_ex_batch_results[i] == MDBX_SUCCESS,
+            "queued get_ex batch before abort returned wrong result");
+    REQUIRE(abort_get_ex_batch_counts[i] == 1,
+            "queued get_ex batch before abort returned wrong value count");
+    CHECK(expect_value(&abort_get_ex_batch_data[i], keys[i + 2], __FILE__, __LINE__));
+    REQUIRE(abort_lower_batch_results[i] == MDBX_SUCCESS,
+            "queued lowerbound batch before abort returned wrong result");
+    CHECK(expect_value(&abort_lower_batch_data[i], keys[i + 5], __FILE__, __LINE__));
+    REQUIRE(abort_cache_results[i].errcode == MDBX_SUCCESS &&
+                abort_cache_results[i].status == MDBX_CACHE_REFRESHED,
+            "queued cache batch before abort returned wrong result");
+    CHECK(expect_value(&abort_cache_data[i], keys[i + 8], __FILE__, __LINE__));
+  }
+  REQUIRE(abort_cursor_count == 4,
+          "queued cursor batch before abort returned wrong value count");
+  for (unsigned i = 0; i < 2; ++i) {
+    REQUIRE(abort_cursor_pairs[i * 2].iov_len == sizeof(uint64_t),
+            "queued cursor batch before abort returned wrong key size");
+    uint64_t actual_key = UINT64_MAX;
+    memcpy(&actual_key, abort_cursor_pairs[i * 2].iov_base, sizeof(actual_key));
+    REQUIRE(actual_key == keys[i],
+            "queued cursor batch before abort returned wrong key");
+    CHECK(expect_value(&abort_cursor_pairs[i * 2 + 1], actual_key,
+                       __FILE__, __LINE__));
+  }
+
+  CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
+  CHECK_OP(op);
   REQUIRE(txn != NULL, "read transaction was not returned");
 
   memset(&env_stat, 0, sizeof(env_stat));
