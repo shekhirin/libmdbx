@@ -21061,6 +21061,7 @@ typedef struct async_cache_get_batch_pending {
   async_batched_get_traverse_state_t refresh_traverse;
   bool materialize_started;
   bool refresh_started;
+  bool refresh_done;
   int drive_rc;
   int refresh_drive_rc;
 } async_cache_get_batch_pending_t;
@@ -21085,20 +21086,28 @@ static void async_cache_get_batch_pending_free(async_cache_get_batch_pending_t *
   osal_free(pending);
 }
 
-static void async_cache_get_batch_pending_finish_materialize(async_cache_get_batch_pending_t *pending) {
+static int async_cache_get_batch_pending_finish_materialize(async_cache_get_batch_pending_t *pending,
+                                                           bool wait) {
   if (unlikely(!pending || !pending->materialize_started))
-    return;
+    return MDBX_SUCCESS;
 
   int rc = pending->drive_rc;
-  while (rc == MDBX_RESULT_TRUE)
-    rc = async_cache_materialize_batch_drive(&pending->materialize, true);
+  while (rc == MDBX_RESULT_TRUE) {
+    rc = async_cache_materialize_batch_drive(&pending->materialize, wait);
+    pending->drive_rc = rc;
+    if (rc == MDBX_RESULT_TRUE && !wait)
+      return rc;
+  }
   (void)async_cache_materialize_batch_finish(&pending->materialize);
   pending->materialize_started = false;
+  return MDBX_SUCCESS;
 }
 
 static int async_cache_get_batch_pending_prepare_refresh(async_cache_get_batch_pending_t *pending) {
   if (unlikely(!pending || !pending->op || !pending->handled))
     return MDBX_EINVAL;
+  if (pending->refresh_done)
+    return MDBX_SUCCESS;
   if (pending->refresh_started)
     return pending->refresh_drive_rc;
 
@@ -21106,14 +21115,18 @@ static int async_cache_get_batch_pending_prepare_refresh(async_cache_get_batch_p
   const MDBX_txn *const txn = op->args.cache_get_batch.txn;
   const MDBX_dbi dbi = op->args.cache_get_batch.dbi;
   const size_t count = op->args.cache_get_batch.count;
-  if (!async_nodup_read_batchable(txn, dbi))
+  if (!async_nodup_read_batchable(txn, dbi)) {
+    pending->refresh_done = true;
     return MDBX_SUCCESS;
+  }
 
   size_t eligible_count = 0;
   for (size_t i = 0; i < count; ++i)
     eligible_count += pending->handled[i] ? 0 : 1;
-  if (!eligible_count)
+  if (!eligible_count) {
+    pending->refresh_done = true;
     return MDBX_SUCCESS;
+  }
 
   pending->refresh_slots = osal_calloc(count, sizeof(pending->refresh_slots[0]));
   pending->refresh_slot_storage = osal_calloc(count, sizeof(pending->refresh_slot_storage[0]));
@@ -21178,6 +21191,7 @@ static int async_cache_get_batch_pending_finish_refresh(async_cache_get_batch_pe
                                               pending->refresh_slot_storage,
                                               pending->refresh_eligible,
                                               pending->refresh_tree_results);
+  pending->refresh_done = true;
   return MDBX_SUCCESS;
 }
 
@@ -21193,7 +21207,7 @@ static void async_cache_get_batch_pending_complete(async_cache_get_batch_pending
   MDBX_cache_result_t *const results = op->args.cache_get_batch.results;
   volatile MDBX_cache_entry_t *const entries_arg = op->args.cache_get_batch.entries;
 
-  async_cache_get_batch_pending_finish_materialize(pending);
+  (void)async_cache_get_batch_pending_finish_materialize(pending, true);
   if (pending->handled) {
     int rc = async_cache_get_batch_pending_prepare_refresh(pending);
     while (rc == MDBX_RESULT_TRUE)
@@ -21224,6 +21238,31 @@ static void async_cache_get_batch_pending_complete(async_cache_get_batch_pending
                                                    results, count)
                    : MDBX_SUCCESS;
   async_cache_get_batch_pending_free(pending);
+}
+
+static int async_cache_get_batch_pending_step(async_cache_get_batch_pending_t *pending,
+                                              bool wait) {
+  if (unlikely(!pending))
+    return MDBX_EINVAL;
+
+  const int materialize_rc =
+      async_cache_get_batch_pending_finish_materialize(pending, wait);
+  if (materialize_rc == MDBX_RESULT_TRUE)
+    return materialize_rc;
+
+  if (pending->handled) {
+    int refresh_rc = async_cache_get_batch_pending_prepare_refresh(pending);
+    while (refresh_rc == MDBX_RESULT_TRUE) {
+      refresh_rc = async_cache_get_batch_pending_finish_refresh(pending, wait);
+      if (refresh_rc == MDBX_RESULT_TRUE)
+        return refresh_rc;
+    }
+    if (refresh_rc != MDBX_RESULT_TRUE)
+      (void)async_cache_get_batch_pending_finish_refresh(pending, wait);
+  }
+
+  async_cache_get_batch_pending_complete(pending);
+  return MDBX_SUCCESS;
 }
 
 static async_cache_get_batch_pending_t *async_cache_get_batch_start(MDBX_async_op *op) {
@@ -21272,7 +21311,7 @@ static async_cache_get_batch_pending_t *async_cache_get_batch_start(MDBX_async_o
   if (pending->drive_rc == MDBX_RESULT_TRUE)
     return pending;
 
-  async_cache_get_batch_pending_finish_materialize(pending);
+  (void)async_cache_get_batch_pending_finish_materialize(pending, true);
   rc = async_cache_get_batch_pending_prepare_refresh(pending);
   if (rc == MDBX_RESULT_TRUE)
     return pending;
@@ -21283,10 +21322,55 @@ static async_cache_get_batch_pending_t *async_cache_get_batch_start(MDBX_async_o
 
 static void async_cache_get_batch_pending_drain_all(async_cache_get_batch_pending_t *pending) {
   while (pending) {
-    async_cache_get_batch_pending_t *const next = pending->next;
-    pending->next = nullptr;
-    async_cache_get_batch_pending_complete(pending);
-    pending = next;
+    async_cache_get_batch_pending_t *again_head = nullptr;
+    async_cache_get_batch_pending_t *again_tail = nullptr;
+    bool progressed = false;
+
+    while (pending) {
+      async_cache_get_batch_pending_t *const item = pending;
+      pending = item->next;
+      item->next = nullptr;
+
+      const bool before_materialize = item->materialize_started;
+      const bool before_refresh = item->refresh_started;
+      const bool before_refresh_done = item->refresh_done;
+      const int before_drive_rc = item->drive_rc;
+      const int before_refresh_drive_rc = item->refresh_drive_rc;
+      const int rc = async_cache_get_batch_pending_step(item, false);
+      if (rc == MDBX_RESULT_TRUE) {
+        if (again_tail)
+          again_tail->next = item;
+        else
+          again_head = item;
+        again_tail = item;
+        progressed = progressed || before_materialize != item->materialize_started ||
+                     before_refresh != item->refresh_started ||
+                     before_refresh_done != item->refresh_done ||
+                     before_drive_rc != item->drive_rc ||
+                     before_refresh_drive_rc != item->refresh_drive_rc;
+      } else {
+        progressed = true;
+      }
+    }
+
+    if (again_head && !progressed) {
+      async_cache_get_batch_pending_t *const item = again_head;
+      again_head = item->next;
+      if (!again_head)
+        again_tail = nullptr;
+      item->next = nullptr;
+
+      const int rc = async_cache_get_batch_pending_step(item, true);
+      if (rc == MDBX_RESULT_TRUE) {
+        if (again_tail)
+          again_tail->next = item;
+        else
+          again_head = item;
+        again_tail = item;
+      }
+    }
+
+    pending = again_head;
   }
 }
 
