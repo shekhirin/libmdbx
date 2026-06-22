@@ -7942,3 +7942,56 @@ Async get scheduler retained-state checkpoint:
   single-run noise. The important change is semantic: grouped async GET no
   longer has to immediately drive every page miss to completion before the
   worker can submit another independent GET group.
+
+Async get_ex scheduler retained-state checkpoint:
+
+- split grouped `async_op_get_ex` worker execution into the same start/complete
+  shape used for grouped `async_op_get`. The start path prepares cache slots,
+  materialized hits, exact-key traversal state, and calls
+  `async_batched_get_traverse_drive(..., false)`.
+- if the nonblocking drive reports `MDBX_RESULT_TRUE`, the worker retains the
+  `get_ex` traversal state and may submit later `async_op_get_ex` groups before
+  draining retained states. This extends scheduler-level traversal suspension
+  from ordinary GET to extended GET.
+- completion publication remains FIFO. The worker drains retained GET/GET_EX
+  states before updating `completed_seq`, and it flushes before crossing between
+  GET, GET_EX, and other operation families while retained state exists.
+- non-batchable DBIs and allocation failures fall back to the previous
+  synchronous grouped `get_ex` execution path.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-getex-retain-before.txt` and
+    `/tmp/mdbx-async-bench-getex-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `677160c`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async single get | 335.345 Kops/s | 312.680 Kops/s |
+| async single get_ex | 270.410 Kops/s | 268.997 Kops/s |
+| async parallel get | 2.776 Mops/s | 2.692 Mops/s |
+| async many parallel get | 1.670 Mops/s | 2.770 Mops/s |
+| async threaded get | 3.153 Mops/s | 1.721 Mops/s |
+| async threaded many get | 3.240 Mops/s | 3.054 Mops/s |
+| async batch parallel get | 2.215 Mops/s | 2.718 Mops/s |
+| async batch callback get | 2.715 Mops/s | 2.809 Mops/s |
+| async get_ex batch | 2.519 Mops/s | 1.963 Mops/s |
+| async get_ex many | 2.897 Mops/s | 2.222 Mops/s |
+| async get_ex loop | 3.463 Mops/s | 2.700 Mops/s |
+| async threaded get_ex loop | 3.528 Mops/s | 1.922 Mops/s |
+| async cache many | 3.448 Mops/s | 4.426 Mops/s |
+| async cache batch | 3.685 Mops/s | 4.108 Mops/s |
+| async lowerbound batch | 1.414 Mops/s | 1.584 Mops/s |
+| async lowerbound loop | 1.905 Mops/s | 1.507 Mops/s |
+
+- conclusion: this checkpoint is primarily semantic and regressed the direct
+  get_ex rows in this single benchmark run. The useful change is that extended
+  GET now reaches the same retained exact-key traversal state as ordinary GET,
+  so scheduler work can continue from one pending mechanism instead of keeping
+  get_ex as an immediate drive-to-completion special case.
