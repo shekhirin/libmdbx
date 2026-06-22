@@ -3781,11 +3781,19 @@ int main(void) {
   CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), false));
   if (expect_explicit_reads) {
     REQUIRE(read_stats.storage_read_items > 0, "explicit read path did not submit storage reads");
+    REQUIRE(read_stats.storage_read_batches > 0, "explicit read path did not start storage read batches");
+    REQUIRE(read_stats.storage_read_max_batch > 0, "explicit read path did not report storage read batch depth");
     REQUIRE(read_stats.storage_read_completed >= read_stats.storage_read_items,
             "explicit read path did not complete submitted reads");
     REQUIRE(read_stats.storage_read_errors == 0, "explicit read path reported read errors");
     REQUIRE(read_stats.page_cache_misses > 0, "explicit read path did not report page-cache misses");
     REQUIRE(read_stats.page_cache_fills > 0, "explicit read path did not fill page-cache entries");
+    if (read_stats.iouring_read_items > 0) {
+      REQUIRE(read_stats.iouring_read_batches > 0, "io_uring read path did not report read batches");
+      REQUIRE(read_stats.iouring_read_max_batch > 0, "io_uring read path did not report read batch depth");
+    }
+    if (read_stats.pending_polls > 0)
+      REQUIRE(read_stats.iouring_read_max_inflight > 0, "io_uring read path did not report in-flight reads");
   }
 
   CHECK(mdbx_async_env_close_ex(async, false, &op));

@@ -2852,10 +2852,13 @@ typedef struct MDBX_stat MDBX_stat;
 struct MDBX_async_read_stats {
   uint64_t storage_read_batches;   /**< Explicit storage read batches started. */
   uint64_t storage_read_items;     /**< Explicit storage read items submitted. */
+  uint64_t storage_read_max_batch; /**< Largest explicit storage read batch submitted. */
   uint64_t storage_read_completed; /**< Explicit storage read items completed. */
   uint64_t storage_read_errors;    /**< Explicit storage read items completed with errors. */
   uint64_t iouring_read_batches;   /**< Storage read batches using the io_uring backend. */
   uint64_t iouring_read_items;     /**< Storage read items submitted through io_uring. */
+  uint64_t iouring_read_max_batch; /**< Largest storage read batch submitted through io_uring. */
+  uint64_t iouring_read_max_inflight; /**< Largest observed io_uring read in-flight depth. */
   uint64_t pending_polls;          /**< Nonblocking drives that left reads in flight. */
   uint64_t page_cache_hits;        /**< Page-cache batch results served from cache. */
   uint64_t page_cache_misses;      /**< Page-cache batch results that required storage reads. */

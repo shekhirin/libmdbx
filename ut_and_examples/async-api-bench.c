@@ -6427,12 +6427,14 @@ static void print_rate(const char *label, double rate) {
 }
 
 static void print_async_read_stats(const MDBX_async_read_stats *stats) {
-  printf("%-28s batches=%" PRIu64 " items=%" PRIu64 " completed=%" PRIu64 " errors=%" PRIu64 "\n",
+  printf("%-28s batches=%" PRIu64 " items=%" PRIu64 " max-batch=%" PRIu64
+         " completed=%" PRIu64 " errors=%" PRIu64 "\n",
          "async-read-storage", stats->storage_read_batches, stats->storage_read_items,
-         stats->storage_read_completed, stats->storage_read_errors);
-  printf("%-28s batches=%" PRIu64 " items=%" PRIu64 " pending-polls=%" PRIu64 "\n",
+         stats->storage_read_max_batch, stats->storage_read_completed, stats->storage_read_errors);
+  printf("%-28s batches=%" PRIu64 " items=%" PRIu64 " max-batch=%" PRIu64
+         " max-inflight=%" PRIu64 " pending-polls=%" PRIu64 "\n",
          "async-read-io_uring", stats->iouring_read_batches, stats->iouring_read_items,
-         stats->pending_polls);
+         stats->iouring_read_max_batch, stats->iouring_read_max_inflight, stats->pending_polls);
   printf("%-28s hits=%" PRIu64 " misses=%" PRIu64 " fills=%" PRIu64 "\n",
          "async-read-page-cache", stats->page_cache_hits, stats->page_cache_misses,
          stats->page_cache_fills);

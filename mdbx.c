@@ -219,6 +219,7 @@ typedef struct osal_ioring_read_batch {
   size_t count;
   size_t submitted;
   size_t finished;
+  size_t max_inflight;
   int first_err;
   enum osal_ioring_read_batch_backend backend_kind;
   void *backend;
@@ -1071,6 +1072,11 @@ MDBX_MAYBE_UNUSED static void diagnostic_counter_add64(mdbx_atomic_uint64_t *p, 
     safe64_inc(p, v);
 }
 
+MDBX_MAYBE_UNUSED static void diagnostic_counter_max64(mdbx_atomic_uint64_t *p, const uint64_t v) {
+  if (likely(v > safe64_read(p)))
+    safe64_update(p, v);
+}
+
 #endif /* !__cplusplus */
 
 /* Сортированный набор txnid, использующий внутри комбинацию непрерывного интервала и списка.
@@ -1852,10 +1858,13 @@ typedef struct dxb_storage {
   struct {
     mdbx_atomic_uint64_t storage_read_batches;
     mdbx_atomic_uint64_t storage_read_items;
+    mdbx_atomic_uint64_t storage_read_max_batch;
     mdbx_atomic_uint64_t storage_read_completed;
     mdbx_atomic_uint64_t storage_read_errors;
     mdbx_atomic_uint64_t iouring_read_batches;
     mdbx_atomic_uint64_t iouring_read_items;
+    mdbx_atomic_uint64_t iouring_read_max_batch;
+    mdbx_atomic_uint64_t iouring_read_max_inflight;
     mdbx_atomic_uint64_t pending_polls;
     mdbx_atomic_uint64_t page_cache_hits;
     mdbx_atomic_uint64_t page_cache_misses;
@@ -12085,10 +12094,13 @@ __cold int mdbx_env_get_async_read_stats(const MDBX_env *env, MDBX_async_read_st
   const dxb_storage_t *const storage = &env->dxb_storage;
   stats->storage_read_batches = atomic_load64(&storage->async_read_stats.storage_read_batches, mo_Relaxed);
   stats->storage_read_items = atomic_load64(&storage->async_read_stats.storage_read_items, mo_Relaxed);
+  stats->storage_read_max_batch = atomic_load64(&storage->async_read_stats.storage_read_max_batch, mo_Relaxed);
   stats->storage_read_completed = atomic_load64(&storage->async_read_stats.storage_read_completed, mo_Relaxed);
   stats->storage_read_errors = atomic_load64(&storage->async_read_stats.storage_read_errors, mo_Relaxed);
   stats->iouring_read_batches = atomic_load64(&storage->async_read_stats.iouring_read_batches, mo_Relaxed);
   stats->iouring_read_items = atomic_load64(&storage->async_read_stats.iouring_read_items, mo_Relaxed);
+  stats->iouring_read_max_batch = atomic_load64(&storage->async_read_stats.iouring_read_max_batch, mo_Relaxed);
+  stats->iouring_read_max_inflight = atomic_load64(&storage->async_read_stats.iouring_read_max_inflight, mo_Relaxed);
   stats->pending_polls = atomic_load64(&storage->async_read_stats.pending_polls, mo_Relaxed);
   stats->page_cache_hits = atomic_load64(&storage->async_read_stats.page_cache_hits, mo_Relaxed);
   stats->page_cache_misses = atomic_load64(&storage->async_read_stats.page_cache_misses, mo_Relaxed);
@@ -12098,10 +12110,13 @@ __cold int mdbx_env_get_async_read_stats(const MDBX_env *env, MDBX_async_read_st
     dxb_storage_t *const mutable_storage = (dxb_storage_t *)storage;
     atomic_store64(&mutable_storage->async_read_stats.storage_read_batches, 0, mo_Relaxed);
     atomic_store64(&mutable_storage->async_read_stats.storage_read_items, 0, mo_Relaxed);
+    atomic_store64(&mutable_storage->async_read_stats.storage_read_max_batch, 0, mo_Relaxed);
     atomic_store64(&mutable_storage->async_read_stats.storage_read_completed, 0, mo_Relaxed);
     atomic_store64(&mutable_storage->async_read_stats.storage_read_errors, 0, mo_Relaxed);
     atomic_store64(&mutable_storage->async_read_stats.iouring_read_batches, 0, mo_Relaxed);
     atomic_store64(&mutable_storage->async_read_stats.iouring_read_items, 0, mo_Relaxed);
+    atomic_store64(&mutable_storage->async_read_stats.iouring_read_max_batch, 0, mo_Relaxed);
+    atomic_store64(&mutable_storage->async_read_stats.iouring_read_max_inflight, 0, mo_Relaxed);
     atomic_store64(&mutable_storage->async_read_stats.pending_polls, 0, mo_Relaxed);
     atomic_store64(&mutable_storage->async_read_stats.page_cache_hits, 0, mo_Relaxed);
     atomic_store64(&mutable_storage->async_read_stats.page_cache_misses, 0, mo_Relaxed);
@@ -42048,6 +42063,7 @@ static int dxb_storage_read_batch_drive(dxb_storage_read_batch_t *batch, bool wa
     batch->accounted_submitted = batch->osal.submitted;
     if (!batch->accounted_batch) {
       diagnostic_counter_add64(&storage->async_read_stats.storage_read_batches, 1);
+      diagnostic_counter_max64(&storage->async_read_stats.storage_read_max_batch, batch->count);
       batch->accounted_batch = true;
     }
 #if MDBX_HAVE_LINUX_IO_URING
@@ -42055,11 +42071,16 @@ static int dxb_storage_read_batch_drive(dxb_storage_read_batch_t *batch, bool wa
       diagnostic_counter_add64(&storage->async_read_stats.iouring_read_items, submitted_delta);
       if (!batch->accounted_backend) {
         diagnostic_counter_add64(&storage->async_read_stats.iouring_read_batches, 1);
+        diagnostic_counter_max64(&storage->async_read_stats.iouring_read_max_batch, batch->count);
         batch->accounted_backend = true;
       }
     }
 #endif /* MDBX_HAVE_LINUX_IO_URING */
   }
+#if MDBX_HAVE_LINUX_IO_URING
+  if (batch->osal.backend_kind == osal_ioring_read_batch_backend_linux_uring)
+    diagnostic_counter_max64(&storage->async_read_stats.iouring_read_max_inflight, batch->osal.max_inflight);
+#endif /* MDBX_HAVE_LINUX_IO_URING */
   if (rc == MDBX_RESULT_TRUE)
     diagnostic_counter_add64(&storage->async_read_stats.pending_polls, 1);
   if (batch->finished == batch->count) {
@@ -53315,6 +53336,7 @@ struct osal_ioring_linux_read_batch {
   size_t count;
   size_t submitted;
   size_t completed;
+  size_t max_inflight;
   int first_err;
   bool items_heap;
   osal_ioring_linux_read_item_t stack_items[osal_ioring_linux_read_batch_stack_items];
@@ -53343,6 +53365,15 @@ static int osal_ioring_linux_read_batch_init(osal_ioring_linux_read_batch_t *bat
 static void osal_ioring_linux_read_batch_dispose(osal_ioring_linux_read_batch_t *batch) {
   if (batch && batch->items_heap)
     osal_free(batch->items);
+}
+
+static __always_inline void osal_ioring_linux_read_batch_account_inflight(
+    osal_ioring_linux_read_batch_t *batch) {
+  if (batch->submitted > batch->completed) {
+    const size_t inflight = batch->submitted - batch->completed;
+    if (batch->max_inflight < inflight)
+      batch->max_inflight = inflight;
+  }
 }
 
 static int osal_ioring_linux_uring_read_batch_submit(osal_ioring_t *ior, mdbx_filehandle_t fd,
@@ -53466,6 +53497,7 @@ static int osal_ioring_linux_uring_read_batch_drive_locked(osal_ioring_t *ior, m
     if (unlikely(submit_err != MDBX_SUCCESS && submit_err != MDBX_RESULT_TRUE &&
                  batch->first_err == MDBX_SUCCESS))
       batch->first_err = submit_err;
+    osal_ioring_linux_read_batch_account_inflight(batch);
   }
 
   if (batch->completed < batch->submitted) {
@@ -54677,6 +54709,7 @@ static int osal_ioring_pread_batch_drive(osal_ioring_read_batch_t *batch, bool w
     const int rc = osal_ioring_linux_uring_read_batch_drive_locked(batch->ior, batch->fd, linux_batch, wait);
     batch->submitted = linux_batch->submitted;
     batch->finished = linux_batch->completed;
+    batch->max_inflight = linux_batch->max_inflight;
     batch->first_err = linux_batch->first_err;
     return rc;
   }
@@ -54696,6 +54729,7 @@ static int osal_ioring_pread_batch_drive(osal_ioring_read_batch_t *batch, bool w
   }
   batch->submitted = batch->count;
   batch->finished = batch->count;
+  batch->max_inflight = 0;
   batch->first_err = first_err;
   return first_err;
 }
