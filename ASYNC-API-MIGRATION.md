@@ -5255,3 +5255,58 @@ Additional single get_ex cache/traversal checkpoint:
   engine instead of independent blocking helper calls. This still runs to
   completion inside the worker; exposing true suspension/resumption remains
   future work.
+
+Additional batched get_ex cache materialization checkpoint:
+
+- changed `mdbx_async_get_ex_batch()` and grouped `async_op_get_ex` execution
+  so warm hidden async-get cache entries are materialized through
+  `cache_materialize_singlethreaded_batch()` before only cold/unhandled entries
+  enter `async_batched_get_traverse()`. This brings batched `get_ex` closer to
+  the existing batched `get` path and avoids re-traversing already-confirmed
+  repeated keys.
+- added a batch-slot preparation/revalidation step for direct-mapped hidden
+  async-get cache slots. Because later keys in a batch can reuse the same
+  direct-mapped slot, stale saved slot pointers are now nulled before
+  materialization/traversal writes through them; cold items still traverse
+  uncached when their slot was displaced.
+- fixed exact non-dupsort `get_ex` result key handling for public async paths.
+  The batchable path now preserves the caller's input key descriptor instead of
+  copying private operation buffers or page-backed traversal keys back into the
+  user's `MDBX_val`. Fallback `mdbx_get_ex()` paths still update keys when they
+  need to preserve duplicate-table semantics.
+- the mixed success/not-found `get_ex_batch` smoke coverage caught both hazards:
+  a stale direct-mapped cache slot could return the wrong payload, and prior
+  `get_ex_many()` completions could leave caller keys pointing at operation
+  buffers that are freed after completion.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-getexbatch-before.txt` and
+    `/tmp/mdbx-async-bench-getexbatch-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `2e07025`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.797 Mops/s | 1.824 Mops/s |
+| blocking parallel get | 943.384 Kops/s | 997.026 Kops/s |
+| async single get | 396.868 Kops/s | 290.292 Kops/s |
+| async single get_ex | 387.325 Kops/s | 239.427 Kops/s |
+| async parallel get | 2.663 Mops/s | 2.502 Mops/s |
+| async many parallel get | 2.601 Mops/s | 2.775 Mops/s |
+| async get_ex batch | 849.187 Kops/s | 2.723 Mops/s |
+| async get_ex many | 1.210 Mops/s | 2.833 Mops/s |
+| async-single-ex/par | 0.411 | 0.240 |
+| async-get-ex-batch/par | 0.900 | 2.732 |
+| async-get-ex-many/par | 1.282 | 2.841 |
+
+- conclusion: the target `get_ex` batch and many rows now use batched cache
+  materialization for warm repeated keys and show a large improvement in this
+  reduced no-mmap/io_uring sample. Some unrelated single/get rows moved down in
+  the same one-run benchmark, so the result should be treated as directional
+  for the targeted warm batched `get_ex` path rather than a global performance
+  claim.

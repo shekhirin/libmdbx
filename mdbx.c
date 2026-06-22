@@ -16602,6 +16602,38 @@ static bool async_get_ex_batchable(const MDBX_txn *txn, MDBX_dbi dbi) {
   return async_nodup_read_batchable(txn, dbi);
 }
 
+static bool async_get_cache_slot_matches(const MDBX_txn *txn, MDBX_dbi dbi,
+                                         MDBX_async_get_cache_slot *slot, const MDBX_val *key) {
+  return slot && async_get_cache_key_equal(slot, txn->env, dbi, async_get_cache_hash(dbi, key), key);
+}
+
+static void async_get_cache_prepare_batch_slots(const MDBX_txn *txn, MDBX_dbi dbi,
+                                                const MDBX_val keys[],
+                                                MDBX_async_get_cache_slot *slots[],
+                                                MDBX_cache_entry_t entries[],
+                                                bool cold[], size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    MDBX_async_get_cache_slot *const slot = slots[i];
+    if (!async_get_cache_slot_matches(txn, dbi, slot, &keys[i])) {
+      slots[i] = nullptr;
+      cold[i] = true;
+      continue;
+    }
+    if (slot->use_count == 0)
+      cold[i] = true;
+    else if (slot->use_count > 1)
+      entries[i] = slot->entry;
+  }
+}
+
+static void async_get_cache_revalidate_batch_slots(const MDBX_txn *txn, MDBX_dbi dbi,
+                                                   const MDBX_val keys[],
+                                                   MDBX_async_get_cache_slot *slots[], size_t count) {
+  for (size_t i = 0; i < count; ++i)
+    if (!async_get_cache_slot_matches(txn, dbi, slots[i], &keys[i]))
+      slots[i] = nullptr;
+}
+
 static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
                                          MDBX_val data[], int results[], bool handled[],
                                          const bool eligible[], MDBX_async_get_cache_slot *slots[],
@@ -17140,13 +17172,8 @@ static int async_cached_get_batch(MDBX_async_op *op) {
       data[i].iov_base = nullptr;
       data[i].iov_len = 0;
       slots[i] = async_get_cache_slot(op->async, txn, dbi, &keys[i]);
-      if (slots[i]) {
-        if (slots[i]->use_count == 0)
-          cold[i] = true;
-        else if (slots[i]->use_count > 1)
-          entries[i] = slots[i]->entry;
-      }
     }
+    async_get_cache_prepare_batch_slots(txn, dbi, keys, slots, entries, cold, count);
     (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
     (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, cold, slots, nullptr, count);
   }
@@ -17214,33 +17241,40 @@ static int async_get_ex_batch_execute(MDBX_async_op *op) {
   size_t *const values_counts = op->args.get_ex_batch.values_counts;
   int *const results = op->args.get_ex_batch.results;
   MDBX_async_get_cache_slot **slots = nullptr;
-  MDBX_val *found_keys = nullptr;
+  MDBX_cache_entry_t *entries = nullptr;
+  MDBX_cache_result_t *cache_results = nullptr;
   bool *handled = nullptr;
-  bool *eligible = nullptr;
+  bool *cold = nullptr;
 
   const bool batchable = async_get_ex_batchable(txn, dbi);
   if (batchable) {
     slots = osal_calloc(count, sizeof(slots[0]));
-    found_keys = osal_calloc(count, sizeof(found_keys[0]));
+    entries = osal_calloc(count, sizeof(entries[0]));
+    cache_results = osal_calloc(count, sizeof(cache_results[0]));
     handled = osal_calloc(count, sizeof(handled[0]));
-    eligible = osal_calloc(count, sizeof(eligible[0]));
+    cold = osal_calloc(count, sizeof(cold[0]));
 
-    if (slots && found_keys && handled && eligible) {
+    if (slots && entries && cache_results && handled && cold) {
       for (size_t i = 0; i < count; ++i) {
-        found_keys[i] = keys[i];
-        eligible[i] = true;
         slots[i] = async_get_cache_slot(op->async, txn, dbi, &keys[i]);
       }
-      (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, eligible, slots,
-                                       found_keys, count);
+      async_get_cache_prepare_batch_slots(txn, dbi, keys, slots, entries, cold, count);
+      (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
+      (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, cold, slots,
+                                       nullptr, count);
     }
   }
 
   for (size_t i = 0; i < count; ++i) {
     if (handled && handled[i]) {
       values_counts[i] = 0;
+      if (cold && cold[i]) {
+        if (slots && slots[i])
+          slots[i]->use_count = slots[i]->use_count ? slots[i]->use_count : 1;
+      } else {
+        results[i] = cache_results[i].errcode;
+      }
       if (results[i] == MDBX_SUCCESS) {
-        keys[i] = found_keys[i];
         values_counts[i] = 1;
       } else {
         data[i].iov_base = nullptr;
@@ -17256,7 +17290,8 @@ static int async_get_ex_batch_execute(MDBX_async_op *op) {
     results[i] = rc;
     values_counts[i] = values_count;
     if (rc == MDBX_SUCCESS) {
-      keys[i] = key;
+      if (!batchable)
+        keys[i] = key;
       data[i] = value;
     } else {
       data[i].iov_base = nullptr;
@@ -17264,9 +17299,10 @@ static int async_get_ex_batch_execute(MDBX_async_op *op) {
     }
   }
 
-  osal_free(eligible);
+  osal_free(cold);
   osal_free(handled);
-  osal_free(found_keys);
+  osal_free(cache_results);
+  osal_free(entries);
   osal_free(slots);
   if (op->args.get_ex_batch.func)
     return op->args.get_ex_batch.func(op->args.get_ex_batch.context, keys, data, values_counts, results,
@@ -17282,12 +17318,14 @@ static void async_get_ex_ops_batch(MDBX_async *async, MDBX_async_op *ops[], size
     MDBX_val key = op->key;
     MDBX_val value = {nullptr, 0};
     size_t values_count = 0;
+    const bool batchable = async_get_ex_batchable(op->args.get_ex.txn, op->args.get_ex.dbi);
     const int rc = async_get_ex_one(async, op->args.get_ex.txn, op->args.get_ex.dbi, &key, &value,
                                     &values_count);
     if (op->args.get_ex.values_count)
       *op->args.get_ex.values_count = values_count;
     if (rc == MDBX_SUCCESS) {
-      *op->args.get_ex.key = key;
+      if (!batchable)
+        *op->args.get_ex.key = key;
       *op->args.get_ex.data = value;
     }
     op->result = rc;
@@ -17297,33 +17335,36 @@ static void async_get_ex_ops_batch(MDBX_async *async, MDBX_async_op *ops[], size
   const MDBX_txn *const txn = ops[0]->args.get_ex.txn;
   const MDBX_dbi dbi = ops[0]->args.get_ex.dbi;
   MDBX_async_get_cache_slot **slots = nullptr;
+  MDBX_cache_entry_t *entries = nullptr;
+  MDBX_cache_result_t *cache_results = nullptr;
   MDBX_val *keys = nullptr;
-  MDBX_val *found_keys = nullptr;
   MDBX_val *data = nullptr;
   int *results = nullptr;
   bool *handled = nullptr;
-  bool *eligible = nullptr;
+  bool *cold = nullptr;
 
   const bool batchable = async_get_ex_batchable(txn, dbi);
   if (batchable) {
     slots = osal_calloc(count, sizeof(slots[0]));
+    entries = osal_calloc(count, sizeof(entries[0]));
+    cache_results = osal_calloc(count, sizeof(cache_results[0]));
     keys = osal_calloc(count, sizeof(keys[0]));
-    found_keys = osal_calloc(count, sizeof(found_keys[0]));
     data = osal_calloc(count, sizeof(data[0]));
     results = osal_calloc(count, sizeof(results[0]));
     handled = osal_calloc(count, sizeof(handled[0]));
-    eligible = osal_calloc(count, sizeof(eligible[0]));
+    cold = osal_calloc(count, sizeof(cold[0]));
   }
-  const bool can_batch = batchable && slots && keys && found_keys && data && results && handled && eligible;
+  const bool can_batch =
+      batchable && slots && entries && cache_results && keys && data && results && handled && cold;
   if (can_batch) {
     for (size_t i = 0; i < count; ++i) {
       keys[i] = ops[i]->key;
-      found_keys[i] = keys[i];
-      eligible[i] = true;
       slots[i] = async_get_cache_slot(async, txn, dbi, &keys[i]);
     }
-    (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, eligible, slots,
-                                     found_keys, count);
+    async_get_cache_prepare_batch_slots(txn, dbi, keys, slots, entries, cold, count);
+    (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
+    (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, cold, slots,
+                                     nullptr, count);
   }
 
   for (size_t i = 0; i < count; ++i) {
@@ -17333,8 +17374,13 @@ static void async_get_ex_ops_batch(MDBX_async *async, MDBX_async_op *ops[], size
     size_t values_count = 0;
     int rc;
     if (handled && handled[i]) {
-      rc = results[i];
-      key = found_keys[i];
+      if (cold && cold[i]) {
+        if (slots && slots[i])
+          slots[i]->use_count = slots[i]->use_count ? slots[i]->use_count : 1;
+        rc = results[i];
+      } else {
+        rc = cache_results[i].errcode;
+      }
       if (rc == MDBX_SUCCESS) {
         value = data[i];
         values_count = 1;
@@ -17346,18 +17392,20 @@ static void async_get_ex_ops_batch(MDBX_async *async, MDBX_async_op *ops[], size
     if (op->args.get_ex.values_count)
       *op->args.get_ex.values_count = values_count;
     if (rc == MDBX_SUCCESS) {
-      *op->args.get_ex.key = key;
+      if (!batchable)
+        *op->args.get_ex.key = key;
       *op->args.get_ex.data = value;
     }
     op->result = rc;
   }
 
-  osal_free(eligible);
+  osal_free(cold);
   osal_free(handled);
   osal_free(results);
   osal_free(data);
-  osal_free(found_keys);
   osal_free(keys);
+  osal_free(cache_results);
+  osal_free(entries);
   osal_free(slots);
 }
 
@@ -17524,13 +17572,8 @@ static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], 
     for (size_t i = 0; i < count; ++i) {
       keys[i] = ops[i]->key;
       slots[i] = async_get_cache_slot(async, txn, dbi, &ops[i]->key);
-      if (slots[i]) {
-        if (slots[i]->use_count == 0)
-          cold[i] = true;
-        else if (slots[i]->use_count > 1)
-          entries[i] = slots[i]->entry;
-      }
     }
+    async_get_cache_prepare_batch_slots(txn, dbi, keys, slots, entries, cold, count);
     (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
     (void)async_batched_get_traverse(txn, dbi, keys, data, tree_results, handled, cold, slots, nullptr, count);
   }
@@ -18202,10 +18245,12 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_get_ex: {
     MDBX_val key = op->key;
     MDBX_val data = {nullptr, 0};
+    const bool batchable = async_get_ex_batchable(op->args.get_ex.txn, op->args.get_ex.dbi);
     const int rc = async_get_ex_one(op->async, op->args.get_ex.txn, op->args.get_ex.dbi, &key, &data,
                                     op->args.get_ex.values_count);
     if (rc == MDBX_SUCCESS) {
-      *op->args.get_ex.key = key;
+      if (!batchable)
+        *op->args.get_ex.key = key;
       *op->args.get_ex.data = data;
     }
     return rc;
@@ -18375,14 +18420,10 @@ static int async_op_execute(MDBX_async_op *op) {
           goto get_loop_bailout;
         }
         slots[j] = async_get_cache_slot(op->async, op->args.get_loop.txn, op->args.get_loop.dbi, &keys[j]);
-        if (slots[j]) {
-          if (slots[j]->use_count == 0)
-            cold[j] = true;
-          else if (slots[j]->use_count > 1)
-            entries[j] = slots[j]->entry;
-        }
       }
 
+      async_get_cache_prepare_batch_slots(op->args.get_loop.txn, op->args.get_loop.dbi, keys, slots,
+                                          entries, cold, chunk);
       (void)cache_materialize_singlethreaded_batch(op->args.get_loop.txn, data, entries,
                                                    cache_results, chunk, handled);
       (void)async_batched_get_traverse(op->args.get_loop.txn, op->args.get_loop.dbi, keys, data,
@@ -18440,7 +18481,6 @@ static int async_op_execute(MDBX_async_op *op) {
         const size_t remaining = op->args.get_ex_loop.count - base;
         const size_t chunk = remaining < get_ex_loop_window ? remaining : get_ex_loop_window;
         MDBX_val keys[get_ex_loop_window];
-        MDBX_val found_keys[get_ex_loop_window];
         MDBX_val data[get_ex_loop_window];
         void *key_copies[get_ex_loop_window];
         uint64_t key_inline[get_ex_loop_window][MDBX_ASYNC_INLINE_WORDS];
@@ -18451,7 +18491,6 @@ static int async_op_execute(MDBX_async_op *op) {
         int loop_rc = MDBX_SUCCESS;
 
         memset(keys, 0, chunk * sizeof(keys[0]));
-        memset(found_keys, 0, chunk * sizeof(found_keys[0]));
         memset(data, 0, chunk * sizeof(data[0]));
         memset(key_copies, 0, chunk * sizeof(key_copies[0]));
         memset(results, 0, chunk * sizeof(results[0]));
@@ -18469,19 +18508,20 @@ static int async_op_execute(MDBX_async_op *op) {
             loop_rc = rc;
             goto get_ex_loop_bailout;
           }
-          found_keys[j] = keys[j];
           eligible[j] = batchable;
           if (batchable)
             slots[j] = async_get_cache_slot(op->async, txn, dbi, &keys[j]);
         }
 
-        if (batchable)
+        if (batchable) {
+          async_get_cache_revalidate_batch_slots(txn, dbi, keys, slots, chunk);
           (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, eligible, slots,
-                                           found_keys, chunk);
+                                           nullptr, chunk);
+        }
 
         for (size_t j = 0; j < chunk; ++j) {
           const size_t i = base + j;
-          MDBX_val key = found_keys[j];
+          MDBX_val key = keys[j];
           MDBX_val value = {nullptr, 0};
           size_t values_count = 0;
           int get_rc;
