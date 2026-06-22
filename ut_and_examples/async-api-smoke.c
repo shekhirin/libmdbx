@@ -5,16 +5,32 @@
 
 #include "mdbx.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 #define ITEM_COUNT 64
 #define LARGE_ITEM_COUNT 4
 #define LARGE_VALUE_BYTES 10000
 
 struct async_probe {
+  unsigned calls;
+};
+
+struct async_block_probe {
+#if defined(_WIN32) || defined(_WIN64)
+  HANDLE release_event;
+#else
+  int release_pipe[2];
+#endif
   unsigned calls;
 };
 
@@ -52,6 +68,12 @@ struct batch_probe {
 
 struct cursor_get_loop_probe {
   unsigned calls;
+};
+
+struct cursor_get_loop_abort_probe {
+  unsigned calls;
+  size_t fail_index;
+  int errcode;
 };
 
 struct get_batch_probe {
@@ -193,6 +215,72 @@ static int async_probe_func(MDBX_env *env, void *context) {
     return MDBX_EINVAL;
   probe->calls += 1;
   return MDBX_SUCCESS;
+}
+
+static int async_block_probe_func(MDBX_env *env, void *context) {
+  struct async_block_probe *const probe = (struct async_block_probe *)context;
+  if (!env || !probe)
+    return MDBX_EINVAL;
+  probe->calls += 1;
+#if defined(_WIN32) || defined(_WIN64)
+  return WaitForSingleObject(probe->release_event, INFINITE) == WAIT_OBJECT_0 ? MDBX_SUCCESS : MDBX_EIO;
+#else
+  char byte = 0;
+  ssize_t bytes;
+  do {
+    bytes = read(probe->release_pipe[0], &byte, 1);
+  } while (bytes < 0 && errno == EINTR);
+  return bytes == 1 ? MDBX_SUCCESS : MDBX_EIO;
+#endif
+}
+
+static int async_block_probe_prepare(struct async_block_probe *probe) {
+  if (!probe)
+    return MDBX_EINVAL;
+  memset(probe, 0, sizeof(*probe));
+#if defined(_WIN32) || defined(_WIN64)
+  probe->release_event = CreateEventA(NULL, TRUE, FALSE, NULL);
+  return probe->release_event ? MDBX_SUCCESS : MDBX_EIO;
+#else
+  probe->release_pipe[0] = -1;
+  probe->release_pipe[1] = -1;
+  return pipe(probe->release_pipe) == 0 ? MDBX_SUCCESS : MDBX_EIO;
+#endif
+}
+
+static int async_block_probe_release(struct async_block_probe *probe) {
+  if (!probe)
+    return MDBX_EINVAL;
+#if defined(_WIN32) || defined(_WIN64)
+  return SetEvent(probe->release_event) ? MDBX_SUCCESS : MDBX_EIO;
+#else
+  const char byte = 1;
+  ssize_t bytes;
+  do {
+    bytes = write(probe->release_pipe[1], &byte, 1);
+  } while (bytes < 0 && errno == EINTR);
+  return bytes == 1 ? MDBX_SUCCESS : MDBX_EIO;
+#endif
+}
+
+static void async_block_probe_close(struct async_block_probe *probe) {
+  if (!probe)
+    return;
+#if defined(_WIN32) || defined(_WIN64)
+  if (probe->release_event) {
+    CloseHandle(probe->release_event);
+    probe->release_event = NULL;
+  }
+#else
+  if (probe->release_pipe[0] >= 0) {
+    close(probe->release_pipe[0]);
+    probe->release_pipe[0] = -1;
+  }
+  if (probe->release_pipe[1] >= 0) {
+    close(probe->release_pipe[1]);
+    probe->release_pipe[1] = -1;
+  }
+#endif
 }
 
 static int enum_probe_func(void *ctx, const MDBX_txn *txn, const MDBX_val *name, MDBX_db_flags_t flags,
@@ -344,6 +432,21 @@ static int cursor_get_loop_probe_func(void *context, size_t index, const MDBX_va
     return MDBX_PROBLEM;
   probe->calls += 1;
   return MDBX_SUCCESS;
+}
+
+static int cursor_get_loop_abort_probe_func(void *context, size_t index, const MDBX_val *key,
+                                            const MDBX_val *data) {
+  struct cursor_get_loop_abort_probe *const probe = (struct cursor_get_loop_abort_probe *)context;
+  if (!probe || !key || !data || key->iov_len != sizeof(uint64_t) || data->iov_len != sizeof(uint64_t))
+    return MDBX_PROBLEM;
+  uint64_t actual_key = 0;
+  uint64_t actual_value = 0;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  memcpy(&actual_value, data->iov_base, sizeof(actual_value));
+  if (actual_key >= ITEM_COUNT || actual_value != expected_value(actual_key))
+    return MDBX_PROBLEM;
+  probe->calls += 1;
+  return index == probe->fail_index ? probe->errcode : MDBX_SUCCESS;
 }
 
 static int get_batch_probe_func(void *context, const MDBX_val keys[], MDBX_val data[], const int results[],
@@ -1733,6 +1836,31 @@ int main(void) {
   REQUIRE(depthmask_result == MDBX_RESULT_TRUE, "non-dupsort dbi did not report MDBX_RESULT_TRUE");
   REQUIRE(depthmask == 0, "unexpected non-dupsort depthmask");
 
+  struct async_block_probe block_probe;
+  MDBX_val queued_get_data = val(NULL, 0);
+  ops[0] = NULL;
+  ops[1] = NULL;
+  CHECK(async_block_probe_prepare(&block_probe));
+  CHECK(mdbx_async_submit(async, async_block_probe_func, &block_probe, &ops[0]));
+  rc = mdbx_async_get(async, txn, dbi, &key_values[0], &queued_get_data, &ops[1]);
+  if (rc != MDBX_SUCCESS) {
+    (void)async_block_probe_release(&block_probe);
+    if (ops[0])
+      (void)mdbx_async_wait_release_all(ops, 1, op_results);
+    async_block_probe_close(&block_probe);
+    rc = fail_rc("mdbx_async_get queued behind blocker", rc, __FILE__, __LINE__);
+    goto bailout;
+  }
+  const int early_release_rc = mdbx_async_op_release(ops[1]);
+  const int early_destroy_rc = mdbx_async_destroy(async, false);
+  CHECK(async_block_probe_release(&block_probe));
+  CHECK(wait_many_success("blocked async read drain", ops, 2, op_results, __FILE__, __LINE__));
+  async_block_probe_close(&block_probe);
+  REQUIRE(block_probe.calls == 1, "async blocker did not run exactly once");
+  REQUIRE(early_release_rc == MDBX_BUSY, "pending async read operation was released early");
+  REQUIRE(early_destroy_rc == MDBX_BUSY, "async executor destroyed with pending read operation");
+  CHECK(expect_value(&queued_get_data, keys[0], __FILE__, __LINE__));
+
   for (unsigned i = 0; i < ITEM_COUNT; ++i) {
     get_values[i] = val(NULL, 0);
     CHECK(mdbx_async_get(async, txn, dbi, &key_values[i], &get_values[i], &ops[i]));
@@ -2755,6 +2883,22 @@ int main(void) {
           "unexpected repeated async cursor get loop count");
   REQUIRE(cursor_get_loop_repeat_probe.calls == ITEM_COUNT,
           "repeated async cursor get loop probe mismatch");
+
+  struct cursor_get_loop_abort_probe cursor_get_loop_abort_probe = {0, 2, MDBX_EINTR};
+  size_t cursor_get_loop_abort_completed = SIZE_MAX;
+  int cursor_get_loop_abort_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_cursor_get_loop(async, cursor, ITEM_COUNT, MDBX_FIRST, MDBX_NEXT,
+                                   cursor_get_loop_abort_probe_func,
+                                   &cursor_get_loop_abort_probe,
+                                   &cursor_get_loop_abort_completed, &op));
+  CHECK(wait_result("mdbx_async_cursor_get_loop callback abort", &op,
+                    &cursor_get_loop_abort_result, __FILE__, __LINE__));
+  REQUIRE(cursor_get_loop_abort_result == MDBX_EINTR,
+          "async cursor get loop did not propagate callback abort");
+  REQUIRE(cursor_get_loop_abort_completed == cursor_get_loop_abort_probe.fail_index,
+          "async cursor get loop completed count included aborted item");
+  REQUIRE(cursor_get_loop_abort_probe.calls == cursor_get_loop_abort_probe.fail_index + 1,
+          "async cursor get loop abort callback count mismatch");
 
   uint64_t cursor_loop_from_key_data = 18;
   MDBX_val cursor_loop_from_key = val(&cursor_loop_from_key_data, sizeof(cursor_loop_from_key_data));
