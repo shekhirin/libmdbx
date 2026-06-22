@@ -6553,3 +6553,71 @@ Additional Linux io_uring read submit/complete split checkpoint:
   loop improved, while cache batch/callback rows, threaded cache loop,
   lowerbound batch/many, get_ex loop, cursor loop, and threaded cursor
   loop-from regressed in this sample.
+
+Additional meta-read batch-adapter checkpoint:
+
+- routed `dxb_storage_submit_read_meta()` through `osal_ioring_pread_batch()`
+  with a one-item byte read request instead of calling `osal_ioring_pread()`
+  directly.
+- kept meta-specific validation intact because meta probing can use a probe
+  page size before normal data-page geometry is finalized.
+- this makes explicit meta reads use the same Linux io_uring read-batch
+  submit/complete driver as data-file page reads, while preserving the existing
+  synchronous meta-read result contract and read/read-complete fault injection.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-meta-batch-before.txt` and
+    `/tmp/mdbx-async-bench-meta-batch-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `74c3cc3`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.842 Mops/s | 1.826 Mops/s |
+| blocking parallel get | 1.064 Mops/s | 1.069 Mops/s |
+| async single get | 420.809 Kops/s | 290.103 Kops/s |
+| async single get_ex | 239.512 Kops/s | 415.260 Kops/s |
+| async single lowerbound | 275.434 Kops/s | 281.873 Kops/s |
+| async parallel get | 2.463 Mops/s | 2.843 Mops/s |
+| async many parallel get | 2.838 Mops/s | 2.365 Mops/s |
+| async get_ex batch | 1.880 Mops/s | 2.547 Mops/s |
+| async get_ex many | 2.779 Mops/s | 2.841 Mops/s |
+| async cache many | 3.284 Mops/s | 4.369 Mops/s |
+| async cache st many | 4.159 Mops/s | 3.176 Mops/s |
+| async cache batch | 3.556 Mops/s | 4.217 Mops/s |
+| async cache st batch | 4.055 Mops/s | 4.274 Mops/s |
+| async cache loop | 4.767 Mops/s | 4.376 Mops/s |
+| async cache st loop | 2.194 Mops/s | 2.782 Mops/s |
+| async threaded cache loop | 2.971 Mops/s | 4.475 Mops/s |
+| async threaded cache st loop | 4.842 Mops/s | 4.752 Mops/s |
+| async lowerbound batch | 1.601 Mops/s | 1.536 Mops/s |
+| async lowerbound many | 1.497 Mops/s | 1.499 Mops/s |
+| async get loop | 2.590 Mops/s | 3.347 Mops/s |
+| async get_ex loop | 3.154 Mops/s | 1.872 Mops/s |
+| async lowerbound loop | 1.852 Mops/s | 1.262 Mops/s |
+| blocking cursor get | 86.831 Mops/s | 84.138 Mops/s |
+| parallel cursor get | 56.770 Mops/s | 55.828 Mops/s |
+| async cursor get | 1.030 Mops/s | 870.667 Kops/s |
+| async cursor get loop | 67.814 Mops/s | 68.786 Mops/s |
+| async cursor get loop_from | 70.082 Mops/s | 70.016 Mops/s |
+| async threaded cursor get loop | 124.766 Mops/s | 117.764 Mops/s |
+| async threaded cget loop_from | 118.528 Mops/s | 126.180 Mops/s |
+| async/blocking parallel | 2.314 | 2.660 |
+| async-cache-many/par | 3.087 | 4.089 |
+| async-cache-loop/par | 4.480 | 4.095 |
+| async-loop/blocking par | 2.434 | 3.133 |
+| async-cursor-get-loop/get | 65.824 | 79.003 |
+
+- conclusion: this checkpoint removes the last direct explicit meta-read call
+  to `osal_ioring_pread()`. The steady-state read benchmark is mostly noise for
+  this startup/meta path; in this one run async get_ex, parallel get, get_ex
+  batch/many, cache many/batch, cache st loop, threaded cache loop, get loop,
+  cursor loop, threaded cursor loop-from, and cursor-loop/get ratio improved,
+  while async single get, many get, cache st many, cache loop, get_ex loop,
+  lowerbound loop, cursor get, and threaded cursor get loop regressed.

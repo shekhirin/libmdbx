@@ -34522,14 +34522,23 @@ static dxb_read_result_t dxb_storage_submit_read_meta(const dxb_storage_t *stora
   rc = dxb_fault_inject("read");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_read_error(rc);
-  rc = osal_ioring_pread((osal_ioring_t *)&storage->ioring, dxb_storage_data_fd(storage), io->buffer,
-                         meta->bytes.bytes, meta->bytes.offset);
-  if (unlikely(rc != MDBX_SUCCESS))
+
+  dxb_read_submit_io_t read = {0};
+  read.data.bytes = meta->bytes;
+  read.buffer = io->buffer;
+  dxb_read_result_t result = dxb_read_error(MDBX_EINVAL);
+  rc = osal_ioring_pread_batch((osal_ioring_t *)&storage->ioring, dxb_storage_data_fd(storage), &read, &result, 1);
+  if (unlikely(rc != MDBX_SUCCESS && result.err == MDBX_SUCCESS))
     return dxb_read_submitted_error(rc);
+  if (unlikely(result.err != MDBX_SUCCESS))
+    return result;
+  if (unlikely(!result.submitted || !result.completed || result.payload_bytes != meta->bytes.bytes))
+    return dxb_read_submitted_error(MDBX_EIO);
+
   rc = dxb_fault_inject("read-complete");
   if (unlikely(rc != MDBX_SUCCESS))
     return dxb_read_submitted_error(rc);
-  return dxb_read_completed(meta->bytes.bytes);
+  return result;
 }
 
 static inline dxb_write_result_t dxb_write_result(int err, unsigned wops, size_t payload_bytes, bool submitted,
