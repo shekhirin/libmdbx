@@ -8149,3 +8149,55 @@ Async get_batch scheduler retained-state checkpoint:
   get-batch no longer has to be an immediate drive-to-completion worker island;
   it can participate in the same retained read drain as the other GET-family
   operations.
+
+Async get_ex_batch scheduler retained-state checkpoint:
+
+- split explicit `async_op_get_ex_batch` execution into a synchronous fallback
+  plus a retained start/complete path. The start path owns cache slots,
+  materialized cache results, cold/handled arrays, and exact-key traversal state
+  for the caller-provided key/data/result arrays.
+- the async worker now treats explicit `get_ex_batch` as part of the retained
+  GET-family read set, so it can coexist with retained single GET, GET_EX,
+  lowerbound, and explicit GET-batch page-read traversals before the worker
+  drains and publishes completions.
+- callbacks still run only during completion, before the operation is marked
+  done. Non-batchable DBIs and allocation failures fall back to the previous
+  synchronous batch execution path.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-getexbatch-retain-before.txt` and
+    `/tmp/mdbx-async-bench-getexbatch-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `a5863e8`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking parallel get | 1.041 Mops/s | 811.187 Kops/s |
+| async single get | 303.961 Kops/s | 192.422 Kops/s |
+| async single get_ex | 325.354 Kops/s | 283.623 Kops/s |
+| async parallel get | 2.475 Mops/s | 2.785 Mops/s |
+| async many parallel get | 2.528 Mops/s | 2.019 Mops/s |
+| async threaded batch get | 2.501 Mops/s | 3.267 Mops/s |
+| async batch parallel get | 2.596 Mops/s | 1.498 Mops/s |
+| async batch callback get | 2.342 Mops/s | 1.427 Mops/s |
+| async get_ex batch | 2.115 Mops/s | 1.529 Mops/s |
+| async get_ex many | 2.574 Mops/s | 1.506 Mops/s |
+| async get_ex loop | 2.875 Mops/s | 3.488 Mops/s |
+| async threaded get_ex loop | 3.395 Mops/s | 3.458 Mops/s |
+| async cache batch | 3.113 Mops/s | 2.597 Mops/s |
+| async cache st batch | 2.403 Mops/s | 4.121 Mops/s |
+| async lowerbound batch | 1.564 Mops/s | 1.344 Mops/s |
+| async lowerbound loop | 1.303 Mops/s | 1.807 Mops/s |
+
+- conclusion: this checkpoint is semantic rather than a single-run performance
+  win. The direct `get_ex_batch` row regressed in this run, while adjacent
+  retained read and cache rows moved in both directions. The important change is
+  that explicit extended batch GET now uses the same retained traversal drain as
+  the rest of the GET-family scheduler instead of being an immediate
+  drive-to-completion operation.
