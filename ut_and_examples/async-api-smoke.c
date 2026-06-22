@@ -2958,6 +2958,18 @@ int main(void) {
   }
   REQUIRE(seen == ITEM_COUNT, "unexpected cursor item count");
 
+  for (unsigned repeat = 0; repeat < 3; ++repeat) {
+    cursor_key = val(NULL, 0);
+    cursor_data = val(NULL, 0);
+    CHECK(mdbx_async_cursor_get(async, cursor, &cursor_key, &cursor_data, MDBX_FIRST, &op));
+    CHECK_OP(op);
+    REQUIRE(cursor_key.iov_len == sizeof(uint64_t), "unexpected repeated first key size");
+    uint64_t repeated_first = 0;
+    memcpy(&repeated_first, cursor_key.iov_base, sizeof(repeated_first));
+    REQUIRE(repeated_first == 0, "unexpected repeated async cursor first key");
+    CHECK(expect_value(&cursor_data, repeated_first, __FILE__, __LINE__));
+  }
+
   CHECK(mdbx_async_txn_reset(async, txn, &op));
   CHECK_OP(op);
   CHECK(mdbx_async_txn_renew(async, txn, &op));

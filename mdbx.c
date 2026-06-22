@@ -21243,6 +21243,7 @@ typedef struct async_cursor_get_batch_pending {
   size_t large_bytes;
   unsigned large_npages;
   enum async_cursor_get_batch_first_phase first_phase;
+  bool stop_after_limit;
   bool first_started;
   bool sibling_started;
   bool large_started;
@@ -21651,8 +21652,11 @@ static int async_cursor_get_batch_pending_drive(async_cursor_get_batch_pending_t
     }
 
     pending->produced += 2;
-    if (++pending->ki == pending->nkeys)
+    if (++pending->ki == pending->nkeys) {
+      if (pending->stop_after_limit && pending->produced >= pending->limit)
+        break;
       continue;
+    }
   }
 
   if (!pending->done) {
@@ -22208,6 +22212,7 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   batch->pairs = pending->pairs;
   batch->limit = 2;
   batch->result = MDBX_SUCCESS;
+  batch->stop_after_limit = true;
 
   if (cursor_op == MDBX_SET_LOWERBOUND || cursor_op == MDBX_SET_KEY) {
     async_cursor_get_batch_pending_free(batch);
@@ -22230,6 +22235,7 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
     async_cursor_get_pending_free(pending);
     return nullptr;
   } else if (cursor_op == MDBX_FIRST) {
+    be_poor(mc);
     rc = async_cursor_get_batch_prepare_first(batch);
     if (unlikely(rc != MDBX_SUCCESS)) {
       batch->result = rc;
