@@ -13652,6 +13652,28 @@ static size_t async_cache_materialize_batch_finish(async_cache_materialize_batch
 
 static MDBX_cache_result_t cache_get_uncached(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *data,
                                              MDBX_cache_status_t status) {
+  if (async_nodup_read_batchable(txn, dbi)) {
+    const MDBX_val keys[1] = {*key};
+    MDBX_val values[1] = {{nullptr, 0}};
+    int results[1] = {MDBX_EINVAL};
+    bool handled[1] = {false};
+    const bool eligible[1] = {true};
+
+    (void)async_batched_get_traverse_stateful(txn, dbi, keys, values, results, handled, eligible,
+                                              nullptr, nullptr, 1);
+    if (handled[0]) {
+      if (results[0] == MDBX_SUCCESS) {
+        *data = values[0];
+        return cache_result(MDBX_SUCCESS, status);
+      }
+      data->iov_base = nullptr;
+      data->iov_len = 0;
+      if (results[0] == MDBX_NOTFOUND)
+        return cache_result(MDBX_NOTFOUND, status);
+      return cache_error(LOG_IFERR(results[0]));
+    }
+  }
+
   cursor_couple_t cx;
   int err = cursor_init(&cx.outer, txn, dbi);
   if (unlikely(err != MDBX_SUCCESS))
