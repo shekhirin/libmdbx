@@ -16743,32 +16743,85 @@ static int async_op_execute(MDBX_async_op *op) {
     return MDBX_SUCCESS;
   }
   case async_op_cache_get_loop:
-  case async_op_cache_get_singlethreaded_loop:
+  case async_op_cache_get_singlethreaded_loop: {
+    enum { cache_get_loop_prefetch_window = 64 };
+    MDBX_val *prefetch_data = nullptr;
+    MDBX_cache_result_t *prefetch_results = nullptr;
+    bool *prefetch_handled = nullptr;
+    size_t prefetch_base = 0;
+    size_t prefetch_count = 0;
+    int loop_rc = MDBX_SUCCESS;
+
+    if (op->opcode == async_op_cache_get_singlethreaded_loop &&
+        op->args.cache_get_loop.count > 1) {
+      prefetch_data = osal_calloc(cache_get_loop_prefetch_window, sizeof(prefetch_data[0]));
+      prefetch_results = osal_calloc(cache_get_loop_prefetch_window, sizeof(prefetch_results[0]));
+      prefetch_handled = osal_calloc(cache_get_loop_prefetch_window, sizeof(prefetch_handled[0]));
+      if (unlikely(!prefetch_data || !prefetch_results || !prefetch_handled)) {
+        osal_free(prefetch_handled);
+        osal_free(prefetch_results);
+        osal_free(prefetch_data);
+        prefetch_data = nullptr;
+        prefetch_results = nullptr;
+        prefetch_handled = nullptr;
+      }
+    }
+
     if (op->args.cache_get_loop.completed)
       *op->args.cache_get_loop.completed = 0;
     for (size_t i = 0; i < op->args.cache_get_loop.count; ++i) {
       MDBX_val key = {nullptr, 0};
       MDBX_val data = {nullptr, 0};
       int rc = op->args.cache_get_loop.key_func(op->args.cache_get_loop.context, i, &key);
-      if (unlikely(rc != MDBX_SUCCESS))
-        return rc;
-      MDBX_cache_result_t result =
-          (op->opcode == async_op_cache_get_loop)
-              ? mdbx_cache_get(op->args.cache_get_loop.txn, op->args.cache_get_loop.dbi, &key, &data,
-                               &op->args.cache_get_loop.entries[i])
-              : mdbx_cache_get_SingleThreaded(op->args.cache_get_loop.txn, op->args.cache_get_loop.dbi,
-                                              &key, &data,
-                                              (MDBX_cache_entry_t *)&op->args.cache_get_loop.entries[i]);
+      if (unlikely(rc != MDBX_SUCCESS)) {
+        loop_rc = rc;
+        goto cache_get_loop_bailout;
+      }
+
+      MDBX_cache_result_t result;
+      bool prefetched = false;
+      if (prefetch_handled) {
+        if (i < prefetch_base || i >= prefetch_base + prefetch_count) {
+          const size_t remaining = op->args.cache_get_loop.count - i;
+          prefetch_base = i;
+          prefetch_count =
+              remaining < cache_get_loop_prefetch_window ? remaining : cache_get_loop_prefetch_window;
+          (void)cache_materialize_singlethreaded_batch(op->args.cache_get_loop.txn, prefetch_data,
+                                                       (MDBX_cache_entry_t *)&op->args.cache_get_loop.entries[i],
+                                                       prefetch_results, prefetch_count, prefetch_handled);
+        }
+        const size_t slot = i - prefetch_base;
+        if (prefetch_handled[slot]) {
+          data = prefetch_data[slot];
+          result = prefetch_results[slot];
+          prefetched = true;
+        }
+      }
+      if (!prefetched)
+        result = (op->opcode == async_op_cache_get_loop)
+                     ? mdbx_cache_get(op->args.cache_get_loop.txn, op->args.cache_get_loop.dbi, &key, &data,
+                                      &op->args.cache_get_loop.entries[i])
+                     : mdbx_cache_get_SingleThreaded(op->args.cache_get_loop.txn,
+                                                     op->args.cache_get_loop.dbi, &key, &data,
+                                                     (MDBX_cache_entry_t *)&op->args.cache_get_loop.entries[i]);
       rc = op->args.cache_get_loop.result_func
                ? op->args.cache_get_loop.result_func(op->args.cache_get_loop.context, i, &key, &data,
                                                      result)
                : result.errcode;
       if (op->args.cache_get_loop.completed)
         *op->args.cache_get_loop.completed = i + 1;
-      if (unlikely(rc != MDBX_SUCCESS))
-        return rc;
+      if (unlikely(rc != MDBX_SUCCESS)) {
+        loop_rc = rc;
+        goto cache_get_loop_bailout;
+      }
     }
-    return MDBX_SUCCESS;
+
+  cache_get_loop_bailout:
+    osal_free(prefetch_handled);
+    osal_free(prefetch_results);
+    osal_free(prefetch_data);
+    return loop_rc;
+  }
   case async_op_get_batch:
     for (size_t i = 0; i < op->args.get_batch.count; ++i) {
       MDBX_val data = {nullptr, 0};

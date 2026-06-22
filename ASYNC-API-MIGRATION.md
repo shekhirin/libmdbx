@@ -100,6 +100,38 @@ write_ops=1000 page_cache=64K`), compared against a detached worktree at
 Single-run benchmark noise is visible in unrelated rows, and callback ratios are
 mixed. The direct single-threaded cache batch path is the target of this slice.
 
+## Cache Loop Prefetch Slice
+
+Extended the internal page-read batch path to
+`mdbx_async_cache_get_SingleThreaded_loop()`. The executor now uses a bounded
+64-entry prefetch window for already-confirmed single-threaded cache entries,
+materializes eligible entries through `cache_materialize_singlethreaded_batch()`,
+then still invokes `key_func`, `result_func`, and `completed` updates in index
+order. Non-eligible entries, allocation failures, large/overflow pages, and
+normal multi-threaded cache entries fall back to the existing per-item path.
+
+This moves cache-get loop workloads closer to the requested async page-read
+model, but it is still not a resumable B-tree traversal engine and does not
+change `mdbx_async_get()`.
+
+Reduced forced no-mmap/io_uring benchmark (`items=10000 ops=30000
+write_ops=1000 page_cache=64K`), compared against a detached worktree at
+`855e9f3`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async cache st loop | 1.386 Mops/s | 2.229 Mops/s |
+| async threaded cache st loop | 1.400 Mops/s | 1.516 Mops/s |
+| async-cache-st-loop/par | 2.090 | 4.330 |
+| async-thread-cache-st-l/par | 2.112 | 2.945 |
+| async-cache-st-loop/many | 0.747 | 1.228 |
+| async-cache-st-loop/loop | 0.659 | 1.056 |
+| async-cache-st-loop/ser | 0.832 | 1.332 |
+| async-thread-cache-st-l/ser | 0.841 | 0.906 |
+
+Single-run benchmark noise remains high across unrelated rows, especially the
+threaded variants, so these numbers should be treated as directional.
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current
