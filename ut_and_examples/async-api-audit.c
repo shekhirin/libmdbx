@@ -26,6 +26,7 @@ static const struct exempt_api exempt_apis[] = {
     {"mdbx_double_from_key", "pure key conversion"},
     {"mdbx_dump_val", "debug formatting helper"},
     {"mdbx_env_chk_encount_problem", "integrity-check callback helper"},
+    {"mdbx_env_get_async_read_stats", "internal async-read migration diagnostic"},
     {"mdbx_env_resurrect_after_fork", "post-fork recovery helper"},
     {"mdbx_float_from_key", "pure key conversion"},
     {"mdbx_get_datacmp", "pure comparator lookup"},

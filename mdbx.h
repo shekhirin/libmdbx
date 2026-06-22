@@ -2844,6 +2844,40 @@ struct MDBX_stat {
 typedef struct MDBX_stat MDBX_stat;
 #endif
 
+/** \brief Diagnostic counters for MDBX internal async read paths.
+ * \ingroup c_statinfo
+ *
+ * These counters are process-local and intended to validate/benchmark the
+ * explicit-I/O async-read migration. They are not persisted in the database. */
+struct MDBX_async_read_stats {
+  uint64_t storage_read_batches;   /**< Explicit storage read batches started. */
+  uint64_t storage_read_items;     /**< Explicit storage read items submitted. */
+  uint64_t storage_read_completed; /**< Explicit storage read items completed. */
+  uint64_t storage_read_errors;    /**< Explicit storage read items completed with errors. */
+  uint64_t iouring_read_batches;   /**< Storage read batches using the io_uring backend. */
+  uint64_t iouring_read_items;     /**< Storage read items submitted through io_uring. */
+  uint64_t pending_polls;          /**< Nonblocking drives that left reads in flight. */
+  uint64_t page_cache_hits;        /**< Page-cache batch results served from cache. */
+  uint64_t page_cache_misses;      /**< Page-cache batch results that required storage reads. */
+  uint64_t page_cache_fills;       /**< Page-cache misses materialized into cache entries. */
+};
+#ifndef __cplusplus
+/** \ingroup c_statinfo */
+typedef struct MDBX_async_read_stats MDBX_async_read_stats;
+#endif
+
+/** \brief Return and optionally reset diagnostic internal async-read counters.
+ * \ingroup c_statinfo
+ *
+ * \param [in] env     An environment handle returned by \ref mdbx_env_create().
+ * \param [out] stats  The address of an \ref MDBX_async_read_stats structure.
+ * \param [in] bytes   The size of \ref MDBX_async_read_stats.
+ * \param [in] reset   Reset process-local counters after taking the snapshot.
+ *
+ * \returns A non-zero error value on failure and 0 on success. */
+LIBMDBX_API int mdbx_env_get_async_read_stats(const MDBX_env *env, MDBX_async_read_stats *stats,
+                                              size_t bytes, bool reset);
+
 /** \brief Return statistics about the MDBX environment.
  * \ingroup c_statinfo
  *

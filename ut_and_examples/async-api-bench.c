@@ -6426,6 +6426,18 @@ static void print_rate(const char *label, double rate) {
     printf("%-28s %8.3f ops/s\n", label, rate);
 }
 
+static void print_async_read_stats(const MDBX_async_read_stats *stats) {
+  printf("%-28s batches=%" PRIu64 " items=%" PRIu64 " completed=%" PRIu64 " errors=%" PRIu64 "\n",
+         "async-read-storage", stats->storage_read_batches, stats->storage_read_items,
+         stats->storage_read_completed, stats->storage_read_errors);
+  printf("%-28s batches=%" PRIu64 " items=%" PRIu64 " pending-polls=%" PRIu64 "\n",
+         "async-read-io_uring", stats->iouring_read_batches, stats->iouring_read_items,
+         stats->pending_polls);
+  printf("%-28s hits=%" PRIu64 " misses=%" PRIu64 " fills=%" PRIu64 "\n",
+         "async-read-page-cache", stats->page_cache_hits, stats->page_cache_misses,
+         stats->page_cache_fills);
+}
+
 int main(void) {
   char path[128];
   MDBX_env *env = NULL;
@@ -6460,6 +6472,9 @@ int main(void) {
   CHECK(mdbx_env_set_maxdbs(env, 4));
   CHECK(mdbx_env_open(env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM | MDBX_SAFE_NOSYNC | MDBX_NOMETASYNC, 0664));
   CHECK(seed_database(env, &dbi, items));
+  MDBX_async_read_stats read_stats;
+  memset(&read_stats, 0, sizeof(read_stats));
+  CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), true));
 
   printf("async-api-bench items=%zu ops=%zu write-ops=%zu replace-ops=%zu delete-ops=%zu write-batch=%zu "
          "workers=%zu window=%zu cursor-batch-pairs=%zu large-items=%zu large-ops=%zu large-value=%zu\n",
@@ -7253,6 +7268,9 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-cursor-range/block", async_cursor_range_del / blocking_cursor_range_del);
   if (blocking_cursor_bunch_del > 0.0 && async_cursor_bunch_del > 0.0)
     printf("%-28s %8.3f\n", "async-cursor-bunch/block", async_cursor_bunch_del / blocking_cursor_bunch_del);
+
+  CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), false));
+  print_async_read_stats(&read_stats);
 
   CHECK(mdbx_env_close(env));
   env = NULL;

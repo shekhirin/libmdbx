@@ -9,6 +9,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -194,6 +195,12 @@ static int fail_msg(const char *msg, const char *file, int line) {
   } while (0)
 
 static unsigned long long smoke_run_id(void) { return (unsigned long long)(uintptr_t)&smoke_run_id; }
+
+static bool env_enabled(const char *name) {
+  const char *const value = getenv(name);
+  return value && value[0] && strcmp(value, "0") != 0 && strcmp(value, "false") != 0 &&
+         strcmp(value, "FALSE") != 0 && strcmp(value, "no") != 0 && strcmp(value, "NO") != 0;
+}
 
 static MDBX_val val(void *base, size_t len) {
   MDBX_val result;
@@ -1032,8 +1039,11 @@ int main(void) {
   int op_results[ITEM_COUNT];
   int close_result = MDBX_SUCCESS;
   int rc = MDBX_SUCCESS;
+  const bool expect_explicit_reads = env_enabled("MDBX_FORCE_NO_DATA_MMAP");
+  MDBX_async_read_stats read_stats;
 
   memset(ops, 0, sizeof(ops));
+  memset(&read_stats, 0, sizeof(read_stats));
   snprintf(path, sizeof(path), "./async-api-smoke-%llx", smoke_run_id());
   snprintf(copy_env_path, sizeof(copy_env_path), "./async-api-smoke-copy-env-%llx", smoke_run_id());
   snprintf(copy_txn_path, sizeof(copy_txn_path), "./async-api-smoke-copy-txn-%llx", smoke_run_id());
@@ -1066,6 +1076,7 @@ int main(void) {
   CHECK(mdbx_async_env_open(async, env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM, 0664, &op));
   CHECK_OP(op);
   REQUIRE(mdbx_async_env(async) == env, "async executor returned wrong environment");
+  CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), true));
 
   struct async_probe probe = {0};
   CHECK(mdbx_async_submit(async, async_probe_func, &probe, &op));
@@ -3766,6 +3777,16 @@ int main(void) {
           "async environment check did not report stages");
   REQUIRE(chk_context.internal == NULL && chk_context.txn == NULL, "async environment check left context active");
   REQUIRE(chk_context.result.total_problems == 0, "async environment check reported problems");
+
+  CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), false));
+  if (expect_explicit_reads) {
+    REQUIRE(read_stats.storage_read_items > 0, "explicit read path did not submit storage reads");
+    REQUIRE(read_stats.storage_read_completed >= read_stats.storage_read_items,
+            "explicit read path did not complete submitted reads");
+    REQUIRE(read_stats.storage_read_errors == 0, "explicit read path reported read errors");
+    REQUIRE(read_stats.page_cache_misses > 0, "explicit read path did not report page-cache misses");
+    REQUIRE(read_stats.page_cache_fills > 0, "explicit read path did not fill page-cache entries");
+  }
 
   CHECK(mdbx_async_env_close_ex(async, false, &op));
   CHECK(wait_result("mdbx_async_env_close_ex", &op, &close_result, __FILE__, __LINE__));
