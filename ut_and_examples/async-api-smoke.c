@@ -2725,6 +2725,17 @@ int main(void) {
           "unexpected cursor batch lower-bound key");
   CHECK(expect_value(&batch_lowerbound_data, batch_lowerbound_actual_key, __FILE__, __LINE__));
 
+  CHECK(mdbx_async_cursor_reset(async, cursor, &op));
+  CHECK_OP(op);
+  struct cursor_get_loop_probe cursor_get_loop_one_probe = {0};
+  size_t cursor_get_loop_one_completed = 0;
+  CHECK(mdbx_async_cursor_get_loop(async, cursor, 1, MDBX_FIRST, MDBX_NEXT,
+                                   cursor_get_loop_probe_func, &cursor_get_loop_one_probe,
+                                   &cursor_get_loop_one_completed, &op));
+  CHECK_OP(op);
+  REQUIRE(cursor_get_loop_one_completed == 1, "unexpected one-item async cursor get loop count");
+  REQUIRE(cursor_get_loop_one_probe.calls == 1, "one-item async cursor get loop probe mismatch");
+
   struct cursor_get_loop_probe cursor_get_loop_probe = {0};
   size_t cursor_get_loop_completed = 0;
   CHECK(mdbx_async_cursor_get_loop(async, cursor, ITEM_COUNT, MDBX_FIRST, MDBX_NEXT,
