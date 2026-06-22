@@ -18173,7 +18173,7 @@ static void async_get_equal_or_great_ops_batch(MDBX_async_op *ops[], size_t coun
   osal_free(keys);
 }
 
-static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], size_t count) {
+static void async_cached_get_ops_batch_sync(MDBX_async *async, MDBX_async_op *ops[], size_t count) {
   if (unlikely(!async || !ops || !count))
     return;
   if (count == 1) {
@@ -18250,6 +18250,155 @@ static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], 
   osal_free(cache_results);
   osal_free(entries);
   osal_free(slots);
+}
+
+typedef struct async_get_ops_pending {
+  struct async_get_ops_pending *next;
+  MDBX_async *async;
+  MDBX_async_op *ops[MDBX_ASYNC_COMPLETE_CHUNK];
+  size_t count;
+  MDBX_async_get_cache_slot **slots;
+  MDBX_cache_entry_t *entries;
+  MDBX_cache_result_t *cache_results;
+  MDBX_val *keys;
+  MDBX_val *data;
+  int *tree_results;
+  bool *handled;
+  bool *cold;
+  async_batched_get_traverse_state_t traverse;
+  bool traverse_started;
+  int drive_rc;
+} async_get_ops_pending_t;
+
+static void async_get_ops_pending_free(async_get_ops_pending_t *pending) {
+  if (!pending)
+    return;
+  if (pending->traverse_started)
+    (void)async_batched_get_traverse_finish(&pending->traverse);
+  osal_free(pending->cold);
+  osal_free(pending->handled);
+  osal_free(pending->tree_results);
+  osal_free(pending->data);
+  osal_free(pending->keys);
+  osal_free(pending->cache_results);
+  osal_free(pending->entries);
+  osal_free(pending->slots);
+  osal_free(pending);
+}
+
+static void async_get_ops_pending_complete(async_get_ops_pending_t *pending) {
+  if (unlikely(!pending))
+    return;
+
+  if (pending->traverse_started) {
+    int rc = pending->drive_rc;
+    while (rc == MDBX_RESULT_TRUE)
+      rc = async_batched_get_traverse_drive(&pending->traverse, true);
+    (void)async_batched_get_traverse_finish(&pending->traverse);
+    pending->traverse_started = false;
+  }
+
+  for (size_t i = 0; i < pending->count; ++i) {
+    MDBX_async_op *const op = pending->ops[i];
+    MDBX_val value = {nullptr, 0};
+    int rc;
+    if (pending->handled && pending->handled[i]) {
+      if (pending->cold && pending->cold[i]) {
+        if (pending->slots && pending->slots[i])
+          pending->slots[i]->use_count = pending->slots[i]->use_count ? pending->slots[i]->use_count : 1;
+        rc = pending->tree_results ? pending->tree_results[i] : MDBX_EINVAL;
+      } else {
+        rc = pending->cache_results[i].errcode;
+      }
+      if (rc == MDBX_SUCCESS)
+        value = pending->data[i];
+    } else {
+      rc = async_cached_get(pending->async, op->args.get.txn, op->args.get.dbi, &op->key, &value);
+    }
+
+    if (op->args.get.data) {
+      if (rc == MDBX_SUCCESS) {
+        *op->args.get.data = value;
+      } else {
+        op->args.get.data->iov_base = nullptr;
+        op->args.get.data->iov_len = 0;
+      }
+    }
+    op->result = rc;
+  }
+  async_get_ops_pending_free(pending);
+}
+
+static async_get_ops_pending_t *async_cached_get_ops_batch_start(MDBX_async *async,
+                                                                 MDBX_async_op *ops[],
+                                                                 size_t count) {
+  if (unlikely(!async || !ops || !count || count > MDBX_ASYNC_COMPLETE_CHUNK)) {
+    async_cached_get_ops_batch_sync(async, ops, count);
+    return nullptr;
+  }
+
+  async_get_ops_pending_t *const pending = osal_calloc(1, sizeof(*pending));
+  if (unlikely(!pending)) {
+    async_cached_get_ops_batch_sync(async, ops, count);
+    return nullptr;
+  }
+  pending->async = async;
+  pending->count = count;
+  for (size_t i = 0; i < count; ++i)
+    pending->ops[i] = ops[i];
+
+  pending->slots = osal_calloc(count, sizeof(pending->slots[0]));
+  pending->entries = osal_calloc(count, sizeof(pending->entries[0]));
+  pending->cache_results = osal_calloc(count, sizeof(pending->cache_results[0]));
+  pending->keys = osal_calloc(count, sizeof(pending->keys[0]));
+  pending->data = osal_calloc(count, sizeof(pending->data[0]));
+  pending->tree_results = osal_calloc(count, sizeof(pending->tree_results[0]));
+  pending->handled = osal_calloc(count, sizeof(pending->handled[0]));
+  pending->cold = osal_calloc(count, sizeof(pending->cold[0]));
+  if (unlikely(!pending->slots || !pending->entries || !pending->cache_results ||
+               !pending->keys || !pending->data || !pending->tree_results ||
+               !pending->handled || !pending->cold)) {
+    async_get_ops_pending_free(pending);
+    async_cached_get_ops_batch_sync(async, ops, count);
+    return nullptr;
+  }
+
+  const MDBX_txn *const txn = ops[0]->args.get.txn;
+  const MDBX_dbi dbi = ops[0]->args.get.dbi;
+  for (size_t i = 0; i < count; ++i) {
+    pending->keys[i] = ops[i]->key;
+    pending->slots[i] = async_get_cache_slot(async, txn, dbi, &ops[i]->key);
+  }
+  async_get_cache_prepare_batch_slots(txn, dbi, pending->keys, pending->slots,
+                                      pending->entries, pending->cold, count);
+  (void)cache_materialize_singlethreaded_batch(txn, pending->data, pending->entries,
+                                               pending->cache_results, count, pending->handled);
+
+  int traverse_rc = async_batched_get_traverse_begin(
+      &pending->traverse, txn, dbi, pending->keys, pending->data,
+      pending->tree_results, pending->handled, pending->cold, pending->slots, nullptr, count);
+  if (likely(traverse_rc == MDBX_SUCCESS)) {
+    pending->traverse_started = true;
+    pending->drive_rc = async_batched_get_traverse_drive(&pending->traverse, false);
+  } else {
+    pending->traverse_started = true;
+    pending->drive_rc = traverse_rc;
+  }
+
+  if (pending->drive_rc == MDBX_RESULT_TRUE)
+    return pending;
+
+  async_get_ops_pending_complete(pending);
+  return nullptr;
+}
+
+static void async_get_ops_pending_drain_all(async_get_ops_pending_t *pending) {
+  while (pending) {
+    async_get_ops_pending_t *const next = pending->next;
+    pending->next = nullptr;
+    async_get_ops_pending_complete(pending);
+    pending = next;
+  }
 }
 
 static MDBX_cache_result_t async_cache_get_one_materialized(const MDBX_txn *txn, MDBX_dbi dbi,
@@ -19833,6 +19982,8 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
     MDBX_async_op *ready_head = nullptr;
     MDBX_async_op *ready_tail = nullptr;
     size_t ready_count = 0;
+    async_get_ops_pending_t *pending_get_head = nullptr;
+    async_get_ops_pending_t *pending_get_tail = nullptr;
     for (;;) {
       MDBX_async_op *next = op->next;
       op->next = nullptr;
@@ -19848,7 +19999,14 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
           item->next = nullptr;
           batch[batch_count++] = item;
         }
-        async_cached_get_ops_batch(async, batch, batch_count);
+        async_get_ops_pending_t *const pending = async_cached_get_ops_batch_start(async, batch, batch_count);
+        if (pending) {
+          if (pending_get_tail)
+            pending_get_tail->next = pending;
+          else
+            pending_get_head = pending;
+          pending_get_tail = pending;
+        }
         for (size_t i = 0; i < batch_count; ++i) {
           if (ready_tail)
             ready_tail->next = batch[i];
@@ -19933,10 +20091,15 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
         ready_count += 1;
       }
 
-      if (next && ready_count < MDBX_ASYNC_COMPLETE_CHUNK) {
+      if (next && ready_count < MDBX_ASYNC_COMPLETE_CHUNK &&
+          (!pending_get_head || next->opcode == async_op_get)) {
         op = next;
         continue;
       }
+
+      async_get_ops_pending_drain_all(pending_get_head);
+      pending_get_head = nullptr;
+      pending_get_tail = nullptr;
 
       rc = osal_condpair_lock(&async->condpair);
       if (unlikely(rc != MDBX_SUCCESS))

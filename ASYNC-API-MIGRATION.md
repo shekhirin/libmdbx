@@ -7885,3 +7885,60 @@ Public get traversal-state checkpoint:
   get loop improved; single get_ex/lowerbound and some threaded rows regressed.
   The structural gain is that public blocking GET no longer bypasses the async
   page-read state machine for the common no-dup explicit-I/O read case.
+
+Async get scheduler retained-state checkpoint:
+
+- split grouped `async_op_get` worker execution into a start/complete form.
+  The start path allocates a worker-local retained state object, prepares cache
+  slots/materialized hits, begins exact-key traversal, and calls
+  `async_batched_get_traverse_drive(..., false)`.
+- if the nonblocking drive reports `MDBX_RESULT_TRUE`, the worker keeps the
+  traversal state instead of immediately waiting. It can then submit later
+  `async_op_get` groups before draining retained states, allowing multiple
+  independent GET page-read batches to be in flight within the same completion
+  chunk.
+- completion order is still FIFO: operations are appended to the ready list in
+  queue order, retained states are drained before `completed_seq` is published,
+  and the worker flushes before any non-GET operation while retained GET state
+  exists.
+- allocation failures and unsupported cases fall back to the previous
+  synchronous grouped GET execution path.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-get-retain-before.txt` and
+    `/tmp/mdbx-async-bench-get-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `1dd14ec`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 981.267 Kops/s | 997.864 Kops/s |
+| blocking parallel get | 1.036 Mops/s | 604.939 Kops/s |
+| async single get | 277.058 Kops/s | 319.014 Kops/s |
+| async parallel get | 2.318 Mops/s | 2.359 Mops/s |
+| async many parallel get | 2.333 Mops/s | 2.721 Mops/s |
+| async threaded get | 2.436 Mops/s | 3.052 Mops/s |
+| async threaded many get | 2.233 Mops/s | 2.703 Mops/s |
+| async threaded batch get | 3.477 Mops/s | 3.381 Mops/s |
+| async batch parallel get | 2.532 Mops/s | 1.332 Mops/s |
+| async batch callback get | 2.808 Mops/s | 1.235 Mops/s |
+| async get loop | 3.451 Mops/s | 3.216 Mops/s |
+| async threaded get loop | 3.423 Mops/s | 3.305 Mops/s |
+| async get_ex loop | 3.062 Mops/s | 3.378 Mops/s |
+| async lowerbound batch | 1.438 Mops/s | 1.648 Mops/s |
+| async lowerbound loop | 1.263 Mops/s | 1.814 Mops/s |
+
+- conclusion: this is the first scheduler checkpoint where an async GET
+  traversal can remain live after a nonblocking drive returns pending, while
+  later GET groups can submit their own page reads before the worker blocks for
+  completion. The target many/threaded GET rows improved in this run; explicit
+  batch/callback GET regressed and several non-target rows moved with the usual
+  single-run noise. The important change is semantic: grouped async GET no
+  longer has to immediately drive every page miss to completion before the
+  worker can submit another independent GET group.
