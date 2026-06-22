@@ -8410,3 +8410,50 @@ Async large cache materialization retained-state checkpoint:
   is that large/overflow cache materialization can now stay inside the retained
   page-read state machine rather than re-entering synchronous cache-get for the
   second storage read.
+
+Async get_loop retained traversal checkpoint:
+
+- added `async_get_loop_pending_t`, a heap-owned retained state for one
+  64-key `mdbx_async_get_loop()` window. The state owns copied keys,
+  cache-entry snapshots, cache materialization results, cold-slot flags, and
+  the `async_batched_get_traverse_state_t` continuation until the pending page
+  reads complete.
+- changed the async worker to route `async_op_get_loop` through the retained
+  read scheduler. The first window now starts traversal with
+  `async_batched_get_traverse_drive(..., false)` and can remain pending while
+  the worker accepts later retained read work before publishing completions.
+- result callbacks and `completed` updates remain in index order. Allocation
+  failure falls back to the existing synchronous executor path; key callback
+  errors and result callback errors stop the loop with the same completed-count
+  semantics as before.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-getloop-before.txt` and
+    `/tmp/mdbx-async-bench-getloop-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `7947edf`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 994.428 Kops/s | 961.754 Kops/s |
+| blocking parallel get | 1.029 Mops/s | 565.433 Kops/s |
+| async get loop | 3.341 Mops/s | 3.479 Mops/s |
+| async threaded get loop | 2.358 Mops/s | 3.484 Mops/s |
+| async-loop/blocking par | 3.248 | 6.152 |
+| async-thread-loop/par | 2.292 | 6.161 |
+| async-get-loop/batch | 1.917 | 0.530 |
+
+- conclusion: this checkpoint makes `mdbx_async_get_loop()` participate in the
+  retained traversal/page-read scheduler instead of driving every traversal
+  window to completion before the worker can collect more read work. The direct
+  get-loop rows improved in this run, especially the threaded loop row. The
+  ratio rows are distorted by a slower blocking-parallel baseline in the
+  after-run, and `async-get-loop/batch` regressed because the batch path was
+  already heavily optimized in previous checkpoints; this should be revisited
+  after `get_ex_loop` and lower-bound loop are moved to retained state too.

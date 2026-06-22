@@ -18463,6 +18463,210 @@ static void async_get_batch_pending_drain_all(async_get_batch_pending_t *pending
   }
 }
 
+static int async_op_execute(MDBX_async_op *op);
+
+typedef struct async_get_loop_pending {
+  struct async_get_loop_pending *next;
+  MDBX_async_op *op;
+  size_t base;
+  size_t chunk;
+  MDBX_val keys[64];
+  MDBX_val data[64];
+  void *key_copies[64];
+  uint64_t key_inline[64][MDBX_ASYNC_INLINE_WORDS];
+  int results[64];
+  MDBX_async_get_cache_slot *slots[64];
+  MDBX_cache_entry_t entries[64];
+  MDBX_cache_result_t cache_results[64];
+  bool handled[64];
+  bool cold[64];
+  async_batched_get_traverse_state_t traverse;
+  bool traverse_started;
+  int drive_rc;
+} async_get_loop_pending_t;
+
+static void async_get_loop_pending_free_chunk(async_get_loop_pending_t *pending) {
+  if (!pending)
+    return;
+  if (pending->traverse_started) {
+    (void)async_batched_get_traverse_finish(&pending->traverse);
+    pending->traverse_started = false;
+  }
+  for (size_t j = 0; j < pending->chunk; ++j) {
+    osal_free(pending->key_copies[j]);
+    pending->key_copies[j] = nullptr;
+  }
+  pending->chunk = 0;
+}
+
+static void async_get_loop_pending_free(async_get_loop_pending_t *pending) {
+  if (!pending)
+    return;
+  async_get_loop_pending_free_chunk(pending);
+  osal_free(pending);
+}
+
+static int async_get_loop_pending_prepare(async_get_loop_pending_t *pending) {
+  MDBX_async_op *const op = pending->op;
+  enum { get_loop_window = 64 };
+  const size_t remaining = op->args.get_loop.count - pending->base;
+  const size_t chunk = remaining < get_loop_window ? remaining : get_loop_window;
+  pending->chunk = chunk;
+  pending->drive_rc = MDBX_SUCCESS;
+  pending->traverse_started = false;
+
+  memset(pending->keys, 0, chunk * sizeof(pending->keys[0]));
+  memset(pending->data, 0, chunk * sizeof(pending->data[0]));
+  memset(pending->key_copies, 0, chunk * sizeof(pending->key_copies[0]));
+  memset(pending->results, 0, chunk * sizeof(pending->results[0]));
+  memset(pending->slots, 0, chunk * sizeof(pending->slots[0]));
+  memset(pending->entries, 0, chunk * sizeof(pending->entries[0]));
+  memset(pending->cache_results, 0, chunk * sizeof(pending->cache_results[0]));
+  memset(pending->handled, 0, chunk * sizeof(pending->handled[0]));
+  memset(pending->cold, 0, chunk * sizeof(pending->cold[0]));
+
+  for (size_t j = 0; j < chunk; ++j) {
+    const size_t i = pending->base + j;
+    MDBX_val key = {nullptr, 0};
+    int rc = op->args.get_loop.key_func(op->args.get_loop.context, i, &key);
+    if (unlikely(rc == MDBX_SUCCESS))
+      rc = async_copy_val(&pending->keys[j], &pending->key_copies[j], pending->key_inline[j],
+                          sizeof(pending->key_inline[j]), &key);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+    pending->slots[j] =
+        async_get_cache_slot(op->async, op->args.get_loop.txn, op->args.get_loop.dbi, &pending->keys[j]);
+  }
+
+  async_get_cache_prepare_batch_slots(op->args.get_loop.txn, op->args.get_loop.dbi, pending->keys,
+                                      pending->slots, pending->entries, pending->cold, chunk);
+  (void)cache_materialize_singlethreaded_batch(op->args.get_loop.txn, pending->data, pending->entries,
+                                               pending->cache_results, chunk, pending->handled);
+  int traverse_rc = async_batched_get_traverse_begin(
+      &pending->traverse, op->args.get_loop.txn, op->args.get_loop.dbi, pending->keys, pending->data,
+      pending->results, pending->handled, pending->cold, pending->slots, nullptr, chunk);
+  pending->traverse_started = true;
+  pending->drive_rc = likely(traverse_rc == MDBX_SUCCESS)
+                          ? async_batched_get_traverse_drive(&pending->traverse, false)
+                          : traverse_rc;
+  return pending->drive_rc;
+}
+
+static int async_get_loop_pending_complete_chunk(async_get_loop_pending_t *pending) {
+  MDBX_async_op *const op = pending->op;
+  if (pending->traverse_started) {
+    int rc = pending->drive_rc;
+    while (rc == MDBX_RESULT_TRUE)
+      rc = async_batched_get_traverse_drive(&pending->traverse, true);
+    (void)async_batched_get_traverse_finish(&pending->traverse);
+    pending->traverse_started = false;
+  }
+
+  for (size_t j = 0; j < pending->chunk; ++j) {
+    const size_t i = pending->base + j;
+    int get_rc;
+    MDBX_val value = {nullptr, 0};
+    if (pending->handled[j]) {
+      if (pending->cold[j]) {
+        if (pending->slots[j])
+          pending->slots[j]->use_count =
+              pending->slots[j]->use_count ? pending->slots[j]->use_count : 1;
+        get_rc = pending->results[j];
+      } else {
+        get_rc = pending->cache_results[j].errcode;
+      }
+      if (get_rc == MDBX_SUCCESS)
+        value = pending->data[j];
+    } else {
+      get_rc = async_cached_get(op->async, op->args.get_loop.txn, op->args.get_loop.dbi,
+                                &pending->keys[j], &value);
+    }
+    int rc = op->args.get_loop.result_func
+                 ? op->args.get_loop.result_func(op->args.get_loop.context, i, &pending->keys[j],
+                                                 &value, get_rc)
+                 : get_rc;
+    if (op->args.get_loop.completed)
+      *op->args.get_loop.completed = i + 1;
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+  }
+
+  pending->base += pending->chunk;
+  async_get_loop_pending_free_chunk(pending);
+  return MDBX_SUCCESS;
+}
+
+static async_get_loop_pending_t *async_get_loop_start(MDBX_async_op *op) {
+  if (unlikely(!op))
+    return nullptr;
+  if (op->args.get_loop.completed)
+    *op->args.get_loop.completed = 0;
+
+  async_get_loop_pending_t *const pending = osal_calloc(1, sizeof(*pending));
+  if (unlikely(!pending)) {
+    op->result = async_op_execute(op);
+    return nullptr;
+  }
+  pending->op = op;
+
+  while (pending->base < op->args.get_loop.count) {
+    const int prepare_rc = async_get_loop_pending_prepare(pending);
+    if (prepare_rc == MDBX_RESULT_TRUE)
+      return pending;
+    if (unlikely(prepare_rc != MDBX_SUCCESS)) {
+      op->result = prepare_rc;
+      async_get_loop_pending_free(pending);
+      return nullptr;
+    }
+    const int complete_rc = async_get_loop_pending_complete_chunk(pending);
+    if (unlikely(complete_rc != MDBX_SUCCESS)) {
+      op->result = complete_rc;
+      async_get_loop_pending_free(pending);
+      return nullptr;
+    }
+  }
+
+  op->result = MDBX_SUCCESS;
+  async_get_loop_pending_free(pending);
+  return nullptr;
+}
+
+static void async_get_loop_pending_complete(async_get_loop_pending_t *pending) {
+  if (unlikely(!pending))
+    return;
+  MDBX_async_op *const op = pending->op;
+
+  for (;;) {
+    const int complete_rc = async_get_loop_pending_complete_chunk(pending);
+    if (unlikely(complete_rc != MDBX_SUCCESS)) {
+      op->result = complete_rc;
+      async_get_loop_pending_free(pending);
+      return;
+    }
+    if (pending->base >= op->args.get_loop.count) {
+      op->result = MDBX_SUCCESS;
+      async_get_loop_pending_free(pending);
+      return;
+    }
+
+    const int prepare_rc = async_get_loop_pending_prepare(pending);
+    if (unlikely(prepare_rc != MDBX_SUCCESS && prepare_rc != MDBX_RESULT_TRUE)) {
+      op->result = prepare_rc;
+      async_get_loop_pending_free(pending);
+      return;
+    }
+  }
+}
+
+static void async_get_loop_pending_drain_all(async_get_loop_pending_t *pending) {
+  while (pending) {
+    async_get_loop_pending_t *const next = pending->next;
+    pending->next = nullptr;
+    async_get_loop_pending_complete(pending);
+    pending = next;
+  }
+}
+
 static int async_get_ex_batch_execute_sync(MDBX_async_op *op) {
   const MDBX_txn *const txn = op->args.get_ex_batch.txn;
   const MDBX_dbi dbi = op->args.get_ex_batch.dbi;
@@ -21480,6 +21684,8 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
     async_cache_get_batch_pending_t *pending_cache_get_batch_tail = nullptr;
     async_cache_get_ops_pending_t *pending_cache_get_head = nullptr;
     async_cache_get_ops_pending_t *pending_cache_get_tail = nullptr;
+    async_get_loop_pending_t *pending_get_loop_head = nullptr;
+    async_get_loop_pending_t *pending_get_loop_tail = nullptr;
     for (;;) {
       MDBX_async_op *next = op->next;
       op->next = nullptr;
@@ -21613,6 +21819,21 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
           ready_head = op;
         ready_tail = op;
         ready_count += 1;
+      } else if (op->opcode == async_op_get_loop) {
+        async_get_loop_pending_t *const pending = async_get_loop_start(op);
+        if (pending) {
+          if (pending_get_loop_tail)
+            pending_get_loop_tail->next = pending;
+          else
+            pending_get_loop_head = pending;
+          pending_get_loop_tail = pending;
+        }
+        if (ready_tail)
+          ready_tail->next = op;
+        else
+          ready_head = op;
+        ready_tail = op;
+        ready_count += 1;
       } else if (op->opcode == async_op_cache_get_batch ||
                  op->opcode == async_op_cache_get_singlethreaded_batch) {
         async_cache_get_batch_pending_t *const pending = async_cache_get_batch_start(op);
@@ -21673,12 +21894,13 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
       const bool pending_read = pending_get_head || pending_get_ex_head || pending_lowerbound_head ||
                                 pending_get_batch_head || pending_get_ex_batch_head ||
                                 pending_lowerbound_batch_head || pending_cache_get_batch_head ||
-                                pending_cache_get_head;
+                                pending_cache_get_head || pending_get_loop_head;
       const bool next_read = next && (next->opcode == async_op_get || next->opcode == async_op_get_ex ||
                                       next->opcode == async_op_get_equal_or_great ||
                                       next->opcode == async_op_get_batch ||
                                       next->opcode == async_op_get_ex_batch ||
                                       next->opcode == async_op_get_equal_or_great_batch ||
+                                      next->opcode == async_op_get_loop ||
                                       next->opcode == async_op_cache_get_batch ||
                                       next->opcode == async_op_cache_get_singlethreaded_batch ||
                                       next->opcode == async_op_cache_get ||
@@ -21707,6 +21929,9 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
       async_lowerbound_batch_pending_drain_all(pending_lowerbound_batch_head);
       pending_lowerbound_batch_head = nullptr;
       pending_lowerbound_batch_tail = nullptr;
+      async_get_loop_pending_drain_all(pending_get_loop_head);
+      pending_get_loop_head = nullptr;
+      pending_get_loop_tail = nullptr;
       async_cache_get_batch_pending_drain_all(pending_cache_get_batch_head);
       pending_cache_get_batch_head = nullptr;
       pending_cache_get_batch_tail = nullptr;
