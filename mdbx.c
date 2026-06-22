@@ -22847,34 +22847,103 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   return nullptr;
 }
 
-static void async_cursor_get_pending_complete(async_cursor_get_pending_t *pending) {
+static int async_cursor_get_pending_step(async_cursor_get_pending_t *pending,
+                                         bool wait, bool *made_progress) {
   if (unlikely(!pending))
-    return;
+    return MDBX_EINVAL;
+
   MDBX_async_op *const op = pending->op;
-  if (pending->seek.seek_started) {
-    int rc = MDBX_RESULT_TRUE;
-    while (rc == MDBX_RESULT_TRUE && pending->seek.seek_started)
-      rc = async_cursor_seek_drive(&pending->seek, true);
+  if (!pending->batch_pending) {
+    const bool before_started = pending->seek.seek_started;
+    const enum async_cursor_get_batch_first_phase before_phase =
+        pending->seek.seek_phase;
+    const int rc = async_cursor_seek_drive(&pending->seek, wait);
+    if (made_progress)
+      *made_progress = pending->seek.seek_started != before_started ||
+                       pending->seek.seek_phase != before_phase;
+    if (rc == MDBX_RESULT_TRUE && pending->seek.seek_started)
+      return MDBX_RESULT_TRUE;
+
     if (rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE) {
       *op->args.cursor_get.key = pending->seek.key;
       *op->args.cursor_get.data = pending->seek.data;
     }
     op->result = rc;
-  } else {
-    int rc = MDBX_RESULT_TRUE;
-    while (rc == MDBX_RESULT_TRUE)
-      rc = async_cursor_get_batch_pending_drive(pending->batch_pending, true);
-    op->result = async_cursor_get_pending_consume(pending);
+    async_cursor_get_pending_free(pending);
+    return MDBX_SUCCESS;
   }
+
+  async_cursor_get_batch_pending_t *const batch = pending->batch_pending;
+  const size_t before_produced = batch->produced;
+  const bool before_first = batch->first_started;
+  const bool before_large = batch->large_started;
+  const bool before_sibling = batch->sibling_started;
+  const int rc = async_cursor_get_batch_pending_drive(batch, wait);
+  if (made_progress)
+    *made_progress = batch->produced != before_produced ||
+                     batch->first_started != before_first ||
+                     batch->large_started != before_large ||
+                     batch->sibling_started != before_sibling;
+  if (rc == MDBX_RESULT_TRUE)
+    return rc;
+
+  op->result = async_cursor_get_pending_consume(pending);
   async_cursor_get_pending_free(pending);
+  return MDBX_SUCCESS;
+}
+
+static void async_cursor_get_pending_complete(async_cursor_get_pending_t *pending) {
+  if (unlikely(!pending))
+    return;
+
+  int rc = MDBX_RESULT_TRUE;
+  while (rc == MDBX_RESULT_TRUE)
+    rc = async_cursor_get_pending_step(pending, true, nullptr);
 }
 
 static void async_cursor_get_pending_drain_all(async_cursor_get_pending_t *pending) {
   while (pending) {
-    async_cursor_get_pending_t *const next = pending->next;
-    pending->next = nullptr;
-    async_cursor_get_pending_complete(pending);
-    pending = next;
+    async_cursor_get_pending_t *again_head = nullptr;
+    async_cursor_get_pending_t *again_tail = nullptr;
+    bool progressed = false;
+
+    while (pending) {
+      async_cursor_get_pending_t *const item = pending;
+      pending = item->next;
+      item->next = nullptr;
+
+      bool made_progress = false;
+      const int rc = async_cursor_get_pending_step(item, false, &made_progress);
+      if (rc == MDBX_RESULT_TRUE) {
+        if (again_tail)
+          again_tail->next = item;
+        else
+          again_head = item;
+        again_tail = item;
+        progressed = progressed || made_progress;
+      } else {
+        progressed = true;
+      }
+    }
+
+    if (again_head && !progressed) {
+      async_cursor_get_pending_t *const item = again_head;
+      again_head = item->next;
+      if (!again_head)
+        again_tail = nullptr;
+      item->next = nullptr;
+
+      const int rc = async_cursor_get_pending_step(item, true, nullptr);
+      if (rc == MDBX_RESULT_TRUE) {
+        if (again_tail)
+          again_tail->next = item;
+        else
+          again_head = item;
+        again_tail = item;
+      }
+    }
+
+    pending = again_head;
   }
 }
 
