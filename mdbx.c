@@ -20966,15 +20966,20 @@ static int async_cache_get_loop_pending_prepare(async_cache_get_loop_pending_t *
   return pending->drive_rc;
 }
 
-static void async_cache_get_loop_pending_finish_materialize(async_cache_get_loop_pending_t *pending) {
+static int async_cache_get_loop_pending_finish_materialize(async_cache_get_loop_pending_t *pending,
+                                                          bool wait) {
   if (unlikely(!pending || !pending->materialize_started))
-    return;
+    return MDBX_SUCCESS;
 
   int rc = pending->drive_rc;
-  while (rc == MDBX_RESULT_TRUE)
-    rc = async_cache_materialize_batch_drive(&pending->materialize, true);
+  while (rc == MDBX_RESULT_TRUE) {
+    rc = async_cache_materialize_batch_drive(&pending->materialize, wait);
+    if (rc == MDBX_RESULT_TRUE && !wait)
+      return rc;
+  }
   (void)async_cache_materialize_batch_finish(&pending->materialize);
   pending->materialize_started = false;
+  return MDBX_SUCCESS;
 }
 
 static int async_cache_get_loop_pending_prepare_refresh(async_cache_get_loop_pending_t *pending) {
@@ -21046,7 +21051,9 @@ static int async_cache_get_loop_pending_complete_chunk(async_cache_get_loop_pend
   const MDBX_dbi dbi = op->args.cache_get_loop.dbi;
   volatile MDBX_cache_entry_t *const entries_arg = op->args.cache_get_loop.entries;
 
-  async_cache_get_loop_pending_finish_materialize(pending);
+  int materialize_rc = async_cache_get_loop_pending_finish_materialize(pending, wait);
+  if (materialize_rc == MDBX_RESULT_TRUE)
+    return materialize_rc;
   int refresh_rc = async_cache_get_loop_pending_prepare_refresh(pending);
   while (refresh_rc == MDBX_RESULT_TRUE) {
     refresh_rc = async_cache_get_loop_pending_finish_refresh(pending, wait);
@@ -21123,39 +21130,82 @@ static async_cache_get_loop_pending_t *async_cache_get_loop_start(MDBX_async_op 
   return nullptr;
 }
 
-static void async_cache_get_loop_pending_complete(async_cache_get_loop_pending_t *pending) {
+static int async_cache_get_loop_pending_step(async_cache_get_loop_pending_t *pending, bool wait) {
   if (unlikely(!pending))
-    return;
+    return MDBX_EINVAL;
   MDBX_async_op *const op = pending->op;
 
-  for (;;) {
-    const int complete_rc = async_cache_get_loop_pending_complete_chunk(pending, true);
-    if (unlikely(complete_rc != MDBX_SUCCESS)) {
-      op->result = complete_rc;
-      async_cache_get_loop_pending_free(pending);
-      return;
-    }
-    if (pending->base >= op->args.cache_get_loop.count) {
-      op->result = MDBX_SUCCESS;
-      async_cache_get_loop_pending_free(pending);
-      return;
-    }
-
-    const int prepare_rc = async_cache_get_loop_pending_prepare(pending);
-    if (unlikely(prepare_rc != MDBX_SUCCESS && prepare_rc != MDBX_RESULT_TRUE)) {
-      op->result = prepare_rc;
-      async_cache_get_loop_pending_free(pending);
-      return;
-    }
+  const int complete_rc = async_cache_get_loop_pending_complete_chunk(pending, wait);
+  if (complete_rc == MDBX_RESULT_TRUE)
+    return complete_rc;
+  if (unlikely(complete_rc != MDBX_SUCCESS)) {
+    op->result = complete_rc;
+    async_cache_get_loop_pending_free(pending);
+    return complete_rc;
   }
+
+  if (pending->base >= op->args.cache_get_loop.count) {
+    op->result = MDBX_SUCCESS;
+    async_cache_get_loop_pending_free(pending);
+    return MDBX_SUCCESS;
+  }
+
+  const int prepare_rc = async_cache_get_loop_pending_prepare(pending);
+  if (unlikely(prepare_rc != MDBX_SUCCESS && prepare_rc != MDBX_RESULT_TRUE)) {
+    op->result = prepare_rc;
+    async_cache_get_loop_pending_free(pending);
+    return prepare_rc;
+  }
+  return MDBX_RESULT_TRUE;
 }
 
 static void async_cache_get_loop_pending_drain_all(async_cache_get_loop_pending_t *pending) {
   while (pending) {
-    async_cache_get_loop_pending_t *const next = pending->next;
-    pending->next = nullptr;
-    async_cache_get_loop_pending_complete(pending);
-    pending = next;
+    async_cache_get_loop_pending_t *again_head = nullptr;
+    async_cache_get_loop_pending_t *again_tail = nullptr;
+    bool progressed = false;
+
+    while (pending) {
+      async_cache_get_loop_pending_t *const item = pending;
+      pending = item->next;
+      item->next = nullptr;
+
+      const size_t before_base = item->base;
+      const bool before_materialize = item->materialize_started;
+      const bool before_refresh = item->refresh_started;
+      const int rc = async_cache_get_loop_pending_step(item, false);
+      if (rc == MDBX_RESULT_TRUE) {
+        if (again_tail)
+          again_tail->next = item;
+        else
+          again_head = item;
+        again_tail = item;
+        progressed = progressed || item->base != before_base ||
+                     before_materialize != item->materialize_started ||
+                     before_refresh != item->refresh_started;
+      } else {
+        progressed = true;
+      }
+    }
+
+    if (again_head && !progressed) {
+      async_cache_get_loop_pending_t *const item = again_head;
+      again_head = item->next;
+      if (!again_head)
+        again_tail = nullptr;
+      item->next = nullptr;
+
+      const int rc = async_cache_get_loop_pending_step(item, true);
+      if (rc == MDBX_RESULT_TRUE) {
+        if (again_tail)
+          again_tail->next = item;
+        else
+          again_head = item;
+        again_tail = item;
+      }
+    }
+
+    pending = again_head;
   }
 }
 
