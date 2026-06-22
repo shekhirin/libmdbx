@@ -1154,6 +1154,8 @@ enum async_read_mode {
   async_read_large_get,
   async_read_large_cache_get,
   async_read_abort_order,
+  async_read_abort_order_batch,
+  async_read_abort_order_loop,
   async_read_get_batch,
   async_read_get_ex_batch,
   async_read_lowerbound_batch,
@@ -1179,11 +1181,11 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   bool abort_probe_prepared = false;
   MDBX_dbi dbi = 0;
   MDBX_async_op *op = NULL;
-  MDBX_async_op *abort_ops[3];
+  MDBX_async_op *abort_ops[7];
   MDBX_async_read_stats read_stats;
   int rc = MDBX_SUCCESS;
   int operation_result = MDBX_SUCCESS;
-  int abort_results[3];
+  int abort_results[7];
   size_t values_count = SIZE_MAX;
   const uint64_t key = 42;
   const uint64_t missing_key = 43;
@@ -1211,6 +1213,31 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   size_t cursor_stream_completed = 0;
   int cursor_batch_result = MDBX_SUCCESS;
   struct async_read_loop_probe loop_read_probe = {0, 0, 0, 0, batch_values};
+  MDBX_val abort_get_batch_data[ASYNC_READ_BATCH_COUNT];
+  int abort_get_batch_results[ASYNC_READ_BATCH_COUNT];
+  MDBX_val abort_get_ex_batch_keys[ASYNC_READ_BATCH_COUNT];
+  MDBX_val abort_get_ex_batch_data[ASYNC_READ_BATCH_COUNT];
+  size_t abort_get_ex_batch_counts[ASYNC_READ_BATCH_COUNT];
+  int abort_get_ex_batch_results[ASYNC_READ_BATCH_COUNT];
+  MDBX_val abort_lower_batch_keys[ASYNC_READ_BATCH_COUNT];
+  MDBX_val abort_lower_batch_data[ASYNC_READ_BATCH_COUNT];
+  int abort_lower_batch_results[ASYNC_READ_BATCH_COUNT];
+  MDBX_cache_entry_t abort_cache_entries[ASYNC_READ_BATCH_COUNT];
+  MDBX_cache_result_t abort_cache_results[ASYNC_READ_BATCH_COUNT];
+  MDBX_val abort_cache_data[ASYNC_READ_BATCH_COUNT];
+  MDBX_val abort_cursor_pairs[ASYNC_READ_BATCH_COUNT * 2];
+  size_t abort_cursor_count = 0;
+  struct async_read_loop_probe abort_get_loop_probe = {0, 0, 0, 0, batch_values};
+  struct async_read_loop_probe abort_get_ex_loop_probe = {0, 0, 0, 0, batch_values};
+  struct async_read_loop_probe abort_lower_loop_probe = {0, 0, 0, 0, batch_values};
+  struct async_read_loop_probe abort_cache_loop_probe = {0, 0, 0, 0, batch_values};
+  struct async_read_loop_probe abort_cursor_loop_probe = {0, 0, 0, 0, batch_values};
+  MDBX_cache_entry_t abort_loop_cache_entries[ASYNC_READ_BATCH_COUNT];
+  size_t abort_get_loop_completed = 0;
+  size_t abort_get_ex_loop_completed = 0;
+  size_t abort_lower_loop_completed = 0;
+  size_t abort_cache_loop_completed = 0;
+  size_t abort_cursor_loop_completed = 0;
   size_t loop_completed = 0;
   MDBX_val cursor_from_key = val(NULL, 0);
   MDBX_val cursor_from_data = val(NULL, 0);
@@ -1223,6 +1250,10 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
                          mode == async_read_sync_cursor_scan_from;
   const bool loop_read = mode == async_read_get_loop || mode == async_read_cache_get_loop ||
                          mode == async_read_get_ex_loop || mode == async_read_lowerbound_loop;
+  const bool abort_order_batch_read = mode == async_read_abort_order_batch;
+  const bool abort_order_loop_read = mode == async_read_abort_order_loop;
+  const bool abort_order_read = mode == async_read_abort_order ||
+                                abort_order_batch_read || abort_order_loop_read;
   const bool sync_cursor_stream_read = mode == async_read_sync_cursor_get_batch ||
                                        mode == async_read_sync_cursor_scan ||
                                        mode == async_read_sync_cursor_scan_from;
@@ -1238,7 +1269,8 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
                                   mode == async_read_get_ex_batch ||
                                   mode == async_read_lowerbound_batch ||
                                   mode == async_read_cache_get_batch ||
-                                  loop_read;
+                                  loop_read || abort_order_batch_read ||
+                                  abort_order_loop_read;
   const bool batch_read = indexed_batch_read || cursor_stream_read;
   const bool notfound_read = mode == async_read_get_notfound || mode == async_read_cache_get_notfound;
   const bool large_read = mode == async_read_large_get || mode == async_read_large_cache_get;
@@ -1248,6 +1280,22 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   memset(&abort_probe, 0, sizeof(abort_probe));
   memset(abort_ops, 0, sizeof(abort_ops));
   memset(abort_results, 0, sizeof(abort_results));
+  for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
+    abort_get_batch_data[i] = val(NULL, 0);
+    abort_get_batch_results[i] = MDBX_PROBLEM;
+    abort_get_ex_batch_keys[i] = val(NULL, 0);
+    abort_get_ex_batch_data[i] = val(NULL, 0);
+    abort_get_ex_batch_counts[i] = SIZE_MAX;
+    abort_get_ex_batch_results[i] = MDBX_PROBLEM;
+    abort_lower_batch_keys[i] = val(NULL, 0);
+    abort_lower_batch_data[i] = val(NULL, 0);
+    abort_lower_batch_results[i] = MDBX_PROBLEM;
+    mdbx_cache_init(&abort_cache_entries[i]);
+    abort_cache_results[i].errcode = MDBX_PROBLEM;
+    abort_cache_results[i].status = MDBX_CACHE_ERROR;
+    abort_cache_data[i] = val(NULL, 0);
+    mdbx_cache_init(&abort_loop_cache_entries[i]);
+  }
 
   if (!env_enabled("MDBX_FORCE_NO_DATA_MMAP")) {
     rc = fail_msg("async read fault smoke requires MDBX_FORCE_NO_DATA_MMAP=1", __FILE__, __LINE__);
@@ -1377,6 +1425,10 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     read_name = "mdbx_async_cache_get cold large read";
   } else if (mode == async_read_abort_order) {
     read_name = "mdbx_async_get cold read before txn abort";
+  } else if (mode == async_read_abort_order_batch) {
+    read_name = "async read batches before txn abort";
+  } else if (mode == async_read_abort_order_loop) {
+    read_name = "async read loops before txn abort";
   } else if (mode == async_read_get_batch) {
     read_name = "mdbx_async_get_batch cold read";
   } else if (mode == async_read_get_ex_batch) {
@@ -1428,6 +1480,100 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     REQUIRE(abort_probe.calls == 1, "abort-order async blocker did not run exactly once");
     REQUIRE(early_release_rc == MDBX_BUSY, "pending cold async read operation was released early");
     REQUIRE(early_destroy_rc == MDBX_BUSY, "async executor destroyed with pending cold read operation");
+  } else if (mode == async_read_abort_order_batch) {
+    CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor, &op));
+    CHECK_OP(op);
+    cursor_is_async = true;
+    CHECK(async_block_probe_prepare(&abort_probe));
+    abort_probe_prepared = true;
+    CHECK(mdbx_async_submit(async, async_block_probe_func, &abort_probe, &abort_ops[0]));
+    for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
+      abort_get_ex_batch_keys[i] = batch_key_values[i];
+      abort_lower_batch_keys[i] = batch_key_values[i];
+    }
+    CHECK(mdbx_async_get_batch(async, txn, dbi, batch_key_values,
+                               abort_get_batch_data, abort_get_batch_results,
+                               ASYNC_READ_BATCH_COUNT, &abort_ops[1]));
+    CHECK(mdbx_async_get_ex_batch(async, txn, dbi, abort_get_ex_batch_keys,
+                                  abort_get_ex_batch_data,
+                                  abort_get_ex_batch_counts,
+                                  abort_get_ex_batch_results,
+                                  ASYNC_READ_BATCH_COUNT, &abort_ops[2]));
+    CHECK(mdbx_async_get_equal_or_great_batch(async, txn, dbi,
+                                              abort_lower_batch_keys,
+                                              abort_lower_batch_data,
+                                              abort_lower_batch_results,
+                                              ASYNC_READ_BATCH_COUNT,
+                                              &abort_ops[3]));
+    CHECK(mdbx_async_cache_get_batch(async, txn, dbi, batch_key_values,
+                                     abort_cache_data, abort_cache_entries,
+                                     abort_cache_results,
+                                     ASYNC_READ_BATCH_COUNT, &abort_ops[4]));
+    abort_cursor_count = 0;
+    memset(abort_cursor_pairs, 0, sizeof(abort_cursor_pairs));
+    CHECK(mdbx_async_cursor_get_batch(async, cursor, &abort_cursor_count,
+                                      abort_cursor_pairs, 4, MDBX_FIRST,
+                                      &abort_ops[5]));
+    CHECK(mdbx_async_txn_abort(async, txn, NULL, &abort_ops[6]));
+    txn = NULL;
+    cursor = NULL;
+    const int early_release_rc = mdbx_async_op_release(abort_ops[1]);
+    const int early_destroy_rc = mdbx_async_destroy(async, false);
+    CHECK(async_block_probe_release(&abort_probe));
+    CHECK(wait_many_success(read_name, abort_ops, 7, abort_results, __FILE__, __LINE__));
+    async_block_probe_close(&abort_probe);
+    abort_probe_prepared = false;
+    REQUIRE(abort_probe.calls == 1, "batch abort-order async blocker did not run exactly once");
+    REQUIRE(early_release_rc == MDBX_BUSY, "pending batch async read operation was released early");
+    REQUIRE(early_destroy_rc == MDBX_BUSY, "async executor destroyed with pending batch read operation");
+  } else if (mode == async_read_abort_order_loop) {
+    CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor, &op));
+    CHECK_OP(op);
+    cursor_is_async = true;
+    CHECK(async_block_probe_prepare(&abort_probe));
+    abort_probe_prepared = true;
+    CHECK(mdbx_async_submit(async, async_block_probe_func, &abort_probe, &abort_ops[0]));
+    CHECK(mdbx_async_get_loop(async, txn, dbi, ASYNC_READ_BATCH_COUNT,
+                              async_read_loop_key_func,
+                              async_read_loop_result_func,
+                              &abort_get_loop_probe,
+                              &abort_get_loop_completed, &abort_ops[1]));
+    CHECK(mdbx_async_get_ex_loop(async, txn, dbi, ASYNC_READ_BATCH_COUNT,
+                                 async_read_loop_key_func,
+                                 async_read_get_ex_loop_result_func,
+                                 &abort_get_ex_loop_probe,
+                                 &abort_get_ex_loop_completed, &abort_ops[2]));
+    CHECK(mdbx_async_get_equal_or_great_loop(async, txn, dbi,
+                                             ASYNC_READ_BATCH_COUNT,
+                                             async_read_loop_key_func,
+                                             async_read_lowerbound_loop_data_func,
+                                             async_read_lowerbound_loop_result_func,
+                                             &abort_lower_loop_probe,
+                                             &abort_lower_loop_completed,
+                                             &abort_ops[3]));
+    CHECK(mdbx_async_cache_get_loop(async, txn, dbi, ASYNC_READ_BATCH_COUNT,
+                                    async_read_loop_key_func,
+                                    abort_loop_cache_entries,
+                                    async_read_cache_loop_result_func,
+                                    &abort_cache_loop_probe,
+                                    &abort_cache_loop_completed, &abort_ops[4]));
+    CHECK(mdbx_async_cursor_get_loop(async, cursor, ASYNC_READ_BATCH_COUNT,
+                                     MDBX_FIRST, MDBX_NEXT,
+                                     async_read_cursor_loop_result_func,
+                                     &abort_cursor_loop_probe,
+                                     &abort_cursor_loop_completed, &abort_ops[5]));
+    CHECK(mdbx_async_txn_abort(async, txn, NULL, &abort_ops[6]));
+    txn = NULL;
+    cursor = NULL;
+    const int early_release_rc = mdbx_async_op_release(abort_ops[1]);
+    const int early_destroy_rc = mdbx_async_destroy(async, false);
+    CHECK(async_block_probe_release(&abort_probe));
+    CHECK(wait_many_success(read_name, abort_ops, 7, abort_results, __FILE__, __LINE__));
+    async_block_probe_close(&abort_probe);
+    abort_probe_prepared = false;
+    REQUIRE(abort_probe.calls == 1, "loop abort-order async blocker did not run exactly once");
+    REQUIRE(early_release_rc == MDBX_BUSY, "pending loop async read operation was released early");
+    REQUIRE(early_destroy_rc == MDBX_BUSY, "async executor destroyed with pending loop read operation");
   } else if (mode == async_read_sync_get)
     rc = mdbx_get(txn, dbi, read_key_value, &data);
   else if (mode == async_read_sync_get_ex)
@@ -1533,7 +1679,7 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
                                             &loop_read_probe, &loop_completed, &op);
   else
     rc = mdbx_async_get(async, txn, dbi, read_key_value, &data, &op);
-  if (mode == async_read_abort_order)
+  if (abort_order_read)
     operation_result = MDBX_SUCCESS;
   else if (sync_read) {
     operation_result = rc;
@@ -1602,6 +1748,77 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
       CHECK(expect_large_value(&data, key, __FILE__, __LINE__));
     } else if (mode == async_read_abort_order) {
       CHECK(expect_payload(&data, payload, __FILE__, __LINE__));
+    } else if (mode == async_read_abort_order_batch) {
+      for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
+        REQUIRE(abort_get_batch_results[i] == MDBX_SUCCESS,
+                "queued get batch before abort returned wrong item result");
+        REQUIRE(abort_get_batch_data[i].iov_len == sizeof(batch_values[i]),
+                "queued get batch before abort returned wrong value size");
+        REQUIRE(memcmp(abort_get_batch_data[i].iov_base, batch_values[i],
+                       sizeof(batch_values[i])) == 0,
+                "queued get batch before abort returned wrong value");
+        REQUIRE(abort_get_ex_batch_results[i] == MDBX_SUCCESS,
+                "queued get_ex batch before abort returned wrong item result");
+        REQUIRE(abort_get_ex_batch_counts[i] == 1,
+                "queued get_ex batch before abort returned wrong value count");
+        REQUIRE(abort_get_ex_batch_data[i].iov_len == sizeof(batch_values[i]),
+                "queued get_ex batch before abort returned wrong value size");
+        REQUIRE(memcmp(abort_get_ex_batch_data[i].iov_base, batch_values[i],
+                       sizeof(batch_values[i])) == 0,
+                "queued get_ex batch before abort returned wrong value");
+        REQUIRE(abort_lower_batch_results[i] == MDBX_SUCCESS,
+                "queued lowerbound batch before abort returned wrong item result");
+        REQUIRE(abort_lower_batch_data[i].iov_len == sizeof(batch_values[i]),
+                "queued lowerbound batch before abort returned wrong value size");
+        REQUIRE(memcmp(abort_lower_batch_data[i].iov_base, batch_values[i],
+                       sizeof(batch_values[i])) == 0,
+                "queued lowerbound batch before abort returned wrong value");
+        REQUIRE(abort_cache_results[i].errcode == MDBX_SUCCESS &&
+                    abort_cache_results[i].status == MDBX_CACHE_REFRESHED,
+                "queued cache batch before abort returned wrong item result");
+        REQUIRE(abort_cache_data[i].iov_len == sizeof(batch_values[i]),
+                "queued cache batch before abort returned wrong value size");
+        REQUIRE(memcmp(abort_cache_data[i].iov_base, batch_values[i],
+                       sizeof(batch_values[i])) == 0,
+                "queued cache batch before abort returned wrong value");
+      }
+      REQUIRE(abort_cursor_count == 4,
+              "queued cursor batch before abort returned wrong item count");
+      for (unsigned i = 0; i < 2; ++i) {
+        MDBX_val *const batch_key = &abort_cursor_pairs[i * 2];
+        MDBX_val *const batch_data_value = &abort_cursor_pairs[i * 2 + 1];
+        REQUIRE(batch_key->iov_len == sizeof(batch_keys[i]),
+                "queued cursor batch before abort returned wrong key size");
+        uint64_t actual_key = UINT64_MAX;
+        memcpy(&actual_key, batch_key->iov_base, sizeof(actual_key));
+        REQUIRE(actual_key == batch_keys[i],
+                "queued cursor batch before abort returned wrong key");
+        REQUIRE(batch_data_value->iov_len == sizeof(batch_values[i]),
+                "queued cursor batch before abort returned wrong value size");
+        REQUIRE(memcmp(batch_data_value->iov_base, batch_values[i],
+                       sizeof(batch_values[i])) == 0,
+                "queued cursor batch before abort returned wrong value");
+      }
+    } else if (mode == async_read_abort_order_loop) {
+      REQUIRE(abort_get_loop_completed == ASYNC_READ_BATCH_COUNT &&
+                  abort_get_loop_probe.keys == ASYNC_READ_BATCH_COUNT &&
+                  abort_get_loop_probe.results == ASYNC_READ_BATCH_COUNT,
+              "queued get loop before abort did not complete");
+      REQUIRE(abort_get_ex_loop_completed == ASYNC_READ_BATCH_COUNT &&
+                  abort_get_ex_loop_probe.keys == ASYNC_READ_BATCH_COUNT &&
+                  abort_get_ex_loop_probe.results == ASYNC_READ_BATCH_COUNT,
+              "queued get_ex loop before abort did not complete");
+      REQUIRE(abort_lower_loop_completed == ASYNC_READ_BATCH_COUNT &&
+                  abort_lower_loop_probe.keys == ASYNC_READ_BATCH_COUNT &&
+                  abort_lower_loop_probe.results == ASYNC_READ_BATCH_COUNT,
+              "queued lowerbound loop before abort did not complete");
+      REQUIRE(abort_cache_loop_completed == ASYNC_READ_BATCH_COUNT &&
+                  abort_cache_loop_probe.keys == ASYNC_READ_BATCH_COUNT &&
+                  abort_cache_loop_probe.results == ASYNC_READ_BATCH_COUNT,
+              "queued cache loop before abort did not complete");
+      REQUIRE(abort_cursor_loop_completed == ASYNC_READ_BATCH_COUNT &&
+                  abort_cursor_loop_probe.results == ASYNC_READ_BATCH_COUNT,
+              "queued cursor loop before abort did not complete");
     } else if (mode == async_read_get_ex) {
       REQUIRE(values_count == 1, "cold async get_ex returned wrong value count");
       REQUIRE(read_key_value->iov_len == sizeof(key), "cold async get_ex returned wrong key size");
@@ -1840,7 +2057,7 @@ bailout:
     (void)async_block_probe_release(&abort_probe);
     async_block_probe_close(&abort_probe);
   }
-  for (unsigned i = 0; i < 3; ++i) {
+  for (unsigned i = 0; i < 7; ++i) {
     if (abort_ops[i]) {
       int ignored = MDBX_SUCCESS;
       (void)mdbx_async_wait(abort_ops[i], &ignored);
@@ -2014,6 +2231,10 @@ int main(void) {
     return exercise_async_read_path(path, false, async_read_large_cache_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_ABORT_ORDER_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_abort_order);
+  if (env_enabled("MDBX_ASYNC_SMOKE_ABORT_ORDER_BATCH_READ_ONLY"))
+    return exercise_async_read_path(path, false, async_read_abort_order_batch);
+  if (env_enabled("MDBX_ASYNC_SMOKE_ABORT_ORDER_LOOP_READ_ONLY"))
+    return exercise_async_read_path(path, false, async_read_abort_order_loop);
   if (env_enabled("MDBX_ASYNC_SMOKE_GET_BATCH_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_get_batch);
   if (env_enabled("MDBX_ASYNC_SMOKE_GET_EX_BATCH_READ_ONLY"))
