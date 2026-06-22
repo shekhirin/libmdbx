@@ -5645,3 +5645,53 @@ Additional single async cache-get materialization checkpoint:
   mixed: cache many, cache loop, threaded cache loop, `get_ex` batch, and cache
   loop ratios improved in this sample, while single get/get_ex and several
   single-threaded cache rows regressed.
+
+Additional async cursor batches stack checkpoint:
+
+- changed `async_cursor_get_batches_execute()` to keep the temporary key/value
+  pair buffer on the stack for cursor batch sizes up to 64 pairs, matching the
+  existing stack-sized cursor loop batch window. Larger async cursor batches
+  still use heap allocation.
+- this keeps the public async cursor batches API behavior unchanged while
+  removing per-operation heap allocation for the common cursor prefetch window.
+  The executor still delegates cursor movement to the existing cursor batch
+  implementation; deeper resumable cursor traversal remains future work.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cursor-batches-stack-before.txt` and
+    `/tmp/mdbx-async-bench-cursor-batches-stack-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `cdda8fa`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.868 Mops/s | 1.809 Mops/s |
+| blocking parallel get | 1.067 Mops/s | 545.168 Kops/s |
+| async single get | 424.467 Kops/s | 417.942 Kops/s |
+| async parallel get | 2.309 Mops/s | 2.761 Mops/s |
+| async many parallel get | 2.483 Mops/s | 2.667 Mops/s |
+| async cache many | 3.458 Mops/s | 4.470 Mops/s |
+| async cache loop | 4.439 Mops/s | 2.772 Mops/s |
+| async threaded cache loop | 4.849 Mops/s | 2.819 Mops/s |
+| async get loop | 2.667 Mops/s | 3.438 Mops/s |
+| async cursor get loop | 130.765 Mops/s | 116.251 Mops/s |
+| async cursor get loop_from | 136.866 Mops/s | 59.057 Mops/s |
+| async threaded cursor get loop | 118.603 Mops/s | 116.536 Mops/s |
+| async threaded cget loop_from | 74.717 Mops/s | 124.414 Mops/s |
+| async-cget-loop-from/par | 1.351 | 0.922 |
+| async-thread-cget-loop/par | 1.899 | 1.950 |
+| async-thread-cget-from/par | 0.737 | 1.942 |
+| async-thread-cget-loop/get | 96.338 | 156.324 |
+| async-thread-cget-loop/loop | 0.907 | 1.002 |
+| async-thread-cget-from/loop | 0.546 | 2.107 |
+
+- conclusion: this checkpoint removes heap allocation from common async cursor
+  batches but does not change the underlying cursor traversal model. The one-run
+  benchmark is mixed: threaded cursor-from ratios and threaded cursor/get ratios
+  improved substantially, while direct cursor loop-from rows regressed.

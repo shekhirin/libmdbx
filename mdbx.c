@@ -17817,7 +17817,11 @@ static int async_cursor_get_batches_execute(MDBX_async_op *op) {
   if (unlikely(limit > SIZE_MAX / sizeof(MDBX_val)))
     return MDBX_EINVAL;
 
-  MDBX_val *const pairs = osal_calloc(limit, sizeof(*pairs));
+  enum { cursor_get_batches_stack_pairs = 64 };
+  MDBX_val stack_pairs[cursor_get_batches_stack_pairs * 2];
+  MDBX_val *pairs = stack_pairs;
+  if (batch_pairs > cursor_get_batches_stack_pairs)
+    pairs = osal_calloc(limit, sizeof(*pairs));
   if (unlikely(!pairs))
     return MDBX_ENOMEM;
 
@@ -17831,11 +17835,13 @@ static int async_cursor_get_batches_execute(MDBX_async_op *op) {
     rc = mdbx_cursor_get(op->args.cursor_get_batches.cursor, &key, data_ptr,
                          op->args.cursor_get_batches.from_op);
     if (unlikely(rc == MDBX_NOTFOUND)) {
-      osal_free(pairs);
+      if (pairs != stack_pairs)
+        osal_free(pairs);
       return MDBX_RESULT_TRUE;
     }
     if (unlikely(rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE)) {
-      osal_free(pairs);
+      if (pairs != stack_pairs)
+        osal_free(pairs);
       return rc;
     }
     *op->args.cursor_get_batches.from_key = key;
@@ -17870,7 +17876,8 @@ static int async_cursor_get_batches_execute(MDBX_async_op *op) {
     rc = MDBX_SUCCESS;
   }
 
-  osal_free(pairs);
+  if (pairs != stack_pairs)
+    osal_free(pairs);
   return rc;
 }
 
