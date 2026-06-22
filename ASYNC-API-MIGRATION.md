@@ -7832,3 +7832,56 @@ Single async helper traversal state ownership checkpoint:
   unrelated batch/cache/loop rows moved substantially. The important result is
   that the async read implementation now reaches exact-key and lowerbound
   traversal through explicit stateful entry points everywhere.
+
+Public get traversal-state checkpoint:
+
+- changed `mdbx_get()`, `mdbx_get_equal_or_great()`, and `mdbx_get_ex()` to
+  drive the internal exact-key/lowerbound traversal state for eligible no-dup
+  read transactions. This preserves the public blocking API shape while routing
+  page-cache misses and explicit reads through the same async page-read engine
+  used by async get/batch paths.
+- unsupported cases still fall back to the original cursor path, including
+  dupsort DBs, changed DBIs, invalid DBIs, and traversal-state allocation
+  failures.
+- `mdbx_get_ex()` reports `values_count == 1` on the new fast path because the
+  traversal-state path is only enabled for non-dupsort DBs. Dupsort databases
+  continue through the existing cursor implementation.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-public-state-before.txt` and
+    `/tmp/mdbx-async-bench-public-state-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `5408d8d`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.195 Mops/s | 967.760 Kops/s |
+| blocking parallel get | 647.909 Kops/s | 1.038 Mops/s |
+| async single get | 386.770 Kops/s | 392.705 Kops/s |
+| async single get_ex | 384.718 Kops/s | 196.887 Kops/s |
+| async single lowerbound | 293.865 Kops/s | 230.932 Kops/s |
+| async parallel get | 2.415 Mops/s | 2.604 Mops/s |
+| async many parallel get | 2.811 Mops/s | 2.888 Mops/s |
+| async threaded get | 2.131 Mops/s | 1.606 Mops/s |
+| async threaded batch get | 3.343 Mops/s | 3.495 Mops/s |
+| async batch parallel get | 2.670 Mops/s | 2.794 Mops/s |
+| async get_ex batch | 2.481 Mops/s | 2.663 Mops/s |
+| async lowerbound batch | 1.485 Mops/s | 1.389 Mops/s |
+| async get loop | 2.201 Mops/s | 3.414 Mops/s |
+| async get_ex loop | 2.719 Mops/s | 2.454 Mops/s |
+| async lowerbound loop | 1.871 Mops/s | 1.755 Mops/s |
+
+- conclusion: this checkpoint makes the synchronous public GET-family APIs
+  participate in the internal async traversal path for the supported no-dup read
+  case. The direct blocking serial row regressed in this run, which is expected
+  from the extra traversal-state setup while the API still drives to completion
+  synchronously. Blocking parallel get, async get, batch get, get_ex batch, and
+  get loop improved; single get_ex/lowerbound and some threaded rows regressed.
+  The structural gain is that public blocking GET no longer bypasses the async
+  page-read state machine for the common no-dup explicit-I/O read case.

@@ -40,6 +40,7 @@ typedef struct meta_ptr meta_ptr_t;
 typedef struct inner_cursor subcur_t;
 typedef struct cursor_couple cursor_couple_t;
 typedef struct defer_free_item defer_free_item_t;
+typedef struct MDBX_async_get_cache_slot MDBX_async_get_cache_slot;
 typedef struct page_cache_entry page_cache_entry_t;
 
 typedef struct troika {
@@ -67,6 +68,19 @@ typedef struct page_get_result {
   int err;
   page_ref_t ref;
 } pgr_t;
+
+static bool async_nodup_read_batchable(const MDBX_txn *txn, MDBX_dbi dbi);
+static size_t async_batched_get_traverse_stateful(const MDBX_txn *txn, MDBX_dbi dbi,
+                                                  const MDBX_val keys[], MDBX_val data[],
+                                                  int results[], bool handled[],
+                                                  const bool eligible[],
+                                                  MDBX_async_get_cache_slot *slots[],
+                                                  MDBX_val found_keys[], size_t count);
+static size_t async_batched_lowerbound_traverse_stateful(const MDBX_txn *txn, MDBX_dbi dbi,
+                                                         const MDBX_val keys[], MDBX_val data[],
+                                                         int results[], bool handled[],
+                                                         const bool eligible[],
+                                                         MDBX_val found_keys[], size_t count);
 
 enum page_ref_flags {
   PAGE_REF_NONE = 0,
@@ -14908,6 +14922,22 @@ int mdbx_get(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *d
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
 
+  if (async_nodup_read_batchable(txn, dbi)) {
+    const MDBX_val keys[1] = {*key};
+    MDBX_val values[1] = {{nullptr, 0}};
+    int results[1] = {MDBX_EINVAL};
+    bool handled[1] = {false};
+    const bool eligible[1] = {true};
+
+    (void)async_batched_get_traverse_stateful(txn, dbi, keys, values, results, handled, eligible,
+                                              nullptr, nullptr, 1);
+    if (handled[0]) {
+      if (results[0] == MDBX_SUCCESS)
+        *data = values[0];
+      return LOG_IFERR(results[0]);
+    }
+  }
+
   cursor_couple_t cx;
   rc = cursor_init(&cx.outer, txn, dbi);
   if (unlikely(rc != MDBX_SUCCESS))
@@ -14928,6 +14958,25 @@ int mdbx_get_equal_or_great(const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key, MD
   int rc = check_txn(txn, MDBX_TXN_BLOCKED);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
+
+  if (async_nodup_read_batchable(txn, dbi)) {
+    const MDBX_val keys[1] = {*key};
+    MDBX_val values[1] = {{nullptr, 0}};
+    MDBX_val found_keys[1] = {*key};
+    int results[1] = {MDBX_EINVAL};
+    bool handled[1] = {false};
+    const bool eligible[1] = {true};
+
+    (void)async_batched_lowerbound_traverse_stateful(txn, dbi, keys, values, results, handled,
+                                                     eligible, found_keys, 1);
+    if (handled[0]) {
+      if (results[0] == MDBX_SUCCESS || results[0] == MDBX_RESULT_TRUE) {
+        *key = found_keys[0];
+        *data = values[0];
+      }
+      return LOG_IFERR(results[0]);
+    }
+  }
 
   cursor_couple_t cx;
   rc = cursor_init(&cx.outer, txn, dbi);
@@ -14956,6 +15005,26 @@ int mdbx_get_ex(const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key, MDBX_val *data
   int rc = check_txn(txn, MDBX_TXN_BLOCKED);
   if (unlikely(rc != MDBX_SUCCESS))
     return LOG_IFERR(rc);
+
+  if (async_nodup_read_batchable(txn, dbi)) {
+    const MDBX_val keys[1] = {*key};
+    MDBX_val values[1] = {{nullptr, 0}};
+    int results[1] = {MDBX_EINVAL};
+    bool handled[1] = {false};
+    const bool eligible[1] = {true};
+
+    (void)async_batched_get_traverse_stateful(txn, dbi, keys, values, results, handled, eligible,
+                                              nullptr, nullptr, 1);
+    if (handled[0]) {
+      if (results[0] == MDBX_SUCCESS) {
+        *data = values[0];
+        if (values_count)
+          *values_count = 1;
+      } else if (values_count)
+        *values_count = 0;
+      return LOG_IFERR(results[0]);
+    }
+  }
 
   cursor_couple_t cx;
   rc = cursor_init(&cx.outer, txn, dbi);
@@ -15732,7 +15801,7 @@ enum mdbx_async_typed_option {
 #define MDBX_ASYNC_COMPLETE_CHUNK 16
 #define MDBX_ASYNC_GET_CACHE_SLOTS 1024
 
-typedef struct MDBX_async_get_cache_slot {
+struct MDBX_async_get_cache_slot {
   const MDBX_env *env;
   MDBX_dbi dbi;
   uint64_t hash;
@@ -15742,7 +15811,7 @@ typedef struct MDBX_async_get_cache_slot {
   MDBX_cache_entry_t entry;
   uint8_t use_count;
   bool valid;
-} MDBX_async_get_cache_slot;
+};
 
 struct MDBX_async {
   int32_t signature;
