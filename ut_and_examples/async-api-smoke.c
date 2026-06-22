@@ -1761,6 +1761,26 @@ int main(void) {
 
   CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
   CHECK_OP(op);
+  REQUIRE(txn != NULL, "abort-order read transaction was not returned");
+  struct async_block_probe abort_order_probe;
+  MDBX_val abort_order_data = val(NULL, 0);
+  ops[0] = NULL;
+  ops[1] = NULL;
+  ops[2] = NULL;
+  CHECK(async_block_probe_prepare(&abort_order_probe));
+  CHECK(mdbx_async_submit(async, async_block_probe_func, &abort_order_probe, &ops[0]));
+  CHECK(mdbx_async_get(async, txn, dbi, &key_values[1], &abort_order_data, &ops[1]));
+  CHECK(mdbx_async_txn_abort(async, txn, NULL, &ops[2]));
+  txn = NULL;
+  CHECK(async_block_probe_release(&abort_order_probe));
+  CHECK(wait_many_success("queued async read before txn abort", ops, 3, op_results,
+                          __FILE__, __LINE__));
+  async_block_probe_close(&abort_order_probe);
+  REQUIRE(abort_order_probe.calls == 1, "abort-order async blocker did not run exactly once");
+  CHECK(expect_value(&abort_order_data, keys[1], __FILE__, __LINE__));
+
+  CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
+  CHECK_OP(op);
   REQUIRE(txn != NULL, "read transaction was not returned");
 
   memset(&env_stat, 0, sizeof(env_stat));
