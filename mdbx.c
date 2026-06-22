@@ -16502,7 +16502,7 @@ static int async_cached_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi
 
 static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
                                          MDBX_val data[], int results[], bool handled[],
-                                         const bool eligible[], size_t count) {
+                                         const bool eligible[], MDBX_async_get_cache_slot *slots[], size_t count) {
   if (unlikely(!txn || !keys || !data || !results || !handled || !eligible || !count))
     return 0;
   if (unlikely(check_txn(txn, MDBX_TXN_BLOCKED) != MDBX_SUCCESS))
@@ -16629,8 +16629,36 @@ static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, cons
     MDBX_val key = keys[i];
     MDBX_val value = {nullptr, 0};
     int rc = cursor_seek(&couples[i].outer, &key, &value, MDBX_SET).err;
-    if (likely(rc == MDBX_SUCCESS))
-      rc = cursor_couple_capture_txn_pins(&couples[i]);
+    if (likely(rc == MDBX_SUCCESS)) {
+      MDBX_cursor *const mc = &couples[i].outer;
+      MDBX_async_get_cache_slot *const slot = slots ? slots[i] : nullptr;
+      bool cached = false;
+      bool captured = false;
+      if (slot && likely(mc->top >= 0 && mc->pg[mc->top])) {
+        const page_t *const mp = mc->pg[mc->top];
+        const node_t *const node = page_node(mp, mc->ki[mc->top]);
+        const txnid_t trunk_txnid = mp->txnid;
+        const uint64_t committed_snapshot_txnid = txn_basis_snapshot(txn);
+        if ((node_flags(node) & N_DUP) == 0 && trunk_txnid <= committed_snapshot_txnid) {
+          cache_value_io_t value_io;
+          const int value_io_err = cache_value_io(mc, &value, &value_io);
+          if (value_io_err == MDBX_SUCCESS) {
+            rc = cursor_couple_capture_txn_pins(&couples[i]);
+            captured = rc == MDBX_SUCCESS;
+            if (likely(rc == MDBX_SUCCESS)) {
+              const int store_err = cache_store_entry_io(&slot->entry, &value_io.bytes, trunk_txnid,
+                                                         committed_snapshot_txnid);
+              if (store_err == MDBX_SUCCESS) {
+                slot->use_count = 2;
+                cached = true;
+              }
+            }
+          }
+        }
+      }
+      if (likely(rc == MDBX_SUCCESS) && !cached && !captured)
+        rc = cursor_couple_capture_txn_pins(&couples[i]);
+    }
     results[i] = rc;
     if (rc == MDBX_SUCCESS)
       data[i] = value;
@@ -16690,13 +16718,13 @@ static int async_cached_get_batch(MDBX_async_op *op) {
       }
     }
     (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
-    (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, cold, count);
+    (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, cold, slots, count);
   }
 
   for (size_t i = 0; i < count; ++i) {
     if (handled && handled[i]) {
       if (cold && cold[i] && slots && slots[i])
-        slots[i]->use_count = 1;
+        slots[i]->use_count = slots[i]->use_count ? slots[i]->use_count : 1;
       if (!(cold && cold[i]))
         results[i] = cache_results[i].errcode;
       if (results[i] != MDBX_SUCCESS) {
@@ -16783,7 +16811,7 @@ static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], 
       }
     }
     (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
-    (void)async_batched_get_traverse(txn, dbi, keys, data, tree_results, handled, cold, count);
+    (void)async_batched_get_traverse(txn, dbi, keys, data, tree_results, handled, cold, slots, count);
   }
 
   for (size_t i = 0; i < count; ++i) {
@@ -16793,7 +16821,7 @@ static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], 
     if (handled && handled[i]) {
       if (cold && cold[i]) {
         if (slots && slots[i])
-          slots[i]->use_count = 1;
+          slots[i]->use_count = slots[i]->use_count ? slots[i]->use_count : 1;
         rc = tree_results ? tree_results[i] : MDBX_EINVAL;
       } else {
         rc = cache_results[i].errcode;

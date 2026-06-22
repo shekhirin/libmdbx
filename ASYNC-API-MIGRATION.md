@@ -457,6 +457,50 @@ Validation:
 - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
 - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
 
+## Batched Async Exact-Get Cache Seeding Slice
+
+Successful cold exact-get traversal now seeds the worker-owned async get cache
+entry while the traversal still has the cursor and returned value. If the value
+maps to a committed page range that fits the public cache-entry format,
+`async_batched_get_traverse()` stores the value byte range, trunk transaction,
+and confirmed snapshot into the slot and promotes `use_count` directly to `2`.
+If the value cannot be represented as a cache entry, the operation still
+returns normally and the slot falls back to the previous `use_count == 1`
+behavior.
+
+This avoids an extra per-item `mdbx_cache_get_SingleThreaded()` refresh pass
+after the first cold batched traversal. Repeated-key windows can move directly
+from the internal batched traversal path to the existing batched cache
+materialization path.
+
+Reduced forced no-mmap/io_uring benchmark (`items=1000 ops=10000
+large_items=256 large_ops=10000 large_value=10000 page_cache=64K`), compared
+against previous commit `95fc223`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking parallel get | 686.133 Kops/s | 447.019 Kops/s |
+| async parallel get | 1.600 Mops/s | 1.292 Mops/s |
+| async many parallel get | 976.731 Kops/s | 1.258 Mops/s |
+| async threaded get | 879.308 Kops/s | 2.701 Mops/s |
+| async threaded many get | 1.157 Mops/s | 2.779 Mops/s |
+| async threaded batch get | 1.787 Mops/s | 2.901 Mops/s |
+| async batch parallel get | 1.492 Mops/s | 1.653 Mops/s |
+| async batch callback get | 1.046 Mops/s | 1.334 Mops/s |
+| async cache st batch | 2.650 Mops/s | 3.919 Mops/s |
+
+The target repeated async get rows improved substantially in this run, while
+some unrelated cache-loop/threaded-cache rows moved down. The direct effect is
+that successful cold batched traversal now feeds the cache-backed fast path for
+subsequent windows instead of requiring an intermediate per-item refresh.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current
