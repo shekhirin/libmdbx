@@ -20318,6 +20318,109 @@ static MDBX_cache_result_t async_cache_get_one_materialized(const MDBX_txn *txn,
                                                             volatile MDBX_cache_entry_t *entry,
                                                             bool singlethreaded);
 
+static void async_cache_publish_refreshed_entry(volatile MDBX_cache_entry_t *entry,
+                                                const MDBX_cache_entry_t *local,
+                                                MDBX_cache_result_t *result,
+                                                bool singlethreaded) {
+  if (unlikely(!entry || !local || !result || result->errcode != MDBX_SUCCESS ||
+               result->status != MDBX_CACHE_REFRESHED))
+    return;
+
+  if (singlethreaded) {
+    *(MDBX_cache_entry_t *)entry = *local;
+    return;
+  }
+
+  while (true) {
+    const txnid_t snap = safe64_read((mdbx_atomic_uint64_t *)&entry->last_confirmed_txnid);
+    if (snap >= local->last_confirmed_txnid) {
+      result->status = MDBX_CACHE_RACE;
+      break;
+    }
+
+    if (likely(safe64_reset_compare((mdbx_atomic_uint64_t *)&entry->last_confirmed_txnid, snap))) {
+      entry->trunk_txnid = 0;
+      osal_compiler_barrier();
+      entry->offset = local->offset;
+      entry->length = local->length;
+      entry->trunk_txnid = local->trunk_txnid;
+      safe64_write((mdbx_atomic_uint64_t *)&entry->last_confirmed_txnid, local->last_confirmed_txnid);
+      break;
+    }
+
+    atomic_yield();
+  }
+}
+
+static size_t async_cache_get_refresh_batch(const MDBX_txn *txn, MDBX_dbi dbi,
+                                            const MDBX_val keys[], MDBX_val data[],
+                                            MDBX_cache_result_t results[], bool handled[],
+                                            volatile MDBX_cache_entry_t entries[],
+                                            bool singlethreaded, size_t count) {
+  if (unlikely(!txn || !keys || !data || !results || !handled || !entries || !count))
+    return 0;
+  if (!async_nodup_read_batchable(txn, dbi))
+    return 0;
+
+  size_t eligible_count = 0;
+  for (size_t i = 0; i < count; ++i)
+    eligible_count += handled[i] ? 0 : 1;
+  if (!eligible_count)
+    return 0;
+
+  MDBX_async_get_cache_slot **slots = osal_calloc(count, sizeof(slots[0]));
+  MDBX_async_get_cache_slot *slot_storage = osal_calloc(count, sizeof(slot_storage[0]));
+  bool *eligible = osal_calloc(count, sizeof(eligible[0]));
+  int *tree_results = osal_calloc(count, sizeof(tree_results[0]));
+  if (unlikely(!slots || !slot_storage || !eligible || !tree_results)) {
+    osal_free(tree_results);
+    osal_free(eligible);
+    osal_free(slot_storage);
+    osal_free(slots);
+    return 0;
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    if (handled[i])
+      continue;
+    __inline_mdbx_cache_init(&slot_storage[i].entry);
+    slots[i] = &slot_storage[i];
+    eligible[i] = true;
+    tree_results[i] = MDBX_EINVAL;
+  }
+
+  size_t handled_count = 0;
+  (void)async_batched_get_traverse_stateful(txn, dbi, keys, data, tree_results, handled,
+                                            eligible, slots, nullptr, count);
+  for (size_t i = 0; i < count; ++i) {
+    if (!eligible[i] || !handled[i])
+      continue;
+
+    if (tree_results[i] == MDBX_SUCCESS) {
+      if (slot_storage[i].use_count > 1) {
+        results[i] = cache_result(MDBX_SUCCESS, MDBX_CACHE_REFRESHED);
+        async_cache_publish_refreshed_entry(&entries[i], &slot_storage[i].entry,
+                                            &results[i], singlethreaded);
+      } else {
+        results[i] = cache_result(MDBX_SUCCESS, MDBX_CACHE_UNABLE);
+      }
+    } else {
+      data[i].iov_base = nullptr;
+      data[i].iov_len = 0;
+      results[i] = tree_results[i] == MDBX_NOTFOUND
+                       ? cache_result(MDBX_NOTFOUND, MDBX_CACHE_UNABLE)
+                       : cache_error(LOG_IFERR(tree_results[i]));
+    }
+    ++handled_count;
+  }
+
+  osal_free(tree_results);
+  osal_free(eligible);
+  osal_free(slot_storage);
+  osal_free(slots);
+  return handled_count;
+}
+
 static int async_cache_get_batch_execute_sync(MDBX_async_op *op) {
   const bool singlethreaded = op->opcode == async_op_cache_get_singlethreaded_batch;
   const MDBX_txn *const txn = op->args.cache_get_batch.txn;
@@ -20338,6 +20441,10 @@ static int async_cache_get_batch_execute_sync(MDBX_async_op *op) {
     }
     (void)cache_materialize_singlethreaded_batch(txn, data, entries, results, count, handled);
   }
+
+  if (handled)
+    (void)async_cache_get_refresh_batch(txn, dbi, op->args.cache_get_batch.keys, data, results,
+                                        handled, entries_arg, singlethreaded, count);
 
   for (size_t i = 0; i < count; ++i) {
     if (handled && handled[i])
@@ -20405,6 +20512,10 @@ static void async_cache_get_batch_pending_complete(async_cache_get_batch_pending
     (void)async_cache_materialize_batch_finish(&pending->materialize);
     pending->materialize_started = false;
   }
+
+  if (pending->handled)
+    (void)async_cache_get_refresh_batch(txn, dbi, op->args.cache_get_batch.keys, data, results,
+                                        pending->handled, entries_arg, pending->singlethreaded, count);
 
   for (size_t i = 0; i < count; ++i) {
     if (pending->handled && pending->handled[i])
