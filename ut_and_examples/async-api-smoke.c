@@ -1057,6 +1057,7 @@ static int exercise_async_single_get_read_path(const char *path, bool inject_fau
 
   CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), false));
   REQUIRE(read_stats.storage_read_items > 0, "cold single async get did not submit storage reads");
+  REQUIRE(read_stats.storage_read_batches > 0, "cold single async get did not start storage read batches");
   REQUIRE(read_stats.storage_read_completed >= read_stats.storage_read_items,
           "cold single async get did not complete submitted reads");
   if (inject_fault)
@@ -1064,6 +1065,15 @@ static int exercise_async_single_get_read_path(const char *path, bool inject_fau
   else
     REQUIRE(read_stats.storage_read_errors == 0, "successful cold single async get reported read errors");
   REQUIRE(read_stats.page_cache_misses > 0, "cold single async get did not report page-cache misses");
+  if (env_enabled("MDBX_ASYNC_SMOKE_EXPECT_IOURING")) {
+    REQUIRE(read_stats.iouring_read_items > 0, "cold single async get did not use io_uring reads");
+    REQUIRE(read_stats.iouring_read_batches > 0, "cold single async get did not report io_uring read batches");
+  }
+  if (env_enabled("MDBX_ASYNC_SMOKE_EXPECT_NO_IOURING")) {
+    REQUIRE(read_stats.iouring_read_items == 0, "fallback cold single async get unexpectedly used io_uring reads");
+    REQUIRE(read_stats.iouring_read_batches == 0, "fallback cold single async get reported io_uring batches");
+    REQUIRE(read_stats.pending_polls == 0, "fallback cold single async get left reads pending");
+  }
 
   CHECK(mdbx_async_txn_abort(async, txn, NULL, &op));
   CHECK_OP(op);
