@@ -9190,3 +9190,61 @@ cache-hot sample. The structural result is that both public single cursor
 `FIRST` and public single cursor `NEXT` can now suspend on read-only explicit
 I/O page reads for the supported plain-cursor cases; write cursors and
 positioned seek starts still use the blocking worker path.
+
+## Public Async Cursor Get Lower-Bound Retained Slice
+
+Extended the retained single-row cursor get path to
+`mdbx_async_cursor_get(..., MDBX_SET_LOWERBOUND)` for plain read-only
+non-dupsort cursors. The supported public cursor lower-bound path now submits
+the root page read, drives branch-page descent through the explicit page-cache
+read engine, and resumes the actual cursor state after each page read
+completion instead of starting with a blocking `mdbx_cursor_get()` seek.
+
+The leaf finish is intentionally still conservative: after the retained
+root/branch descent reaches a resident leaf, it calls
+`cursor_ops(..., MDBX_SET_LOWERBOUND)` to perform the leaf-local search and
+normal result setup. That means overflow values or leaf-edge sibling movement
+inside the final cursor operation can still block. This is an incremental seek
+migration, not the finished lower-bound coroutine for every page access.
+
+The smoke test now covers an inexact lower-bound single cursor get and verifies
+the expected `MDBX_RESULT_TRUE` result, returned key, and value payload.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+- Benchmark log: `/tmp/mdbx-async-bench-cursorget-lowerbound-retain-after-rerun.txt`
+
+Reduced forced no-mmap/io_uring benchmark with `MDBX_ASYNC_BENCH_ITEMS=10000`,
+`MDBX_ASYNC_BENCH_OPS=30000`, `MDBX_ASYNC_BENCH_WRITE_OPS=1000`,
+`MDBX_ASYNC_BENCH_LARGE_OPS=30000`, and
+`MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against the previous checkpoint
+`761a0c8`.
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async single lowerbound | 266.116 Kops/s | 242.052 Kops/s |
+| async lowerbound batch | 1.221 Mops/s | 1.095 Mops/s |
+| async lowerbound many | 1.201 Mops/s | 673.068 Kops/s |
+| async lowerbound loop | 1.337 Mops/s | 1.123 Mops/s |
+| async threaded lower loop | 1.315 Mops/s | 1.468 Mops/s |
+| async cursor get | 840.556 Kops/s | 906.229 Kops/s |
+| async cursor get loop | 50.088 Mops/s | 52.361 Mops/s |
+| async cursor get loop_from | 53.954 Mops/s | 68.560 Mops/s |
+| async threaded cget loop_from | 58.238 Mops/s | 47.094 Mops/s |
+| async cursor scan_from | 54.748 Mops/s | 49.968 Mops/s |
+| async-lower-loop/par | 2.317 | 1.564 |
+| async-thread-lower-loop/par | 2.278 | 2.044 |
+| async-cursor-get/par | 0.016 | 0.021 |
+| async-cursor-get-loop/get | 59.590 | 57.779 |
+| async-cget-loop-from/scan | 0.985 | 1.372 |
+
+Single-run benchmark noise remains visible, and most lower-bound batch/loop
+rows are separate public API paths rather than this single cursor-get path. The
+important structural result is that public single cursor lower-bound can now
+suspend on root and branch page reads in the supported read-only plain-cursor
+case. Positioned `loop_from` and `scan_from` starts still contain blocking
+`mdbx_cursor_get(..., MDBX_SET_LOWERBOUND)` islands and remain future work.

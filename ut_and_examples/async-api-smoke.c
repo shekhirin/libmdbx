@@ -2713,6 +2713,31 @@ int main(void) {
   REQUIRE(cursor_loop_from_actual_key == cursor_loop_from_key_data + 3, "unexpected cursor get loop-from key");
   CHECK(expect_value(&cursor_loop_from_data, cursor_loop_from_actual_key, __FILE__, __LINE__));
 
+  uint64_t cursor_get_lowerbound_seed = 17;
+  uint8_t cursor_get_lowerbound_bytes[sizeof(cursor_get_lowerbound_seed) + 1];
+  memcpy(cursor_get_lowerbound_bytes, &cursor_get_lowerbound_seed, sizeof(cursor_get_lowerbound_seed));
+  cursor_get_lowerbound_bytes[sizeof(cursor_get_lowerbound_seed)] = 0;
+  MDBX_val cursor_get_lowerbound_key =
+      val(cursor_get_lowerbound_bytes, sizeof(cursor_get_lowerbound_bytes));
+  MDBX_val cursor_get_lowerbound_data = val(NULL, 0);
+  int cursor_get_lowerbound_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_cursor_get(async, cursor, &cursor_get_lowerbound_key,
+                              &cursor_get_lowerbound_data, MDBX_SET_LOWERBOUND, &op));
+  CHECK(wait_result("mdbx_async_cursor_get lowerbound", &op,
+                    &cursor_get_lowerbound_result, __FILE__, __LINE__));
+  REQUIRE(cursor_get_lowerbound_result == MDBX_RESULT_TRUE,
+          "unexpected async cursor get lower-bound result");
+  REQUIRE(cursor_get_lowerbound_key.iov_len == sizeof(uint64_t),
+          "unexpected cursor get lower-bound key size");
+  uint64_t cursor_get_lowerbound_actual_key = 0;
+  memcpy(&cursor_get_lowerbound_actual_key, cursor_get_lowerbound_key.iov_base,
+         sizeof(cursor_get_lowerbound_actual_key));
+  REQUIRE(cursor_get_lowerbound_actual_key > cursor_get_lowerbound_seed &&
+              cursor_get_lowerbound_actual_key < ITEM_COUNT,
+          "unexpected cursor get lower-bound key");
+  CHECK(expect_value(&cursor_get_lowerbound_data, cursor_get_lowerbound_actual_key,
+                     __FILE__, __LINE__));
+
   uint64_t cursor_lowerbound_seed = 18;
   uint8_t cursor_lowerbound_bytes[sizeof(cursor_lowerbound_seed) + 1];
   memcpy(cursor_lowerbound_bytes, &cursor_lowerbound_seed, sizeof(cursor_lowerbound_seed));
