@@ -275,6 +275,13 @@ typedef struct dxb_page_cache_read_submit_io {
   dxb_cache_page_submit_io_t fill;
 } dxb_page_cache_read_submit_io_t;
 
+typedef struct page_cache_batch_fill {
+  page_cache_entry_t *entry;
+  dxb_cache_page_submit_io_t fill;
+  dxb_read_submit_io_t storage_read;
+  bool active;
+} page_cache_batch_fill_t;
+
 typedef struct dxb_cache_fill_read_submit_io {
   dxb_cache_read_io_t read;
   page_cache_entry_t *entry;
@@ -549,6 +556,34 @@ static inline dxb_cache_page_result_t dxb_cache_page_submitted_error(int err, bo
 static inline dxb_cache_page_result_t dxb_cache_page_miss(void) {
   return dxb_cache_page_result(pgr_error(MDBX_RESULT_TRUE), 0, false, false, false, false, true);
 }
+
+typedef struct dxb_page_cache_read_batch {
+  MDBX_txn *txn;
+  struct dxb_storage *storage;
+  const dxb_page_cache_read_submit_io_t *ios;
+  dxb_cache_page_result_t *results;
+  size_t count;
+  size_t misses;
+  int first_err;
+  page_cache_batch_fill_t stack_fills[4];
+  dxb_read_submit_io_t stack_reads[4];
+  dxb_read_result_t stack_read_results[4];
+  size_t stack_miss_index[4];
+  size_t stack_duplicate_of[4];
+  size_t stack_duplicate_buckets[4];
+  size_t stack_duplicate_next[4];
+  page_cache_batch_fill_t *fills;
+  dxb_read_submit_io_t *reads;
+  dxb_read_result_t *read_results;
+  size_t *miss_index;
+  size_t *duplicate_of;
+  size_t *duplicate_buckets;
+  size_t *duplicate_next;
+  dxb_storage_read_batch_t storage_batch;
+  bool prepared;
+  bool storage_batch_prepared;
+  bool materialized;
+} dxb_page_cache_read_batch_t;
 
 static inline page_ref_t page_ref_empty(void) {
   page_ref_t ref;
@@ -5173,6 +5208,11 @@ static size_t page_cache_limit_from_env(void);
 static inline dxb_cache_result_t dxb_cache_error(int err);
 static inline int page_cache_read_submit_io_validate(const MDBX_txn *txn,
                                                      const dxb_page_cache_read_submit_io_t *io);
+static int page_cache_read_batch_begin(dxb_page_cache_read_batch_t *batch, MDBX_txn *txn,
+                                       const dxb_page_cache_read_submit_io_t *ios,
+                                       dxb_cache_page_result_t *results, size_t count);
+static int page_cache_read_batch_drive(dxb_page_cache_read_batch_t *batch, bool wait);
+static int page_cache_read_batch_finish(dxb_page_cache_read_batch_t *batch);
 static int page_cache_submit_read_batch(MDBX_txn *txn, const dxb_page_cache_read_submit_io_t *ios,
                                         dxb_cache_page_result_t *results, size_t count);
 static void dxb_storage_retain_cached_entry(dxb_storage_t *storage, page_cache_entry_t *entry);
@@ -32522,13 +32562,6 @@ static dxb_cache_page_result_t dxb_storage_submit_lookup_cached_page(dxb_storage
   return dxb_cache_page_miss();
 }
 
-typedef struct page_cache_batch_fill {
-  page_cache_entry_t *entry;
-  dxb_cache_page_submit_io_t fill;
-  dxb_read_submit_io_t storage_read;
-  bool active;
-} page_cache_batch_fill_t;
-
 static void page_cache_batch_fill_discard(page_cache_batch_fill_t *fill) {
   if (!fill || !fill->entry)
     return;
@@ -32588,73 +32621,89 @@ bailout:
   return dxb_cache_page_error(err);
 }
 
-static int page_cache_submit_read_batch(MDBX_txn *txn, const dxb_page_cache_read_submit_io_t *ios,
-                                        dxb_cache_page_result_t *results, size_t count) {
-  if (unlikely(!txn || !ios || !results || !count))
+static int page_cache_read_batch_begin(dxb_page_cache_read_batch_t *batch, MDBX_txn *txn,
+                                       const dxb_page_cache_read_submit_io_t *ios,
+                                       dxb_cache_page_result_t *results, size_t count) {
+  if (unlikely(!batch || !txn || !ios || !results || !count))
     return MDBX_EINVAL;
 
+  memset(batch, 0, sizeof(*batch));
   dxb_storage_t *const storage = &txn->env->dxb_storage;
-  int first_err = MDBX_SUCCESS;
-  size_t misses = 0;
-  page_cache_batch_fill_t stack_fills[4];
-  dxb_read_submit_io_t stack_reads[4];
-  dxb_read_result_t stack_read_results[4];
-  size_t stack_miss_index[4];
-  size_t stack_duplicate_of[4];
-  size_t stack_duplicate_buckets[4];
-  size_t stack_duplicate_next[4];
-  page_cache_batch_fill_t *fills = stack_fills;
-  dxb_read_submit_io_t *reads = stack_reads;
-  dxb_read_result_t *read_results = stack_read_results;
-  size_t *miss_index = stack_miss_index;
-  size_t *duplicate_of = stack_duplicate_of;
-  size_t *duplicate_buckets = stack_duplicate_buckets;
-  size_t *duplicate_next = stack_duplicate_next;
-  if (count <= ARRAY_LENGTH(stack_fills)) {
-    memset(fills, 0, count * sizeof(fills[0]));
+  batch->txn = txn;
+  batch->storage = storage;
+  batch->ios = ios;
+  batch->results = results;
+  batch->count = count;
+  batch->first_err = MDBX_SUCCESS;
+  batch->fills = batch->stack_fills;
+  batch->reads = batch->stack_reads;
+  batch->read_results = batch->stack_read_results;
+  batch->miss_index = batch->stack_miss_index;
+  batch->duplicate_of = batch->stack_duplicate_of;
+  batch->duplicate_buckets = batch->stack_duplicate_buckets;
+  batch->duplicate_next = batch->stack_duplicate_next;
+
+  if (count <= ARRAY_LENGTH(batch->stack_fills)) {
+    memset(batch->fills, 0, count * sizeof(batch->fills[0]));
   } else {
-    fills = osal_calloc(count, sizeof(fills[0]));
-    reads = osal_calloc(count, sizeof(reads[0]));
-    read_results = osal_calloc(count, sizeof(read_results[0]));
-    miss_index = osal_malloc(count * sizeof(miss_index[0]));
-    duplicate_of = osal_malloc(count * sizeof(duplicate_of[0]));
-    duplicate_buckets = osal_malloc(count * sizeof(duplicate_buckets[0]));
-    duplicate_next = osal_malloc(count * sizeof(duplicate_next[0]));
+    batch->fills = osal_calloc(count, sizeof(batch->fills[0]));
+    batch->reads = osal_calloc(count, sizeof(batch->reads[0]));
+    batch->read_results = osal_calloc(count, sizeof(batch->read_results[0]));
+    batch->miss_index = osal_malloc(count * sizeof(batch->miss_index[0]));
+    batch->duplicate_of = osal_malloc(count * sizeof(batch->duplicate_of[0]));
+    batch->duplicate_buckets = osal_malloc(count * sizeof(batch->duplicate_buckets[0]));
+    batch->duplicate_next = osal_malloc(count * sizeof(batch->duplicate_next[0]));
   }
-  if (unlikely(!fills || !reads || !read_results || !miss_index || !duplicate_of ||
-               !duplicate_buckets || !duplicate_next)) {
-    first_err = MDBX_ENOMEM;
-    goto bailout;
+  if (unlikely(!batch->fills || !batch->reads || !batch->read_results || !batch->miss_index ||
+               !batch->duplicate_of || !batch->duplicate_buckets || !batch->duplicate_next)) {
+    if (batch->duplicate_next != batch->stack_duplicate_next)
+      osal_free(batch->duplicate_next);
+    if (batch->duplicate_buckets != batch->stack_duplicate_buckets)
+      osal_free(batch->duplicate_buckets);
+    if (batch->duplicate_of != batch->stack_duplicate_of)
+      osal_free(batch->duplicate_of);
+    if (batch->miss_index != batch->stack_miss_index)
+      osal_free(batch->miss_index);
+    if (batch->read_results != batch->stack_read_results)
+      osal_free(batch->read_results);
+    if (batch->reads != batch->stack_reads)
+      osal_free(batch->reads);
+    if (batch->fills != batch->stack_fills)
+      osal_free(batch->fills);
+    for (size_t i = 0; i < count; ++i)
+      results[i] = dxb_cache_page_error(MDBX_ENOMEM);
+    memset(batch, 0, sizeof(*batch));
+    return MDBX_ENOMEM;
   }
   for (size_t i = 0; i < count; ++i) {
-    duplicate_of[i] = SIZE_MAX;
-    duplicate_buckets[i] = SIZE_MAX;
-    duplicate_next[i] = SIZE_MAX;
+    batch->duplicate_of[i] = SIZE_MAX;
+    batch->duplicate_buckets[i] = SIZE_MAX;
+    batch->duplicate_next[i] = SIZE_MAX;
   }
 
   for (size_t i = 0; i < count; ++i) {
     int err = page_cache_read_submit_io_validate(txn, &ios[i]);
     if (unlikely(err != MDBX_SUCCESS)) {
       results[i] = dxb_cache_page_error(err);
-      if (first_err == MDBX_SUCCESS)
-        first_err = err;
+      if (batch->first_err == MDBX_SUCCESS)
+        batch->first_err = err;
       continue;
     }
 
     dxb_cache_page_result_t cached = dxb_storage_submit_lookup_cached_page(storage, &ios[i].lookup);
     if (cached.page.err == MDBX_SUCCESS || unlikely(cached.page.err != MDBX_RESULT_TRUE)) {
       results[i] = cached;
-      if (unlikely(cached.page.err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
-        first_err = cached.page.err;
+      if (unlikely(cached.page.err != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+        batch->first_err = cached.page.err;
       continue;
     }
 
     const size_t bucket = dxb_page_cache_read_submit_io_hash(&ios[i]) % count;
     bool duplicate = false;
-    for (size_t j = duplicate_buckets[bucket]; j != SIZE_MAX; j = duplicate_next[j]) {
-      const size_t master = miss_index[j];
+    for (size_t j = batch->duplicate_buckets[bucket]; j != SIZE_MAX; j = batch->duplicate_next[j]) {
+      const size_t master = batch->miss_index[j];
       if (dxb_page_cache_read_submit_io_equal(&ios[i], &ios[master])) {
-        duplicate_of[i] = master;
+        batch->duplicate_of[i] = master;
         duplicate = true;
         break;
       }
@@ -32662,41 +32711,46 @@ static int page_cache_submit_read_batch(MDBX_txn *txn, const dxb_page_cache_read
     if (duplicate)
       continue;
 
-    dxb_cache_page_result_t prepared = dxb_storage_prepare_read_cached_page(storage, &ios[i].fill, &fills[misses]);
+    dxb_cache_page_result_t prepared =
+        dxb_storage_prepare_read_cached_page(storage, &ios[i].fill, &batch->fills[batch->misses]);
     if (unlikely(prepared.page.err != MDBX_RESULT_TRUE)) {
       results[i] = prepared;
-      if (unlikely(prepared.page.err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
-        first_err = prepared.page.err;
+      if (unlikely(prepared.page.err != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+        batch->first_err = prepared.page.err;
       continue;
     }
 
-    reads[misses] = fills[misses].storage_read;
-    miss_index[misses] = i;
-    duplicate_next[misses] = duplicate_buckets[bucket];
-    duplicate_buckets[bucket] = misses;
-    ++misses;
+    batch->reads[batch->misses] = batch->fills[batch->misses].storage_read;
+    batch->miss_index[batch->misses] = i;
+    batch->duplicate_next[batch->misses] = batch->duplicate_buckets[bucket];
+    batch->duplicate_buckets[bucket] = batch->misses;
+    ++batch->misses;
   }
 
-  if (misses) {
-    dxb_storage_read_batch_t read_batch;
-    int batch_err = dxb_storage_read_batch_begin(&read_batch, storage, reads, read_results, misses);
+  if (batch->misses) {
+    int batch_err = dxb_storage_read_batch_begin(&batch->storage_batch, storage, batch->reads,
+                                                 batch->read_results, batch->misses);
     if (likely(batch_err == MDBX_SUCCESS)) {
-      batch_err = dxb_storage_read_batch_drive(&read_batch, false);
-      while (batch_err == MDBX_RESULT_TRUE)
-        batch_err = dxb_storage_read_batch_drive(&read_batch, true);
-      const int finish_err = dxb_storage_read_batch_finish(&read_batch);
-      if (unlikely(finish_err != MDBX_SUCCESS))
-        batch_err = finish_err;
+      batch->storage_batch_prepared = true;
     }
-    if (unlikely(batch_err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
-      first_err = batch_err;
+    if (unlikely(batch_err != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+      batch->first_err = batch_err;
   }
 
-  for (size_t j = 0; j < misses; ++j) {
-    const size_t i = miss_index[j];
-    page_cache_batch_fill_t *const fill = &fills[j];
+  batch->prepared = true;
+  return MDBX_SUCCESS;
+}
+
+static int page_cache_read_batch_materialize(dxb_page_cache_read_batch_t *batch) {
+  dxb_storage_t *const storage = batch->storage;
+  dxb_cache_page_result_t *const results = batch->results;
+  int first_err = batch->first_err;
+
+  for (size_t j = 0; j < batch->misses; ++j) {
+    const size_t i = batch->miss_index[j];
+    page_cache_batch_fill_t *const fill = &batch->fills[j];
     const dxb_cache_read_io_t *const read = &fill->fill.read;
-    dxb_read_result_t read_result = read_results[j];
+    dxb_read_result_t read_result = batch->read_results[j];
     int err = read_result.err;
     bool submitted = read_result.submitted;
     if (unlikely(err != MDBX_SUCCESS))
@@ -32733,8 +32787,8 @@ static int page_cache_submit_read_batch(MDBX_txn *txn, const dxb_page_cache_read
       first_err = err;
   }
 
-  for (size_t i = 0; i < count; ++i) {
-    const size_t master = duplicate_of ? duplicate_of[i] : SIZE_MAX;
+  for (size_t i = 0; i < batch->count; ++i) {
+    const size_t master = batch->duplicate_of ? batch->duplicate_of[i] : SIZE_MAX;
     if (master == SIZE_MAX)
       continue;
 
@@ -32756,30 +32810,84 @@ static int page_cache_submit_read_batch(MDBX_txn *txn, const dxb_page_cache_read
       first_err = results[i].page.err;
   }
 
-bailout:
-  if (fills) {
-    for (size_t i = 0; i < count; ++i)
-      page_cache_batch_fill_discard(&fills[i]);
-  }
-  if (duplicate_of != stack_duplicate_of)
-    osal_free(duplicate_of);
-  if (duplicate_next != stack_duplicate_next)
-    osal_free(duplicate_next);
-  if (duplicate_buckets != stack_duplicate_buckets)
-    osal_free(duplicate_buckets);
-  if (miss_index != stack_miss_index)
-    osal_free(miss_index);
-  if (read_results != stack_read_results)
-    osal_free(read_results);
-  if (reads != stack_reads)
-    osal_free(reads);
-  if (fills != stack_fills)
-    osal_free(fills);
-  if (unlikely(first_err == MDBX_ENOMEM)) {
-    for (size_t i = 0; i < count; ++i)
-      results[i] = dxb_cache_page_error(MDBX_ENOMEM);
-  }
+  batch->first_err = first_err;
+  batch->materialized = true;
   return first_err;
+}
+
+static int page_cache_read_batch_drive(dxb_page_cache_read_batch_t *batch, bool wait) {
+  if (unlikely(!batch || !batch->prepared || !batch->txn || !batch->storage || !batch->ios ||
+               !batch->results || !batch->count))
+    return MDBX_EINVAL;
+  if (batch->materialized)
+    return batch->first_err;
+
+  if (batch->storage_batch_prepared) {
+    int rc = dxb_storage_read_batch_drive(&batch->storage_batch, wait);
+    if (rc == MDBX_RESULT_TRUE)
+      return MDBX_RESULT_TRUE;
+    if (unlikely(rc != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+      batch->first_err = rc;
+    const int finish_err = dxb_storage_read_batch_finish(&batch->storage_batch);
+    batch->storage_batch_prepared = false;
+    if (unlikely(finish_err != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+      batch->first_err = finish_err;
+  }
+
+  return page_cache_read_batch_materialize(batch);
+}
+
+static int page_cache_read_batch_finish(dxb_page_cache_read_batch_t *batch) {
+  if (unlikely(!batch || !batch->prepared))
+    return MDBX_EINVAL;
+
+  if (batch->storage_batch_prepared) {
+    const int finish_err = dxb_storage_read_batch_finish(&batch->storage_batch);
+    batch->storage_batch_prepared = false;
+    if (unlikely(finish_err != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+      batch->first_err = finish_err;
+  }
+
+  if (batch->fills) {
+    for (size_t i = 0; i < batch->count; ++i)
+      page_cache_batch_fill_discard(&batch->fills[i]);
+  }
+  if (batch->duplicate_next != batch->stack_duplicate_next)
+    osal_free(batch->duplicate_next);
+  if (batch->duplicate_buckets != batch->stack_duplicate_buckets)
+    osal_free(batch->duplicate_buckets);
+  if (batch->duplicate_of != batch->stack_duplicate_of)
+    osal_free(batch->duplicate_of);
+  if (batch->miss_index != batch->stack_miss_index)
+    osal_free(batch->miss_index);
+  if (batch->read_results != batch->stack_read_results)
+    osal_free(batch->read_results);
+  if (batch->reads != batch->stack_reads)
+    osal_free(batch->reads);
+  if (batch->fills != batch->stack_fills)
+    osal_free(batch->fills);
+  if (unlikely(batch->first_err == MDBX_ENOMEM)) {
+    for (size_t i = 0; i < batch->count; ++i)
+      batch->results[i] = dxb_cache_page_error(MDBX_ENOMEM);
+  }
+  const int rc = batch->first_err;
+  memset(batch, 0, sizeof(*batch));
+  return rc;
+}
+
+static int page_cache_submit_read_batch(MDBX_txn *txn, const dxb_page_cache_read_submit_io_t *ios,
+                                        dxb_cache_page_result_t *results, size_t count) {
+  dxb_page_cache_read_batch_t batch;
+  int rc = page_cache_read_batch_begin(&batch, txn, ios, results, count);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  rc = page_cache_read_batch_drive(&batch, false);
+  while (rc == MDBX_RESULT_TRUE)
+    rc = page_cache_read_batch_drive(&batch, true);
+
+  const int finish_err = page_cache_read_batch_finish(&batch);
+  return unlikely(finish_err != MDBX_SUCCESS) ? finish_err : rc;
 }
 
 static dxb_cache_result_t dxb_storage_submit_detach_materialized_large_page(
