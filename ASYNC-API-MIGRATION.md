@@ -4949,3 +4949,35 @@ Additional threaded async cache-get-loop benchmark checkpoint:
   threaded cache-loop row remains above blocking parallel and serial GET in the
   reduced sample, while the single-threaded threaded cache-loop row is not a
   current high-water mark.
+
+Additional async cursor-get-loop batching checkpoint:
+
+- changed the executor for `mdbx_async_cursor_get_loop()` and
+  `mdbx_async_cursor_get_loop_from()` so non-dupsort `MDBX_NEXT` loops can
+  materialize multiple cursor pairs with `mdbx_cursor_get_batch()` after the
+  initial positioned cursor get. This keeps the public API shape unchanged but
+  reduces per-item cursor executor calls for cursor get-loop workloads.
+- the first batch after the initial cursor get skips the already-returned
+  current item. Later batches do not skip their first item because
+  `mdbx_cursor_get_batch(MDBX_NEXT)` leaves the cursor at the next unreturned
+  pair for continuation. A single-record tail is handled with
+  `MDBX_GET_CURRENT` to avoid overfetching past the requested loop count.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cursor-get-loop-before.txt` and
+    `/tmp/mdbx-async-bench-cursor-get-loop-after-release.txt`
+- reduced forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=10000 MDBX_ASYNC_BENCH_OPS=50000
+  MDBX_ASYNC_BENCH_WRITE_OPS=5000 MDBX_ASYNC_BENCH_LARGE_OPS=5000`:
+  blocking cursor get moved 47.095 -> 46.596 Mops/s, parallel cursor get
+  41.380 -> 47.076 Mops/s, async cursor get 821.258 -> 765.170 Kops/s, async
+  cursor get loop 53.647 -> 54.636 Mops/s, async cursor get loop_from
+  50.201 -> 59.148 Mops/s, async threaded cursor get loop 88.319 -> 81.233
+  Mops/s, and async threaded cursor get loop_from 78.516 -> 84.305 Mops/s.
+- conclusion: this is a modest cursor-loop executor batching improvement rather
+  than a new storage-level async page-read primitive. It keeps moving cursor
+  traversal work toward coarser async operations, while the true async I/O goal
+  still requires resumable B-tree/page-read continuations below cursor logic.
