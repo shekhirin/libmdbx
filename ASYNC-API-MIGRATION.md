@@ -5213,3 +5213,45 @@ Additional mixed not-found read coverage checkpoint:
   async read APIs now have smoke coverage for per-item not-found behavior,
   result ordering, and empty-result normalization in both normal and forced
   no-mmap/io_uring runs.
+
+Additional single get_ex cache/traversal checkpoint:
+
+- changed eligible single `mdbx_async_get_ex()` execution to reuse
+  `async_cached_get_one()` instead of running a separate direct one-item
+  traversal. For read-only non-dupsort DBIs this lets `get_ex` share the hidden
+  async get cache, cached-entry materialization, and internal explicit-I/O
+  traversal path already used by `mdbx_async_get()`. Unsupported shapes still
+  fall back to `mdbx_get_ex()`.
+- this keeps the public `get_ex` result contract: non-dupsort successful
+  lookups report `values_count == 1`, misses report zero values, and dupsort
+  semantics remain on the existing fallback path.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-getexcache-repeat-before.txt` and
+    `/tmp/mdbx-async-bench-getexcache-repeat-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `e3b759b`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.777 Mops/s | 1.796 Mops/s |
+| blocking parallel get | 932.538 Kops/s | 1.024 Mops/s |
+| async single get | 401.189 Kops/s | 212.146 Kops/s |
+| async single get_ex | 179.522 Kops/s | 326.153 Kops/s |
+| async single lowerbound | 294.618 Kops/s | 369.266 Kops/s |
+| async parallel get | 1.668 Mops/s | 1.702 Mops/s |
+| async many parallel get | 1.825 Mops/s | 2.849 Mops/s |
+| async get_ex batch | 858.826 Kops/s | 1.679 Mops/s |
+| async get_ex many | 915.523 Kops/s | 1.403 Mops/s |
+
+- conclusion: repeated non-dupsort `get_ex` now benefits from the same
+  cache-backed internal traversal route as repeated `get`, which is closer to
+  the requested design where public async reads use the internal async page
+  engine instead of independent blocking helper calls. This still runs to
+  completion inside the worker; exposing true suspension/resumption remains
+  future work.

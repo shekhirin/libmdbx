@@ -17063,8 +17063,8 @@ static int async_cached_get_one(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi
   return async_cached_get(async, txn, dbi, key, data);
 }
 
-static int async_get_ex_one(const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key, MDBX_val *data,
-                            size_t *values_count) {
+static int async_get_ex_one(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key,
+                            MDBX_val *data, size_t *values_count) {
   if (unlikely(!key || !data))
     return MDBX_EINVAL;
 
@@ -17072,25 +17072,14 @@ static int async_get_ex_one(const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key, MD
     *values_count = 0;
 
   if (async_get_ex_batchable(txn, dbi)) {
-    MDBX_val keys[1] = {*key};
-    MDBX_val found_keys[1] = {*key};
-    MDBX_val values[1] = {{nullptr, 0}};
-    int results[1] = {MDBX_EINVAL};
-    bool handled[1] = {false};
-    bool eligible[1] = {true};
-    MDBX_async_get_cache_slot *slots[1] = {nullptr};
-
-    (void)async_batched_get_traverse(txn, dbi, keys, values, results, handled, eligible, slots,
-                                     found_keys, 1);
-    if (handled[0]) {
-      if (results[0] == MDBX_SUCCESS) {
-        *key = found_keys[0];
-        *data = values[0];
-        if (values_count)
-          *values_count = 1;
-      }
-      return results[0];
+    MDBX_val value = {nullptr, 0};
+    const int rc = async_cached_get_one(async, txn, dbi, key, &value);
+    if (rc == MDBX_SUCCESS) {
+      *data = value;
+      if (values_count)
+        *values_count = 1;
     }
+    return rc;
   }
 
   MDBX_val fallback_key = *key;
@@ -17293,7 +17282,7 @@ static void async_get_ex_ops_batch(MDBX_async *async, MDBX_async_op *ops[], size
     MDBX_val key = op->key;
     MDBX_val value = {nullptr, 0};
     size_t values_count = 0;
-    const int rc = async_get_ex_one(op->args.get_ex.txn, op->args.get_ex.dbi, &key, &value,
+    const int rc = async_get_ex_one(async, op->args.get_ex.txn, op->args.get_ex.dbi, &key, &value,
                                     &values_count);
     if (op->args.get_ex.values_count)
       *op->args.get_ex.values_count = values_count;
@@ -18213,7 +18202,7 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_get_ex: {
     MDBX_val key = op->key;
     MDBX_val data = {nullptr, 0};
-    const int rc = async_get_ex_one(op->args.get_ex.txn, op->args.get_ex.dbi, &key, &data,
+    const int rc = async_get_ex_one(op->async, op->args.get_ex.txn, op->args.get_ex.dbi, &key, &data,
                                     op->args.get_ex.values_count);
     if (rc == MDBX_SUCCESS) {
       *op->args.get_ex.key = key;
