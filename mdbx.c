@@ -50069,13 +50069,24 @@ static int page_get_committed_batch(MDBX_txn *txn, const dxb_committed_page_subm
   if (unlikely(!txn || !ios || !results || !count))
     return MDBX_EINVAL;
 
-  dxb_page_cache_read_submit_io_t *submits = osal_calloc(count, sizeof(submits[0]));
-  dxb_cache_page_result_t *submit_results = osal_calloc(count, sizeof(submit_results[0]));
-  size_t *indices = osal_malloc(count * sizeof(indices[0]));
+  dxb_page_cache_read_submit_io_t stack_submits[4];
+  dxb_cache_page_result_t stack_submit_results[4];
+  size_t stack_indices[4];
+  dxb_page_cache_read_submit_io_t *submits = stack_submits;
+  dxb_cache_page_result_t *submit_results = stack_submit_results;
+  size_t *indices = stack_indices;
+  if (count > ARRAY_LENGTH(stack_submits)) {
+    submits = osal_calloc(count, sizeof(submits[0]));
+    submit_results = osal_calloc(count, sizeof(submit_results[0]));
+    indices = osal_malloc(count * sizeof(indices[0]));
+  }
   if (unlikely(!submits || !submit_results || !indices)) {
-    osal_free(indices);
-    osal_free(submit_results);
-    osal_free(submits);
+    if (indices != stack_indices)
+      osal_free(indices);
+    if (submit_results != stack_submit_results)
+      osal_free(submit_results);
+    if (submits != stack_submits)
+      osal_free(submits);
     for (size_t i = 0; i < count; ++i)
       results[i] = dxb_cache_page_error(MDBX_ENOMEM);
     return MDBX_ENOMEM;
@@ -50108,9 +50119,12 @@ static int page_get_committed_batch(MDBX_txn *txn, const dxb_committed_page_subm
       first_err = submit_results[j].page.err;
   }
 
-  osal_free(indices);
-  osal_free(submit_results);
-  osal_free(submits);
+  if (indices != stack_indices)
+    osal_free(indices);
+  if (submit_results != stack_submit_results)
+    osal_free(submit_results);
+  if (submits != stack_submits)
+    osal_free(submits);
   return first_err;
 }
 
@@ -50309,13 +50323,24 @@ static int page_submit_get_unchecked_batch(MDBX_txn *txn, const dxb_page_get_sub
     return results[0].err;
   }
 
-  dxb_committed_page_submit_io_t *committed_ios = osal_calloc(count, sizeof(committed_ios[0]));
-  dxb_cache_page_result_t *committed_results = osal_calloc(count, sizeof(committed_results[0]));
-  size_t *indices = osal_malloc(count * sizeof(indices[0]));
+  dxb_committed_page_submit_io_t stack_committed_ios[4];
+  dxb_cache_page_result_t stack_committed_results[4];
+  size_t stack_indices[4];
+  dxb_committed_page_submit_io_t *committed_ios = stack_committed_ios;
+  dxb_cache_page_result_t *committed_results = stack_committed_results;
+  size_t *indices = stack_indices;
+  if (count > ARRAY_LENGTH(stack_committed_ios)) {
+    committed_ios = osal_calloc(count, sizeof(committed_ios[0]));
+    committed_results = osal_calloc(count, sizeof(committed_results[0]));
+    indices = osal_malloc(count * sizeof(indices[0]));
+  }
   if (unlikely(!committed_ios || !committed_results || !indices)) {
-    osal_free(indices);
-    osal_free(committed_results);
-    osal_free(committed_ios);
+    if (indices != stack_indices)
+      osal_free(indices);
+    if (committed_results != stack_committed_results)
+      osal_free(committed_results);
+    if (committed_ios != stack_committed_ios)
+      osal_free(committed_ios);
     for (size_t i = 0; i < count; ++i)
       results[i] = pgr_error(MDBX_ENOMEM);
     return MDBX_ENOMEM;
@@ -50373,9 +50398,12 @@ static int page_submit_get_unchecked_batch(MDBX_txn *txn, const dxb_page_get_sub
     results[i] = r;
   }
 
-  osal_free(indices);
-  osal_free(committed_results);
-  osal_free(committed_ios);
+  if (indices != stack_indices)
+    osal_free(indices);
+  if (committed_results != stack_committed_results)
+    osal_free(committed_results);
+  if (committed_ios != stack_committed_ios)
+    osal_free(committed_ios);
   return first_err;
 }
 

@@ -5409,3 +5409,50 @@ Additional regular cache-get loop prefetch checkpoint:
   materialization like the single-threaded loop. The direct regular loop and
   threaded regular loop rows improved substantially in this sample; nearby
   cache batch rows were mixed, consistent with normal reduced benchmark noise.
+
+Additional small committed-page batch stack checkpoint:
+
+- changed `page_get_committed_batch()` and `page_submit_get_unchecked_batch()`
+  to use stack storage for up to four committed page reads before falling back
+  to heap allocation for larger batches. This mirrors the existing small-stack
+  behavior in `page_submit_cursor_get_batch()`.
+- this is below the async traversal/cache materialization paths, so it reduces
+  allocator overhead for common shallow B-tree/root/branch read batches without
+  changing page-cache lookup, io_uring submission, duplicate-miss coalescing,
+  pinning, validation, or fallback behavior.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-smallbatch-stack-before.txt` and
+    `/tmp/mdbx-async-bench-smallbatch-stack-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `2262626`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.768 Mops/s | 1.842 Mops/s |
+| blocking parallel get | 1.037 Mops/s | 1.075 Mops/s |
+| async single get | 195.591 Kops/s | 230.947 Kops/s |
+| async single get_ex | 350.891 Kops/s | 388.892 Kops/s |
+| async parallel get | 2.612 Mops/s | 2.298 Mops/s |
+| async many parallel get | 2.750 Mops/s | 2.745 Mops/s |
+| async get_ex batch | 2.730 Mops/s | 2.031 Mops/s |
+| async cache loop | 3.906 Mops/s | 2.791 Mops/s |
+| async threaded cache loop | 2.089 Mops/s | 5.082 Mops/s |
+| async get_ex loop | 2.823 Mops/s | 2.041 Mops/s |
+| async cursor get loop | 71.439 Mops/s | 123.627 Mops/s |
+| async cursor get loop_from | 56.800 Mops/s | 65.965 Mops/s |
+| async threaded cursor get loop | 73.133 Mops/s | 71.800 Mops/s |
+| async threaded cget loop_from | 122.942 Mops/s | 123.195 Mops/s |
+| async-thread-cget-loop/loop | 1.024 | 0.581 |
+| async-get-loop/batch | 1.056 | 1.865 |
+
+- conclusion: the target low-level small-batch allocator change is visible most
+  clearly in cursor loop rows in this sample, especially the main async cursor
+  get loop and loop-from rows. Other get/cache rows moved in both directions,
+  so this should be treated as a plumbing/overhead reduction for common small
+  committed-page batches rather than a broad throughput claim.
