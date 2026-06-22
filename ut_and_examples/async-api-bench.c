@@ -5622,6 +5622,144 @@ bailout:
   return -1.0;
 }
 
+static double async_mixed_cursor_get_common(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops,
+                                            size_t window, bool cache) {
+  struct async_worker worker = {0};
+  MDBX_async_op *op = NULL;
+  MDBX_cache_entry_t *stable_cache_entries = NULL;
+  int rc = MDBX_SUCCESS;
+  if (!items || !ops)
+    return -1.0;
+  if (!window)
+    window = 1;
+  const size_t capacity = window + 1;
+  if (async_worker_init(env, &worker, dbi, capacity) != MDBX_SUCCESS)
+    return -1.0;
+  if (cache) {
+    stable_cache_entries = calloc(items, sizeof(*stable_cache_entries));
+    if (!stable_cache_entries) {
+      rc = MDBX_ENOMEM;
+      goto bailout;
+    }
+    for (size_t i = 0; i < items; ++i)
+      mdbx_cache_init(&stable_cache_entries[i]);
+  }
+
+  rc = mdbx_async_cursor_open(worker.async, worker.txn, dbi, &worker.cursor, &op);
+  if (rc == MDBX_SUCCESS)
+    rc = wait_success(&op, NULL, __FILE__, __LINE__);
+  if (rc != MDBX_SUCCESS)
+    goto bailout;
+
+  size_t issued = 0;
+  size_t cursor_completed = 0;
+  size_t get_completed = 0;
+  const uint64_t start = monotime_ns();
+  while (issued < ops) {
+    const size_t chunk = (ops - issued < window) ? ops - issued : window;
+    worker.pending = 0;
+    const MDBX_cursor_op cursor_op = (cursor_completed % items) ? MDBX_NEXT : MDBX_FIRST;
+    worker.key_vals[0] = val(NULL, 0);
+    worker.data[0] = val(NULL, 0);
+    rc = mdbx_async_cursor_get(worker.async, worker.cursor, &worker.key_vals[0], &worker.data[0],
+                               cursor_op, &worker.ops[0]);
+    if (rc != MDBX_SUCCESS)
+      goto bailout;
+    worker.pending = 1;
+
+    for (size_t slot = 1; slot <= chunk; ++slot) {
+      worker.keys[slot] = key_for(issued + slot - 1, items);
+      worker.key_vals[slot] = val(&worker.keys[slot], sizeof(worker.keys[slot]));
+      worker.data[slot] = val(NULL, 0);
+      worker.cache_results[slot].errcode = MDBX_PROBLEM;
+      worker.cache_results[slot].status = MDBX_CACHE_ERROR;
+    }
+    for (size_t slot = 1; slot <= chunk; ++slot) {
+      if (cache) {
+        rc = mdbx_async_cache_get(worker.async, worker.txn, dbi, &worker.key_vals[slot],
+                                  &worker.data[slot],
+                                  &stable_cache_entries[(size_t)worker.keys[slot]],
+                                  &worker.cache_results[slot], &worker.ops[slot]);
+      } else {
+        rc = mdbx_async_get(worker.async, worker.txn, dbi, &worker.key_vals[slot],
+                            &worker.data[slot], &worker.ops[slot]);
+      }
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
+    }
+    worker.pending += chunk;
+
+    rc = mdbx_async_wait_release_all(worker.ops, worker.pending, worker.results);
+    if (rc != MDBX_SUCCESS)
+      goto bailout;
+    if (worker.results[0] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_cursor_get mixed", worker.results[0], __FILE__, __LINE__);
+      goto bailout;
+    }
+    if (worker.key_vals[0].iov_len != sizeof(uint64_t)) {
+      rc = fail_msg("unexpected mixed cursor key size", __FILE__, __LINE__);
+      goto bailout;
+    }
+    uint64_t cursor_key = 0;
+    memcpy(&cursor_key, worker.key_vals[0].iov_base, sizeof(cursor_key));
+    if (cursor_key >= items) {
+      rc = fail_msg("unexpected mixed cursor key", __FILE__, __LINE__);
+      goto bailout;
+    }
+    rc = expect_value(&worker.data[0], cursor_key, __FILE__, __LINE__);
+    if (rc != MDBX_SUCCESS)
+      goto bailout;
+    cursor_completed += 1;
+
+    for (size_t slot = 1; slot <= chunk; ++slot) {
+      const int operation_rc = worker.results[slot];
+      if (operation_rc != MDBX_SUCCESS) {
+        rc = fail_rc(cache ? "mdbx_async_cache_get_many mixed item" : "mdbx_async_get mixed item",
+                     operation_rc, __FILE__, __LINE__);
+        goto bailout;
+      }
+      if (cache && worker.cache_results[slot].errcode != MDBX_SUCCESS) {
+        rc = fail_rc("mdbx_cache_get mixed result", worker.cache_results[slot].errcode,
+                     __FILE__, __LINE__);
+        goto bailout;
+      }
+      rc = expect_value(&worker.data[slot], worker.keys[slot], __FILE__, __LINE__);
+      if (rc != MDBX_SUCCESS)
+        goto bailout;
+    }
+    get_completed += chunk;
+    issued += chunk;
+    worker.pending = 0;
+  }
+  const uint64_t finish = monotime_ns();
+  free(stable_cache_entries);
+  async_worker_destroy(&worker);
+  if (finish <= start || !cursor_completed || get_completed != ops)
+    return -1.0;
+  return (double)(cursor_completed + get_completed) * 1000000000.0 / (double)(finish - start);
+
+bailout:
+  if (op)
+    (void)wait_success(&op, NULL, __FILE__, __LINE__);
+  for (size_t slot = 0; slot < worker.pending; ++slot) {
+    if (worker.ops && worker.ops[slot])
+      (void)wait_success(&worker.ops[slot], NULL, __FILE__, __LINE__);
+  }
+  free(stable_cache_entries);
+  async_worker_destroy(&worker);
+  (void)rc;
+  return -1.0;
+}
+
+static double async_mixed_cursor_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops, size_t window) {
+  return async_mixed_cursor_get_common(env, dbi, items, ops, window, false);
+}
+
+static double async_mixed_cursor_cache_get(MDBX_env *env, MDBX_dbi dbi, size_t items, size_t ops,
+                                           size_t window) {
+  return async_mixed_cursor_get_common(env, dbi, items, ops, window, true);
+}
+
 static double async_parallel_cursor_get_setkey(MDBX_env *env, MDBX_dbi dbi, size_t items,
                                                size_t target_pairs, size_t workers_count) {
   struct async_worker *workers = calloc(workers_count, sizeof(*workers));
@@ -6366,6 +6504,8 @@ int main(void) {
       async_threaded_cache_loop_get(env, dbi, items, ops, workers);
   const double async_threaded_cache_st_loop_parallel =
       async_threaded_cache_st_loop_get(env, dbi, items, ops, workers);
+  const double async_mixed_cursor_get_rate = async_mixed_cursor_get(env, dbi, items, ops, window);
+  const double async_mixed_cursor_cache_rate = async_mixed_cursor_cache_get(env, dbi, items, ops, window);
   const double async_lowerbound_batch_parallel =
       async_lowerbound_batch_parallel_get(env, dbi, items, ops, workers, window);
   const double async_lowerbound_many_parallel =
@@ -6535,6 +6675,8 @@ int main(void) {
   print_rate("async cache st loop", async_cache_st_loop_parallel);
   print_rate("async threaded cache loop", async_threaded_cache_loop_parallel);
   print_rate("async threaded cache st loop", async_threaded_cache_st_loop_parallel);
+  print_rate("async mixed cursor+get", async_mixed_cursor_get_rate);
+  print_rate("async mixed cursor+cache", async_mixed_cursor_cache_rate);
   print_rate("async lowerbound batch", async_lowerbound_batch_parallel);
   print_rate("async lowerbound many", async_lowerbound_many_parallel);
   print_rate("async get loop", async_loop_parallel);
@@ -6683,6 +6825,10 @@ int main(void) {
   if (blocking_parallel > 0.0 && async_threaded_cache_st_loop_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-cache-st-l/par",
            async_threaded_cache_st_loop_parallel / blocking_parallel);
+  if (async_parallel > 0.0 && async_mixed_cursor_get_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-mixed-cget-get/async", async_mixed_cursor_get_rate / async_parallel);
+  if (async_cache_many_parallel > 0.0 && async_mixed_cursor_cache_rate > 0.0)
+    printf("%-28s %8.3f\n", "async-mixed-cget-cache", async_mixed_cursor_cache_rate / async_cache_many_parallel);
   if (blocking_parallel > 0.0 && async_lowerbound_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-lower-batch/par", async_lowerbound_batch_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_lowerbound_many_parallel > 0.0)
