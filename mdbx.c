@@ -604,6 +604,25 @@ typedef struct dxb_committed_page_read_batch {
   bool scattered;
 } dxb_committed_page_read_batch_t;
 
+typedef struct dxb_page_get_batch {
+  MDBX_txn *txn;
+  const dxb_page_get_submit_io_t *ios;
+  pgr_t *results;
+  size_t count;
+  size_t committed_count;
+  int first_err;
+  dxb_committed_page_submit_io_t stack_committed_ios[4];
+  dxb_cache_page_result_t stack_committed_results[4];
+  size_t stack_indices[4];
+  dxb_committed_page_submit_io_t *committed_ios;
+  dxb_cache_page_result_t *committed_results;
+  size_t *indices;
+  dxb_committed_page_read_batch_t committed_batch;
+  bool prepared;
+  bool committed_batch_prepared;
+  bool completed;
+} dxb_page_get_batch_t;
+
 static inline page_ref_t page_ref_empty(void) {
   page_ref_t ref;
   ref.page = nullptr;
@@ -5239,6 +5258,10 @@ static int page_committed_read_batch_begin(dxb_committed_page_read_batch_t *batc
                                            dxb_cache_page_result_t *results, size_t count);
 static int page_committed_read_batch_drive(dxb_committed_page_read_batch_t *batch, bool wait);
 static int page_committed_read_batch_finish(dxb_committed_page_read_batch_t *batch);
+static int page_get_batch_begin(dxb_page_get_batch_t *batch, MDBX_txn *txn,
+                                const dxb_page_get_submit_io_t *ios, pgr_t *results, size_t count);
+static int page_get_batch_drive(dxb_page_get_batch_t *batch, bool wait);
+static int page_get_batch_finish(dxb_page_get_batch_t *batch);
 static void dxb_storage_retain_cached_entry(dxb_storage_t *storage, page_cache_entry_t *entry);
 static void dxb_storage_release_cached_ref(dxb_storage_t *storage, const MDBX_cursor *mc, page_ref_t *ref);
 static dxb_cache_result_t dxb_storage_submit_retain_cached_ref(dxb_storage_t *storage,
@@ -50640,21 +50663,6 @@ static int page_committed_read_batch_finish(dxb_committed_page_read_batch_t *bat
   return rc;
 }
 
-static int page_get_committed_batch(MDBX_txn *txn, const dxb_committed_page_submit_io_t *ios,
-                                    dxb_cache_page_result_t *results, size_t count) {
-  dxb_committed_page_read_batch_t batch;
-  int rc = page_committed_read_batch_begin(&batch, txn, ios, results, count);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  rc = page_committed_read_batch_drive(&batch, false);
-  while (rc == MDBX_RESULT_TRUE)
-    rc = page_committed_read_batch_drive(&batch, true);
-
-  const int finish_err = page_committed_read_batch_finish(&batch);
-  return unlikely(finish_err != MDBX_SUCCESS) ? finish_err : rc;
-}
-
 static inline int page_make_large_page_read_submit_io(MDBX_txn *txn, const pgr_t *pgr,
                                                       dxb_large_page_read_submit_io_t *io) {
   if (unlikely(!txn || !pgr || !pgr->page || !io))
@@ -50814,42 +50822,45 @@ static inline pgr_t page_get_dirty_or_spilled(MDBX_txn *txn, const pgno_t pgno, 
   return pgr_empty();
 }
 
-static int page_submit_get_unchecked_batch(MDBX_txn *txn, const dxb_page_get_submit_io_t *ios,
-                                           pgr_t *results, size_t count) {
-  if (unlikely(!txn || !ios || !results || !count))
+static int page_get_batch_begin(dxb_page_get_batch_t *batch, MDBX_txn *txn,
+                                const dxb_page_get_submit_io_t *ios, pgr_t *results, size_t count) {
+  if (unlikely(!batch || !txn || !ios || !results || !count))
     return MDBX_EINVAL;
 
-  dxb_committed_page_submit_io_t stack_committed_ios[4];
-  dxb_cache_page_result_t stack_committed_results[4];
-  size_t stack_indices[4];
-  dxb_committed_page_submit_io_t *committed_ios = stack_committed_ios;
-  dxb_cache_page_result_t *committed_results = stack_committed_results;
-  size_t *indices = stack_indices;
-  if (count > ARRAY_LENGTH(stack_committed_ios)) {
-    committed_ios = osal_calloc(count, sizeof(committed_ios[0]));
-    committed_results = osal_calloc(count, sizeof(committed_results[0]));
-    indices = osal_malloc(count * sizeof(indices[0]));
+  memset(batch, 0, sizeof(*batch));
+  batch->txn = txn;
+  batch->ios = ios;
+  batch->results = results;
+  batch->count = count;
+  batch->first_err = MDBX_SUCCESS;
+  batch->committed_ios = batch->stack_committed_ios;
+  batch->committed_results = batch->stack_committed_results;
+  batch->indices = batch->stack_indices;
+
+  if (count > ARRAY_LENGTH(batch->stack_committed_ios)) {
+    batch->committed_ios = osal_calloc(count, sizeof(batch->committed_ios[0]));
+    batch->committed_results = osal_calloc(count, sizeof(batch->committed_results[0]));
+    batch->indices = osal_malloc(count * sizeof(batch->indices[0]));
   }
-  if (unlikely(!committed_ios || !committed_results || !indices)) {
-    if (indices != stack_indices)
-      osal_free(indices);
-    if (committed_results != stack_committed_results)
-      osal_free(committed_results);
-    if (committed_ios != stack_committed_ios)
-      osal_free(committed_ios);
+  if (unlikely(!batch->committed_ios || !batch->committed_results || !batch->indices)) {
+    if (batch->indices != batch->stack_indices)
+      osal_free(batch->indices);
+    if (batch->committed_results != batch->stack_committed_results)
+      osal_free(batch->committed_results);
+    if (batch->committed_ios != batch->stack_committed_ios)
+      osal_free(batch->committed_ios);
     for (size_t i = 0; i < count; ++i)
       results[i] = pgr_error(MDBX_ENOMEM);
+    memset(batch, 0, sizeof(*batch));
     return MDBX_ENOMEM;
   }
 
-  int first_err = MDBX_SUCCESS;
-  size_t committed_count = 0;
   for (size_t i = 0; i < count; ++i) {
     int err = page_get_submit_io_validate(txn, &ios[i]);
     if (unlikely(err != MDBX_SUCCESS)) {
       results[i] = pgr_error(err);
-      if (first_err == MDBX_SUCCESS)
-        first_err = err;
+      if (batch->first_err == MDBX_SUCCESS)
+        batch->first_err = err;
       continue;
     }
 
@@ -50859,48 +50870,109 @@ static int page_submit_get_unchecked_batch(MDBX_txn *txn, const dxb_page_get_sub
     if (unlikely(dirty.err != MDBX_SUCCESS) || !committed_needed) {
       results[i] = dirty;
       TRACE("page %u, %p, err %d", pgno, __Wpedantic_format_voidptr(dirty.page), dirty.err);
-      if (unlikely(dirty.err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
-        first_err = dirty.err;
+      if (unlikely(dirty.err != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+        batch->first_err = dirty.err;
       continue;
     }
 
     err = page_make_committed_read_submit_io(txn, &ios[i].request, ios[i].track_private,
-                                             &committed_ios[committed_count]);
+                                             &batch->committed_ios[batch->committed_count]);
     if (unlikely(err != MDBX_SUCCESS)) {
       results[i] = pgr_error(err);
-      if (first_err == MDBX_SUCCESS)
-        first_err = err;
+      if (batch->first_err == MDBX_SUCCESS)
+        batch->first_err = err;
       continue;
     }
-    indices[committed_count] = i;
-    ++committed_count;
+    batch->indices[batch->committed_count] = i;
+    ++batch->committed_count;
   }
 
-  if (committed_count) {
-    const int err = page_get_committed_batch(txn, committed_ios, committed_results, committed_count);
-    if (unlikely(err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
-      first_err = err;
+  if (batch->committed_count) {
+    const int err = page_committed_read_batch_begin(&batch->committed_batch, txn, batch->committed_ios,
+                                                    batch->committed_results, batch->committed_count);
+    if (likely(err == MDBX_SUCCESS))
+      batch->committed_batch_prepared = true;
+    else if (batch->first_err == MDBX_SUCCESS)
+      batch->first_err = err;
   }
 
-  for (size_t j = 0; j < committed_count; ++j) {
-    const size_t i = indices[j];
-    const pgno_t pgno = ios[i].request.pgno;
-    pgr_t r = committed_results[j].page;
+  batch->prepared = true;
+  return MDBX_SUCCESS;
+}
+
+static int page_get_batch_complete(dxb_page_get_batch_t *batch) {
+  for (size_t j = 0; j < batch->committed_count; ++j) {
+    const size_t i = batch->indices[j];
+    const pgno_t pgno = batch->ios[i].request.pgno;
+    pgr_t r = batch->committed_results[j].page;
     if (likely(r.err == MDBX_SUCCESS) && unlikely(r.page->pgno != pgno))
       r.err = bad_page(r.page, "pgno mismatch (%" PRIaPGNO ") != expected (%" PRIaPGNO ")\n", r.page->pgno, pgno);
     TRACE("page %u, %p, err %d", pgno, __Wpedantic_format_voidptr(r.page), r.err);
-    if (unlikely(r.err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
-      first_err = r.err;
-    results[i] = r;
+    if (unlikely(r.err != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+      batch->first_err = r.err;
+    batch->results[i] = r;
   }
 
-  if (indices != stack_indices)
-    osal_free(indices);
-  if (committed_results != stack_committed_results)
-    osal_free(committed_results);
-  if (committed_ios != stack_committed_ios)
-    osal_free(committed_ios);
-  return first_err;
+  batch->completed = true;
+  return batch->first_err;
+}
+
+static int page_get_batch_drive(dxb_page_get_batch_t *batch, bool wait) {
+  if (unlikely(!batch || !batch->prepared || !batch->txn || !batch->ios || !batch->results || !batch->count))
+    return MDBX_EINVAL;
+  if (batch->completed)
+    return batch->first_err;
+
+  if (batch->committed_batch_prepared) {
+    int rc = page_committed_read_batch_drive(&batch->committed_batch, wait);
+    if (rc == MDBX_RESULT_TRUE)
+      return MDBX_RESULT_TRUE;
+    if (unlikely(rc != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+      batch->first_err = rc;
+    const int finish_err = page_committed_read_batch_finish(&batch->committed_batch);
+    batch->committed_batch_prepared = false;
+    if (unlikely(finish_err != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+      batch->first_err = finish_err;
+  }
+
+  return page_get_batch_complete(batch);
+}
+
+static int page_get_batch_finish(dxb_page_get_batch_t *batch) {
+  if (unlikely(!batch || !batch->prepared))
+    return MDBX_EINVAL;
+
+  if (batch->committed_batch_prepared) {
+    const int finish_err = page_committed_read_batch_finish(&batch->committed_batch);
+    batch->committed_batch_prepared = false;
+    if (unlikely(finish_err != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+      batch->first_err = finish_err;
+  }
+
+  if (batch->indices != batch->stack_indices)
+    osal_free(batch->indices);
+  if (batch->committed_results != batch->stack_committed_results)
+    osal_free(batch->committed_results);
+  if (batch->committed_ios != batch->stack_committed_ios)
+    osal_free(batch->committed_ios);
+  const int rc = batch->first_err;
+  memset(batch, 0, sizeof(*batch));
+  return rc;
+}
+
+static int page_submit_get_unchecked_batch(MDBX_txn *txn, const dxb_page_get_submit_io_t *ios,
+                                           pgr_t *results, size_t count) {
+  dxb_page_get_batch_t batch;
+  int rc = page_get_batch_begin(&batch, txn, ios, results, count);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  rc = page_get_batch_drive(&batch, false);
+  while (rc == MDBX_RESULT_TRUE)
+    rc = page_get_batch_drive(&batch, true);
+
+  const int finish_err = page_get_batch_finish(&batch);
+  return unlikely(finish_err != MDBX_SUCCESS) ? finish_err : rc;
 }
 
 static __hot pgr_t page_submit_get_unchecked(MDBX_txn *txn, const dxb_page_get_submit_io_t *io) {
