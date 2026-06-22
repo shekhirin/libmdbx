@@ -1661,6 +1661,8 @@ typedef struct osal_ioring {
   bool linux_uring_requested;
   bool linux_uring_lock_initialized;
   osal_fastmutex_t linux_uring_lock;
+  volatile uintptr_t linux_uring_read_owner;
+  volatile unsigned linux_uring_read_holds;
   void *linux_uring_sq_ring;
   void *linux_uring_cq_ring;
   struct io_uring_sqe *linux_uring_sqes;
