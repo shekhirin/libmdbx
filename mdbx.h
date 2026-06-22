@@ -5244,7 +5244,9 @@ LIBMDBX_API int mdbx_async_canary_get(MDBX_async *async, const MDBX_txn *txn, st
 /** \brief Asynchronously get an item from a table.
  * \ingroup c_async
  * \details The key bytes are copied during submission. Returned value lifetime
- *          follows \ref mdbx_get() after operation completion.
+ *          follows \ref mdbx_get() after operation completion. On explicit-I/O
+ *          backends, page-cache misses are driven by the internal async read
+ *          engine and may be batched with adjacent queued read operations.
  * \see mdbx_get() */
 LIBMDBX_API int mdbx_async_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
                                MDBX_val *data, MDBX_async_op **op);
@@ -5260,7 +5262,8 @@ LIBMDBX_API int mdbx_async_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi 
  *          receives an independent operation handle that can be waited and
  *          released normally, including with \ref mdbx_async_wait_release_all().
  *          On failure, no operations are queued and the `ops` slots are set to
- *          NULL.
+ *          NULL. Compatible adjacent reads may share one internal async page
+ *          traversal and storage-read batch.
  * \see mdbx_get()
  * \see mdbx_async_get()
  * \see mdbx_async_wait_release_all() */
@@ -5273,7 +5276,9 @@ LIBMDBX_API int mdbx_async_get_many(MDBX_async *async, const MDBX_txn *txn, MDBX
  * \details The input key bytes are copied during submission. The `key` and
  *          `data` descriptor objects must remain valid until completion and are
  *          updated with the actual key/value pair on success. Returned value
- *          lifetime follows \ref mdbx_get_ex() after operation completion.
+ *          lifetime follows \ref mdbx_get_ex() after operation completion. On
+ *          explicit-I/O backends, page-cache misses are driven by the internal
+ *          async read engine.
  * \see mdbx_get_ex() */
 LIBMDBX_API int mdbx_async_get_ex(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key,
                                   MDBX_val *data, size_t *values_count, MDBX_async_op **op);
@@ -5301,7 +5306,8 @@ LIBMDBX_API int mdbx_async_get_ex_many(MDBX_async *async, const MDBX_txn *txn, M
  *          `data` descriptor objects must remain valid until completion and are
  *          updated with the actual lower-bound key/value pair on success.
  *          Returned value lifetime follows \ref mdbx_get_equal_or_great() after
- *          operation completion.
+ *          operation completion. On explicit-I/O backends, page-cache misses are
+ *          driven by the internal async read engine.
  * \see mdbx_get_equal_or_great() */
 LIBMDBX_API int mdbx_async_get_equal_or_great(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key,
                                               MDBX_val *data, MDBX_async_op **op);
@@ -5366,7 +5372,7 @@ typedef int (*MDBX_get_loop_key_func)(void *context, size_t index, MDBX_val *key
 /** \brief Callback that consumes one \ref mdbx_async_get_loop() result.
  * \ingroup c_async
  * \details The callback runs on the executor worker thread after one
- *          \ref mdbx_get() call. Returned values follow normal \ref mdbx_get()
+ *          get-equivalent lookup. Returned values follow normal \ref mdbx_get()
  *          lifetime rules. Returning a non-success result stops the loop and
  *          becomes the async operation result. */
 typedef int (*MDBX_get_loop_result_func)(void *context, size_t index, const MDBX_val *key, const MDBX_val *data,
@@ -5375,7 +5381,7 @@ typedef int (*MDBX_get_loop_result_func)(void *context, size_t index, const MDBX
 /** \brief Callback that consumes one \ref mdbx_async_get_ex_loop() result.
  * \ingroup c_async
  * \details The callback runs on the executor worker thread after one
- *          \ref mdbx_get_ex() call. Returned values follow normal
+ *          get_ex-equivalent lookup. Returned values follow normal
  *          \ref mdbx_get_ex() lifetime rules. Returning a non-success result
  *          stops the loop and becomes the async operation result. */
 typedef int (*MDBX_get_ex_loop_result_func)(void *context, size_t index, const MDBX_val *key,
@@ -5397,7 +5403,7 @@ typedef int (*MDBX_get_loop_data_func)(void *context, size_t index, const MDBX_v
  * \ref mdbx_async_get_equal_or_great_loop() result.
  * \ingroup c_async
  * \details The callback runs on the executor worker thread after one
- *          \ref mdbx_get_equal_or_great() call. Returned values follow normal
+ *          lower-bound lookup. Returned values follow normal
  *          \ref mdbx_get_equal_or_great() lifetime rules. Returning a
  *          non-success result stops the loop and becomes the async operation
  *          result. */
@@ -5547,7 +5553,7 @@ LIBMDBX_API int mdbx_async_get_equal_or_great_batch_cb(MDBX_async *async, const 
                                                        MDBX_get_equal_or_great_batch_func func,
                                                        void *context, MDBX_async_op **op);
 
-/** \brief Asynchronously run a worker-side loop of get operations.
+/** \brief Asynchronously run a get lookup loop.
  * \ingroup c_async
  * \details This submits one async operation that invokes `key_func` for each
  *          index, performs a get-equivalent lookup, and then invokes
@@ -5555,36 +5561,40 @@ LIBMDBX_API int mdbx_async_get_equal_or_great_batch_cb(MDBX_async *async, const 
  *          supplied, the first non-success get result stops the loop and
  *          becomes the async operation result. If `completed` is non-NULL, it
  *          receives the number of get attempts completed before the operation
- *          returned.
+ *          returned. Explicit-I/O page misses use the same internal async read
+ *          engine as \ref mdbx_async_get().
  * \see mdbx_get() */
 LIBMDBX_API int mdbx_async_get_loop(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, size_t count,
                                     MDBX_get_loop_key_func key_func, MDBX_get_loop_result_func result_func,
                                     void *context, size_t *completed, MDBX_async_op **op);
 
-/** \brief Asynchronously run a worker-side loop of get_ex operations.
+/** \brief Asynchronously run a get_ex lookup loop.
  * \ingroup c_async
  * \details This submits one async operation that invokes `key_func` for each
- *          index, calls \ref mdbx_get_ex(), and then invokes `result_func` when
- *          it is non-NULL. If no result callback is supplied, the first
- *          non-success \ref mdbx_get_ex() result stops the loop and becomes the
- *          async operation result. If `completed` is non-NULL, it receives the
- *          number of get_ex attempts completed before the operation returned.
+ *          index, performs a get_ex-equivalent lookup, and then invokes
+ *          `result_func` when it is non-NULL. If no result callback is
+ *          supplied, the first non-success \ref mdbx_get_ex() result stops the
+ *          loop and becomes the async operation result. If `completed` is
+ *          non-NULL, it receives the number of get_ex attempts completed before
+ *          the operation returned. Explicit-I/O page misses use the same
+ *          internal async read engine as \ref mdbx_async_get_ex().
  * \see mdbx_get_ex() */
 LIBMDBX_API int mdbx_async_get_ex_loop(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, size_t count,
                                        MDBX_get_loop_key_func key_func,
                                        MDBX_get_ex_loop_result_func result_func, void *context,
                                        size_t *completed, MDBX_async_op **op);
 
-/** \brief Asynchronously run a worker-side loop of equal-or-greater get operations.
+/** \brief Asynchronously run an equal-or-greater lookup loop.
  * \ingroup c_async
  * \details This submits one async operation that invokes `key_func` and the
- *          optional `data_func` for each index, calls
- *          \ref mdbx_get_equal_or_great(), and then invokes `result_func` when
- *          it is non-NULL. If no result callback is supplied, the first result
- *          other than \ref MDBX_SUCCESS or \ref MDBX_RESULT_TRUE stops the loop
- *          and becomes the async operation result. If `completed` is non-NULL,
- *          it receives the number of lower-bound attempts completed before the
- *          operation returned.
+ *          optional `data_func` for each index, performs a lower-bound lookup,
+ *          and then invokes `result_func` when it is non-NULL. If no result
+ *          callback is supplied, the first result other than \ref MDBX_SUCCESS
+ *          or \ref MDBX_RESULT_TRUE stops the loop and becomes the async
+ *          operation result. If `completed` is non-NULL, it receives the number
+ *          of lower-bound attempts completed before the operation returned.
+ *          Explicit-I/O page misses use the same internal async read engine as
+ *          \ref mdbx_async_get_equal_or_great().
  * \see mdbx_get_equal_or_great() */
 LIBMDBX_API int mdbx_async_get_equal_or_great_loop(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
                                                    size_t count, MDBX_get_loop_key_func key_func,
@@ -5799,14 +5809,14 @@ LIBMDBX_API int mdbx_async_cursor_renew(MDBX_async *async, MDBX_txn *txn, MDBX_c
 LIBMDBX_API int mdbx_async_cursor_get(MDBX_async *async, MDBX_cursor *cursor, MDBX_val *key, MDBX_val *data,
                                       MDBX_cursor_op cursor_op, MDBX_async_op **op);
 
-/** \brief Asynchronously get several items through a cursor in one worker-side loop.
+/** \brief Asynchronously get several items through a cursor in one read loop.
  * \ingroup c_async
- * \details The operation runs on the async executor worker thread and calls
- *          \ref mdbx_cursor_get() up to `count` times, using `start_op` for the
- *          first fetch and `turn_op` for subsequent fetches. If end-of-data is
- *          reached before `count` items, the operation result is
- *          \ref MDBX_RESULT_TRUE and `completed`, when non-NULL, contains the
- *          number of successfully consumed items.
+ * \details The operation performs up to `count` cursor lookups, using
+ *          `start_op` for the first fetch and `turn_op` for subsequent fetches.
+ *          Explicit-I/O page misses are driven by the internal async read
+ *          engine. If end-of-data is reached before `count` items, the
+ *          operation result is \ref MDBX_RESULT_TRUE and `completed`, when
+ *          non-NULL, contains the number of successfully consumed items.
  *
  *          `func`, when non-NULL, is called for each successfully fetched item.
  *          Returned key/value descriptors are database-owned cursor results and
@@ -5855,10 +5865,11 @@ LIBMDBX_API int mdbx_async_cursor_get_batch(MDBX_async *async, MDBX_cursor *curs
 
 /** \brief Asynchronously fetch cursor batches until a target pair count is reached.
  * \ingroup c_async
- * \details The operation runs on the async executor worker thread and repeatedly
- *          calls \ref mdbx_cursor_get_batch(), starting with \ref MDBX_FIRST and
- *          then using \ref MDBX_NEXT. When a batch reports end-of-data, the next
- *          internal fetch restarts at \ref MDBX_FIRST.
+ * \details The operation repeatedly fetches cursor batches, starting with
+ *          \ref MDBX_FIRST and then using \ref MDBX_NEXT. Explicit-I/O page
+ *          misses are driven by the internal async read engine. When a batch
+ *          reports end-of-data, the next internal fetch restarts at
+ *          \ref MDBX_FIRST.
  *
  *          `func`, when non-NULL, is called once per internal batch. Its
  *          `pairs` descriptors are reused by the next internal batch and must
@@ -6994,7 +7005,9 @@ LIBMDBX_API MDBX_cache_result_t mdbx_cache_get(const MDBX_txn *txn, MDBX_dbi dbi
 /** \brief Asynchronously get an item using a cache entry.
  * \ingroup c_async
  * \details The key bytes are copied during submission. The `data`, `entry`,
- *          and `result` outputs must remain valid until completion.
+ *          and `result` outputs must remain valid until completion. On
+ *          explicit-I/O backends, cold cache refreshes are driven by the
+ *          internal async read engine.
  * \see mdbx_cache_get() */
 LIBMDBX_API int mdbx_async_cache_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
                                      MDBX_val *data, volatile MDBX_cache_entry_t *entry,
@@ -7031,10 +7044,11 @@ typedef int (*MDBX_cache_get_batch_func)(void *context, const MDBX_val keys[], M
 
 /** \brief Asynchronously get a batch of items using cache entries.
  * \ingroup c_async
- * \details This submits one async operation that calls \ref mdbx_cache_get()
- *          once per item. The `keys`, `data`, `entries`, and `results` arrays
- *          must contain at least `count` items and remain valid until
- *          operation completion. The async operation result is
+ * \details This submits one async operation that performs cache lookups for
+ *          each item. The `keys`, `data`, `entries`, and `results` arrays must
+ *          contain at least `count` items and remain valid until operation
+ *          completion. Cold cache refreshes may share one internal async page
+ *          traversal and storage-read batch. The async operation result is
  *          \ref MDBX_SUCCESS when the batch itself ran; each per-item result is
  *          stored in `results[index]`.
  * \see mdbx_cache_get()
@@ -7061,23 +7075,23 @@ LIBMDBX_API int mdbx_async_cache_get_batch_cb(MDBX_async *async, const MDBX_txn 
 
 /** \brief Callback that consumes one cache-get loop result.
  * \ingroup c_async
- * \details The callback runs on the executor worker thread after one
- *          \ref mdbx_cache_get() or \ref mdbx_cache_get_SingleThreaded() call.
- *          Returned values follow normal cache-get lifetime rules. Returning a
- *          non-success result stops the loop and becomes the async operation
- *          result. */
+ * \details The callback runs on the executor worker thread after one cache
+ *          lookup. Returned values follow normal cache-get lifetime rules.
+ *          Returning a non-success result stops the loop and becomes the async
+ *          operation result. */
 typedef int (*MDBX_cache_get_loop_result_func)(void *context, size_t index, const MDBX_val *key,
                                                const MDBX_val *data,
                                                MDBX_cache_result_t result) MDBX_CXX17_NOEXCEPT;
 
-/** \brief Asynchronously run a worker-side loop of cache-get operations.
+/** \brief Asynchronously run a cache-get lookup loop.
  * \ingroup c_async
  * \details This submits one async operation that invokes `key_func` for each
- *          index, calls \ref mdbx_cache_get() with `entries[index]`, and then
- *          invokes `result_func` when it is non-NULL. If no result callback is
- *          supplied, the first non-success cache `errcode` stops the loop and
- *          becomes the async operation result. `entries` must contain at least
- *          `count` initialized cache entries and remain valid until operation
+ *          index, performs a cache lookup with `entries[index]`, and then
+ *          invokes `result_func` when it is non-NULL. Cold cache refreshes use
+ *          the internal async read engine. If no result callback is supplied,
+ *          the first non-success cache `errcode` stops the loop and becomes the
+ *          async operation result. `entries` must contain at least `count`
+ *          initialized cache entries and remain valid until operation
  *          completion.
  * \see mdbx_cache_get()
  * \see mdbx_async_cache_get_many()
@@ -7119,7 +7133,9 @@ LIBMDBX_API MDBX_cache_result_t mdbx_cache_get_SingleThreaded(const MDBX_txn *tx
 /** \brief Asynchronously get an item using a single-threaded cache entry.
  * \ingroup c_async
  * \details The key bytes are copied during submission. The `data`, `entry`,
- *          and `result` outputs must remain valid until completion.
+ *          and `result` outputs must remain valid until completion. On
+ *          explicit-I/O backends, cold cache refreshes are driven by the
+ *          internal async read engine.
  * \see mdbx_cache_get_SingleThreaded() */
 LIBMDBX_API int mdbx_async_cache_get_SingleThreaded(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
                                                     const MDBX_val *key, MDBX_val *data,
@@ -7147,12 +7163,12 @@ LIBMDBX_API int mdbx_async_cache_get_SingleThreaded_many(MDBX_async *async, cons
 
 /** \brief Asynchronously get a batch using single-threaded cache entries.
  * \ingroup c_async
- * \details This submits one async operation that calls
- *          \ref mdbx_cache_get_SingleThreaded() once per item. The `keys`,
- *          `data`, `entries`, and `results` arrays must contain at least
- *          `count` items and remain valid until operation completion. Each
- *          cache entry must be used only by the executor worker while the
- *          operation is pending.
+ * \details This submits one async operation that performs single-threaded cache
+ *          lookups for each item. The `keys`, `data`, `entries`, and `results`
+ *          arrays must contain at least `count` items and remain valid until
+ *          operation completion. Cold cache refreshes may share one internal
+ *          async page traversal and storage-read batch. Each cache entry must
+ *          be used only by the executor worker while the operation is pending.
  * \see mdbx_cache_get_SingleThreaded()
  * \see mdbx_async_cache_get_SingleThreaded_many() */
 LIBMDBX_API int mdbx_async_cache_get_SingleThreaded_batch(MDBX_async *async, const MDBX_txn *txn,
@@ -7180,15 +7196,16 @@ LIBMDBX_API int mdbx_async_cache_get_SingleThreaded_batch_cb(MDBX_async *async, 
                                                              MDBX_cache_get_batch_func func,
                                                              void *context, MDBX_async_op **op);
 
-/** \brief Asynchronously run a worker-side loop of single-threaded cache-get operations.
+/** \brief Asynchronously run a single-threaded cache-get lookup loop.
  * \ingroup c_async
  * \details This submits one async operation that invokes `key_func` for each
- *          index, calls \ref mdbx_cache_get_SingleThreaded() with
+ *          index, performs a single-threaded cache lookup with
  *          `entries[index]`, and then invokes `result_func` when it is
- *          non-NULL. If no result callback is supplied, the first non-success
- *          cache `errcode` stops the loop and becomes the async operation
- *          result. Each cache entry must be used only by the executor worker
- *          while the operation is pending.
+ *          non-NULL. Cold cache refreshes use the internal async read engine.
+ *          If no result callback is supplied, the first non-success cache
+ *          `errcode` stops the loop and becomes the async operation result.
+ *          Each cache entry must be used only by the executor worker while the
+ *          operation is pending.
  * \see mdbx_cache_get_SingleThreaded()
  * \see mdbx_async_cache_get_SingleThreaded_many()
  * \see MDBX_get_loop_key_func
