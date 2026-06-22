@@ -8600,3 +8600,52 @@ Async cache_get loop retained materialization checkpoint:
   cache-get loops can now suspend while their prefetch window has explicit
   page-cache reads outstanding, instead of materializing the window to
   completion before the worker can collect more retained read work.
+
+Async cursor get_batch retained sibling-read checkpoint:
+
+- added `async_cursor_get_batch_pending_t`, a retained state for
+  `mdbx_async_cursor_get_batch()` on the simple non-dupsort `MDBX_NEXT` path
+  and already-positioned `MDBX_FIRST` path. Unsupported starts still fall back
+  to the existing synchronous `mdbx_cursor_get_batch()` implementation.
+- the retained cursor batch fills key/value pairs from the current leaf in
+  order. When it reaches a leaf boundary, it prepares the right-sibling child
+  read and drives it with `page_cursor_get_batch_begin/drive/finish`, allowing
+  the async worker to collect other retained read work while the sibling page
+  read is outstanding.
+- result count and cursor-batch return code semantics are preserved for the
+  covered path. Large/overflow value reads through `node_read()` and complex
+  initial cursor seeks are still synchronous islands and need later retained
+  states.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cursorbatch-retain-before.txt` and
+    `/tmp/mdbx-async-bench-cursorbatch-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `4fa5d73`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking cursor batch | 149.443 Mops/s | 149.525 Mops/s |
+| parallel cursor batch | 63.436 Mops/s | 60.750 Mops/s |
+| async cursor batch | 63.762 Mops/s | 55.370 Mops/s |
+| async threaded cursor batch | 113.215 Mops/s | 64.507 Mops/s |
+| async-cursor-batch/get | 59.053 | 46.739 |
+| async-cursor/blocking par | 1.005 | 0.911 |
+| async-cursor/blocking ser | 0.427 | 0.370 |
+| async-thread-cbatch/par | 1.785 | 1.062 |
+| async-thread-cbatch/ser | 0.758 | 0.431 |
+| async-thread-cbatch/batch | 1.776 | 1.165 |
+
+- conclusion: this checkpoint is a semantic cursor-read migration step, not a
+  throughput improvement. The added retained sibling-read state regressed the
+  warm cursor-batch benchmark, especially the threaded cursor batch row. The
+  useful change is that `mdbx_async_cursor_get_batch()` no longer has to block
+  the worker at every right-sibling page-cache miss on the covered path. Future
+  work should extend the same retained state through `async_cursor_get_batches`
+  and cursor loop/scan paths, then reduce the overhead in the hot in-page case.
