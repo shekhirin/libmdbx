@@ -17762,8 +17762,7 @@ static void async_batched_get_traverse_seek_complete(async_batched_get_traverse_
 
     MDBX_val key = state->keys[i];
     MDBX_val value = {nullptr, 0};
-    int rc = cursor_seek(&state->couples[i].outer, &key, &value,
-                         state->found_keys ? MDBX_SET_KEY : MDBX_SET).err;
+    int rc = cursor_seek(&state->couples[i].outer, &key, &value, MDBX_SET_KEY).err;
     if (likely(rc == MDBX_SUCCESS)) {
       MDBX_cursor *const mc = &state->couples[i].outer;
       MDBX_async_get_cache_slot *const slot = state->slots ? state->slots[i] : nullptr;
