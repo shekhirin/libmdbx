@@ -192,6 +192,17 @@ typedef struct dxb_read_submit_io {
   void *buffer;
 } dxb_read_submit_io_t;
 
+typedef struct dxb_storage_read_batch {
+  const struct dxb_storage *storage;
+  const dxb_read_submit_io_t *ios;
+  dxb_read_result_t *results;
+  size_t count;
+  size_t finished;
+  int first_err;
+  bool prepared;
+  bool submitted;
+} dxb_storage_read_batch_t;
+
 typedef struct dxb_cache_invalidate_io {
   dxb_page_io_t pages;
   bool include_reusable;
@@ -3937,6 +3948,11 @@ MDBX_INTERNAL int __must_check_result dxb_resize(MDBX_env *const env, const pgno
 MDBX_INTERNAL int dxb_set_readahead(const MDBX_env *env, const pgno_t edge, const bool enable, const bool force_whole);
 static dxb_read_result_t dxb_storage_submit_read_data(const dxb_storage_t *storage,
                                                       const dxb_read_submit_io_t *io);
+static int dxb_storage_read_batch_begin(dxb_storage_read_batch_t *batch, const dxb_storage_t *storage,
+                                        const dxb_read_submit_io_t *ios, dxb_read_result_t *results,
+                                        size_t count);
+static int dxb_storage_read_batch_drive(dxb_storage_read_batch_t *batch, bool wait);
+static int dxb_storage_read_batch_finish(const dxb_storage_read_batch_t *batch);
 static int dxb_storage_submit_read_data_batch(const dxb_storage_t *storage, const dxb_read_submit_io_t *ios,
                                               dxb_read_result_t *results, size_t count);
 static int osal_ioring_pread_batch(osal_ioring_t *ior, mdbx_filehandle_t fd, const dxb_read_submit_io_t *ios,
@@ -34468,10 +34484,18 @@ static dxb_read_result_t dxb_storage_submit_read_data(const dxb_storage_t *stora
   return result;
 }
 
-static int dxb_storage_submit_read_data_batch(const dxb_storage_t *storage, const dxb_read_submit_io_t *ios,
-                                              dxb_read_result_t *results, size_t count) {
-  if (unlikely(!storage || !ios || !results || !count))
+static int dxb_storage_read_batch_begin(dxb_storage_read_batch_t *batch, const dxb_storage_t *storage,
+                                        const dxb_read_submit_io_t *ios, dxb_read_result_t *results,
+                                        size_t count) {
+  if (unlikely(!batch || !storage || !ios || !results || !count))
     return MDBX_EINVAL;
+
+  memset(batch, 0, sizeof(*batch));
+  batch->storage = storage;
+  batch->ios = ios;
+  batch->results = results;
+  batch->count = count;
+  batch->first_err = MDBX_SUCCESS;
 
   int first_err = MDBX_SUCCESS;
   for (size_t i = 0; i < count; ++i) {
@@ -34484,32 +34508,76 @@ static int dxb_storage_submit_read_data_batch(const dxb_storage_t *storage, cons
       results[i] = dxb_read_result(MDBX_SUCCESS, 0, false, false);
     }
   }
-  if (unlikely(first_err != MDBX_SUCCESS))
+  if (unlikely(first_err != MDBX_SUCCESS)) {
+    batch->first_err = first_err;
     return first_err;
+  }
 
   int rc = dxb_fault_inject("read");
   if (unlikely(rc != MDBX_SUCCESS)) {
     for (size_t i = 0; i < count; ++i)
       results[i] = dxb_read_error(rc);
+    batch->first_err = rc;
     return rc;
   }
 
-  rc = osal_ioring_pread_batch((osal_ioring_t *)&storage->ioring, dxb_storage_data_fd(storage), ios, results, count);
+  batch->prepared = true;
+  return MDBX_SUCCESS;
+}
+
+static int dxb_storage_read_batch_drive(dxb_storage_read_batch_t *batch, bool wait) {
+  if (unlikely(!batch || !batch->prepared || !batch->storage || !batch->ios || !batch->results || !batch->count))
+    return MDBX_EINVAL;
+  if (batch->finished >= batch->count)
+    return batch->first_err;
+
+  (void)wait;
+  const dxb_storage_t *const storage = batch->storage;
+  int first_err = batch->first_err;
+  int rc = osal_ioring_pread_batch((osal_ioring_t *)&storage->ioring, dxb_storage_data_fd(storage), batch->ios,
+                                   batch->results, batch->count);
   if (unlikely(rc != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
     first_err = rc;
 
-  for (size_t i = 0; i < count; ++i) {
-    if (results[i].err == MDBX_SUCCESS && results[i].completed) {
+  batch->submitted = true;
+  batch->finished = 0;
+  for (size_t i = 0; i < batch->count; ++i) {
+    if (batch->results[i].err == MDBX_SUCCESS && batch->results[i].completed) {
       const int complete_err = dxb_fault_inject("read-complete");
       if (unlikely(complete_err != MDBX_SUCCESS)) {
-        results[i] = dxb_read_submitted_error(complete_err);
+        batch->results[i] = dxb_read_submitted_error(complete_err);
         if (first_err == MDBX_SUCCESS)
           first_err = complete_err;
       }
     }
+    if (batch->results[i].err != MDBX_SUCCESS || batch->results[i].completed)
+      ++batch->finished;
   }
 
-  return first_err;
+  batch->first_err = first_err;
+  return (batch->finished == batch->count) ? first_err : MDBX_RESULT_TRUE;
+}
+
+static int dxb_storage_read_batch_finish(const dxb_storage_read_batch_t *batch) {
+  if (unlikely(!batch || !batch->prepared || !batch->submitted))
+    return MDBX_EINVAL;
+  return likely(batch->finished == batch->count) ? batch->first_err
+                                                : (batch->first_err != MDBX_SUCCESS ? batch->first_err : MDBX_EIO);
+}
+
+static int dxb_storage_submit_read_data_batch(const dxb_storage_t *storage, const dxb_read_submit_io_t *ios,
+                                              dxb_read_result_t *results, size_t count) {
+  dxb_storage_read_batch_t batch;
+  int rc = dxb_storage_read_batch_begin(&batch, storage, ios, results, count);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  do {
+    rc = dxb_storage_read_batch_drive(&batch, true);
+  } while (rc == MDBX_RESULT_TRUE);
+
+  const int finish_err = dxb_storage_read_batch_finish(&batch);
+  return unlikely(finish_err != MDBX_SUCCESS) ? finish_err : rc;
 }
 
 static dxb_read_result_t dxb_storage_submit_read_meta(const dxb_storage_t *storage,
