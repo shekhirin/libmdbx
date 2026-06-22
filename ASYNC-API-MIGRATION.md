@@ -262,6 +262,47 @@ Single-run noise is visible in non-target rows; regular `async cache many` was
 lower in this run (`3.010 Mops/s` before, `1.790 Mops/s` after), and that path
 is not coalesced by this slice.
 
+## Async Large Cache Materialization Slice
+
+`cache_materialize_singlethreaded_batch()` now keeps large/overflow cache hits
+on the batched explicit-I/O path instead of immediately falling back to the
+per-item `mdbx_cache_get_SingleThreaded()` path. The first-page cache lookup
+still runs through `page_cache_submit_read_batch()`. If the page is an overflow
+page whose cached first page must be expanded, the materializer now prepares a
+second batch of large-page materialization reads, submits those reads with
+`dxb_storage_submit_read_data_batch()`, then finishes each item through the
+same cache-entry replace/detach rules used by the existing single-item
+materialization path.
+
+The overflow batching arrays are allocated lazily only after a large page is
+seen, so ordinary small-value cache batches do not pay for large-page
+bookkeeping. If allocation fails, the item remains fallbackable and the caller
+can use the existing single-item path.
+
+Smoke coverage now writes four 10 KiB values into a temporary named DBI, warms
+cache entries with `mdbx_async_cache_get_batch()`, then fetches them through
+`mdbx_async_cache_get_SingleThreaded_batch()` and verifies every returned byte.
+The temporary DBI is dropped before the cursor-heavy smoke checks so their main
+DB ordering assumptions remain unchanged.
+
+Reduced forced no-mmap/io_uring benchmark (`items=1000 ops=30000
+write_ops=1000 page_cache=64K`), compared against the previous commit
+`80a26f7`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async cache st batch | 2.491 Mops/s | 2.331 Mops/s |
+| async-cache-st-batch/par | 5.841 | 4.455 |
+| async-cache-st-batch/many | 0.558 | 0.968 |
+| async-cache-st-batch/batch | 0.955 | 1.382 |
+| async-cache-st-batch/ser | 1.252 | 1.148 |
+| async threaded cache st batch | 5.329 Mops/s | 5.154 Mops/s |
+| async cache st loop | 4.990 Mops/s | 4.315 Mops/s |
+
+This benchmark uses small 8-byte values, so it does not directly measure the
+new overflow materialization path. The row movement is treated as single-run
+noise; the functional coverage above is the targeted evidence for this slice.
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current

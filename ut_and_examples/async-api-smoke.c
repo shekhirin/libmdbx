@@ -11,6 +11,8 @@
 #include <string.h>
 
 #define ITEM_COUNT 64
+#define LARGE_ITEM_COUNT 4
+#define LARGE_VALUE_BYTES 10000
 
 struct async_probe {
   unsigned calls;
@@ -179,6 +181,11 @@ static MDBX_val val(void *base, size_t len) {
 }
 
 static uint64_t expected_value(uint64_t key) { return key * UINT64_C(17) + UINT64_C(11); }
+
+static void fill_large_value(uint8_t *bytes, size_t len, uint64_t key) {
+  for (size_t i = 0; i < len; ++i)
+    bytes[i] = (uint8_t)(key + i * 31u + i / 7u);
+}
 
 static int async_probe_func(MDBX_env *env, void *context) {
   struct async_probe *const probe = (struct async_probe *)context;
@@ -739,6 +746,18 @@ static int expect_value(const MDBX_val *data, uint64_t key, const char *file, in
   return expect_payload(data, expected_value(key), file, line);
 }
 
+static int expect_large_value(const MDBX_val *data, uint64_t key, const char *file, int line) {
+  if (!data || !data->iov_base || data->iov_len != LARGE_VALUE_BYTES)
+    return fail_msg("unexpected large value size", file, line);
+  const uint8_t *const bytes = (const uint8_t *)data->iov_base;
+  for (size_t i = 0; i < data->iov_len; ++i) {
+    const uint8_t expected = (uint8_t)(key + i * 31u + i / 7u);
+    if (bytes[i] != expected)
+      return fail_msg("unexpected large value payload", file, line);
+  }
+  return MDBX_SUCCESS;
+}
+
 static int verify_copied_value(const char *path, uint64_t key_value, const char *file, int line) {
   MDBX_env *copy_env = NULL;
   MDBX_txn *copy_txn = NULL;
@@ -849,6 +868,7 @@ int main(void) {
   MDBX_dbi bunch_dbi = 0;
   MDBX_dbi del_loop_dbi = 0;
   MDBX_dbi put_loop_dbi = 0;
+  MDBX_dbi large_dbi = 0;
   MDBX_dbi key_del_loop_dbi = 0;
   MDBX_dbi replace_loop_dbi = 0;
   MDBX_dbi replace_delete_loop_dbi = 0;
@@ -857,6 +877,8 @@ int main(void) {
   MDBX_dbi custom_val_dbi = 0;
   uint64_t keys[ITEM_COUNT];
   uint64_t values[ITEM_COUNT];
+  uint64_t large_keys[LARGE_ITEM_COUNT];
+  uint8_t large_values[LARGE_ITEM_COUNT][LARGE_VALUE_BYTES];
   uint64_t cursor_extra_key = ITEM_COUNT;
   uint64_t cursor_extra_value = expected_value(ITEM_COUNT);
   uint64_t checkpoint_key = ITEM_COUNT + 100;
@@ -870,6 +892,8 @@ int main(void) {
   MDBX_val key_values[ITEM_COUNT];
   MDBX_val delete_keys[ITEM_COUNT];
   MDBX_val put_values[ITEM_COUNT];
+  MDBX_val large_key_values[LARGE_ITEM_COUNT];
+  MDBX_val large_put_values[LARGE_ITEM_COUNT];
   uint8_t open2_name_bytes[] = {'a', 's', 'y', 'n', 'c', '-', 'o', 'p', 'e', 'n', '2', 0, 'o', 'l', 'd'};
   uint8_t rename2_name_bytes[] = {'a', 's', 'y', 'n', 'c', '-', 'o', 'p', 'e', 'n', '2', 0, 'n', 'e', 'w'};
   uint8_t custom_val_name_bytes[] = {'a', 's', 'y', 'n', 'c', '-', 'c', 'm', 'p', 0, 'v', 'a', 'l'};
@@ -1121,6 +1145,8 @@ int main(void) {
 
   CHECK(mdbx_async_dbi_open(async, txn, NULL, MDBX_DB_DEFAULTS, &dbi, &op));
   CHECK_OP(op);
+  CHECK(mdbx_async_dbi_open(async, txn, "async-large-cache-target", MDBX_CREATE, &large_dbi, &op));
+  CHECK_OP(op);
 
   CHECK(mdbx_async_put(async, txn, dbi, &checkpoint_key_value, &checkpoint_put_value, 0, &op));
   CHECK_OP(op);
@@ -1167,6 +1193,12 @@ int main(void) {
     values[i] = expected_value(keys[i]);
     key_values[i] = val(&keys[i], sizeof(keys[i]));
     put_values[i] = val(&values[i], sizeof(values[i]));
+  }
+  for (unsigned i = 0; i < LARGE_ITEM_COUNT; ++i) {
+    large_keys[i] = ITEM_COUNT + 200u + i;
+    fill_large_value(large_values[i], sizeof(large_values[i]), large_keys[i]);
+    large_key_values[i] = val(&large_keys[i], sizeof(large_keys[i]));
+    large_put_values[i] = val(large_values[i], sizeof(large_values[i]));
   }
 
   CHECK(mdbx_async_dbi_open(async, txn, "async-enum-target", MDBX_CREATE, &enum_dbi, &op));
@@ -1555,6 +1587,15 @@ int main(void) {
       goto bailout;
     }
   }
+  CHECK(mdbx_async_put_batch(async, txn, large_dbi, large_key_values, large_put_values, op_results,
+                             LARGE_ITEM_COUNT, 0, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < LARGE_ITEM_COUNT; ++i) {
+    if (op_results[i] != MDBX_SUCCESS) {
+      rc = fail_rc("mdbx_async_put_batch large", op_results[i], __FILE__, __LINE__);
+      goto bailout;
+    }
+  }
 
   CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
   CHECK_OP(op);
@@ -1563,7 +1604,8 @@ int main(void) {
   memset(&env_stat, 0, sizeof(env_stat));
   CHECK(mdbx_async_env_stat_ex(async, NULL, &env_stat, sizeof(env_stat), &op));
   CHECK_OP(op);
-  REQUIRE(env_stat.ms_entries == ITEM_COUNT, "unexpected async environment stat entries after commit");
+  REQUIRE(env_stat.ms_entries == ITEM_COUNT + LARGE_ITEM_COUNT + 1,
+          "unexpected async environment stat entries after commit");
 
   CHECK(mdbx_async_env_copy(async, copy_env_path, MDBX_CP_DONT_FLUSH, &op));
   CHECK_OP(op);
@@ -1615,7 +1657,8 @@ int main(void) {
   memset(&env_stat, 0, sizeof(env_stat));
   CHECK(mdbx_async_env_stat_ex(async, txn, &env_stat, sizeof(env_stat), &op));
   CHECK_OP(op);
-  REQUIRE(env_stat.ms_entries == ITEM_COUNT, "unexpected async txn-scoped environment stat entries");
+  REQUIRE(env_stat.ms_entries == ITEM_COUNT + LARGE_ITEM_COUNT + 1,
+          "unexpected async txn-scoped environment stat entries");
 
   memset(&env_info, 0, sizeof(env_info));
   CHECK(mdbx_async_env_info_ex(async, txn, &env_info, sizeof(env_info), &op));
@@ -1665,7 +1708,7 @@ int main(void) {
   memset(&dbi_stat, 0, sizeof(dbi_stat));
   CHECK(mdbx_async_dbi_stat(async, txn, dbi, &dbi_stat, sizeof(dbi_stat), &op));
   CHECK_OP(op);
-  REQUIRE(dbi_stat.ms_entries == ITEM_COUNT, "unexpected async dbi stat entry count");
+  REQUIRE(dbi_stat.ms_entries == ITEM_COUNT + 1, "unexpected async dbi stat entry count");
 
   unsigned dbi_flags = UINT_MAX;
   unsigned dbi_state = UINT_MAX;
@@ -2032,6 +2075,54 @@ int main(void) {
             "unexpected async single-thread cache get batch result");
     CHECK(expect_value(&cache_many_data[i], keys[i + 2], __FILE__, __LINE__));
   }
+
+  MDBX_cache_entry_t large_cache_entries[LARGE_ITEM_COUNT];
+  MDBX_cache_result_t large_cache_results[LARGE_ITEM_COUNT];
+  MDBX_val large_cache_data[LARGE_ITEM_COUNT];
+  for (unsigned i = 0; i < LARGE_ITEM_COUNT; ++i) {
+    mdbx_cache_init(&large_cache_entries[i]);
+    large_cache_results[i].errcode = MDBX_PROBLEM;
+    large_cache_results[i].status = MDBX_CACHE_ERROR;
+    large_cache_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_cache_get_batch(async, txn, large_dbi, large_key_values, large_cache_data,
+                                   large_cache_entries, large_cache_results,
+                                   LARGE_ITEM_COUNT, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < LARGE_ITEM_COUNT; ++i) {
+    REQUIRE(large_cache_results[i].errcode == MDBX_SUCCESS &&
+                large_cache_results[i].status != MDBX_CACHE_ERROR,
+            "unexpected async large cache get batch result");
+    CHECK(expect_large_value(&large_cache_data[i], large_keys[i], __FILE__, __LINE__));
+  }
+  for (unsigned i = 0; i < LARGE_ITEM_COUNT; ++i) {
+    large_cache_results[i].errcode = MDBX_PROBLEM;
+    large_cache_results[i].status = MDBX_CACHE_ERROR;
+    large_cache_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_cache_get_SingleThreaded_batch(async, txn, large_dbi, large_key_values,
+                                                  large_cache_data, large_cache_entries,
+                                                  large_cache_results, LARGE_ITEM_COUNT, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < LARGE_ITEM_COUNT; ++i) {
+    REQUIRE(large_cache_results[i].errcode == MDBX_SUCCESS &&
+                large_cache_results[i].status == MDBX_CACHE_HIT,
+            "unexpected async large single-thread cache get batch result");
+    CHECK(expect_large_value(&large_cache_data[i], large_keys[i], __FILE__, __LINE__));
+  }
+  CHECK(mdbx_async_txn_abort(async, txn, NULL, &op));
+  CHECK_OP(op);
+  txn = NULL;
+  CHECK(mdbx_async_txn_begin(async, NULL, 0, &txn, NULL, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_drop(async, txn, large_dbi, true, &op));
+  CHECK_OP(op);
+  large_dbi = 0;
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  CHECK_OP(op);
+  txn = NULL;
+  CHECK(mdbx_async_txn_begin(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
+  CHECK_OP(op);
 
   for (unsigned i = 0; i < 4; ++i) {
     mdbx_cache_init(&cache_many_entries[i]);
