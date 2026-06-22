@@ -16653,13 +16653,13 @@ static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, cons
   if (unlikely(check_txn(txn, MDBX_TXN_BLOCKED) != MDBX_SUCCESS))
     return 0;
 
-  cursor_couple_t stack_couples[1];
-  bool stack_initialized[1] = {false};
-  dxb_cursor_page_get_submit_io_t stack_gets[1];
-  pgr_t stack_pgrs[1];
-  size_t stack_indices[1];
-  intptr_t stack_parent_tops[1];
-  indx_t stack_parent_kis[1];
+  cursor_couple_t stack_couples[4];
+  bool stack_initialized[4] = {false};
+  dxb_cursor_page_get_submit_io_t stack_gets[4];
+  pgr_t stack_pgrs[4];
+  size_t stack_indices[4];
+  intptr_t stack_parent_tops[4];
+  indx_t stack_parent_kis[4];
 
   cursor_couple_t *couples = stack_couples;
   bool *initialized = stack_initialized;
@@ -16669,7 +16669,7 @@ static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, cons
   intptr_t *parent_tops = stack_parent_tops;
   indx_t *parent_kis = stack_parent_kis;
 
-  if (count != 1) {
+  if (count > ARRAY_LENGTH(stack_couples)) {
     couples = osal_calloc(count, sizeof(couples[0]));
     initialized = osal_calloc(count, sizeof(initialized[0]));
     gets = osal_calloc(count, sizeof(gets[0]));
@@ -16873,13 +16873,13 @@ static size_t async_batched_lowerbound_traverse(const MDBX_txn *txn, MDBX_dbi db
   if (unlikely(check_txn(txn, MDBX_TXN_BLOCKED) != MDBX_SUCCESS))
     return 0;
 
-  cursor_couple_t stack_couples[1];
-  bool stack_initialized[1] = {false};
-  dxb_cursor_page_get_submit_io_t stack_gets[1];
-  pgr_t stack_pgrs[1];
-  size_t stack_indices[1];
-  intptr_t stack_parent_tops[1];
-  indx_t stack_parent_kis[1];
+  cursor_couple_t stack_couples[4];
+  bool stack_initialized[4] = {false};
+  dxb_cursor_page_get_submit_io_t stack_gets[4];
+  pgr_t stack_pgrs[4];
+  size_t stack_indices[4];
+  intptr_t stack_parent_tops[4];
+  indx_t stack_parent_kis[4];
 
   cursor_couple_t *couples = stack_couples;
   bool *initialized = stack_initialized;
@@ -16889,7 +16889,7 @@ static size_t async_batched_lowerbound_traverse(const MDBX_txn *txn, MDBX_dbi db
   intptr_t *parent_tops = stack_parent_tops;
   indx_t *parent_kis = stack_parent_kis;
 
-  if (count != 1) {
+  if (count > ARRAY_LENGTH(stack_couples)) {
     couples = osal_calloc(count, sizeof(couples[0]));
     initialized = osal_calloc(count, sizeof(initialized[0]));
     gets = osal_calloc(count, sizeof(gets[0]));

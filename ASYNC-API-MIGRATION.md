@@ -5695,3 +5695,65 @@ Additional async cursor batches stack checkpoint:
   batches but does not change the underlying cursor traversal model. The one-run
   benchmark is mixed: threaded cursor-from ratios and threaded cursor/get ratios
   improved substantially, while direct cursor loop-from rows regressed.
+
+Additional small async traversal batch stack checkpoint:
+
+- changed `async_batched_get_traverse()` and
+  `async_batched_lowerbound_traverse()` to keep traversal scratch state on the
+  stack for batches of up to four keys. Larger batches still use the existing
+  heap-backed arrays.
+- the stack-backed state covers cursor couples, initialized flags, child page
+  read submissions/results, parent stack positions, parent key indices, and
+  source-key indices. This keeps common small `get`, `get_ex`, and lower-bound
+  async read batches on the internal page-read traversal path without per-call
+  allocator traffic.
+- behavior is otherwise unchanged: the helpers still submit root/branch child
+  page reads through `page_submit_cursor_get_batch()`, materialize results into
+  the existing cursor stack, capture transaction pins, and fall back to the
+  existing public read operations when a caller cannot be handled by the
+  internal traversal.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-traverse-smallstack-before.txt` and
+    `/tmp/mdbx-async-bench-traverse-smallstack-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `6bb86c1`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.865 Mops/s | 1.859 Mops/s |
+| blocking parallel get | 1.072 Mops/s | 917.594 Kops/s |
+| async single get | 338.577 Kops/s | 387.045 Kops/s |
+| async single get_ex | 297.599 Kops/s | 401.917 Kops/s |
+| async parallel get | 2.427 Mops/s | 2.461 Mops/s |
+| async many parallel get | 2.836 Mops/s | 2.624 Mops/s |
+| async get_ex batch | 2.722 Mops/s | 2.737 Mops/s |
+| async get_ex many | 2.846 Mops/s | 2.443 Mops/s |
+| async cache many | 4.527 Mops/s | 3.785 Mops/s |
+| async cache loop | 5.076 Mops/s | 2.132 Mops/s |
+| async threaded cache loop | 2.049 Mops/s | 4.801 Mops/s |
+| async lowerbound batch | 1.662 Mops/s | 1.649 Mops/s |
+| async lowerbound many | 1.431 Mops/s | 1.666 Mops/s |
+| async get loop | 2.337 Mops/s | 2.218 Mops/s |
+| async get_ex loop | 3.303 Mops/s | 3.484 Mops/s |
+| async lowerbound loop | 1.928 Mops/s | 1.904 Mops/s |
+| async cursor get loop | 67.656 Mops/s | 66.683 Mops/s |
+| async cursor get loop_from | 70.151 Mops/s | 68.378 Mops/s |
+| async threaded cursor get loop | 120.528 Mops/s | 123.165 Mops/s |
+| async threaded cget loop_from | 127.938 Mops/s | 128.813 Mops/s |
+| async-single-ex/par | 0.278 | 0.438 |
+| async-get-ex-batch/par | 2.539 | 2.983 |
+| async-thread-cache-loop/par | 1.911 | 5.232 |
+| async-cget-loop-from/par | 0.705 | 1.095 |
+| async-thread-cget-from/par | 1.286 | 2.063 |
+
+- conclusion: this checkpoint reduces allocator overhead for small internal
+  async traversal batches. The reduced benchmark is mixed: single get/get_ex,
+  get_ex loop, lowerbound many, and threaded cache/cursor ratios improved in
+  this sample, while cache-loop and some many/batch rows regressed.
