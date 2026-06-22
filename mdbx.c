@@ -371,6 +371,20 @@ static inline bool dxb_data_read_io_equal(const dxb_data_read_io_t *a, const dxb
          a->bytes.bytes == b->bytes.bytes;
 }
 
+static inline bool dxb_read_submit_io_data_equal(const dxb_read_submit_io_t *a,
+                                                 const dxb_read_submit_io_t *b) {
+  return dxb_data_read_io_equal(&a->data, &b->data);
+}
+
+static inline size_t dxb_read_submit_io_data_hash(const dxb_read_submit_io_t *io) {
+  const dxb_data_read_io_t *const data = &io->data;
+  uint64_t hash = (uint64_t)data->pages.pgno * UINT64_C(11400714819323198485);
+  hash ^= (uint64_t)data->pages.npages * UINT64_C(0x9E3779B185EBCA87);
+  hash ^= (uint64_t)data->bytes.offset;
+  hash ^= (uint64_t)data->bytes.bytes << 7;
+  return (size_t)(hash ^ (hash >> 33));
+}
+
 static inline bool dxb_cache_read_io_equal(const dxb_cache_read_io_t *a, const dxb_cache_read_io_t *b) {
   return dxb_data_read_io_equal(&a->data, &b->data) && a->snapshot == b->snapshot &&
          a->reusable == b->reusable && a->tracked == b->tracked;
@@ -12664,6 +12678,7 @@ static inline bool cache_materialize_fallbackable(int err) {
 
 typedef struct cache_large_materialize_batch_item {
   size_t index;
+  size_t read_slot;
   dxb_cache_entry_read_io_t read;
   pgr_t pgr;
   dxb_cache_materialize_io_t materialize;
@@ -12690,6 +12705,8 @@ static size_t cache_materialize_singlethreaded_batch(const MDBX_txn *txn, MDBX_v
   cache_large_materialize_batch_item_t *large_items = nullptr;
   dxb_read_submit_io_t *large_reads = nullptr;
   dxb_read_result_t *large_results = nullptr;
+  size_t *large_buckets = nullptr;
+  size_t *large_next = nullptr;
   if (unlikely(!submits || !reads || !page_results || !indices)) {
     osal_free(indices);
     osal_free(page_results);
@@ -12750,6 +12767,7 @@ static size_t cache_materialize_singlethreaded_batch(const MDBX_txn *txn, MDBX_v
     (void)page_cache_submit_read_batch((MDBX_txn *)txn, submits, page_results, eligible);
 
   size_t large_count = 0;
+  size_t large_read_count = 0;
   for (size_t j = 0; j < eligible; ++j) {
     const size_t i = indices[j];
     const dxb_cache_entry_read_io_t *const read = &reads[j];
@@ -12790,13 +12808,25 @@ static size_t cache_materialize_singlethreaded_batch(const MDBX_txn *txn, MDBX_v
           large_items = osal_calloc(count, sizeof(large_items[0]));
           large_reads = osal_calloc(count, sizeof(large_reads[0]));
           large_results = osal_calloc(count, sizeof(large_results[0]));
-          if (unlikely(!large_items || !large_reads || !large_results)) {
+          large_buckets = osal_malloc(count * sizeof(large_buckets[0]));
+          large_next = osal_malloc(count * sizeof(large_next[0]));
+          if (unlikely(!large_items || !large_reads || !large_results || !large_buckets ||
+                       !large_next)) {
+            osal_free(large_next);
+            osal_free(large_buckets);
             osal_free(large_results);
             osal_free(large_reads);
             osal_free(large_items);
+            large_next = nullptr;
+            large_buckets = nullptr;
             large_results = nullptr;
             large_reads = nullptr;
             large_items = nullptr;
+          } else {
+            for (size_t k = 0; k < count; ++k) {
+              large_buckets[k] = SIZE_MAX;
+              large_next[k] = SIZE_MAX;
+            }
           }
         }
         if (unlikely(!large_items)) {
@@ -12826,13 +12856,28 @@ static size_t cache_materialize_singlethreaded_batch(const MDBX_txn *txn, MDBX_v
           goto item_bailout;
         }
 
+        size_t read_slot = SIZE_MAX;
+        const size_t bucket = dxb_read_submit_io_data_hash(&materialize_read.storage_read) % count;
+        for (size_t k = large_buckets[bucket]; k != SIZE_MAX; k = large_next[k]) {
+          if (dxb_read_submit_io_data_equal(&materialize_read.storage_read, &large_reads[k])) {
+            read_slot = k;
+            break;
+          }
+        }
+        if (read_slot == SIZE_MAX) {
+          read_slot = large_read_count++;
+          large_reads[read_slot] = materialize_read.storage_read;
+          large_next[read_slot] = large_buckets[bucket];
+          large_buckets[bucket] = read_slot;
+        }
+
         const size_t large_slot = large_count++;
         large_items[large_slot].index = i;
+        large_items[large_slot].read_slot = read_slot;
         large_items[large_slot].read = *read;
         large_items[large_slot].pgr = pgr;
         large_items[large_slot].materialize = large_submit.large.materialize_submit.materialize;
         large_items[large_slot].large = large;
-        large_reads[large_slot] = materialize_read.storage_read;
         continue;
       }
     }
@@ -12874,15 +12919,18 @@ static size_t cache_materialize_singlethreaded_batch(const MDBX_txn *txn, MDBX_v
 
   if (large_count) {
     (void)dxb_storage_submit_read_data_batch(&((MDBX_txn *)txn)->env->dxb_storage, large_reads,
-                                             large_results, large_count);
+                                             large_results, large_read_count);
     for (size_t j = 0; j < large_count; ++j) {
       cache_large_materialize_batch_item_t *const item = &large_items[j];
       const size_t i = item->index;
       const dxb_cache_entry_read_io_t *const read = &item->read;
       pgr_t *const pgr = &item->pgr;
+      dxb_read_result_t read_result = large_results[item->read_slot];
+      if (likely(read_result.err == MDBX_SUCCESS && read_result.completed &&
+                 large_reads[item->read_slot].buffer != item->large))
+        memcpy(item->large, large_reads[item->read_slot].buffer, read_result.payload_bytes);
       dxb_cache_result_t materialize_result = dxb_storage_complete_materialize_cached_large_page(
-          &((MDBX_txn *)txn)->env->dxb_storage, pgr, item->large, &item->materialize,
-          large_results[j]);
+          &((MDBX_txn *)txn)->env->dxb_storage, pgr, item->large, &item->materialize, read_result);
       item->large = nullptr;
       int err = materialize_result.err;
       if (unlikely(err != MDBX_SUCCESS))
@@ -12932,6 +12980,8 @@ static size_t cache_materialize_singlethreaded_batch(const MDBX_txn *txn, MDBX_v
   osal_free(large_results);
   osal_free(large_reads);
   osal_free(large_items);
+  osal_free(large_next);
+  osal_free(large_buckets);
   osal_free(indices);
   osal_free(page_results);
   osal_free(reads);

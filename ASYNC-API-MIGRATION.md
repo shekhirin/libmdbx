@@ -5028,3 +5028,40 @@ Additional page-cache duplicate read coalescing checkpoint:
   page-cache buffers on identical reads in duplicate-heavy batches. The effect
   is workload-sensitive because the benchmark driver mixes many cache shapes,
   but the duplicate-heavy sample shows the intended batch rows improving.
+
+Additional duplicate large-materialization read checkpoint:
+
+- changed `cache_materialize_singlethreaded_batch()` so duplicate large/overflow
+  materialization reads inside one batch submit only one storage read per
+  matching byte span. Duplicate logical items keep their own materialization
+  buffers; after the unique read completes, its bytes are copied into duplicate
+  buffers and the existing
+  `dxb_storage_complete_materialize_cached_large_page()` path handles detach,
+  replacement, retained refs, and error handling for every item.
+- this keeps the tricky overflow page ownership rules unchanged while reducing
+  redundant io_uring read submissions for repeated large cache entries.
+- added smoke coverage for repeated large cache entries in one
+  `mdbx_async_cache_get_SingleThreaded_batch()` materialization pass.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-large-dup-before.txt`,
+    `/tmp/mdbx-async-bench-large-dup-after.txt`,
+    `/tmp/mdbx-async-bench-large-dup64-before.txt`, and
+    `/tmp/mdbx-async-bench-large-dup64-after.txt`
+- duplicate-heavy large-value benchmark with `MDBX_ASYNC_BENCH_LARGE_ITEMS=8`,
+  `MDBX_ASYNC_BENCH_LARGE_OPS=20000`, `MDBX_ASYNC_BENCH_LARGE_VALUE_BYTES=10000`,
+  and forced no-mmap/io_uring reported async large cache batch
+  150.249 -> 149.629 Kops/s and async large cache st batch
+  145.823 -> 148.203 Kops/s. Nearby cache rows were noisy:
+  async cache st batch 2.129 -> 4.147 Mops/s, async cache batch callback
+  2.577 -> 4.200 Mops/s, and async get loop 2.581 -> 1.741 Mops/s.
+- the same shape with `MDBX_ASYNC_BENCH_LARGE_VALUE_BYTES=65536` reported
+  async large cache batch 23.570 -> 23.554 Kops/s and async large cache st
+  batch 23.483 -> 23.499 Kops/s, effectively flat in the buffered spot run.
+- conclusion: this removes redundant large-page storage-read submissions and
+  io_uring slots for duplicate overflow materialization, but the current
+  buffered benchmark does not show a throughput win because saved reads are
+  offset by copying the completed buffer into each duplicate destination.

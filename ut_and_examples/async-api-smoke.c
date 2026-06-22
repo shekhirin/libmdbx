@@ -2144,6 +2144,42 @@ int main(void) {
             "unexpected async large single-thread cache get batch result");
     CHECK(expect_large_value(&large_cache_data[i], large_keys[i], __FILE__, __LINE__));
   }
+
+  MDBX_cache_entry_t large_duplicate_entries[4];
+  MDBX_cache_result_t large_duplicate_results[4];
+  MDBX_val large_duplicate_keys[4];
+  MDBX_val large_duplicate_data[4];
+  for (unsigned i = 0; i < 4; ++i) {
+    mdbx_cache_init(&large_duplicate_entries[i]);
+    large_duplicate_results[i].errcode = MDBX_PROBLEM;
+    large_duplicate_results[i].status = MDBX_CACHE_ERROR;
+    large_duplicate_keys[i] = large_key_values[1];
+    large_duplicate_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_cache_get_batch(async, txn, large_dbi, large_duplicate_keys,
+                                   large_duplicate_data, large_duplicate_entries,
+                                   large_duplicate_results, 4, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < 4; ++i) {
+    REQUIRE(large_duplicate_results[i].errcode == MDBX_SUCCESS &&
+                large_duplicate_results[i].status != MDBX_CACHE_ERROR,
+            "unexpected async duplicate large cache get batch result");
+    CHECK(expect_large_value(&large_duplicate_data[i], large_keys[1], __FILE__, __LINE__));
+    large_duplicate_results[i].errcode = MDBX_PROBLEM;
+    large_duplicate_results[i].status = MDBX_CACHE_ERROR;
+    large_duplicate_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_cache_get_SingleThreaded_batch(async, txn, large_dbi,
+                                                  large_duplicate_keys, large_duplicate_data,
+                                                  large_duplicate_entries,
+                                                  large_duplicate_results, 4, &op));
+  CHECK_OP(op);
+  for (unsigned i = 0; i < 4; ++i) {
+    REQUIRE(large_duplicate_results[i].errcode == MDBX_SUCCESS &&
+                large_duplicate_results[i].status == MDBX_CACHE_HIT,
+            "unexpected async duplicate large single-thread cache batch result");
+    CHECK(expect_large_value(&large_duplicate_data[i], large_keys[1], __FILE__, __LINE__));
+  }
   CHECK(mdbx_async_txn_abort(async, txn, NULL, &op));
   CHECK_OP(op);
   txn = NULL;
