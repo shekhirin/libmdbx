@@ -5578,3 +5578,70 @@ Additional page-cache read batch small-stack checkpoint:
   several direct get/cache throughput rows regressed in this one-run sample.
   Treat the change as internal async-read plumbing cleanup rather than a broad
   throughput result.
+
+Additional single async cache-get materialization checkpoint:
+
+- changed the single async cache-get execution path so
+  `async_op_cache_get`/`async_op_cache_get_singlethreaded` first snapshot or
+  copy the supplied cache entry and try `cache_materialize_singlethreaded_batch()`
+  with a one-entry batch. Only unhandled entries fall back to
+  `mdbx_cache_get()` or `mdbx_cache_get_SingleThreaded()`.
+- added a shared `async_cache_get_one_materialized()` helper and used it for
+  grouped async cache-get operations when the grouped count is one. Multi-op
+  grouped, batch, and loop cache-get paths already used the materialization
+  helper.
+- this moves another public async read surface away from always executing the
+  blocking cache-get path in the worker. The result still preserves the same
+  fallback behavior for volatile entries that cannot be snapshotted, entries
+  that are not materializable, and non-explicit-I/O cases.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cache-single-before.txt` and
+    `/tmp/mdbx-async-bench-cache-single-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `574bfea`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.860 Mops/s | 1.849 Mops/s |
+| blocking parallel get | 1.016 Mops/s | 1.085 Mops/s |
+| async single get | 424.401 Kops/s | 346.328 Kops/s |
+| async single get_ex | 253.377 Kops/s | 201.674 Kops/s |
+| async parallel get | 2.788 Mops/s | 2.724 Mops/s |
+| async many parallel get | 2.673 Mops/s | 2.780 Mops/s |
+| async get_ex batch | 2.422 Mops/s | 2.729 Mops/s |
+| async get_ex many | 2.509 Mops/s | 2.500 Mops/s |
+| async cache many | 3.307 Mops/s | 4.421 Mops/s |
+| async cache st many | 3.626 Mops/s | 3.406 Mops/s |
+| async cache batch | 4.160 Mops/s | 3.061 Mops/s |
+| async cache st batch | 4.127 Mops/s | 2.784 Mops/s |
+| async cache batch cb | 3.443 Mops/s | 3.829 Mops/s |
+| async cache st batch cb | 4.177 Mops/s | 4.060 Mops/s |
+| async cache loop | 2.456 Mops/s | 2.782 Mops/s |
+| async cache st loop | 3.485 Mops/s | 2.734 Mops/s |
+| async threaded cache loop | 3.459 Mops/s | 5.050 Mops/s |
+| async threaded cache st loop | 4.943 Mops/s | 4.198 Mops/s |
+| async get loop | 2.488 Mops/s | 2.305 Mops/s |
+| async get_ex loop | 3.243 Mops/s | 3.283 Mops/s |
+| async cursor get loop | 68.629 Mops/s | 68.993 Mops/s |
+| async cursor get loop_from | 78.015 Mops/s | 70.994 Mops/s |
+| async threaded cursor get loop | 124.165 Mops/s | 124.771 Mops/s |
+| async threaded cget loop_from | 128.691 Mops/s | 124.766 Mops/s |
+| async-cache-loop/par | 2.417 | 2.564 |
+| async-thread-cache-loop/par | 3.405 | 4.655 |
+| async-cache-loop/batch | 0.590 | 0.909 |
+| async-cache-loop/ser | 1.320 | 1.505 |
+| async-get-loop/batch | 0.535 | 1.035 |
+
+- conclusion: this checkpoint is a behavioral/plumbing improvement for the
+  single async cache-get path, which now attempts the same internal page-cache
+  materialization used by batch and loop variants. The reduced benchmark is
+  mixed: cache many, cache loop, threaded cache loop, `get_ex` batch, and cache
+  loop ratios improved in this sample, while single get/get_ex and several
+  single-threaded cache rows regressed.

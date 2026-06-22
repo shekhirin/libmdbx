@@ -17693,9 +17693,65 @@ static int async_cache_get_batch_execute(MDBX_async_op *op) {
   return MDBX_SUCCESS;
 }
 
+static MDBX_cache_result_t async_cache_get_one_materialized(const MDBX_txn *txn, MDBX_dbi dbi,
+                                                            const MDBX_val *key, MDBX_val *data,
+                                                            volatile MDBX_cache_entry_t *entry,
+                                                            bool singlethreaded) {
+  MDBX_cache_entry_t snapshot;
+  bool can_materialize;
+  if (singlethreaded) {
+    snapshot = *(MDBX_cache_entry_t *)entry;
+    can_materialize = true;
+  } else {
+    can_materialize = cache_entry_snapshot_volatile(entry, &snapshot);
+  }
+
+  if (can_materialize) {
+    MDBX_val materialized = {nullptr, 0};
+    MDBX_cache_result_t materialized_result = {0};
+    bool handled = false;
+    (void)cache_materialize_singlethreaded_batch(txn, &materialized, &snapshot, &materialized_result,
+                                                 1, &handled);
+    if (handled) {
+      if (materialized_result.errcode == MDBX_SUCCESS)
+        *data = materialized;
+      else {
+        data->iov_base = nullptr;
+        data->iov_len = 0;
+      }
+      return materialized_result;
+    }
+  }
+
+  MDBX_val value = {nullptr, 0};
+  MDBX_cache_result_t result =
+      singlethreaded ? mdbx_cache_get_SingleThreaded(txn, dbi, key, &value, (MDBX_cache_entry_t *)entry)
+                     : mdbx_cache_get(txn, dbi, key, &value, entry);
+  if (result.errcode == MDBX_SUCCESS)
+    *data = value;
+  else {
+    data->iov_base = nullptr;
+    data->iov_len = 0;
+  }
+  return result;
+}
+
 static void async_cache_get_ops_batch(MDBX_async_op *ops[], size_t count, bool singlethreaded) {
   if (unlikely(!ops || !count))
     return;
+  if (count == 1) {
+    MDBX_async_op *const op = ops[0];
+    MDBX_val value = {nullptr, 0};
+    MDBX_cache_result_t result =
+        async_cache_get_one_materialized(op->args.cache_get.txn, op->args.cache_get.dbi, &op->key,
+                                         &value, op->args.cache_get.entry, singlethreaded);
+    if (op->args.cache_get.result)
+      *op->args.cache_get.result = result;
+    if (op->args.cache_get.data)
+      *op->args.cache_get.data = value;
+    op->result = result.errcode;
+    return;
+  }
 
   const MDBX_txn *const txn = ops[0]->args.cache_get.txn;
   const MDBX_dbi dbi = ops[0]->args.cache_get.dbi;
@@ -18281,24 +18337,15 @@ static int async_op_execute(MDBX_async_op *op) {
     return MDBX_SUCCESS;
   case async_op_cache_get:
   case async_op_cache_get_singlethreaded: {
+    const bool singlethreaded = op->opcode == async_op_cache_get_singlethreaded;
     MDBX_val data = {nullptr, 0};
-    MDBX_cache_result_t result = (op->opcode == async_op_cache_get)
-                                     ? mdbx_cache_get(op->args.cache_get.txn, op->args.cache_get.dbi,
-                                                      &op->key, &data, op->args.cache_get.entry)
-                                     : mdbx_cache_get_SingleThreaded(op->args.cache_get.txn,
-                                                                     op->args.cache_get.dbi, &op->key,
-                                                                     &data,
-                                                                     (MDBX_cache_entry_t *)op->args.cache_get.entry);
+    MDBX_cache_result_t result = async_cache_get_one_materialized(
+        op->args.cache_get.txn, op->args.cache_get.dbi, &op->key, &data, op->args.cache_get.entry,
+        singlethreaded);
     if (op->args.cache_get.result)
       *op->args.cache_get.result = result;
-    if (op->args.cache_get.data) {
-      if (result.errcode == MDBX_SUCCESS) {
-        *op->args.cache_get.data = data;
-      } else {
-        op->args.cache_get.data->iov_base = nullptr;
-        op->args.cache_get.data->iov_len = 0;
-      }
-    }
+    if (op->args.cache_get.data)
+      *op->args.cache_get.data = data;
     return result.errcode;
   }
   case async_op_cache_get_batch:
