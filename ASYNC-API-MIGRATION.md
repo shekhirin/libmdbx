@@ -9138,3 +9138,55 @@ expected for a first-position state machine that is mainly valuable when the
 root/leftmost descent has real explicit-I/O misses to overlap. The structural
 gain is that retained cursor batch/loop/scan no longer have to block in
 `outer_first()` before the worker can collect other pending read work.
+
+## Public Async Cursor Get FIRST Retained Slice
+
+Extended the retained single-row cursor get path from `MDBX_NEXT` to
+`MDBX_FIRST` for plain read-only non-dupsort cursors. Public
+`mdbx_async_cursor_get(..., MDBX_FIRST)` now uses the same retained
+root/leftmost descent added for cursor batches, then consumes one pair through
+the retained cursor-batch drive and restores normal single-cursor positioning.
+This moves the common public cursor-first read path away from direct
+worker-offloaded `mdbx_cursor_get()` when the cursor belongs to a read-only
+transaction.
+
+The retained cursor batch and single cursor-get paths now explicitly require a
+read-only transaction before using retained page-cache I/O. Write cursors fall
+back to the existing blocking worker path. The benchmark caught this: allowing
+retained first-positioning on write cursors corrupted later write-cursor delete
+state, so the read-only gate is part of the correctness fix as well as the API
+scope boundary.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+- Benchmark log: `/tmp/mdbx-async-bench-cursorsingle-first-retain-after.txt`
+
+Reduced forced no-mmap/io_uring benchmark with `MDBX_ASYNC_BENCH_ITEMS=10000`,
+`MDBX_ASYNC_BENCH_OPS=30000`, `MDBX_ASYNC_BENCH_WRITE_OPS=1000`,
+`MDBX_ASYNC_BENCH_LARGE_OPS=30000`, and
+`MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against the previous checkpoint
+`8ea07f5`.
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async cursor get | 846.441 Kops/s | 840.556 Kops/s |
+| async cursor get loop | 47.696 Mops/s | 50.088 Mops/s |
+| async cursor get loop_from | 50.718 Mops/s | 53.954 Mops/s |
+| async threaded cursor get loop | 67.437 Mops/s | 50.704 Mops/s |
+| async cursor batch | 50.193 Mops/s | 42.006 Mops/s |
+| async threaded cursor batch | 47.149 Mops/s | 72.145 Mops/s |
+| async cursor scan | 60.591 Mops/s | 51.244 Mops/s |
+| async cursor scan_from | 56.276 Mops/s | 54.748 Mops/s |
+| async-cursor-get/par | 0.017 | 0.016 |
+| async-cursor-get-loop/get | 56.349 | 59.590 |
+| async-cursor-batch/get | 59.299 | 49.974 |
+
+The direct `async cursor get` microbenchmark is essentially flat in this
+cache-hot sample. The structural result is that both public single cursor
+`FIRST` and public single cursor `NEXT` can now suspend on read-only explicit
+I/O page reads for the supported plain-cursor cases; write cursors and
+positioned seek starts still use the blocking worker path.
