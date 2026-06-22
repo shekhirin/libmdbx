@@ -8361,3 +8361,52 @@ Async cache_get grouped retained page-cache read checkpoint:
   change is that adjacent cache-get operations no longer have to materialize
   all page-cache misses to completion before the worker can collect later
   retained read work.
+
+Async large cache materialization retained-state checkpoint:
+
+- extended the retained cache materializer with a second async phase for
+  large/overflow page materialization. After the retained page-cache read phase
+  identifies large cached pages, it now prepares deduplicated large-page read
+  submissions and drives them with `dxb_storage_read_batch_begin/drive/finish`
+  instead of immediately falling back through synchronous cache-get.
+- large materialization buffers and page refs are now owned by
+  `async_cache_materialize_batch_state_t` until completion or cleanup. Ordinary
+  cached-page reads, explicit cache batches, grouped cache gets, and their
+  single-threaded variants all share this retained large-page path.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-largecache-retain-before.txt` and
+    `/tmp/mdbx-async-bench-largecache-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `4b62bb3`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking parallel get | 998.439 Kops/s | 521.365 Kops/s |
+| async cache many | 4.881 Mops/s | 4.461 Mops/s |
+| async cache st many | 4.143 Mops/s | 4.230 Mops/s |
+| async cache batch | 2.472 Mops/s | 3.806 Mops/s |
+| async cache st batch | 3.413 Mops/s | 3.803 Mops/s |
+| async cache batch cb | 4.075 Mops/s | 4.044 Mops/s |
+| async cache st batch cb | 3.385 Mops/s | 4.330 Mops/s |
+| async large cache batch | 123.844 Kops/s | 139.458 Kops/s |
+| async large cache st batch | 121.483 Kops/s | 130.667 Kops/s |
+| async threaded cache batch | 5.505 Mops/s | 3.929 Mops/s |
+| async threaded cache st batch | 4.807 Mops/s | 5.463 Mops/s |
+| async cache loop | 2.821 Mops/s | 2.067 Mops/s |
+| async cache st loop | 5.133 Mops/s | 2.162 Mops/s |
+| async threaded cache loop | 2.134 Mops/s | 2.668 Mops/s |
+| async threaded cache st loop | 2.792 Mops/s | 2.239 Mops/s |
+
+- conclusion: this checkpoint directly addresses the previous large-cache
+  fallback caveat. The large cache batch rows improved in this run, while
+  unrelated cache loop and threaded rows remain noisy. The semantic improvement
+  is that large/overflow cache materialization can now stay inside the retained
+  page-read state machine rather than re-entering synchronous cache-get for the
+  second storage read.

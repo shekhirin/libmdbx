@@ -13190,7 +13190,17 @@ typedef struct async_cache_materialize_batch_state {
   dxb_cache_page_result_t *page_results;
   size_t *indices;
   dxb_page_cache_read_batch_t page_batch;
+  cache_large_materialize_batch_item_t *large_items;
+  dxb_read_submit_io_t *large_reads;
+  dxb_read_result_t *large_results;
+  size_t *large_buckets;
+  size_t *large_next;
+  size_t large_count;
+  size_t large_read_count;
+  dxb_storage_read_batch_t large_read_batch;
   bool page_batch_started;
+  bool large_read_started;
+  bool large_processed;
   bool prepared;
   bool completed;
 } async_cache_materialize_batch_state_t;
@@ -13202,6 +13212,25 @@ static void async_cache_materialize_batch_cleanup(async_cache_materialize_batch_
     (void)page_cache_read_batch_finish(&state->page_batch);
     state->page_batch_started = false;
   }
+  if (state->large_read_started) {
+    (void)dxb_storage_read_batch_finish(&state->large_read_batch);
+    state->large_read_started = false;
+  }
+  if (state->large_items && !state->large_processed) {
+    for (size_t i = 0; i < state->large_count; ++i) {
+      cache_large_materialize_batch_item_t *const item = &state->large_items[i];
+      if (item->large) {
+        osal_memalign_free(item->large);
+        item->large = nullptr;
+      }
+      pgr_release(nullptr, &item->pgr);
+    }
+  }
+  osal_free(state->large_next);
+  osal_free(state->large_buckets);
+  osal_free(state->large_results);
+  osal_free(state->large_reads);
+  osal_free(state->large_items);
   if (state->indices && state->indices != state->stack_indices)
     osal_free(state->indices);
   if (state->page_results && state->page_results != state->stack_page_results)
@@ -13211,6 +13240,92 @@ static void async_cache_materialize_batch_cleanup(async_cache_materialize_batch_
   if (state->submits && state->submits != state->stack_submits)
     osal_free(state->submits);
   memset(state, 0, sizeof(*state));
+}
+
+static int async_cache_materialize_batch_prepare_large_arrays(
+    async_cache_materialize_batch_state_t *state) {
+  if (state->large_items)
+    return MDBX_SUCCESS;
+
+  const size_t count = state->count;
+  state->large_items = osal_calloc(count, sizeof(state->large_items[0]));
+  state->large_reads = osal_calloc(count, sizeof(state->large_reads[0]));
+  state->large_results = osal_calloc(count, sizeof(state->large_results[0]));
+  state->large_buckets = osal_malloc(count * sizeof(state->large_buckets[0]));
+  state->large_next = osal_malloc(count * sizeof(state->large_next[0]));
+  if (unlikely(!state->large_items || !state->large_reads || !state->large_results ||
+               !state->large_buckets || !state->large_next))
+    return MDBX_ENOMEM;
+
+  for (size_t i = 0; i < count; ++i) {
+    state->large_buckets[i] = SIZE_MAX;
+    state->large_next[i] = SIZE_MAX;
+  }
+  return MDBX_SUCCESS;
+}
+
+static int async_cache_materialize_batch_process_large(async_cache_materialize_batch_state_t *state,
+                                                       int first_err) {
+  if (!state->large_count || state->large_processed)
+    return first_err;
+
+  for (size_t j = 0; j < state->large_count; ++j) {
+    cache_large_materialize_batch_item_t *const item = &state->large_items[j];
+    const size_t i = item->index;
+    const dxb_cache_entry_read_io_t *const read = &item->read;
+    pgr_t *const pgr = &item->pgr;
+    dxb_read_result_t read_result = state->large_results[item->read_slot];
+    if (likely(read_result.err == MDBX_SUCCESS && read_result.completed &&
+               state->large_reads[item->read_slot].buffer != item->large))
+      memcpy(item->large, state->large_reads[item->read_slot].buffer, read_result.payload_bytes);
+
+    dxb_cache_result_t materialize_result =
+        dxb_storage_complete_materialize_cached_large_page(
+            &((MDBX_txn *)state->txn)->env->dxb_storage, pgr, item->large,
+            &item->materialize, read_result);
+    item->large = nullptr;
+    int err = materialize_result.err;
+    if (unlikely(err != MDBX_SUCCESS))
+      goto large_item_bailout;
+
+    MDBX_val materialized_data = {.iov_base = ptr_disp(pgr->page, read->page_offset),
+                                  .iov_len = read->value.bytes};
+    cache_value_io_t materialized_value;
+    err = cache_value_io_from_ref(&state->txn->env->dxb_storage, &pgr->ref,
+                                  &materialized_data, &materialized_value);
+    if (unlikely(err != MDBX_SUCCESS || materialized_value.bytes.offset != read->value.offset ||
+                 materialized_value.bytes.bytes != read->value.bytes ||
+                 materialized_value.page_offset != read->page_offset))
+      goto large_item_bailout;
+
+    const size_t retain = page_ref_requires_txn_pin(&pgr->ref);
+    err = txn_retained_refs_reserve((MDBX_txn *)state->txn, retain);
+    if (unlikely(err != MDBX_SUCCESS))
+      goto large_item_bailout;
+    if (retain) {
+      err = txn_retained_ref_append((MDBX_txn *)state->txn, nullptr, pgr->ref);
+      if (unlikely(err != MDBX_SUCCESS))
+        goto large_item_bailout;
+    }
+
+    state->data[i] = materialized_data;
+    state->results[i] = cache_result(MDBX_SUCCESS, MDBX_CACHE_HIT);
+    state->handled[i] = true;
+    pgr_release(nullptr, pgr);
+    continue;
+
+  large_item_bailout:
+    pgr_release(nullptr, pgr);
+    if (err == MDBX_RESULT_TRUE || cache_materialize_fallbackable(err))
+      continue;
+    state->results[i] = cache_error(LOG_IFERR(err));
+    state->handled[i] = true;
+    if (first_err == MDBX_SUCCESS)
+      first_err = err;
+  }
+
+  state->large_processed = true;
+  return first_err;
 }
 
 static int async_cache_materialize_batch_begin(async_cache_materialize_batch_state_t *state,
@@ -13315,6 +13430,21 @@ static int async_cache_materialize_batch_complete(async_cache_materialize_batch_
     return unlikely(state && state->completed) ? MDBX_SUCCESS : MDBX_EINVAL;
 
   int first_err = MDBX_SUCCESS;
+  if (state->large_read_started) {
+    int rc = dxb_storage_read_batch_drive(&state->large_read_batch, true);
+    while (rc == MDBX_RESULT_TRUE)
+      rc = dxb_storage_read_batch_drive(&state->large_read_batch, true);
+    if (unlikely(rc != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
+      first_err = rc;
+    const int finish_err = dxb_storage_read_batch_finish(&state->large_read_batch);
+    state->large_read_started = false;
+    if (unlikely(finish_err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
+      first_err = finish_err;
+    first_err = async_cache_materialize_batch_process_large(state, first_err);
+    state->completed = true;
+    return first_err;
+  }
+
   for (size_t j = 0; j < state->eligible; ++j) {
     const size_t i = state->indices[j];
     const dxb_cache_entry_read_io_t *const read = &state->reads[j];
@@ -13337,8 +13467,83 @@ static int async_cache_materialize_batch_complete(async_cache_materialize_batch_
       goto item_bailout;
     }
     if (unlikely(is_largepage(pgr.page))) {
-      err = MDBX_RESULT_TRUE;
-      goto item_bailout;
+      dxb_cache_entry_read_submit_io_t read_submit = {.read = *read, .cache = state->submits[j]};
+      dxb_cache_entry_large_submit_io_t large_submit;
+      err = cache_make_entry_large_submit_io(state->txn, &state->entries[i], &pgr,
+                                             &read_submit, &large_submit);
+      if (unlikely(err != MDBX_SUCCESS))
+        goto item_bailout;
+      err = cache_entry_large_submit_io_validate(state->txn, &state->entries[i], &pgr,
+                                                 &large_submit);
+      if (unlikely(err != MDBX_SUCCESS))
+        goto item_bailout;
+      err = page_large_read_submit_io_validate((MDBX_txn *)state->txn, &pgr,
+                                               &large_submit.large);
+      if (unlikely(err != MDBX_SUCCESS))
+        goto item_bailout;
+      if (large_submit.large.materialize) {
+        page_cache_entry_t *const large_entry = pgr.ref.cache;
+        if (unlikely(!large_submit.large.cache_backed || !large_entry)) {
+          err = MDBX_EINVAL;
+          goto item_bailout;
+        }
+        err = async_cache_materialize_batch_prepare_large_arrays(state);
+        if (unlikely(err != MDBX_SUCCESS)) {
+          err = MDBX_RESULT_TRUE;
+          goto item_bailout;
+        }
+
+        page_t *large = nullptr;
+        err = osal_memalign_alloc(
+            globals.sys_pagesize,
+            large_submit.large.materialize_submit.materialize.data.bytes.bytes,
+            (void **)&large);
+        if (unlikely(err != MDBX_SUCCESS))
+          goto item_bailout;
+
+        dxb_cache_materialize_read_submit_io_t materialize_read;
+        err = dxb_storage_make_cache_materialize_read_submit_io(
+            large_entry->storage, &pgr, large,
+            &large_submit.large.materialize_submit.materialize, &materialize_read);
+        if (unlikely(err != MDBX_SUCCESS)) {
+          osal_memalign_free(large);
+          goto item_bailout;
+        }
+        err = dxb_storage_cache_materialize_read_submit_io_validate(large_entry->storage,
+                                                                    &materialize_read);
+        if (unlikely(err != MDBX_SUCCESS)) {
+          osal_memalign_free(large);
+          goto item_bailout;
+        }
+
+        size_t read_slot = SIZE_MAX;
+        const size_t bucket =
+            dxb_read_submit_io_data_hash(&materialize_read.storage_read) % state->count;
+        for (size_t k = state->large_buckets[bucket]; k != SIZE_MAX;
+             k = state->large_next[k]) {
+          if (dxb_read_submit_io_data_equal(&materialize_read.storage_read,
+                                            &state->large_reads[k])) {
+            read_slot = k;
+            break;
+          }
+        }
+        if (read_slot == SIZE_MAX) {
+          read_slot = state->large_read_count++;
+          state->large_reads[read_slot] = materialize_read.storage_read;
+          state->large_next[read_slot] = state->large_buckets[bucket];
+          state->large_buckets[bucket] = read_slot;
+        }
+
+        cache_large_materialize_batch_item_t *const item =
+            &state->large_items[state->large_count++];
+        item->index = i;
+        item->read_slot = read_slot;
+        item->read = *read;
+        item->pgr = pgr;
+        item->materialize = large_submit.large.materialize_submit.materialize;
+        item->large = large;
+        continue;
+      }
     }
 
     MDBX_val materialized_data = {.iov_base = ptr_disp(pgr.page, read->page_offset),
@@ -13383,6 +13588,31 @@ static int async_cache_materialize_batch_complete(async_cache_materialize_batch_
     if (unlikely(finish_err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
       first_err = finish_err;
   }
+
+  if (state->large_read_count) {
+    const int err = dxb_storage_read_batch_begin(
+        &state->large_read_batch, &((MDBX_txn *)state->txn)->env->dxb_storage,
+        state->large_reads, state->large_results, state->large_read_count);
+    if (unlikely(err != MDBX_SUCCESS)) {
+      if (first_err == MDBX_SUCCESS)
+        first_err = err;
+      first_err = async_cache_materialize_batch_process_large(state, first_err);
+      state->completed = true;
+      return first_err;
+    }
+    state->large_read_started = true;
+    int rc = dxb_storage_read_batch_drive(&state->large_read_batch, false);
+    if (rc == MDBX_RESULT_TRUE)
+      return MDBX_RESULT_TRUE;
+    if (unlikely(rc != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
+      first_err = rc;
+    const int finish_err = dxb_storage_read_batch_finish(&state->large_read_batch);
+    state->large_read_started = false;
+    if (unlikely(finish_err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
+      first_err = finish_err;
+    first_err = async_cache_materialize_batch_process_large(state, first_err);
+  }
+
   state->completed = true;
   return first_err;
 }
@@ -13396,6 +13626,11 @@ static int async_cache_materialize_batch_drive(async_cache_materialize_batch_sta
 
   if (state->page_batch_started) {
     int rc = page_cache_read_batch_drive(&state->page_batch, wait);
+    if (rc == MDBX_RESULT_TRUE)
+      return MDBX_RESULT_TRUE;
+  }
+  if (state->large_read_started) {
+    int rc = dxb_storage_read_batch_drive(&state->large_read_batch, wait);
     if (rc == MDBX_RESULT_TRUE)
       return MDBX_RESULT_TRUE;
   }
