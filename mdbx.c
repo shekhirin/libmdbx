@@ -21403,10 +21403,11 @@ typedef struct async_cursor_get_loop_pending {
   MDBX_async_op *op;
   MDBX_async_op batch_op;
   async_cursor_get_batch_pending_t *batch_pending;
-  MDBX_val pairs[128];
+  MDBX_val pairs[130];
   size_t batch_count;
   size_t done;
   MDBX_cursor_op cursor_op;
+  bool skip_current;
   int result;
 } async_cursor_get_loop_pending_t;
 
@@ -21431,6 +21432,10 @@ static int async_cursor_get_loop_pending_tail(async_cursor_get_loop_pending_t *p
     return MDBX_RESULT_TRUE;
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
+  if (op->args.cursor_get_loop.from_key)
+    *op->args.cursor_get_loop.from_key = key;
+  if (op->args.cursor_get_loop.has_from_value)
+    *op->args.cursor_get_loop.from_value = data;
   if (op->args.cursor_get_loop.func) {
     rc = op->args.cursor_get_loop.func(op->args.cursor_get_loop.context, pending->done, &key, &data);
     if (unlikely(rc != MDBX_SUCCESS))
@@ -21453,12 +21458,17 @@ static int async_cursor_get_loop_pending_consume(async_cursor_get_loop_pending_t
     return MDBX_RESULT_TRUE;
   if (unlikely(batch_rc != MDBX_SUCCESS && batch_rc != MDBX_RESULT_TRUE))
     return batch_rc;
-  if (unlikely(fetched == 0))
+  const size_t first_value = pending->skip_current ? 2 : 0;
+  if (unlikely(fetched <= first_value))
     return pending->done ? MDBX_RESULT_TRUE : batch_rc;
 
-  for (size_t n = 0; n < fetched && pending->done < target; n += 2) {
+  for (size_t n = first_value; n < fetched && pending->done < target; n += 2) {
     MDBX_val *const key = &pending->pairs[n];
     MDBX_val *const data = &pending->pairs[n + 1];
+    if (op->args.cursor_get_loop.from_key)
+      *op->args.cursor_get_loop.from_key = *key;
+    if (op->args.cursor_get_loop.has_from_value)
+      *op->args.cursor_get_loop.from_value = *data;
     if (op->args.cursor_get_loop.func) {
       rc = op->args.cursor_get_loop.func(op->args.cursor_get_loop.context, pending->done, key, data);
       if (unlikely(rc != MDBX_SUCCESS))
@@ -21473,6 +21483,7 @@ static int async_cursor_get_loop_pending_consume(async_cursor_get_loop_pending_t
     return MDBX_SUCCESS;
   if (batch_rc == MDBX_RESULT_TRUE)
     return MDBX_RESULT_TRUE;
+  pending->skip_current = false;
   pending->cursor_op = MDBX_NEXT;
   return MDBX_SUCCESS;
 }
@@ -21483,8 +21494,10 @@ static int async_cursor_get_loop_pending_start_batch(async_cursor_get_loop_pendi
   const size_t target = op->args.cursor_get_loop.count;
   enum { cursor_get_loop_batch_pairs = 64 };
   const size_t remaining = target - pending->done;
-  const size_t want_pairs =
+  size_t want_pairs =
       remaining < cursor_get_loop_batch_pairs ? remaining : cursor_get_loop_batch_pairs;
+  if (pending->skip_current)
+    want_pairs += 1;
 
   memset(&pending->batch_op, 0, sizeof(pending->batch_op));
   pending->batch_count = 0;
@@ -21522,7 +21535,7 @@ static int async_cursor_get_loop_pending_drive(async_cursor_get_loop_pending_t *
       continue;
     }
 
-    if (target - pending->done == 1)
+    if (target - pending->done == 1 && !pending->skip_current)
       return async_cursor_get_loop_pending_tail(pending);
 
     const int rc = async_cursor_get_loop_pending_start_batch(pending, wait);
@@ -21547,9 +21560,15 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
     op->result = MDBX_SUCCESS;
     return nullptr;
   }
-  if (!(count && !is_filled(cursor) && cursor->subcur == nullptr &&
-        op->args.cursor_get_loop.turn_op == MDBX_NEXT && !op->args.cursor_get_loop.from_key &&
-        op->args.cursor_get_loop.start_op == MDBX_FIRST)) {
+  const bool plain_first_loop =
+      !op->args.cursor_get_loop.from_key && !is_filled(cursor) &&
+      op->args.cursor_get_loop.start_op == MDBX_FIRST;
+  const bool positioned_loop =
+      op->args.cursor_get_loop.from_key &&
+      (op->args.cursor_get_loop.start_op == MDBX_SET_LOWERBOUND ||
+       op->args.cursor_get_loop.start_op == MDBX_SET_KEY);
+  if (!(count && cursor->subcur == nullptr && op->args.cursor_get_loop.turn_op == MDBX_NEXT &&
+        (plain_first_loop || positioned_loop))) {
     op->result = async_cursor_get_loop_execute(op);
     return nullptr;
   }
@@ -21560,7 +21579,46 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
     return nullptr;
   }
   pending->op = op;
-  pending->cursor_op = MDBX_FIRST;
+  pending->cursor_op = plain_first_loop ? MDBX_FIRST : MDBX_NEXT;
+
+  if (positioned_loop) {
+    MDBX_val key = op->key;
+    MDBX_val data = op->args.cursor_get_loop.has_from_value ? op->data : (MDBX_val){nullptr, 0};
+    int rc = mdbx_cursor_get(cursor, &key, &data, op->args.cursor_get_loop.start_op);
+    if (unlikely(rc == MDBX_NOTFOUND)) {
+      op->result = MDBX_RESULT_TRUE;
+      async_cursor_get_loop_pending_free(pending);
+      return nullptr;
+    }
+    if (unlikely(rc != MDBX_SUCCESS)) {
+      if (rc != MDBX_RESULT_TRUE) {
+        op->result = rc;
+        async_cursor_get_loop_pending_free(pending);
+        return nullptr;
+      }
+      rc = MDBX_SUCCESS;
+    }
+    *op->args.cursor_get_loop.from_key = key;
+    if (op->args.cursor_get_loop.has_from_value)
+      *op->args.cursor_get_loop.from_value = data;
+    if (op->args.cursor_get_loop.func) {
+      rc = op->args.cursor_get_loop.func(op->args.cursor_get_loop.context, 0, &key, &data);
+      if (unlikely(rc != MDBX_SUCCESS)) {
+        op->result = rc;
+        async_cursor_get_loop_pending_free(pending);
+        return nullptr;
+      }
+    }
+    pending->done = 1;
+    pending->skip_current = true;
+    if (op->args.cursor_get_loop.completed)
+      *op->args.cursor_get_loop.completed = pending->done;
+    if (pending->done == count) {
+      op->result = MDBX_SUCCESS;
+      async_cursor_get_loop_pending_free(pending);
+      return nullptr;
+    }
+  }
 
   const int rc = async_cursor_get_loop_pending_drive(pending, false);
   if (rc == MDBX_RESULT_TRUE && pending->batch_pending)

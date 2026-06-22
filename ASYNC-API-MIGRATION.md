@@ -8769,3 +8769,73 @@ Async cursor get_loop retained sibling-read checkpoint:
   The next cursor work should retain `_from` seek positioning, scan helpers,
   duplicate-subcursor cases, and large/overflow value reads, then reduce the
   added hot in-page overhead.
+
+Async cursor get_loop_from retained sibling-read checkpoint:
+
+- extended `async_cursor_get_loop_pending_t` so the positioned
+  `mdbx_async_cursor_get_loop_from()` path with `MDBX_SET_LOWERBOUND` or
+  `MDBX_SET_KEY` and `MDBX_NEXT` can reuse retained cursor-batch sibling reads
+  after the first positioned item.
+- the initial `mdbx_cursor_get(from_op)` positioning call is still
+  synchronous. After that item is consumed, the retained loop requests one
+  extra batch pair, skips the already-current item, and consumes later pairs
+  from the retained cursor-batch state. This preserves the previous
+  skip-current behavior while allowing later right-sibling page reads to
+  suspend in the async worker.
+- `from_key`, optional `from_value`, callback order, completed counts,
+  `MDBX_NOTFOUND` to EOF conversion, and successful `MDBX_RESULT_TRUE`
+  lower-bound positioning semantics match the previous executor path.
+  Remaining cursor work includes retained initial seek positioning, scan
+  helpers, duplicate-subcursor cases, and large/overflow value reads.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cursorloop-retain-after.txt` and
+    `/tmp/mdbx-async-bench-cursorloop-from-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `2e87de0`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking cursor get | 72.884 Mops/s | 72.447 Mops/s |
+| parallel cursor get | 59.361 Mops/s | 60.408 Mops/s |
+| async cursor get loop | 64.456 Mops/s | 112.291 Mops/s |
+| async cursor get loop_from | 111.063 Mops/s | 63.962 Mops/s |
+| async threaded cursor get loop | 112.367 Mops/s | 61.741 Mops/s |
+| async threaded cget loop_from | 114.040 Mops/s | 103.154 Mops/s |
+| async cursor loop | 75.351 Mops/s | 66.881 Mops/s |
+| async cursor loop_from | 72.047 Mops/s | 72.505 Mops/s |
+| async threaded cursor loop | 130.164 Mops/s | 135.013 Mops/s |
+| async threaded cursor loop_from | 131.890 Mops/s | 57.558 Mops/s |
+| async-cursor-get-loop/par | 1.086 | 1.859 |
+| async-cget-loop-from/par | 1.776 | 0.918 |
+| async-cursor-get-loop/ser | 0.884 | 1.550 |
+| async-cget-loop-from/ser | 1.002 | 0.569 |
+| async-cursor-get-loop/get | 75.907 | 130.118 |
+| async-thread-cget-loop/par | 1.893 | 1.022 |
+| async-thread-cget-from/par | 1.824 | 1.480 |
+| async-thread-cget-loop/ser | 1.542 | 0.852 |
+| async-thread-cget-from/ser | 1.029 | 0.917 |
+| async-thread-cget-loop/get | 132.330 | 71.542 |
+| async-thread-cget-loop/loop | 1.743 | 0.550 |
+| async-loop-cursor/par | 1.373 | 1.233 |
+| async-loop-cursor/ser | 0.511 | 0.471 |
+| async-thread-cursor-loop/par | 2.372 | 2.489 |
+| async-thread-cursor-loop/ser | 0.883 | 0.951 |
+| async-thread-cursor/batch | 2.059 | 2.112 |
+| async-thread-cursor/loop | 1.727 | 2.019 |
+
+- conclusion: this checkpoint moves the `_from` loop continuation after the
+  initial seek into the retained sibling-read scheduler, but the benchmark is
+  not a throughput win. Direct get-loop improved in this sample, direct
+  get-loop-from and several threaded get-loop rows regressed, and cursor-loop
+  rows moved in both directions. The structural value is narrower: positioned
+  cursor loops no longer have to drive every post-seek sibling read
+  synchronously. The next high-value work is a retained seek/lower-bound state
+  so `_from` can suspend before the first positioned item too, followed by
+  cursor scan and large/overflow value materialization.
