@@ -7669,3 +7669,58 @@ Additional batched lowerbound traversal state-machine checkpoint:
   benchmark should be read as a checkpoint comparison rather than a stable
   performance claim. The structural gain is that both exact-key and lowerbound
   batched traversal now expose resumable internal state for page-read batches.
+
+Async loop traversal state ownership checkpoint:
+
+- added `async_batched_get_traverse_drive_to_completion()` and
+  `async_batched_lowerbound_traverse_drive_to_completion()` helpers so callers
+  can own traversal state explicitly while still preserving today's blocking
+  drive-to-finish behavior.
+- changed async `get_loop`, `get_ex_loop`, and `get_equal_or_great_loop`
+  chunk execution to instantiate traversal state directly with begin/drive/
+  finish instead of calling the compatibility wrappers.
+- this does not yet suspend an async loop operation across worker iterations,
+  but it moves loop chunk execution to the resumable traversal API that future
+  scheduler integration can poll and resume.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-loop-state-before.txt` and
+    `/tmp/mdbx-async-bench-loop-state-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `f9b70e7`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async single get | 388.955 Kops/s | 351.912 Kops/s |
+| async single get_ex | 338.758 Kops/s | 326.191 Kops/s |
+| async single lowerbound | 249.562 Kops/s | 294.163 Kops/s |
+| async parallel get | 2.457 Mops/s | 2.217 Mops/s |
+| async many parallel get | 2.870 Mops/s | 2.274 Mops/s |
+| async batch parallel get | 2.094 Mops/s | 2.743 Mops/s |
+| async get_ex many | 1.782 Mops/s | 2.415 Mops/s |
+| async cache many | 3.756 Mops/s | 4.290 Mops/s |
+| async cache batch | 3.826 Mops/s | 4.179 Mops/s |
+| async cache loop | 3.582 Mops/s | 4.920 Mops/s |
+| async cache st loop | 4.876 Mops/s | 3.780 Mops/s |
+| async threaded cache loop | 3.130 Mops/s | 4.859 Mops/s |
+| async lowerbound batch | 1.621 Mops/s | 1.683 Mops/s |
+| async lowerbound many | 1.475 Mops/s | 1.632 Mops/s |
+| async get loop | 1.861 Mops/s | 3.356 Mops/s |
+| async get_ex loop | 2.874 Mops/s | 3.385 Mops/s |
+| async lowerbound loop | 1.871 Mops/s | 1.555 Mops/s |
+| async threaded get loop | 3.384 Mops/s | 2.580 Mops/s |
+| async threaded get_ex loop | 2.731 Mops/s | 3.381 Mops/s |
+| async threaded lower loop | 1.881 Mops/s | 1.824 Mops/s |
+
+- conclusion: the explicitly owned loop traversal state improved `get_loop`,
+  `get_ex_loop`, cache loop, lowerbound batch, and lowerbound many in this run.
+  It regressed lowerbound loop and threaded get loop rows, with broader noise
+  in unrelated rows. The structural point is that async loop chunks now use the
+  same resumable traversal state that later scheduler work can stop driving
+  after a nonblocking poll returns pending.
