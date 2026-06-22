@@ -623,6 +623,25 @@ typedef struct dxb_page_get_batch {
   bool completed;
 } dxb_page_get_batch_t;
 
+typedef struct dxb_cursor_page_get_batch {
+  MDBX_txn *txn;
+  const dxb_cursor_page_get_submit_io_t *ios;
+  pgr_t *results;
+  size_t count;
+  size_t eligible;
+  int first_err;
+  dxb_page_get_submit_io_t stack_gets[4];
+  pgr_t stack_raw[4];
+  size_t stack_indices[4];
+  dxb_page_get_submit_io_t *gets;
+  pgr_t *raw;
+  size_t *indices;
+  dxb_page_get_batch_t page_batch;
+  bool prepared;
+  bool page_batch_prepared;
+  bool completed;
+} dxb_cursor_page_get_batch_t;
+
 static inline page_ref_t page_ref_empty(void) {
   page_ref_t ref;
   ref.page = nullptr;
@@ -5262,6 +5281,11 @@ static int page_get_batch_begin(dxb_page_get_batch_t *batch, MDBX_txn *txn,
                                 const dxb_page_get_submit_io_t *ios, pgr_t *results, size_t count);
 static int page_get_batch_drive(dxb_page_get_batch_t *batch, bool wait);
 static int page_get_batch_finish(dxb_page_get_batch_t *batch);
+static int page_cursor_get_batch_begin(dxb_cursor_page_get_batch_t *batch,
+                                       const dxb_cursor_page_get_submit_io_t *ios,
+                                       pgr_t *results, size_t count);
+static int page_cursor_get_batch_drive(dxb_cursor_page_get_batch_t *batch, bool wait);
+static int page_cursor_get_batch_finish(dxb_cursor_page_get_batch_t *batch);
 static void dxb_storage_retain_cached_entry(dxb_storage_t *storage, page_cache_entry_t *entry);
 static void dxb_storage_release_cached_ref(dxb_storage_t *storage, const MDBX_cursor *mc, page_ref_t *ref);
 static dxb_cache_result_t dxb_storage_submit_retain_cached_ref(dxb_storage_t *storage,
@@ -51065,9 +51089,10 @@ static __always_inline pgr_t page_submit_cursor_get(const dxb_cursor_page_get_su
   return likely(err == result.err) ? result : pgr_error(err);
 }
 
-static int page_submit_cursor_get_batch(const dxb_cursor_page_get_submit_io_t *ios, pgr_t *results,
-                                        size_t count) {
-  if (unlikely(!ios || !results || !count))
+static int page_cursor_get_batch_begin(dxb_cursor_page_get_batch_t *batch,
+                                       const dxb_cursor_page_get_submit_io_t *ios,
+                                       pgr_t *results, size_t count) {
+  if (unlikely(!batch || !ios || !results || !count))
     return MDBX_EINVAL;
 
   MDBX_txn *const txn = likely(ios[0].cursor) ? ios[0].cursor->txn : nullptr;
@@ -51077,32 +51102,35 @@ static int page_submit_cursor_get_batch(const dxb_cursor_page_get_submit_io_t *i
     return MDBX_EINVAL;
   }
 
-  dxb_page_get_submit_io_t stack_gets[4];
-  pgr_t stack_raw[4];
-  size_t stack_indices[4];
-  dxb_page_get_submit_io_t *gets = stack_gets;
-  pgr_t *raw = stack_raw;
-  size_t *indices = stack_indices;
-  if (count > ARRAY_LENGTH(stack_gets)) {
-    gets = osal_calloc(count, sizeof(gets[0]));
-    raw = osal_calloc(count, sizeof(raw[0]));
-    indices = osal_malloc(count * sizeof(indices[0]));
+  memset(batch, 0, sizeof(*batch));
+  batch->txn = txn;
+  batch->ios = ios;
+  batch->results = results;
+  batch->count = count;
+  batch->first_err = MDBX_SUCCESS;
+  batch->gets = batch->stack_gets;
+  batch->raw = batch->stack_raw;
+  batch->indices = batch->stack_indices;
+
+  if (count > ARRAY_LENGTH(batch->stack_gets)) {
+    batch->gets = osal_calloc(count, sizeof(batch->gets[0]));
+    batch->raw = osal_calloc(count, sizeof(batch->raw[0]));
+    batch->indices = osal_malloc(count * sizeof(batch->indices[0]));
   }
-  if (unlikely(!gets || !raw || !indices)) {
-    if (indices != stack_indices)
-      osal_free(indices);
-    if (raw != stack_raw)
-      osal_free(raw);
-    if (gets != stack_gets)
-      osal_free(gets);
+  if (unlikely(!batch->gets || !batch->raw || !batch->indices)) {
+    if (batch->indices != batch->stack_indices)
+      osal_free(batch->indices);
+    if (batch->raw != batch->stack_raw)
+      osal_free(batch->raw);
+    if (batch->gets != batch->stack_gets)
+      osal_free(batch->gets);
     for (size_t i = 0; i < count; ++i)
       results[i] = pgr_error(MDBX_ENOMEM);
     txn->flags |= MDBX_TXN_ERROR;
+    memset(batch, 0, sizeof(*batch));
     return MDBX_ENOMEM;
   }
 
-  int first_err = MDBX_SUCCESS;
-  size_t eligible = 0;
   for (size_t i = 0; i < count; ++i) {
     int err = page_cursor_get_submit_io_validate(&ios[i]);
     if (unlikely(err == MDBX_SUCCESS && ios[i].cursor->txn != txn))
@@ -51110,41 +51138,101 @@ static int page_submit_cursor_get_batch(const dxb_cursor_page_get_submit_io_t *i
     if (unlikely(err != MDBX_SUCCESS)) {
       results[i] = pgr_error(err);
       txn->flags |= MDBX_TXN_ERROR;
-      if (first_err == MDBX_SUCCESS)
-        first_err = err;
+      if (batch->first_err == MDBX_SUCCESS)
+        batch->first_err = err;
       continue;
     }
 
     cASSERT0(txn, ios[i].get.front <= txn->front_txnid);
-    gets[eligible] = ios[i].get;
-    indices[eligible] = i;
-    ++eligible;
+    batch->gets[batch->eligible] = ios[i].get;
+    batch->indices[batch->eligible] = i;
+    ++batch->eligible;
   }
 
 #if MDBX_ENABLE_PGET_STAT
-  txn->ops_pget += eligible;
+  txn->ops_pget += batch->eligible;
 #endif /* MDBX_ENABLE_PGET_STAT */
 
-  if (eligible) {
-    const int err = page_submit_get_unchecked_batch(txn, gets, raw, eligible);
-    if (unlikely(err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
-      first_err = err;
+  if (batch->eligible) {
+    const int err = page_get_batch_begin(&batch->page_batch, txn, batch->gets, batch->raw,
+                                         batch->eligible);
+    if (likely(err == MDBX_SUCCESS))
+      batch->page_batch_prepared = true;
+    else if (batch->first_err == MDBX_SUCCESS)
+      batch->first_err = err;
   }
 
-  for (size_t j = 0; j < eligible; ++j) {
-    const size_t i = indices[j];
-    results[i] = page_complete_cursor_get(&ios[i], raw[j]);
-    if (unlikely(results[i].err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
-      first_err = results[i].err;
+  batch->prepared = true;
+  return MDBX_SUCCESS;
+}
+
+static int page_cursor_get_batch_complete(dxb_cursor_page_get_batch_t *batch) {
+  for (size_t j = 0; j < batch->eligible; ++j) {
+    const size_t i = batch->indices[j];
+    batch->results[i] = page_complete_cursor_get(&batch->ios[i], batch->raw[j]);
+    if (unlikely(batch->results[i].err != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+      batch->first_err = batch->results[i].err;
+  }
+  batch->completed = true;
+  return batch->first_err;
+}
+
+static int page_cursor_get_batch_drive(dxb_cursor_page_get_batch_t *batch, bool wait) {
+  if (unlikely(!batch || !batch->prepared || !batch->txn || !batch->ios || !batch->results || !batch->count))
+    return MDBX_EINVAL;
+  if (batch->completed)
+    return batch->first_err;
+
+  if (batch->page_batch_prepared) {
+    int rc = page_get_batch_drive(&batch->page_batch, wait);
+    if (rc == MDBX_RESULT_TRUE)
+      return MDBX_RESULT_TRUE;
+    if (unlikely(rc != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+      batch->first_err = rc;
+    const int finish_err = page_get_batch_finish(&batch->page_batch);
+    batch->page_batch_prepared = false;
+    if (unlikely(finish_err != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+      batch->first_err = finish_err;
   }
 
-  if (indices != stack_indices)
-    osal_free(indices);
-  if (raw != stack_raw)
-    osal_free(raw);
-  if (gets != stack_gets)
-    osal_free(gets);
-  return first_err;
+  return page_cursor_get_batch_complete(batch);
+}
+
+static int page_cursor_get_batch_finish(dxb_cursor_page_get_batch_t *batch) {
+  if (unlikely(!batch || !batch->prepared))
+    return MDBX_EINVAL;
+
+  if (batch->page_batch_prepared) {
+    const int finish_err = page_get_batch_finish(&batch->page_batch);
+    batch->page_batch_prepared = false;
+    if (unlikely(finish_err != MDBX_SUCCESS && batch->first_err == MDBX_SUCCESS))
+      batch->first_err = finish_err;
+  }
+
+  if (batch->indices != batch->stack_indices)
+    osal_free(batch->indices);
+  if (batch->raw != batch->stack_raw)
+    osal_free(batch->raw);
+  if (batch->gets != batch->stack_gets)
+    osal_free(batch->gets);
+  const int rc = batch->first_err;
+  memset(batch, 0, sizeof(*batch));
+  return rc;
+}
+
+static int page_submit_cursor_get_batch(const dxb_cursor_page_get_submit_io_t *ios, pgr_t *results,
+                                        size_t count) {
+  dxb_cursor_page_get_batch_t batch;
+  int rc = page_cursor_get_batch_begin(&batch, ios, results, count);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  rc = page_cursor_get_batch_drive(&batch, false);
+  while (rc == MDBX_RESULT_TRUE)
+    rc = page_cursor_get_batch_drive(&batch, true);
+
+  const int finish_err = page_cursor_get_batch_finish(&batch);
+  return unlikely(finish_err != MDBX_SUCCESS) ? finish_err : rc;
 }
 
 static inline bool iov_page_io_equal(const dxb_page_io_t *a, const dxb_page_io_t *b) {

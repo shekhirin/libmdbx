@@ -7395,3 +7395,78 @@ Additional page-get batch state checkpoint:
   cursor get, threaded cursor get loop, and several normalized ratios. The
   structural gain is that page-get miss submission and completion are now
   separable above dirty/spilled-page handling.
+
+Additional cursor-page get-batch state checkpoint:
+
+- introduced `dxb_cursor_page_get_batch_t` and split cursor-page read batches
+  into `page_cursor_get_batch_begin()`, `page_cursor_get_batch_drive()`, and
+  `page_cursor_get_batch_finish()`.
+- the begin phase validates cursor page-get requests, groups the underlying
+  page-get requests, accounts `ops_pget`, and begins a nested
+  `dxb_page_get_batch_t`.
+- the drive phase polls or waits the page-get batch and then applies
+  cursor-specific completion checks, including page-header validation and large
+  page materialization. The public synchronous helper
+  `page_submit_cursor_get_batch()` now only drives this state to completion.
+- this moves the pollable state boundary to the cursor-page layer used by
+  batched get/lowerbound traversal for root and child page reads. Traversal
+  still waits at each level, but it can now retain cursor-page read state
+  directly in a future continuation.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cursorpage-batch-before.txt` and
+    `/tmp/mdbx-async-bench-cursorpage-batch-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `231a183`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.442 Mops/s | 1.188 Mops/s |
+| blocking parallel get | 941.472 Kops/s | 1.054 Mops/s |
+| async single get | 420.105 Kops/s | 419.046 Kops/s |
+| async single get_ex | 277.864 Kops/s | 345.860 Kops/s |
+| async single lowerbound | 341.072 Kops/s | 274.887 Kops/s |
+| async parallel get | 1.917 Mops/s | 1.885 Mops/s |
+| async many parallel get | 2.492 Mops/s | 2.118 Mops/s |
+| async get_ex batch | 2.137 Mops/s | 2.343 Mops/s |
+| async get_ex many | 2.649 Mops/s | 2.832 Mops/s |
+| async cache many | 2.000 Mops/s | 3.440 Mops/s |
+| async cache st many | 4.287 Mops/s | 3.677 Mops/s |
+| async cache batch | 3.190 Mops/s | 3.803 Mops/s |
+| async cache st batch | 3.790 Mops/s | 2.379 Mops/s |
+| async cache loop | 3.898 Mops/s | 2.791 Mops/s |
+| async threaded cache batch | 5.195 Mops/s | 5.314 Mops/s |
+| async threaded cache loop | 1.947 Mops/s | 2.019 Mops/s |
+| async lowerbound batch | 1.669 Mops/s | 1.642 Mops/s |
+| async lowerbound many | 1.470 Mops/s | 1.680 Mops/s |
+| async get loop | 2.980 Mops/s | 2.251 Mops/s |
+| async get_ex loop | 2.426 Mops/s | 2.645 Mops/s |
+| async lowerbound loop | 1.725 Mops/s | 1.616 Mops/s |
+| blocking cursor get | 79.992 Mops/s | 73.093 Mops/s |
+| parallel cursor get | 58.994 Mops/s | 65.763 Mops/s |
+| async cursor get | 870.566 Kops/s | 876.454 Kops/s |
+| async cursor get loop | 68.409 Mops/s | 67.493 Mops/s |
+| async cursor get loop_from | 65.591 Mops/s | 63.855 Mops/s |
+| async threaded cursor get loop | 116.489 Mops/s | 63.136 Mops/s |
+| async threaded cget loop_from | 114.999 Mops/s | 64.585 Mops/s |
+| async/blocking parallel | 2.036 | 1.787 |
+| async-many/blocking par | 2.647 | 2.009 |
+| async-cache-loop/par | 4.140 | 2.647 |
+| async-thread-cache-batch/par | 5.518 | 5.040 |
+| async-lower-loop/par | 1.832 | 1.533 |
+| async-cursor-get-loop/par | 1.160 | 1.026 |
+
+- conclusion: this checkpoint improves blocking parallel get, async single
+  get_ex, get_ex batch/many/loop, cache many/batch, threaded cache batch/loop,
+  lowerbound many, parallel cursor get, and async cursor get in this run. It
+  regresses blocking serial get, single lowerbound, async parallel/many get,
+  cache st many/st batch/loop, get loop, lowerbound batch/loop, blocking cursor
+  get, cursor loop rows, threaded cursor rows, and several normalized ratios.
+  The structural gain is that cursor page reads now expose a pollable state
+  object at the exact layer batched get/lowerbound traversal calls.
