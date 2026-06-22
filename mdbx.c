@@ -20136,12 +20136,84 @@ static async_lowerbound_batch_pending_t *async_lowerbound_batch_start(MDBX_async
   return nullptr;
 }
 
+static int async_lowerbound_batch_pending_step(async_lowerbound_batch_pending_t *pending,
+                                               bool wait, bool *made_progress) {
+  if (unlikely(!pending))
+    return MDBX_EINVAL;
+
+  if (pending->traverse_started) {
+    const enum async_batched_lowerbound_traverse_phase before_phase =
+        pending->traverse.phase;
+    const bool before_prepared = pending->traverse.page_batch_prepared;
+    const int before_drive_rc = pending->drive_rc;
+    int rc = pending->drive_rc;
+    if (rc == MDBX_RESULT_TRUE) {
+      rc = async_batched_lowerbound_traverse_drive(&pending->traverse, wait);
+      pending->drive_rc = rc;
+    }
+    if (made_progress)
+      *made_progress = pending->traverse.phase != before_phase ||
+                       pending->traverse.page_batch_prepared != before_prepared ||
+                       pending->drive_rc != before_drive_rc;
+    if (rc == MDBX_RESULT_TRUE)
+      return MDBX_RESULT_TRUE;
+
+    (void)async_batched_lowerbound_traverse_finish(&pending->traverse);
+    pending->traverse_started = false;
+    if (made_progress)
+      *made_progress = true;
+  } else if (made_progress) {
+    *made_progress = false;
+  }
+
+  async_lowerbound_batch_pending_complete(pending);
+  return MDBX_SUCCESS;
+}
+
 static void async_lowerbound_batch_pending_drain_all(async_lowerbound_batch_pending_t *pending) {
   while (pending) {
-    async_lowerbound_batch_pending_t *const next = pending->next;
-    pending->next = nullptr;
-    async_lowerbound_batch_pending_complete(pending);
-    pending = next;
+    async_lowerbound_batch_pending_t *again_head = nullptr;
+    async_lowerbound_batch_pending_t *again_tail = nullptr;
+    bool progressed = false;
+
+    while (pending) {
+      async_lowerbound_batch_pending_t *const item = pending;
+      pending = item->next;
+      item->next = nullptr;
+
+      bool made_progress = false;
+      const int rc =
+          async_lowerbound_batch_pending_step(item, false, &made_progress);
+      if (rc == MDBX_RESULT_TRUE) {
+        if (again_tail)
+          again_tail->next = item;
+        else
+          again_head = item;
+        again_tail = item;
+        progressed = progressed || made_progress;
+      } else {
+        progressed = true;
+      }
+    }
+
+    if (again_head && !progressed) {
+      async_lowerbound_batch_pending_t *const item = again_head;
+      again_head = item->next;
+      if (!again_head)
+        again_tail = nullptr;
+      item->next = nullptr;
+
+      const int rc = async_lowerbound_batch_pending_step(item, true, nullptr);
+      if (rc == MDBX_RESULT_TRUE) {
+        if (again_tail)
+          again_tail->next = item;
+        else
+          again_head = item;
+        again_tail = item;
+      }
+    }
+
+    pending = again_head;
   }
 }
 
