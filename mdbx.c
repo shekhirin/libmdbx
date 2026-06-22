@@ -34461,22 +34461,11 @@ static inline dxb_read_result_t dxb_read_completed(size_t payload_bytes) {
 
 static dxb_read_result_t dxb_storage_submit_read_data(const dxb_storage_t *storage,
                                                       const dxb_read_submit_io_t *io) {
-  int rc = dxb_storage_read_submit_io_validate(storage, io);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_read_error(rc);
-
-  const dxb_data_read_io_t *const data = &io->data;
-  rc = dxb_fault_inject("read");
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_read_error(rc);
-  rc = osal_ioring_pread((osal_ioring_t *)&storage->ioring, dxb_storage_data_fd(storage), io->buffer,
-                         data->bytes.bytes, data->bytes.offset);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_read_submitted_error(rc);
-  rc = dxb_fault_inject("read-complete");
-  if (unlikely(rc != MDBX_SUCCESS))
-    return dxb_read_submitted_error(rc);
-  return dxb_read_completed(data->bytes.bytes);
+  dxb_read_result_t result = dxb_read_error(MDBX_EINVAL);
+  const int err = dxb_storage_submit_read_data_batch(storage, io, &result, 1);
+  if (unlikely(err != MDBX_SUCCESS && result.err == MDBX_SUCCESS))
+    return dxb_read_submitted_error(err);
+  return result;
 }
 
 static int dxb_storage_submit_read_data_batch(const dxb_storage_t *storage, const dxb_read_submit_io_t *ios,
@@ -46894,7 +46883,7 @@ static int osal_ioring_pread_batch(osal_ioring_t *ior, mdbx_filehandle_t fd, con
   if (unlikely(!ios || !results || !count))
     return MDBX_EINVAL;
 #if MDBX_HAVE_LINUX_IO_URING
-  if (likely(count > 1 && ior && ior->backend == osal_ioring_backend_linux_uring &&
+  if (likely(ior && ior->backend == osal_ioring_backend_linux_uring &&
              osal_ioring_linux_uring_ready(ior)))
     return osal_ioring_linux_uring_read_batch(ior, fd, ios, results, count);
 #endif /* MDBX_HAVE_LINUX_IO_URING */
