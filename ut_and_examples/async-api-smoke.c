@@ -1709,8 +1709,45 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   if (rc != MDBX_SUCCESS)
     goto bailout;
   if (inject_fault) {
-    REQUIRE(operation_result == MDBX_EIO, "async get did not propagate injected read-completion failure");
-    REQUIRE(data.iov_base == NULL && data.iov_len == 0, "failed async get returned data");
+    if (mode == async_read_get) {
+      REQUIRE(operation_result == MDBX_EIO, "async get did not propagate injected read-completion failure");
+      REQUIRE(data.iov_base == NULL && data.iov_len == 0, "failed async get returned data");
+    } else if (mode == async_read_get_batch) {
+      REQUIRE(operation_result == MDBX_SUCCESS, "faulted async get batch operation returned wrong result");
+      for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
+        REQUIRE(batch_results[i] == MDBX_EIO,
+                "faulted async get batch returned wrong item result");
+        CHECK(expect_empty_value(&batch_data[i], __FILE__, __LINE__));
+      }
+    } else if (mode == async_read_get_ex_batch) {
+      REQUIRE(operation_result == MDBX_SUCCESS, "faulted async get_ex batch operation returned wrong result");
+      for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
+        REQUIRE(batch_results[i] == MDBX_EIO,
+                "faulted async get_ex batch returned wrong item result");
+        REQUIRE(batch_values_counts[i] == 0,
+                "faulted async get_ex batch returned value count");
+        CHECK(expect_empty_value(&batch_data[i], __FILE__, __LINE__));
+      }
+    } else if (mode == async_read_lowerbound_batch) {
+      REQUIRE(operation_result == MDBX_SUCCESS,
+              "faulted async lowerbound batch operation returned wrong result");
+      for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
+        REQUIRE(batch_results[i] == MDBX_EIO,
+                "faulted async lowerbound batch returned wrong item result");
+        CHECK(expect_empty_value(&batch_data[i], __FILE__, __LINE__));
+      }
+    } else if (mode == async_read_cache_get_batch) {
+      REQUIRE(operation_result == MDBX_SUCCESS,
+              "faulted async cache get batch operation returned wrong result");
+      for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
+        REQUIRE(batch_cache_results[i].errcode == MDBX_EIO &&
+                    batch_cache_results[i].status == MDBX_CACHE_ERROR,
+                "faulted async cache get batch returned wrong item result");
+        CHECK(expect_empty_value(&batch_data[i], __FILE__, __LINE__));
+      }
+    } else {
+      REQUIRE(false, "unhandled async read fault mode");
+    }
   } else if (notfound_read) {
     REQUIRE(operation_result == MDBX_NOTFOUND, "cold async missing read returned wrong result");
     if (mode == async_read_cache_get_notfound)
@@ -1999,7 +2036,7 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     else
       REQUIRE(read_stats.storage_read_errors == 0, "successful cold single async read reported read errors");
     REQUIRE(read_stats.page_cache_misses > 0, "cold single async read did not report page-cache misses");
-    if (batch_read) {
+    if (batch_read && !inject_fault) {
       REQUIRE(read_stats.storage_read_items > 1, "cold async batch read did not submit multiple storage reads");
       if (indexed_batch_read)
         REQUIRE(read_stats.storage_read_max_batch > 1, "cold async batch read did not report multi-read batches");
@@ -2007,7 +2044,7 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     if (env_enabled("MDBX_ASYNC_SMOKE_EXPECT_IOURING")) {
       REQUIRE(read_stats.iouring_read_items > 0, "cold single async read did not use io_uring reads");
       REQUIRE(read_stats.iouring_read_batches > 0, "cold single async read did not report io_uring read batches");
-      if (batch_read) {
+      if (batch_read && !inject_fault) {
         REQUIRE(read_stats.iouring_read_items > 1, "cold async batch read did not submit multiple io_uring reads");
         if (indexed_batch_read) {
           REQUIRE(read_stats.iouring_read_max_batch > 1, "cold async batch read did not report io_uring batch depth");
@@ -2265,6 +2302,14 @@ int main(void) {
     return exercise_async_read_path(path, false, async_read_cursor_scan_from);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_ONLY"))
     return exercise_async_read_path(path, true, async_read_get);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_GET_BATCH_ONLY"))
+    return exercise_async_read_path(path, true, async_read_get_batch);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_GET_EX_BATCH_ONLY"))
+    return exercise_async_read_path(path, true, async_read_get_ex_batch);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LOWERBOUND_BATCH_ONLY"))
+    return exercise_async_read_path(path, true, async_read_lowerbound_batch);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CACHE_BATCH_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cache_get_batch);
 
   rc = mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
   if (rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE) {
