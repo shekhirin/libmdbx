@@ -20941,7 +20941,14 @@ typedef struct async_cursor_get_batch_pending {
   dxb_cursor_page_get_batch_t sibling_batch;
   intptr_t sibling_parent_top;
   indx_t sibling_parent_ki;
+  dxb_cursor_page_get_submit_io_t large_get;
+  pgr_t large_pgr;
+  dxb_cursor_page_get_batch_t large_batch;
+  size_t large_value_slot;
+  size_t large_bytes;
+  unsigned large_npages;
   bool sibling_started;
+  bool large_started;
   bool done;
   int result;
 } async_cursor_get_batch_pending_t;
@@ -20958,6 +20965,10 @@ static void async_cursor_get_batch_pending_free(async_cursor_get_batch_pending_t
   if (pending->sibling_started) {
     (void)page_cursor_get_batch_finish(&pending->sibling_batch);
     pending->sibling_started = false;
+  }
+  if (pending->large_started) {
+    (void)page_cursor_get_batch_finish(&pending->large_batch);
+    pending->large_started = false;
   }
   osal_free(pending);
 }
@@ -21045,10 +21056,93 @@ static int async_cursor_get_batch_finish_sibling(async_cursor_get_batch_pending_
   return MDBX_SUCCESS;
 }
 
+static int async_cursor_get_batch_prepare_large(async_cursor_get_batch_pending_t *pending,
+                                                const node_t *leaf) {
+  MDBX_cursor *const mc = pending->cursor;
+  if (unlikely(!leaf || node_flags(leaf) != N_BIG))
+    return MDBX_EINVAL;
+
+  MDBX_val *const data = &pending->pairs[pending->produced + 1];
+  data->iov_len = node_ds(leaf);
+  data->iov_base = node_data(leaf);
+  pending->large_value_slot = pending->produced + 1;
+  pending->large_bytes = data->iov_len;
+  pending->large_npages = largechunk_npages(mc->txn->env, pending->large_bytes);
+
+  const pgno_t large_pgno = node_largedata_pgno(leaf);
+  const txnid_t front = pending->mp->txnid;
+  int rc = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_BRANCH | P_LEAF | P_DUPFIX,
+                                          large_pgno, front, &pending->large_get);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  rc = page_cursor_get_batch_begin(&pending->large_batch, &pending->large_get,
+                                   &pending->large_pgr, 1);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  pending->large_started = true;
+  return MDBX_SUCCESS;
+}
+
+static int async_cursor_get_batch_finish_large(async_cursor_get_batch_pending_t *pending,
+                                               bool wait) {
+  int rc = page_cursor_get_batch_drive(&pending->large_batch, wait);
+  if (rc == MDBX_RESULT_TRUE)
+    return MDBX_RESULT_TRUE;
+
+  const int finish_err = page_cursor_get_batch_finish(&pending->large_batch);
+  pending->large_started = false;
+  if (unlikely(finish_err != MDBX_SUCCESS && rc == MDBX_SUCCESS))
+    rc = finish_err;
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  MDBX_cursor *const mc = pending->cursor;
+  pgr_t large = pending->large_pgr;
+  if (unlikely(large.err != MDBX_SUCCESS)) {
+    const int err = large.err;
+    pgr_release(mc, &large);
+    return err;
+  }
+
+  cASSERT0(mc, page_type(large.page) == P_LARGE);
+  if (!MDBX_DISABLE_VALIDATION && unlikely(large.page->pages < pending->large_npages)) {
+    rc = bad_page(large.page, "too less n-pages %u for bigdata-node (%zu bytes)",
+                  large.page->pages, pending->large_bytes);
+    pgr_release(mc, &large);
+    return rc;
+  }
+
+  cursor_value_set(mc, &large);
+  pending->pairs[pending->large_value_slot].iov_base = page2payload(large.page);
+  pending->pairs[pending->large_value_slot].iov_len = pending->large_bytes;
+  pgr_release(mc, &large);
+
+  rc = cursor_capture_txn_pin(mc, mc->value_ref);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  pending->produced += 2;
+  ++pending->ki;
+  return MDBX_SUCCESS;
+}
+
 static int async_cursor_get_batch_pending_drive(async_cursor_get_batch_pending_t *pending,
                                                 bool wait) {
   MDBX_cursor *const mc = pending->cursor;
   while (!pending->done && pending->produced + 2 <= pending->limit) {
+    if (pending->large_started) {
+      const int rc = async_cursor_get_batch_finish_large(pending, wait);
+      if (rc == MDBX_RESULT_TRUE)
+        return rc;
+      if (unlikely(rc != MDBX_SUCCESS)) {
+        pending->result = rc;
+        pending->done = true;
+        break;
+      }
+      continue;
+    }
+
     if (pending->sibling_started) {
       const int rc = async_cursor_get_batch_finish_sibling(pending, wait);
       if (rc == MDBX_RESULT_TRUE)
@@ -21088,17 +21182,27 @@ static int async_cursor_get_batch_pending_drive(async_cursor_get_batch_pending_t
 
     const node_t *leaf = page_node(pending->mp, pending->ki);
     pending->pairs[pending->produced] = get_key(leaf);
-    int rc = node_read(mc, leaf, &pending->pairs[pending->produced + 1], pending->mp);
-    if (unlikely(rc != MDBX_SUCCESS)) {
-      pending->result = rc;
-      pending->done = true;
-      break;
-    }
-    rc = cursor_capture_txn_pin(mc, mc->value_ref);
-    if (unlikely(rc != MDBX_SUCCESS)) {
-      pending->result = rc;
-      pending->done = true;
-      break;
+    if (node_flags(leaf) == N_BIG) {
+      int rc = async_cursor_get_batch_prepare_large(pending, leaf);
+      if (unlikely(rc != MDBX_SUCCESS)) {
+        pending->result = rc;
+        pending->done = true;
+        break;
+      }
+      continue;
+    } else {
+      int rc = node_read(mc, leaf, &pending->pairs[pending->produced + 1], pending->mp);
+      if (unlikely(rc != MDBX_SUCCESS)) {
+        pending->result = rc;
+        pending->done = true;
+        break;
+      }
+      rc = cursor_capture_txn_pin(mc, mc->value_ref);
+      if (unlikely(rc != MDBX_SUCCESS)) {
+        pending->result = rc;
+        pending->done = true;
+        break;
+      }
     }
 
     pending->produced += 2;

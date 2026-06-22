@@ -2299,6 +2299,31 @@ int main(void) {
             "unexpected async duplicate large single-thread cache batch result");
     CHECK(expect_large_value(&large_duplicate_data[i], large_keys[1], __FILE__, __LINE__));
   }
+
+  CHECK(mdbx_async_cursor_open(async, txn, large_dbi, &cursor, &op));
+  CHECK_OP(op);
+  MDBX_val large_cursor_pairs[LARGE_ITEM_COUNT * 2];
+  size_t large_cursor_count = 0;
+  CHECK(mdbx_async_cursor_get_batch(async, cursor, &large_cursor_count, large_cursor_pairs,
+                                    LARGE_ITEM_COUNT * 2, MDBX_FIRST, &op));
+  int large_cursor_result = MDBX_SUCCESS;
+  CHECK(wait_result("mdbx_async_cursor_get_batch large", &op, &large_cursor_result, __FILE__, __LINE__));
+  REQUIRE(large_cursor_result == MDBX_SUCCESS || large_cursor_result == MDBX_RESULT_TRUE,
+          "unexpected async large cursor batch result");
+  REQUIRE(large_cursor_count == LARGE_ITEM_COUNT * 2, "unexpected async large cursor batch count");
+  for (unsigned i = 0; i < LARGE_ITEM_COUNT; ++i) {
+    MDBX_val *const key = &large_cursor_pairs[i * 2];
+    MDBX_val *const data = &large_cursor_pairs[i * 2 + 1];
+    REQUIRE(key->iov_len == sizeof(uint64_t), "unexpected async large cursor key size");
+    uint64_t actual_key = 0;
+    memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+    REQUIRE(actual_key == large_keys[i], "unexpected async large cursor key");
+    CHECK(expect_large_value(data, large_keys[i], __FILE__, __LINE__));
+  }
+  CHECK(mdbx_async_cursor_close(async, cursor, &op));
+  CHECK_OP(op);
+  cursor = NULL;
+
   CHECK(mdbx_async_txn_abort(async, txn, NULL, &op));
   CHECK_OP(op);
   txn = NULL;

@@ -8896,3 +8896,72 @@ Async cursor scan retained sibling-read checkpoint:
   The next cursor work remains retained initial seek/lower-bound traversal,
   duplicate-subcursor scan/loop shapes, reverse scans, and retained
   large/overflow value materialization.
+
+Async cursor large-value retained page-read checkpoint:
+
+- extended `async_cursor_get_batch_pending_t` with a retained large-value read
+  phase for `N_BIG` leaf nodes. Instead of calling `node_read()` and blocking
+  inside `node_read_bigdata()`, the retained cursor batch now prepares the
+  large/overflow page get, submits it through `page_cursor_get_batch_begin()`,
+  and can suspend while the explicit page read is outstanding.
+- completion reuses the same cursor page-get completion path as ordinary
+  cursor page reads, including page validation and cached large-page
+  materialization performed by `page_complete_cursor_get()`. The retained
+  batch then installs the cursor value ref, fills the output pair, captures the
+  transaction pin, and continues with the next item. Cursor loops and retained
+  scans inherit this behavior because they drive embedded cursor batches.
+- added async smoke coverage that opens a cursor on the large-value test DB,
+  reads the rows through `mdbx_async_cursor_get_batch()`, accepts the documented
+  EOF `MDBX_RESULT_TRUE` completion, and verifies each overflow payload.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cursorscan-retain-after.txt` and
+    `/tmp/mdbx-async-bench-cursorlarge-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `2be8552`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async large cache batch | 136.305 Kops/s | 139.057 Kops/s |
+| async large cache st batch | 138.071 Kops/s | 133.091 Kops/s |
+| blocking cursor get | 72.826 Mops/s | 72.309 Mops/s |
+| parallel cursor get | 78.192 Mops/s | 54.562 Mops/s |
+| async cursor get loop | 66.235 Mops/s | 66.576 Mops/s |
+| async cursor get loop_from | 62.966 Mops/s | 62.093 Mops/s |
+| async threaded cursor get loop | 107.241 Mops/s | 106.569 Mops/s |
+| async threaded cget loop_from | 109.547 Mops/s | 65.505 Mops/s |
+| blocking cursor batch | 148.177 Mops/s | 138.732 Mops/s |
+| parallel cursor batch | 50.988 Mops/s | 53.693 Mops/s |
+| async cursor batch | 64.174 Mops/s | 62.973 Mops/s |
+| async threaded cursor batch | 111.921 Mops/s | 59.281 Mops/s |
+| blocking cursor scan | 114.692 Mops/s | 111.278 Mops/s |
+| parallel cursor scan | 89.846 Mops/s | 58.199 Mops/s |
+| async cursor scan | 104.475 Mops/s | 56.401 Mops/s |
+| async threaded cursor scan | 109.244 Mops/s | 63.891 Mops/s |
+| blocking cursor scan_from | 111.385 Mops/s | 113.651 Mops/s |
+| parallel cursor scan_from | 61.930 Mops/s | 62.424 Mops/s |
+| async cursor scan_from | 79.580 Mops/s | 100.150 Mops/s |
+| async threaded cursor scan_from | 109.479 Mops/s | 108.237 Mops/s |
+| async-cursor-get-loop/get | 77.347 | 90.548 |
+| async-cursor-batch/get | 74.939 | 85.648 |
+| async-thread-cbatch/par | 2.195 | 1.104 |
+| async-thread-cbatch/ser | 0.755 | 0.427 |
+| async-thread-cbatch/batch | 1.744 | 0.941 |
+| async-cursor-scan/par | 1.163 | 0.969 |
+| async-cursor-scan/ser | 0.911 | 0.507 |
+
+- conclusion: this is primarily a correctness/semantics migration checkpoint.
+  The existing benchmark has large cache rows but no isolated cursor-overflow
+  row, so the regular cursor rows are only indirect performance evidence for
+  this change. Those rows are mixed and noisy: async cursor batch is roughly
+  flat, async scan regressed in this sample, scan-from improved, and threaded
+  cursor batch regressed. The structural result is that retained cursor batch,
+  cursor loop, and retained scan paths no longer have to block on an
+  `N_BIG` overflow page read before the worker can collect other retained read
+  work. A later benchmark slice should add an explicit cursor-overflow workload.
