@@ -34606,9 +34606,9 @@ static int dxb_storage_submit_read_data_batch(const dxb_storage_t *storage, cons
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  do {
+  rc = dxb_storage_read_batch_drive(&batch, false);
+  while (rc == MDBX_RESULT_TRUE)
     rc = dxb_storage_read_batch_drive(&batch, true);
-  } while (rc == MDBX_RESULT_TRUE);
 
   const int finish_err = dxb_storage_read_batch_finish(&batch);
   return unlikely(finish_err != MDBX_SUCCESS) ? finish_err : rc;
@@ -47071,9 +47071,9 @@ static int osal_ioring_pread_batch(osal_ioring_t *ior, mdbx_filehandle_t fd, con
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  do {
+  rc = osal_ioring_pread_batch_drive(&batch, false);
+  while (rc == MDBX_RESULT_TRUE)
     rc = osal_ioring_pread_batch_drive(&batch, true);
-  } while (rc == MDBX_RESULT_TRUE);
 
   const int finish_err = osal_ioring_pread_batch_finish(&batch);
   return unlikely(finish_err != MDBX_SUCCESS) ? finish_err : rc;
