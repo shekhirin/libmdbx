@@ -979,10 +979,11 @@ bailout:
   return rc ? rc : fail_msg("async preopen recovery failed", file, line);
 }
 
-static int exercise_async_single_get_read_path(const char *path, bool inject_fault) {
+static int exercise_async_single_read_path(const char *path, bool inject_fault, bool cursor_read) {
   MDBX_async *async = NULL;
   MDBX_env *env = NULL;
   MDBX_txn *txn = NULL;
+  MDBX_cursor *cursor = NULL;
   MDBX_dbi dbi = 0;
   MDBX_async_op *op = NULL;
   MDBX_async_read_stats read_stats;
@@ -1033,15 +1034,24 @@ static int exercise_async_single_get_read_path(const char *path, bool inject_fau
   CHECK_OP(op);
   CHECK(mdbx_async_txn_begin_ex(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
   CHECK_OP(op);
+  if (cursor_read) {
+    CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor, &op));
+    CHECK_OP(op);
+  }
   memset(&read_stats, 0, sizeof(read_stats));
   CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), true));
 
   CHECK(unset_env_var("MDBX_TEST_DXB_FAULT"));
   if (inject_fault)
     CHECK(set_env_var("MDBX_TEST_DXB_FAULT", "read-complete:EIO"));
-  rc = mdbx_async_get(async, txn, dbi, &key_value, &data, &op);
+  if (cursor_read)
+    rc = mdbx_async_cursor_get(async, cursor, &key_value, &data, MDBX_SET_KEY, &op);
+  else
+    rc = mdbx_async_get(async, txn, dbi, &key_value, &data, &op);
   if (rc == MDBX_SUCCESS)
-    rc = wait_result("mdbx_async_get cold single read", &op, &operation_result, __FILE__, __LINE__);
+    rc = wait_result(cursor_read ? "mdbx_async_cursor_get cold single read"
+                                 : "mdbx_async_get cold single read",
+                     &op, &operation_result, __FILE__, __LINE__);
   else
     operation_result = rc;
   CHECK(unset_env_var("MDBX_TEST_DXB_FAULT"));
@@ -1051,30 +1061,35 @@ static int exercise_async_single_get_read_path(const char *path, bool inject_fau
     REQUIRE(operation_result == MDBX_EIO, "async get did not propagate injected read-completion failure");
     REQUIRE(data.iov_base == NULL && data.iov_len == 0, "failed async get returned data");
   } else {
-    REQUIRE(operation_result == MDBX_SUCCESS, "cold single async get returned wrong result");
+    REQUIRE(operation_result == MDBX_SUCCESS, "cold single async read returned wrong result");
     CHECK(expect_payload(&data, payload, __FILE__, __LINE__));
   }
 
   CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), false));
-  REQUIRE(read_stats.storage_read_items > 0, "cold single async get did not submit storage reads");
-  REQUIRE(read_stats.storage_read_batches > 0, "cold single async get did not start storage read batches");
+  REQUIRE(read_stats.storage_read_items > 0, "cold single async read did not submit storage reads");
+  REQUIRE(read_stats.storage_read_batches > 0, "cold single async read did not start storage read batches");
   REQUIRE(read_stats.storage_read_completed >= read_stats.storage_read_items,
-          "cold single async get did not complete submitted reads");
+          "cold single async read did not complete submitted reads");
   if (inject_fault)
     REQUIRE(read_stats.storage_read_errors > 0, "faulted async get did not report read errors");
   else
-    REQUIRE(read_stats.storage_read_errors == 0, "successful cold single async get reported read errors");
-  REQUIRE(read_stats.page_cache_misses > 0, "cold single async get did not report page-cache misses");
+    REQUIRE(read_stats.storage_read_errors == 0, "successful cold single async read reported read errors");
+  REQUIRE(read_stats.page_cache_misses > 0, "cold single async read did not report page-cache misses");
   if (env_enabled("MDBX_ASYNC_SMOKE_EXPECT_IOURING")) {
-    REQUIRE(read_stats.iouring_read_items > 0, "cold single async get did not use io_uring reads");
-    REQUIRE(read_stats.iouring_read_batches > 0, "cold single async get did not report io_uring read batches");
+    REQUIRE(read_stats.iouring_read_items > 0, "cold single async read did not use io_uring reads");
+    REQUIRE(read_stats.iouring_read_batches > 0, "cold single async read did not report io_uring read batches");
   }
   if (env_enabled("MDBX_ASYNC_SMOKE_EXPECT_NO_IOURING")) {
-    REQUIRE(read_stats.iouring_read_items == 0, "fallback cold single async get unexpectedly used io_uring reads");
-    REQUIRE(read_stats.iouring_read_batches == 0, "fallback cold single async get reported io_uring batches");
-    REQUIRE(read_stats.pending_polls == 0, "fallback cold single async get left reads pending");
+    REQUIRE(read_stats.iouring_read_items == 0, "fallback cold single async read unexpectedly used io_uring reads");
+    REQUIRE(read_stats.iouring_read_batches == 0, "fallback cold single async read reported io_uring batches");
+    REQUIRE(read_stats.pending_polls == 0, "fallback cold single async read left reads pending");
   }
 
+  if (cursor) {
+    CHECK(mdbx_async_cursor_close(async, cursor, &op));
+    CHECK_OP(op);
+    cursor = NULL;
+  }
   CHECK(mdbx_async_txn_abort(async, txn, NULL, &op));
   CHECK_OP(op);
   txn = NULL;
@@ -1091,6 +1106,8 @@ static int exercise_async_single_get_read_path(const char *path, bool inject_fau
 
 bailout:
   (void)unset_env_var("MDBX_TEST_DXB_FAULT");
+  if (cursor)
+    (void)mdbx_cursor_close(cursor);
   if (txn)
     (void)mdbx_txn_abort(txn);
   if (async) {
@@ -1187,9 +1204,11 @@ int main(void) {
   snprintf(copy_env_path, sizeof(copy_env_path), "./async-api-smoke-copy-env-%llx", smoke_run_id());
   snprintf(copy_txn_path, sizeof(copy_txn_path), "./async-api-smoke-copy-txn-%llx", smoke_run_id());
   if (env_enabled("MDBX_ASYNC_SMOKE_SINGLE_GET_READ_ONLY"))
-    return exercise_async_single_get_read_path(path, false);
+    return exercise_async_single_read_path(path, false, false);
+  if (env_enabled("MDBX_ASYNC_SMOKE_CURSOR_READ_ONLY"))
+    return exercise_async_single_read_path(path, false, true);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_ONLY"))
-    return exercise_async_single_get_read_path(path, true);
+    return exercise_async_single_read_path(path, true, false);
 
   rc = mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
   if (rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE) {
