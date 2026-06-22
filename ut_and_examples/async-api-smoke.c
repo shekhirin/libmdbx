@@ -133,6 +133,14 @@ struct async_dupsort_loop_probe {
   size_t results_seen;
 };
 
+struct async_dupsort_cache_loop_probe {
+  uint64_t keys[2];
+  int expected_errcodes[2];
+  MDBX_cache_status_t expected_statuses[2];
+  size_t keys_seen;
+  size_t results_seen;
+};
+
 struct get_ex_loop_probe {
   uint64_t key;
   size_t keys;
@@ -796,6 +804,36 @@ static int async_dupsort_get_ex_loop_result_func(void *context, size_t index, co
   } else if (data->iov_base != NULL || data->iov_len != 0) {
     return MDBX_PROBLEM;
   }
+  probe->results_seen += 1;
+  return MDBX_SUCCESS;
+}
+
+static int async_dupsort_cache_loop_key_func(void *context, size_t index, MDBX_val *key) {
+  struct async_dupsort_cache_loop_probe *const probe =
+      (struct async_dupsort_cache_loop_probe *)context;
+  if (!probe || !key || index >= sizeof(probe->keys) / sizeof(probe->keys[0]))
+    return MDBX_PROBLEM;
+  *key = val(&probe->keys[index], sizeof(probe->keys[index]));
+  probe->keys_seen += 1;
+  return MDBX_SUCCESS;
+}
+
+static int async_dupsort_cache_loop_result_func(void *context, size_t index, const MDBX_val *key,
+                                                const MDBX_val *data, MDBX_cache_result_t result) {
+  struct async_dupsort_cache_loop_probe *const probe =
+      (struct async_dupsort_cache_loop_probe *)context;
+  if (!probe || !key || !data || index >= sizeof(probe->keys) / sizeof(probe->keys[0]) ||
+      result.errcode != probe->expected_errcodes[index] ||
+      result.status != probe->expected_statuses[index])
+    return MDBX_PROBLEM;
+  if (key->iov_len != sizeof(uint64_t))
+    return MDBX_PROBLEM;
+  uint64_t actual_key = UINT64_MAX;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  if (actual_key != probe->keys[index])
+    return MDBX_PROBLEM;
+  if (data->iov_base != NULL || data->iov_len != 0)
+    return MDBX_PROBLEM;
   probe->results_seen += 1;
   return MDBX_SUCCESS;
 }
@@ -2664,17 +2702,33 @@ static int exercise_async_dupsort_read_fallback(const char *path) {
   MDBX_cache_entry_t cache_st_entry;
   MDBX_cache_result_t cache_result = {MDBX_PROBLEM, MDBX_CACHE_ERROR};
   MDBX_cache_result_t cache_st_result = {MDBX_PROBLEM, MDBX_CACHE_ERROR};
+  MDBX_async_op *cache_ops[2] = {NULL, NULL};
+  int cache_op_results[2] = {MDBX_PROBLEM, MDBX_PROBLEM};
+  MDBX_val cache_keys[2] = {dup_key_value, missing_key};
+  MDBX_val cache_data[2] = {val(NULL, 0), val(NULL, 0)};
+  MDBX_cache_entry_t cache_entries[2];
+  MDBX_cache_result_t cache_results[2];
   size_t completed = 0;
   struct async_dupsort_loop_probe loop_probe = {{dup_key, UINT64_MAX, key1},
                                                 {dup0, 0, value1},
                                                 {MDBX_SUCCESS, MDBX_NOTFOUND, MDBX_SUCCESS},
                                                 0,
                                                 0};
+  struct async_dupsort_cache_loop_probe cache_loop_probe = {{dup_key, UINT64_MAX},
+                                                            {MDBX_EMULTIVAL, MDBX_NOTFOUND},
+                                                            {MDBX_CACHE_ERROR, MDBX_CACHE_UNABLE},
+                                                            0,
+                                                            0};
 
   memset(missing_key_bytes, 0xff, sizeof(missing_key_bytes));
   memset(&read_stats, 0, sizeof(read_stats));
   mdbx_cache_init(&cache_entry);
   mdbx_cache_init(&cache_st_entry);
+  for (size_t i = 0; i < 2; ++i) {
+    mdbx_cache_init(&cache_entries[i]);
+    cache_results[i].errcode = MDBX_PROBLEM;
+    cache_results[i].status = MDBX_CACHE_ERROR;
+  }
 
   if (!env_enabled("MDBX_FORCE_NO_DATA_MMAP")) {
     rc = fail_msg("async dupsort fallback smoke requires MDBX_FORCE_NO_DATA_MMAP=1", __FILE__, __LINE__);
@@ -2764,6 +2818,110 @@ static int exercise_async_dupsort_read_fallback(const char *path) {
               cache_st_result.status == MDBX_CACHE_ERROR,
           "dupsort async single-threaded cache_get fallback did not preserve multivalue error");
   CHECK(expect_empty_value(&data, __FILE__, __LINE__));
+
+  for (size_t i = 0; i < 2; ++i) {
+    mdbx_cache_init(&cache_entries[i]);
+    cache_results[i].errcode = MDBX_PROBLEM;
+    cache_results[i].status = MDBX_CACHE_ERROR;
+    cache_data[i] = val(NULL, 0);
+    cache_op_results[i] = MDBX_PROBLEM;
+  }
+  CHECK(mdbx_async_cache_get_many(async, txn, dbi, cache_keys, cache_data, cache_entries,
+                                  cache_results, 2, cache_ops));
+  CHECK(wait_many_result("mdbx_async_cache_get_many dupsort fallback", cache_ops, 2,
+                         cache_op_results, __FILE__, __LINE__));
+  REQUIRE(cache_op_results[0] == MDBX_EMULTIVAL && cache_op_results[1] == MDBX_NOTFOUND,
+          "dupsort async cache_get_many fallback returned wrong results");
+  REQUIRE(cache_results[0].errcode == MDBX_EMULTIVAL &&
+              cache_results[0].status == MDBX_CACHE_ERROR &&
+              cache_results[1].errcode == MDBX_NOTFOUND &&
+              cache_results[1].status == MDBX_CACHE_UNABLE,
+          "dupsort async cache_get_many fallback returned wrong cache results");
+  CHECK(expect_empty_value(&cache_data[0], __FILE__, __LINE__));
+  CHECK(expect_empty_value(&cache_data[1], __FILE__, __LINE__));
+
+  for (size_t i = 0; i < 2; ++i) {
+    mdbx_cache_init(&cache_entries[i]);
+    cache_results[i].errcode = MDBX_PROBLEM;
+    cache_results[i].status = MDBX_CACHE_ERROR;
+    cache_data[i] = val(NULL, 0);
+    cache_op_results[i] = MDBX_PROBLEM;
+  }
+  CHECK(mdbx_async_cache_get_SingleThreaded_many(async, txn, dbi, cache_keys, cache_data,
+                                                 cache_entries, cache_results, 2, cache_ops));
+  CHECK(wait_many_result("mdbx_async_cache_get_SingleThreaded_many dupsort fallback", cache_ops, 2,
+                         cache_op_results, __FILE__, __LINE__));
+  REQUIRE(cache_op_results[0] == MDBX_EMULTIVAL && cache_op_results[1] == MDBX_NOTFOUND,
+          "dupsort async single-threaded cache_get_many fallback returned wrong results");
+  REQUIRE(cache_results[0].errcode == MDBX_EMULTIVAL &&
+              cache_results[0].status == MDBX_CACHE_ERROR &&
+              cache_results[1].errcode == MDBX_NOTFOUND &&
+              cache_results[1].status == MDBX_CACHE_UNABLE,
+          "dupsort async single-threaded cache_get_many fallback returned wrong cache results");
+  CHECK(expect_empty_value(&cache_data[0], __FILE__, __LINE__));
+  CHECK(expect_empty_value(&cache_data[1], __FILE__, __LINE__));
+
+  for (size_t i = 0; i < 2; ++i) {
+    mdbx_cache_init(&cache_entries[i]);
+    cache_results[i].errcode = MDBX_PROBLEM;
+    cache_results[i].status = MDBX_CACHE_ERROR;
+    cache_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_cache_get_batch(async, txn, dbi, cache_keys, cache_data, cache_entries,
+                                   cache_results, 2, &op));
+  CHECK_OP(op);
+  REQUIRE(cache_results[0].errcode == MDBX_EMULTIVAL &&
+              cache_results[0].status == MDBX_CACHE_ERROR &&
+              cache_results[1].errcode == MDBX_NOTFOUND &&
+              cache_results[1].status == MDBX_CACHE_UNABLE,
+          "dupsort async cache_get_batch fallback returned wrong cache results");
+  CHECK(expect_empty_value(&cache_data[0], __FILE__, __LINE__));
+  CHECK(expect_empty_value(&cache_data[1], __FILE__, __LINE__));
+
+  for (size_t i = 0; i < 2; ++i) {
+    mdbx_cache_init(&cache_entries[i]);
+    cache_results[i].errcode = MDBX_PROBLEM;
+    cache_results[i].status = MDBX_CACHE_ERROR;
+    cache_data[i] = val(NULL, 0);
+  }
+  CHECK(mdbx_async_cache_get_SingleThreaded_batch(async, txn, dbi, cache_keys, cache_data,
+                                                  cache_entries, cache_results, 2, &op));
+  CHECK_OP(op);
+  REQUIRE(cache_results[0].errcode == MDBX_EMULTIVAL &&
+              cache_results[0].status == MDBX_CACHE_ERROR &&
+              cache_results[1].errcode == MDBX_NOTFOUND &&
+              cache_results[1].status == MDBX_CACHE_UNABLE,
+          "dupsort async single-threaded cache_get_batch fallback returned wrong cache results");
+  CHECK(expect_empty_value(&cache_data[0], __FILE__, __LINE__));
+  CHECK(expect_empty_value(&cache_data[1], __FILE__, __LINE__));
+
+  for (size_t i = 0; i < 2; ++i)
+    mdbx_cache_init(&cache_entries[i]);
+  completed = 0;
+  cache_loop_probe.keys_seen = 0;
+  cache_loop_probe.results_seen = 0;
+  CHECK(mdbx_async_cache_get_loop(async, txn, dbi, 2, async_dupsort_cache_loop_key_func,
+                                  cache_entries, async_dupsort_cache_loop_result_func,
+                                  &cache_loop_probe, &completed, &op));
+  CHECK_OP(op);
+  REQUIRE(completed == 2 && cache_loop_probe.keys_seen == 2 &&
+              cache_loop_probe.results_seen == 2,
+          "dupsort async cache_get_loop fallback did not visit every item");
+
+  for (size_t i = 0; i < 2; ++i)
+    mdbx_cache_init(&cache_entries[i]);
+  completed = 0;
+  cache_loop_probe.keys_seen = 0;
+  cache_loop_probe.results_seen = 0;
+  CHECK(mdbx_async_cache_get_SingleThreaded_loop(async, txn, dbi, 2,
+                                                 async_dupsort_cache_loop_key_func,
+                                                 cache_entries,
+                                                 async_dupsort_cache_loop_result_func,
+                                                 &cache_loop_probe, &completed, &op));
+  CHECK_OP(op);
+  REQUIRE(completed == 2 && cache_loop_probe.keys_seen == 2 &&
+              cache_loop_probe.results_seen == 2,
+          "dupsort async single-threaded cache_get_loop fallback did not visit every item");
 
   CHECK(mdbx_async_get_loop(async, txn, dbi, 3, async_dupsort_loop_key_func,
                             async_dupsort_loop_result_func, &loop_probe, &completed, &op));
