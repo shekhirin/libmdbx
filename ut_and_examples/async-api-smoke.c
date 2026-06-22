@@ -2850,6 +2850,16 @@ int main(void) {
   CHECK(wait_result("mdbx_async_cursor_scan", &op, &scan_result, __FILE__, __LINE__));
   REQUIRE(scan_result == MDBX_RESULT_TRUE && scan_probe.calls == 13, "unexpected async cursor scan result");
 
+  for (unsigned repeat = 0; repeat < 3; ++repeat) {
+    struct scan_probe repeat_scan_probe = {ITEM_COUNT - 1, 0};
+    CHECK(mdbx_async_cursor_scan(async, cursor, scan_probe_func, &repeat_scan_probe,
+                                 MDBX_FIRST, MDBX_NEXT, NULL, &op));
+    CHECK(wait_result("mdbx_async_cursor_scan repeat", &op, &scan_result,
+                      __FILE__, __LINE__));
+    REQUIRE(scan_result == MDBX_RESULT_TRUE && repeat_scan_probe.calls == ITEM_COUNT,
+            "unexpected repeated async cursor scan result");
+  }
+
   uint64_t scan_from_key_data = 18;
   MDBX_val scan_from_key = val(&scan_from_key_data, sizeof(scan_from_key_data));
   MDBX_val scan_from_data = val(NULL, 0);
@@ -2863,6 +2873,25 @@ int main(void) {
   memcpy(&scan_from_actual_key, scan_from_key.iov_base, sizeof(scan_from_actual_key));
   REQUIRE(scan_from_actual_key == scan_from_probe.target, "unexpected scan_from key");
   CHECK(expect_value(&scan_from_data, scan_from_actual_key, __FILE__, __LINE__));
+
+  uint64_t scan_from_full_key_data = 0;
+  MDBX_val scan_from_full_key = val(&scan_from_full_key_data, sizeof(scan_from_full_key_data));
+  MDBX_val scan_from_full_data = val(NULL, 0);
+  struct scan_probe scan_from_full_probe = {ITEM_COUNT - 1, 0};
+  CHECK(mdbx_async_cursor_scan_from(async, cursor, scan_probe_func, &scan_from_full_probe,
+                                    MDBX_SET_LOWERBOUND, &scan_from_full_key,
+                                    &scan_from_full_data, MDBX_NEXT, NULL, &op));
+  CHECK(wait_result("mdbx_async_cursor_scan_from full", &op, &scan_result,
+                    __FILE__, __LINE__));
+  REQUIRE(scan_result == MDBX_RESULT_TRUE && scan_from_full_probe.calls == ITEM_COUNT,
+          "unexpected full async cursor scan_from result");
+  REQUIRE(scan_from_full_key.iov_len == sizeof(uint64_t), "unexpected full scan_from key size");
+  uint64_t scan_from_full_actual = 0;
+  memcpy(&scan_from_full_actual, scan_from_full_key.iov_base,
+         sizeof(scan_from_full_actual));
+  REQUIRE(scan_from_full_actual == scan_from_full_probe.target,
+          "unexpected full scan_from key");
+  CHECK(expect_value(&scan_from_full_data, scan_from_full_actual, __FILE__, __LINE__));
 
   uint64_t scan_setkey_data = 19;
   MDBX_val scan_setkey_key = val(&scan_setkey_data, sizeof(scan_setkey_data));
