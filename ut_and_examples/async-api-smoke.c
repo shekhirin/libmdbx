@@ -2713,6 +2713,49 @@ int main(void) {
   REQUIRE(cursor_loop_from_actual_key == cursor_loop_from_key_data + 3, "unexpected cursor get loop-from key");
   CHECK(expect_value(&cursor_loop_from_data, cursor_loop_from_actual_key, __FILE__, __LINE__));
 
+  uint64_t cursor_loop_setkey_data = 19;
+  MDBX_val cursor_loop_setkey_key = val(&cursor_loop_setkey_data, sizeof(cursor_loop_setkey_data));
+  MDBX_val cursor_loop_setkey_value = val(NULL, 0);
+  struct cursor_get_loop_probe cursor_loop_setkey_probe = {0};
+  size_t cursor_loop_setkey_completed = 0;
+  CHECK(mdbx_async_cursor_get_loop_from(async, cursor, 3, MDBX_SET_KEY,
+                                        &cursor_loop_setkey_key, &cursor_loop_setkey_value,
+                                        MDBX_NEXT, cursor_get_loop_probe_func,
+                                        &cursor_loop_setkey_probe,
+                                        &cursor_loop_setkey_completed, &op));
+  CHECK_OP(op);
+  REQUIRE(cursor_loop_setkey_completed == 3, "unexpected async cursor get loop set-key count");
+  REQUIRE(cursor_loop_setkey_probe.calls == 3, "async cursor get loop set-key probe mismatch");
+  REQUIRE(cursor_loop_setkey_key.iov_len == sizeof(uint64_t),
+          "unexpected cursor get loop set-key key size");
+  uint64_t cursor_loop_setkey_actual = 0;
+  memcpy(&cursor_loop_setkey_actual, cursor_loop_setkey_key.iov_base,
+         sizeof(cursor_loop_setkey_actual));
+  REQUIRE(cursor_loop_setkey_actual == cursor_loop_setkey_data + 2,
+          "unexpected cursor get loop set-key key");
+  CHECK(expect_value(&cursor_loop_setkey_value, cursor_loop_setkey_actual,
+                     __FILE__, __LINE__));
+
+  uint64_t cursor_get_setkey_data = 16;
+  MDBX_val cursor_get_setkey_key = val(&cursor_get_setkey_data, sizeof(cursor_get_setkey_data));
+  MDBX_val cursor_get_setkey_value = val(NULL, 0);
+  int cursor_get_setkey_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_cursor_get(async, cursor, &cursor_get_setkey_key,
+                              &cursor_get_setkey_value, MDBX_SET_KEY, &op));
+  CHECK(wait_result("mdbx_async_cursor_get set-key", &op,
+                    &cursor_get_setkey_result, __FILE__, __LINE__));
+  REQUIRE(cursor_get_setkey_result == MDBX_SUCCESS,
+          "unexpected async cursor get set-key result");
+  REQUIRE(cursor_get_setkey_key.iov_len == sizeof(uint64_t),
+          "unexpected cursor get set-key key size");
+  uint64_t cursor_get_setkey_actual = 0;
+  memcpy(&cursor_get_setkey_actual, cursor_get_setkey_key.iov_base,
+         sizeof(cursor_get_setkey_actual));
+  REQUIRE(cursor_get_setkey_actual == cursor_get_setkey_data,
+          "unexpected cursor get set-key key");
+  CHECK(expect_value(&cursor_get_setkey_value, cursor_get_setkey_actual,
+                     __FILE__, __LINE__));
+
   uint64_t cursor_get_lowerbound_seed = 17;
   uint8_t cursor_get_lowerbound_bytes[sizeof(cursor_get_lowerbound_seed) + 1];
   memcpy(cursor_get_lowerbound_bytes, &cursor_get_lowerbound_seed, sizeof(cursor_get_lowerbound_seed));
@@ -2781,6 +2824,24 @@ int main(void) {
   memcpy(&scan_from_actual_key, scan_from_key.iov_base, sizeof(scan_from_actual_key));
   REQUIRE(scan_from_actual_key == scan_from_probe.target, "unexpected scan_from key");
   CHECK(expect_value(&scan_from_data, scan_from_actual_key, __FILE__, __LINE__));
+
+  uint64_t scan_setkey_data = 19;
+  MDBX_val scan_setkey_key = val(&scan_setkey_data, sizeof(scan_setkey_data));
+  MDBX_val scan_setkey_value = val(NULL, 0);
+  struct scan_probe scan_setkey_probe = {21, 0};
+  CHECK(mdbx_async_cursor_scan_from(async, cursor, scan_probe_func, &scan_setkey_probe,
+                                    MDBX_SET_KEY, &scan_setkey_key, &scan_setkey_value,
+                                    MDBX_NEXT, NULL, &op));
+  CHECK(wait_result("mdbx_async_cursor_scan_from set-key", &op, &scan_result,
+                    __FILE__, __LINE__));
+  REQUIRE(scan_result == MDBX_RESULT_TRUE && scan_setkey_probe.calls == 3,
+          "unexpected async cursor scan_from set-key result");
+  REQUIRE(scan_setkey_key.iov_len == sizeof(uint64_t),
+          "unexpected scan_from set-key key size");
+  uint64_t scan_setkey_actual = 0;
+  memcpy(&scan_setkey_actual, scan_setkey_key.iov_base, sizeof(scan_setkey_actual));
+  REQUIRE(scan_setkey_actual == scan_setkey_probe.target, "unexpected scan_from set-key key");
+  CHECK(expect_value(&scan_setkey_value, scan_setkey_actual, __FILE__, __LINE__));
 
   uint64_t scan_lowerbound_seed = 18;
   uint8_t scan_lowerbound_bytes[sizeof(scan_lowerbound_seed) + 1];

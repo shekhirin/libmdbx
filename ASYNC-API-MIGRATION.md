@@ -9304,3 +9304,58 @@ The cache-hot loop/scan microbenchmarks remain noisy and mixed. This checkpoint
 is primarily structural: the first positioned lower-bound page descent for
 public loop and scan operations is no longer a mandatory blocking
 `mdbx_cursor_get()` call on the async worker.
+
+## Public Async Cursor Exact Seek Retained Slice
+
+Extended the reusable retained seek state so the final leaf operation can be
+`MDBX_SET_KEY` as well as `MDBX_SET_LOWERBOUND`. Plain read-only non-dupsort
+public cursor paths now use retained root/branch page descent for exact
+positioned seeks in:
+
+- `mdbx_async_cursor_get(..., MDBX_SET_KEY)`
+- `mdbx_async_cursor_get_loop_from(..., MDBX_SET_KEY, ..., MDBX_NEXT)`
+- `mdbx_async_cursor_scan_from(..., MDBX_SET_KEY, ..., MDBX_NEXT)`
+
+The compatibility envelope is unchanged: write cursors, dupsort/subcursor
+shapes, and unsupported cursor forms still fall back to the existing blocking
+worker path. The retained seek still delegates the resident-leaf finish to
+`cursor_ops()`, so overflow value reads and any leaf-edge movement triggered
+inside that final operation remain future coroutine work.
+
+Smoke coverage now includes exact `MDBX_SET_KEY` single cursor get, cursor
+`loop_from`, and `scan_from` cases. The benchmark harness also adds a direct
+`async cursor get set-key` row and normalized ratios for that exact seek path.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+- Benchmark log: `/tmp/mdbx-async-bench-cursor-setkey-retain-after.txt`
+
+Reduced forced no-mmap/io_uring benchmark with `MDBX_ASYNC_BENCH_ITEMS=10000`,
+`MDBX_ASYNC_BENCH_OPS=30000`, `MDBX_ASYNC_BENCH_WRITE_OPS=1000`,
+`MDBX_ASYNC_BENCH_LARGE_OPS=30000`, and
+`MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against the previous checkpoint
+`0d3caa9`.
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async cursor get | 1.277 Mops/s | 774.470 Kops/s |
+| async cursor get set-key | n/a | 644.125 Kops/s |
+| async cursor get loop_from | 53.770 Mops/s | 50.468 Mops/s |
+| async cursor scan_from | 47.863 Mops/s | 66.294 Mops/s |
+| async-cursor-get/par | 0.030 | 0.016 |
+| async-cursor-get/ser | 0.033 | 0.019 |
+| async-cget-setkey/par | n/a | 0.013 |
+| async-cget-setkey/ser | n/a | 0.016 |
+| async-cget-setkey/get | n/a | 0.832 |
+| async-cget-loop-from/par | 0.976 | 1.051 |
+| async-scan-from/par | 0.869 | 1.380 |
+| async-scan-from/scan | 0.812 | 1.360 |
+
+The direct async cursor-get row regressed in this noisy cache-hot sample, while
+scan-from improved. The important structural change is that exact positioned
+public cursor seeks can now suspend on root and branch explicit-I/O page reads
+instead of starting with a blocking `mdbx_cursor_get(..., MDBX_SET_KEY)`.
