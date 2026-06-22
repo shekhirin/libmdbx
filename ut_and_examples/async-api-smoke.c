@@ -2556,6 +2556,217 @@ bailout:
   return rc ? rc : MDBX_PROBLEM;
 }
 
+static int exercise_async_dupsort_read_fallback(const char *path) {
+  MDBX_async *async = NULL;
+  MDBX_env *env = NULL;
+  MDBX_txn *txn = NULL;
+  MDBX_async_op *op = NULL;
+  MDBX_dbi dbi = 0;
+  int rc = MDBX_SUCCESS;
+  int operation_result = MDBX_SUCCESS;
+  MDBX_async_read_stats read_stats;
+
+  const uint64_t dup_key = 7;
+  const uint64_t key0 = 9;
+  const uint64_t key1 = 11;
+  const uint64_t dup0 = expected_value(dup_key);
+  const uint64_t dup1 = expected_value(dup_key) + 1;
+  const uint64_t value0 = expected_value(key0);
+  const uint64_t value1 = expected_value(key1);
+  MDBX_val dup_key_value = val((void *)&dup_key, sizeof(dup_key));
+  MDBX_val key0_value = val((void *)&key0, sizeof(key0));
+  MDBX_val key1_value = val((void *)&key1, sizeof(key1));
+  MDBX_val dup0_value = val((void *)&dup0, sizeof(dup0));
+  MDBX_val dup1_value = val((void *)&dup1, sizeof(dup1));
+  MDBX_val value0_value = val((void *)&value0, sizeof(value0));
+  MDBX_val value1_value = val((void *)&value1, sizeof(value1));
+  uint8_t missing_key_bytes[sizeof(uint64_t)];
+  MDBX_val missing_key = val(missing_key_bytes, sizeof(missing_key_bytes));
+  MDBX_val data = val(NULL, 0);
+  size_t values_count = SIZE_MAX;
+  MDBX_async_op *ops[3] = {NULL, NULL, NULL};
+  int op_results[3] = {MDBX_PROBLEM, MDBX_PROBLEM, MDBX_PROBLEM};
+  MDBX_val keys[3] = {dup_key_value, missing_key, key1_value};
+  MDBX_val values[3] = {val(NULL, 0), val(NULL, 0), val(NULL, 0)};
+  size_t counts[3] = {SIZE_MAX, SIZE_MAX, SIZE_MAX};
+
+  memset(missing_key_bytes, 0xff, sizeof(missing_key_bytes));
+  memset(&read_stats, 0, sizeof(read_stats));
+
+  if (!env_enabled("MDBX_FORCE_NO_DATA_MMAP")) {
+    rc = fail_msg("async dupsort fallback smoke requires MDBX_FORCE_NO_DATA_MMAP=1", __FILE__, __LINE__);
+    goto bailout;
+  }
+
+  rc = mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
+  if (rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE) {
+    rc = fail_rc("mdbx_env_delete", rc, __FILE__, __LINE__);
+    goto bailout;
+  }
+
+  CHECK(mdbx_async_create(NULL, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_env_create(async, &env, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_env_set_maxdbs(async, 4, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_env_open(async, env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM, 0664, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_txn_begin_ex(async, NULL, 0, &txn, NULL, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_dbi_open(async, txn, "async-dupsort-target", MDBX_CREATE | MDBX_DUPSORT, &dbi, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put(async, txn, dbi, &dup_key_value, &dup0_value, 0, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put(async, txn, dbi, &dup_key_value, &dup1_value, 0, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put(async, txn, dbi, &key0_value, &value0_value, 0, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_put(async, txn, dbi, &key1_value, &value1_value, 0, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_txn_commit(async, txn, NULL, &op));
+  CHECK_OP(op);
+  txn = NULL;
+  CHECK(mdbx_async_env_close_ex(async, false, &op));
+  CHECK(wait_result("mdbx_async_env_close_ex dupsort populate", &op, &operation_result, __FILE__, __LINE__));
+  REQUIRE(operation_result == MDBX_SUCCESS, "unexpected async env close after dupsort populate");
+  env = NULL;
+  CHECK(mdbx_async_destroy(async, true));
+  async = NULL;
+
+  CHECK(mdbx_async_create(NULL, MDBX_ASYNC_DEFAULTS, &async));
+  CHECK(mdbx_async_env_create(async, &env, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_env_set_maxdbs(async, 4, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_env_open(async, env, path, MDBX_NOSUBDIR | MDBX_LIFORECLAIM, 0664, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_txn_begin_ex(async, NULL, MDBX_TXN_RDONLY, &txn, NULL, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_async_dbi_open(async, txn, "async-dupsort-target", MDBX_DUPSORT, &dbi, &op));
+  CHECK_OP(op);
+  CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), true));
+
+  CHECK(mdbx_async_get(async, txn, dbi, &dup_key_value, &data, &op));
+  CHECK(wait_result("mdbx_async_get dupsort fallback", &op, &operation_result, __FILE__, __LINE__));
+  REQUIRE(operation_result == MDBX_SUCCESS, "dupsort async get fallback returned wrong result");
+  CHECK(expect_payload(&data, dup0, __FILE__, __LINE__));
+
+  data = val(NULL, 0);
+  values_count = SIZE_MAX;
+  MDBX_val get_ex_key = dup_key_value;
+  CHECK(mdbx_async_get_ex(async, txn, dbi, &get_ex_key, &data, &values_count, &op));
+  CHECK(wait_result("mdbx_async_get_ex dupsort fallback", &op, &operation_result, __FILE__, __LINE__));
+  REQUIRE(operation_result == MDBX_SUCCESS, "dupsort async get_ex fallback returned wrong result");
+  REQUIRE(values_count == 2, "dupsort async get_ex fallback returned wrong duplicate count");
+  CHECK(expect_payload(&data, dup0, __FILE__, __LINE__));
+
+  CHECK(mdbx_async_get_many(async, txn, dbi, keys, values, 3, ops));
+  CHECK(wait_many_result("mdbx_async_get_many dupsort fallback", ops, 3, op_results, __FILE__, __LINE__));
+  REQUIRE(op_results[0] == MDBX_SUCCESS && op_results[1] == MDBX_NOTFOUND &&
+              op_results[2] == MDBX_SUCCESS,
+          "dupsort async get_many fallback returned wrong results");
+  CHECK(expect_payload(&values[0], dup0, __FILE__, __LINE__));
+  CHECK(expect_empty_value(&values[1], __FILE__, __LINE__));
+  CHECK(expect_payload(&values[2], value1, __FILE__, __LINE__));
+
+  keys[0] = dup_key_value;
+  keys[1] = missing_key;
+  keys[2] = key0_value;
+  values[0] = val(NULL, 0);
+  values[1] = val(NULL, 0);
+  values[2] = val(NULL, 0);
+  counts[0] = SIZE_MAX;
+  counts[1] = SIZE_MAX;
+  counts[2] = SIZE_MAX;
+  CHECK(mdbx_async_get_ex_batch(async, txn, dbi, keys, values, counts, op_results, 3, &op));
+  CHECK_OP(op);
+  REQUIRE(op_results[0] == MDBX_SUCCESS && op_results[1] == MDBX_NOTFOUND &&
+              op_results[2] == MDBX_SUCCESS,
+          "dupsort async get_ex batch fallback returned wrong results");
+  REQUIRE(counts[0] == 2 && counts[1] == 0 && counts[2] == 1,
+          "dupsort async get_ex batch fallback returned wrong duplicate counts");
+  CHECK(expect_payload(&values[0], dup0, __FILE__, __LINE__));
+  CHECK(expect_empty_value(&values[1], __FILE__, __LINE__));
+  CHECK(expect_payload(&values[2], value0, __FILE__, __LINE__));
+
+  keys[0] = key0_value;
+  keys[1] = missing_key;
+  keys[2] = key1_value;
+  values[0] = val(NULL, 0);
+  values[1] = val(NULL, 0);
+  values[2] = val(NULL, 0);
+  CHECK(mdbx_async_get_equal_or_great_batch(async, txn, dbi, keys, values, op_results, 3, &op));
+  CHECK_OP(op);
+  REQUIRE((op_results[0] == MDBX_SUCCESS || op_results[0] == MDBX_RESULT_TRUE) &&
+              op_results[1] == MDBX_NOTFOUND &&
+              (op_results[2] == MDBX_SUCCESS || op_results[2] == MDBX_RESULT_TRUE),
+          "dupsort async lowerbound batch fallback returned wrong results");
+  CHECK(expect_payload(&values[0], value0, __FILE__, __LINE__));
+  CHECK(expect_empty_value(&values[1], __FILE__, __LINE__));
+  CHECK(expect_payload(&values[2], value1, __FILE__, __LINE__));
+
+  CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), false));
+  REQUIRE(read_stats.storage_read_items > 0, "dupsort fallback async reads did not submit storage reads");
+  REQUIRE(read_stats.storage_read_completed >= read_stats.storage_read_items,
+          "dupsort fallback async reads did not complete submitted reads");
+  REQUIRE(read_stats.storage_read_errors == 0, "dupsort fallback async reads reported read errors");
+  if (env_enabled("MDBX_ASYNC_SMOKE_EXPECT_IOURING")) {
+    REQUIRE(read_stats.iouring_read_items > 0, "dupsort fallback async reads did not use io_uring");
+    REQUIRE(read_stats.iouring_read_batches > 0, "dupsort fallback async reads reported no io_uring batches");
+  }
+  if (env_enabled("MDBX_ASYNC_SMOKE_EXPECT_NO_IOURING")) {
+    REQUIRE(read_stats.iouring_read_items == 0, "dupsort fallback unexpectedly used io_uring");
+    REQUIRE(read_stats.iouring_read_batches == 0, "dupsort fallback unexpectedly reported io_uring batches");
+  }
+
+  CHECK(mdbx_async_txn_abort(async, txn, NULL, &op));
+  CHECK_OP(op);
+  txn = NULL;
+  CHECK(mdbx_async_env_close_ex(async, false, &op));
+  CHECK(wait_result("mdbx_async_env_close_ex dupsort fallback", &op, &operation_result, __FILE__, __LINE__));
+  REQUIRE(operation_result == MDBX_SUCCESS, "unexpected async env close after dupsort fallback");
+  env = NULL;
+  CHECK(mdbx_async_env_delete(async, path, MDBX_ENV_JUST_DELETE, &op));
+  CHECK(wait_result("mdbx_async_env_delete dupsort fallback", &op, &operation_result, __FILE__, __LINE__));
+  REQUIRE(operation_result == MDBX_SUCCESS || operation_result == MDBX_RESULT_TRUE,
+          "unexpected async env delete after dupsort fallback");
+  CHECK(mdbx_async_destroy(async, true));
+  return MDBX_SUCCESS;
+
+bailout:
+  for (unsigned i = 0; i < 3; ++i) {
+    if (ops[i]) {
+      int ignored = MDBX_SUCCESS;
+      (void)mdbx_async_wait(ops[i], &ignored);
+      (void)mdbx_async_op_release(ops[i]);
+      ops[i] = NULL;
+    }
+  }
+  if (txn && async) {
+    MDBX_async_op *cleanup_op = NULL;
+    int ignored = MDBX_SUCCESS;
+    if (mdbx_async_txn_abort(async, txn, NULL, &cleanup_op) == MDBX_SUCCESS && cleanup_op) {
+      (void)mdbx_async_wait(cleanup_op, &ignored);
+      (void)mdbx_async_op_release(cleanup_op);
+    }
+    txn = NULL;
+  }
+  if (async) {
+    if (env) {
+      MDBX_async_op *cleanup_op = NULL;
+      int ignored = MDBX_SUCCESS;
+      if (mdbx_async_env_close_ex(async, true, &cleanup_op) == MDBX_SUCCESS && cleanup_op) {
+        (void)mdbx_async_wait(cleanup_op, &ignored);
+        (void)mdbx_async_op_release(cleanup_op);
+      }
+      env = NULL;
+    }
+    (void)mdbx_async_destroy(async, true);
+  }
+  (void)mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
+  return rc ? rc : MDBX_PROBLEM;
+}
+
 int main(void) {
   char path[96];
   char copy_env_path[128];
@@ -2746,6 +2957,8 @@ int main(void) {
     return exercise_async_read_path(path, false, async_read_cursor_scan);
   if (env_enabled("MDBX_ASYNC_SMOKE_CURSOR_SCAN_FROM_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_cursor_scan_from);
+  if (env_enabled("MDBX_ASYNC_SMOKE_DUPSORT_FALLBACK_READ_ONLY"))
+    return exercise_async_dupsort_read_fallback(path);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_ONLY"))
     return exercise_async_read_path(path, true, async_read_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_GET_MANY_ONLY"))
