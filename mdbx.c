@@ -20611,7 +20611,10 @@ typedef struct async_cache_get_loop_pending {
   bool singlethreaded;
   size_t base;
   size_t chunk;
+  MDBX_val keys[64];
   MDBX_val data[64];
+  void *key_copies[64];
+  uint64_t key_inline[64][MDBX_ASYNC_INLINE_WORDS];
   MDBX_cache_entry_t entries[64];
   MDBX_cache_result_t results[64];
   bool handled[64];
@@ -20626,6 +20629,10 @@ static void async_cache_get_loop_pending_free_chunk(async_cache_get_loop_pending
   if (pending->materialize_started) {
     (void)async_cache_materialize_batch_finish(&pending->materialize);
     pending->materialize_started = false;
+  }
+  for (size_t j = 0; j < pending->chunk; ++j) {
+    osal_free(pending->key_copies[j]);
+    pending->key_copies[j] = nullptr;
   }
   pending->chunk = 0;
 }
@@ -20647,13 +20654,23 @@ static int async_cache_get_loop_pending_prepare(async_cache_get_loop_pending_t *
   pending->drive_rc = MDBX_SUCCESS;
   pending->materialize_started = false;
 
+  memset(pending->keys, 0, chunk * sizeof(pending->keys[0]));
   memset(pending->data, 0, chunk * sizeof(pending->data[0]));
+  memset(pending->key_copies, 0, chunk * sizeof(pending->key_copies[0]));
   memset(pending->entries, 0, chunk * sizeof(pending->entries[0]));
   memset(pending->results, 0, chunk * sizeof(pending->results[0]));
   memset(pending->handled, 0, chunk * sizeof(pending->handled[0]));
 
   for (size_t j = 0; j < chunk; ++j) {
     const size_t i = pending->base + j;
+    MDBX_val key = {nullptr, 0};
+    int rc = op->args.cache_get_loop.key_func(op->args.cache_get_loop.context, i, &key);
+    if (unlikely(rc == MDBX_SUCCESS))
+      rc = async_copy_val(&pending->keys[j], &pending->key_copies[j], pending->key_inline[j],
+                          sizeof(pending->key_inline[j]), &key);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+
     if (pending->singlethreaded) {
       pending->entries[j] = ((MDBX_cache_entry_t *)entries_arg)[i];
     } else if (!cache_entry_snapshot_volatile(&entries_arg[i], &pending->entries[j])) {
@@ -20684,13 +20701,15 @@ static int async_cache_get_loop_pending_complete_chunk(async_cache_get_loop_pend
     pending->materialize_started = false;
   }
 
+  (void)async_cache_get_refresh_batch(txn, dbi, pending->keys, pending->data,
+                                      pending->results, pending->handled,
+                                      &entries_arg[pending->base], pending->singlethreaded,
+                                      pending->chunk);
+
   for (size_t j = 0; j < pending->chunk; ++j) {
     const size_t i = pending->base + j;
-    MDBX_val key = {nullptr, 0};
+    MDBX_val key = pending->keys[j];
     MDBX_val data = {nullptr, 0};
-    int rc = op->args.cache_get_loop.key_func(op->args.cache_get_loop.context, i, &key);
-    if (unlikely(rc != MDBX_SUCCESS))
-      return rc;
 
     MDBX_cache_result_t result;
     if (pending->handled[j]) {
@@ -20701,10 +20720,10 @@ static int async_cache_get_loop_pending_complete_chunk(async_cache_get_loop_pend
                                                 pending->singlethreaded);
     }
 
-    rc = op->args.cache_get_loop.result_func
-             ? op->args.cache_get_loop.result_func(op->args.cache_get_loop.context, i, &key, &data,
-                                                   result)
-             : result.errcode;
+    int rc = op->args.cache_get_loop.result_func
+                 ? op->args.cache_get_loop.result_func(op->args.cache_get_loop.context, i, &key, &data,
+                                                       result)
+                 : result.errcode;
     if (op->args.cache_get_loop.completed)
       *op->args.cache_get_loop.completed = i + 1;
     if (unlikely(rc != MDBX_SUCCESS))
