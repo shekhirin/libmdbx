@@ -22206,6 +22206,31 @@ static void async_cursor_get_batch_pending_complete(async_cursor_get_batch_pendi
   async_cursor_get_batch_pending_free(pending);
 }
 
+static int async_cursor_get_batch_pending_step(async_cursor_get_batch_pending_t *pending,
+                                               bool wait, bool *made_progress) {
+  if (unlikely(!pending))
+    return MDBX_EINVAL;
+
+  MDBX_async_op *const op = pending->op;
+  const size_t before_produced = pending->produced;
+  const bool before_first = pending->first_started;
+  const bool before_large = pending->large_started;
+  const bool before_sibling = pending->sibling_started;
+  int rc = async_cursor_get_batch_pending_drive(pending, wait);
+  if (made_progress)
+    *made_progress = pending->produced != before_produced ||
+                     pending->first_started != before_first ||
+                     pending->large_started != before_large ||
+                     pending->sibling_started != before_sibling;
+  if (rc == MDBX_RESULT_TRUE)
+    return rc;
+
+  *op->args.cursor_get_batch.count = pending->produced;
+  op->result = pending->result;
+  async_cursor_get_batch_pending_free(pending);
+  return rc;
+}
+
 static async_cursor_get_batch_pending_t *async_cursor_get_batch_start(MDBX_async_op *op) {
   if (unlikely(!op))
     return nullptr;
@@ -22288,10 +22313,47 @@ static async_cursor_get_batch_pending_t *async_cursor_get_batch_start(MDBX_async
 
 static void async_cursor_get_batch_pending_drain_all(async_cursor_get_batch_pending_t *pending) {
   while (pending) {
-    async_cursor_get_batch_pending_t *const next = pending->next;
-    pending->next = nullptr;
-    async_cursor_get_batch_pending_complete(pending);
-    pending = next;
+    async_cursor_get_batch_pending_t *again_head = nullptr;
+    async_cursor_get_batch_pending_t *again_tail = nullptr;
+    bool progressed = false;
+
+    while (pending) {
+      async_cursor_get_batch_pending_t *const item = pending;
+      pending = item->next;
+      item->next = nullptr;
+
+      bool made_progress = false;
+      const int rc = async_cursor_get_batch_pending_step(item, false, &made_progress);
+      if (rc == MDBX_RESULT_TRUE) {
+        if (again_tail)
+          again_tail->next = item;
+        else
+          again_head = item;
+        again_tail = item;
+        progressed = progressed || made_progress;
+      } else {
+        progressed = true;
+      }
+    }
+
+    if (again_head && !progressed) {
+      async_cursor_get_batch_pending_t *const item = again_head;
+      again_head = item->next;
+      if (!again_head)
+        again_tail = nullptr;
+      item->next = nullptr;
+
+      const int rc = async_cursor_get_batch_pending_step(item, true, nullptr);
+      if (rc == MDBX_RESULT_TRUE) {
+        if (again_tail)
+          again_tail->next = item;
+        else
+          again_head = item;
+        again_tail = item;
+      }
+    }
+
+    pending = again_head;
   }
 }
 
