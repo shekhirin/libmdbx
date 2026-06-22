@@ -7995,3 +7995,56 @@ Async get_ex scheduler retained-state checkpoint:
   GET now reaches the same retained exact-key traversal state as ordinary GET,
   so scheduler work can continue from one pending mechanism instead of keeping
   get_ex as an immediate drive-to-completion special case.
+
+Async lowerbound scheduler retained-state checkpoint:
+
+- split grouped `async_op_get_equal_or_great` worker execution into a
+  start/complete form using `async_batched_lowerbound_traverse_state_t`.
+- the start path prepares lowerbound keys, found-key storage, value buffers,
+  result arrays, and eligible flags, then calls
+  `async_batched_lowerbound_traverse_drive(..., false)`.
+- if the nonblocking drive reports `MDBX_RESULT_TRUE`, the worker retains the
+  lowerbound traversal state and may submit later lowerbound groups before
+  draining retained states.
+- completion publication remains FIFO. The worker drains retained GET, GET_EX,
+  and lowerbound states before updating `completed_seq`, and it flushes before
+  crossing between retained operation families.
+- non-batchable DBIs and allocation failures fall back to the previous
+  synchronous grouped lowerbound execution path.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-lower-retain-before.txt` and
+    `/tmp/mdbx-async-bench-lower-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `e874325`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async single get | 336.784 Kops/s | 296.560 Kops/s |
+| async single get_ex | 320.105 Kops/s | 324.433 Kops/s |
+| async single lowerbound | 287.693 Kops/s | 253.750 Kops/s |
+| async parallel get | 2.791 Mops/s | 1.493 Mops/s |
+| async many parallel get | 2.862 Mops/s | 1.879 Mops/s |
+| async threaded get | 2.527 Mops/s | 2.370 Mops/s |
+| async threaded many get | 3.179 Mops/s | 2.279 Mops/s |
+| async batch parallel get | 2.122 Mops/s | 2.533 Mops/s |
+| async get_ex batch | 2.680 Mops/s | 1.544 Mops/s |
+| async get_ex many | 2.651 Mops/s | 1.252 Mops/s |
+| async lowerbound batch | 1.673 Mops/s | 1.242 Mops/s |
+| async lowerbound many | 1.671 Mops/s | 1.620 Mops/s |
+| async lowerbound loop | 1.740 Mops/s | 1.102 Mops/s |
+| async threaded lower loop | 1.859 Mops/s | 1.585 Mops/s |
+| async cache batch | 3.971 Mops/s | 4.068 Mops/s |
+| async cache st batch | 3.826 Mops/s | 3.648 Mops/s |
+
+- conclusion: this checkpoint is semantic rather than a performance win in this
+  single benchmark run. The lowerbound grouped worker path now participates in
+  scheduler-retained traversal state, so the main grouped GET-family operations
+  can all suspend after a nonblocking page-read drive and be completed through
+  the same retained-state drain mechanism.
