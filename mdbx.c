@@ -13643,8 +13643,11 @@ static int async_cache_materialize_batch_drive(async_cache_materialize_batch_sta
 static size_t async_cache_materialize_batch_finish(async_cache_materialize_batch_state_t *state) {
   if (!state)
     return 0;
-  if (state->prepared && !state->completed)
-    (void)async_cache_materialize_batch_complete(state);
+  if (state->prepared && !state->completed) {
+    int rc = async_cache_materialize_batch_drive(state, false);
+    while (rc == MDBX_RESULT_TRUE)
+      rc = async_cache_materialize_batch_drive(state, true);
+  }
   size_t handled_count = 0;
   if (state->handled)
     for (size_t i = 0; i < state->count; ++i)
