@@ -198,6 +198,39 @@ write_ops=1000 page_cache=64K`), compared against the previous commit
 This is still a per-item loop. A future resumable traversal design should be
 able to batch independent page misses without changing callback order.
 
+## Public Async Get Run Batching Slice
+
+The async worker now coalesces contiguous `async_op_get` operations with the
+same transaction and DBI into one internal execution batch, up to the existing
+completion chunk size. This primarily targets `mdbx_async_get_many()` and
+windows of adjacent `mdbx_async_get()` calls. Eligible cached entries in the
+run can be materialized through one `cache_materialize_singlethreaded_batch()`
+call, so repeated reads can share the explicit page-cache read batching path
+before the operations are marked complete.
+
+The coalescing is deliberately conservative: it does not cross transaction or
+DBI boundaries, does not reorder completions, and still falls back per item
+when entries are not warm enough for cached materialization. `mdbx_async_get_batch()`
+already has its own batch operation and is not the main target of this slice.
+
+Repeated-key forced no-mmap/io_uring benchmark (`items=1000 ops=30000
+write_ops=1000 page_cache=64K`), compared against the previous commit
+`ef3c250`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async parallel get | 1.756 Mops/s | 2.039 Mops/s |
+| async many parallel get | 1.740 Mops/s | 1.818 Mops/s |
+| async threaded get | 1.237 Mops/s | 2.238 Mops/s |
+| async threaded many get | 953.463 Kops/s | 1.147 Mops/s |
+| async/blocking parallel | 2.140 | 2.253 |
+| async-many/blocking par | 2.120 | 2.008 |
+| async-thread/blocking par | 1.506 | 2.473 |
+| async-thread-many/par | 1.161 | 1.267 |
+
+Single-run noise is visible in related rows, and the separate batch-operation
+row was lower in this run (`2.052 Mops/s` before, `1.963 Mops/s` after).
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current

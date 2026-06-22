@@ -16435,6 +16435,85 @@ static int async_cached_get_batch(MDBX_async_op *op) {
   return MDBX_SUCCESS;
 }
 
+static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], size_t count) {
+  if (unlikely(!async || !ops || !count))
+    return;
+  if (count == 1) {
+    MDBX_val data = {nullptr, 0};
+    MDBX_async_op *const op = ops[0];
+    const int rc = async_cached_get(async, op->args.get.txn, op->args.get.dbi, &op->key, &data);
+    if (op->args.get.data)
+      *op->args.get.data = data;
+    op->result = rc;
+    return;
+  }
+
+  const MDBX_txn *const txn = ops[0]->args.get.txn;
+  const MDBX_dbi dbi = ops[0]->args.get.dbi;
+  MDBX_async_get_cache_slot **slots = osal_calloc(count, sizeof(slots[0]));
+  MDBX_cache_entry_t *entries = osal_calloc(count, sizeof(entries[0]));
+  MDBX_cache_result_t *cache_results = osal_calloc(count, sizeof(cache_results[0]));
+  MDBX_val *data = osal_calloc(count, sizeof(data[0]));
+  bool *handled = osal_calloc(count, sizeof(handled[0]));
+
+  if (slots && entries && cache_results && data && handled) {
+    for (size_t i = 0; i < count; ++i) {
+      slots[i] = async_get_cache_slot(async, txn, dbi, &ops[i]->key);
+      if (slots[i] && slots[i]->use_count > 1)
+        entries[i] = slots[i]->entry;
+    }
+    (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    MDBX_async_op *const op = ops[i];
+    MDBX_val value = {nullptr, 0};
+    int rc;
+    if (handled && handled[i]) {
+      rc = cache_results[i].errcode;
+      if (rc == MDBX_SUCCESS)
+        value = data[i];
+    } else {
+      MDBX_async_get_cache_slot *slot = slots ? slots[i] : nullptr;
+      if (slot) {
+        const uint64_t hash = async_get_cache_hash(dbi, &op->key);
+        if (!async_get_cache_key_equal(slot, txn->env, dbi, hash, &op->key))
+          slot = async_get_cache_slot(async, txn, dbi, &op->key);
+      }
+      if (slot) {
+        if (slot->use_count == 0) {
+          rc = mdbx_get(txn, dbi, &op->key, &value);
+          slot->use_count = 1;
+        } else {
+          MDBX_cache_result_t cache_result = mdbx_cache_get_SingleThreaded(txn, dbi, &op->key, &value,
+                                                                           &slot->entry);
+          rc = cache_result.errcode;
+          if (cache_result.errcode == MDBX_SUCCESS || cache_result.errcode == MDBX_NOTFOUND)
+            slot->use_count = 2;
+        }
+      } else {
+        rc = async_cached_get(async, txn, dbi, &op->key, &value);
+      }
+    }
+
+    if (op->args.get.data) {
+      if (rc == MDBX_SUCCESS) {
+        *op->args.get.data = value;
+      } else {
+        op->args.get.data->iov_base = nullptr;
+        op->args.get.data->iov_len = 0;
+      }
+    }
+    op->result = rc;
+  }
+
+  osal_free(handled);
+  osal_free(data);
+  osal_free(cache_results);
+  osal_free(entries);
+  osal_free(slots);
+}
+
 static int async_cursor_get_batches_execute(MDBX_async_op *op) {
   const size_t target_pairs = op->args.cursor_get_batches.target_pairs;
   const size_t batch_pairs = op->args.cursor_get_batches.batch_pairs;
@@ -17537,15 +17616,38 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
     MDBX_async_op *ready_tail = nullptr;
     size_t ready_count = 0;
     for (;;) {
-      MDBX_async_op *const next = op->next;
+      MDBX_async_op *next = op->next;
       op->next = nullptr;
-      op->result = async_op_execute(op);
-      if (ready_tail)
-        ready_tail->next = op;
-      else
-        ready_head = op;
-      ready_tail = op;
-      ready_count += 1;
+      if (op->opcode == async_op_get) {
+        MDBX_async_op *batch[MDBX_ASYNC_COMPLETE_CHUNK];
+        size_t batch_count = 1;
+        const size_t batch_limit = MDBX_ASYNC_COMPLETE_CHUNK - ready_count;
+        batch[0] = op;
+        while (next && batch_count < batch_limit && next->opcode == async_op_get &&
+               next->args.get.txn == op->args.get.txn && next->args.get.dbi == op->args.get.dbi) {
+          MDBX_async_op *const item = next;
+          next = item->next;
+          item->next = nullptr;
+          batch[batch_count++] = item;
+        }
+        async_cached_get_ops_batch(async, batch, batch_count);
+        for (size_t i = 0; i < batch_count; ++i) {
+          if (ready_tail)
+            ready_tail->next = batch[i];
+          else
+            ready_head = batch[i];
+          ready_tail = batch[i];
+        }
+        ready_count += batch_count;
+      } else {
+        op->result = async_op_execute(op);
+        if (ready_tail)
+          ready_tail->next = op;
+        else
+          ready_head = op;
+        ready_tail = op;
+        ready_count += 1;
+      }
 
       if (next && ready_count < MDBX_ASYNC_COMPLETE_CHUNK) {
         op = next;
