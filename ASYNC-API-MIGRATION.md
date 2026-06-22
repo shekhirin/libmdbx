@@ -5514,3 +5514,67 @@ Additional cache materialization small-batch stack checkpoint:
   Treat this as a small allocator-overhead reduction in the internal async
   materialization path; the reduced benchmark remains noisy and should not be
   used as a broad throughput claim.
+
+Additional page-cache read batch small-stack checkpoint:
+
+- changed `page_cache_submit_read_batch()` to use stack scratch storage for up
+  to four page-cache read submissions. The stack-backed state covers fill
+  records, storage read submissions/results, miss indices, and duplicate-miss
+  tracking buckets.
+- larger batches still use heap allocation. The stack fill records are
+  explicitly zeroed before use so the existing discard path can safely release
+  only active prepared cache fills.
+- this is the central internal page-cache miss path under committed page reads,
+  cache-entry materialization, cursor prefetch reads, and explicit no-mmap
+  async page reads. It reduces allocator overhead for common shallow page-read
+  batches without changing lookup, duplicate-miss coalescing, io_uring batch
+  submission, cache insertion, retained page pinning, or fallback behavior.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-pagecache-stack-before.txt` and
+    `/tmp/mdbx-async-bench-pagecache-stack-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `6aba82c`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.874 Mops/s | 1.875 Mops/s |
+| blocking parallel get | 1.039 Mops/s | 817.428 Kops/s |
+| async single get | 393.405 Kops/s | 294.649 Kops/s |
+| async single get_ex | 408.322 Kops/s | 276.899 Kops/s |
+| async parallel get | 2.730 Mops/s | 2.244 Mops/s |
+| async many parallel get | 2.828 Mops/s | 2.379 Mops/s |
+| async get_ex batch | 2.550 Mops/s | 2.702 Mops/s |
+| async get_ex many | 2.764 Mops/s | 2.833 Mops/s |
+| async cache many | 4.243 Mops/s | 2.648 Mops/s |
+| async cache st many | 4.389 Mops/s | 4.505 Mops/s |
+| async cache batch | 3.577 Mops/s | 2.991 Mops/s |
+| async cache st batch | 4.020 Mops/s | 3.725 Mops/s |
+| async cache loop | 3.962 Mops/s | 3.797 Mops/s |
+| async cache st loop | 4.820 Mops/s | 2.715 Mops/s |
+| async threaded cache loop | 2.683 Mops/s | 2.566 Mops/s |
+| async threaded cache st loop | 2.791 Mops/s | 3.736 Mops/s |
+| async get loop | 2.656 Mops/s | 2.077 Mops/s |
+| async get_ex loop | 1.949 Mops/s | 2.440 Mops/s |
+| async cursor get loop | 68.352 Mops/s | 66.318 Mops/s |
+| async cursor get loop_from | 66.822 Mops/s | 67.315 Mops/s |
+| async threaded cursor get loop | 119.751 Mops/s | 128.288 Mops/s |
+| async threaded cget loop_from | 118.819 Mops/s | 129.201 Mops/s |
+| async-cache-loop/par | 3.813 | 4.645 |
+| async-thread-cache-loop/par | 2.583 | 3.139 |
+| async-cache-loop/batch | 1.108 | 1.270 |
+| async-cache-loop/many | 0.934 | 1.434 |
+| async-cache-loop/ser | 2.114 | 2.025 |
+
+- conclusion: this checkpoint removes per-call heap allocation from the common
+  small central page-cache batch path. The reduced benchmark is mixed: cache
+  loop ratios, `get_ex` loop, and threaded cursor loop rows improved, while
+  several direct get/cache throughput rows regressed in this one-run sample.
+  Treat the change as internal async-read plumbing cleanup rather than a broad
+  throughput result.

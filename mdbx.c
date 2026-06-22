@@ -32524,13 +32524,31 @@ static int page_cache_submit_read_batch(MDBX_txn *txn, const dxb_page_cache_read
   dxb_storage_t *const storage = &txn->env->dxb_storage;
   int first_err = MDBX_SUCCESS;
   size_t misses = 0;
-  page_cache_batch_fill_t *fills = osal_calloc(count, sizeof(fills[0]));
-  dxb_read_submit_io_t *reads = osal_calloc(count, sizeof(reads[0]));
-  dxb_read_result_t *read_results = osal_calloc(count, sizeof(read_results[0]));
-  size_t *miss_index = osal_malloc(count * sizeof(miss_index[0]));
-  size_t *duplicate_of = osal_malloc(count * sizeof(duplicate_of[0]));
-  size_t *duplicate_buckets = osal_malloc(count * sizeof(duplicate_buckets[0]));
-  size_t *duplicate_next = osal_malloc(count * sizeof(duplicate_next[0]));
+  page_cache_batch_fill_t stack_fills[4];
+  dxb_read_submit_io_t stack_reads[4];
+  dxb_read_result_t stack_read_results[4];
+  size_t stack_miss_index[4];
+  size_t stack_duplicate_of[4];
+  size_t stack_duplicate_buckets[4];
+  size_t stack_duplicate_next[4];
+  page_cache_batch_fill_t *fills = stack_fills;
+  dxb_read_submit_io_t *reads = stack_reads;
+  dxb_read_result_t *read_results = stack_read_results;
+  size_t *miss_index = stack_miss_index;
+  size_t *duplicate_of = stack_duplicate_of;
+  size_t *duplicate_buckets = stack_duplicate_buckets;
+  size_t *duplicate_next = stack_duplicate_next;
+  if (count <= ARRAY_LENGTH(stack_fills)) {
+    memset(fills, 0, count * sizeof(fills[0]));
+  } else {
+    fills = osal_calloc(count, sizeof(fills[0]));
+    reads = osal_calloc(count, sizeof(reads[0]));
+    read_results = osal_calloc(count, sizeof(read_results[0]));
+    miss_index = osal_malloc(count * sizeof(miss_index[0]));
+    duplicate_of = osal_malloc(count * sizeof(duplicate_of[0]));
+    duplicate_buckets = osal_malloc(count * sizeof(duplicate_buckets[0]));
+    duplicate_next = osal_malloc(count * sizeof(duplicate_next[0]));
+  }
   if (unlikely(!fills || !reads || !read_results || !miss_index || !duplicate_of ||
                !duplicate_buckets || !duplicate_next)) {
     first_err = MDBX_ENOMEM;
@@ -32662,13 +32680,20 @@ bailout:
     for (size_t i = 0; i < count; ++i)
       page_cache_batch_fill_discard(&fills[i]);
   }
-  osal_free(duplicate_of);
-  osal_free(duplicate_next);
-  osal_free(duplicate_buckets);
-  osal_free(miss_index);
-  osal_free(read_results);
-  osal_free(reads);
-  osal_free(fills);
+  if (duplicate_of != stack_duplicate_of)
+    osal_free(duplicate_of);
+  if (duplicate_next != stack_duplicate_next)
+    osal_free(duplicate_next);
+  if (duplicate_buckets != stack_duplicate_buckets)
+    osal_free(duplicate_buckets);
+  if (miss_index != stack_miss_index)
+    osal_free(miss_index);
+  if (read_results != stack_read_results)
+    osal_free(read_results);
+  if (reads != stack_reads)
+    osal_free(reads);
+  if (fills != stack_fills)
+    osal_free(fills);
   if (unlikely(first_err == MDBX_ENOMEM)) {
     for (size_t i = 0; i < count; ++i)
       results[i] = dxb_cache_page_error(MDBX_ENOMEM);
