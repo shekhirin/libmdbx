@@ -172,6 +172,32 @@ adaptive first-sighting change; representative public get rows were async get
 `920.384 Kops/s`, async many `931.513 Kops/s`, async batch `856.293 Kops/s`,
 and async batch callback `882.005 Kops/s`.
 
+## Public Async Get Loop Cache Slice
+
+Routed `mdbx_async_get_loop()` through the same worker-owned async get cache
+used by public async get and batch get. The loop still invokes `key_func`,
+performs exactly one get-equivalent lookup, invokes `result_func`, and updates
+`completed` in index order for each item. It does not prefetch future keys ahead
+of callbacks, so callback-visible ordering remains unchanged. Repeated keys can
+now leave the pure `mdbx_get()` executor-offload path and use cached-entry
+materialization through the explicit page-cache path.
+
+Repeated-key forced no-mmap/io_uring benchmark (`items=1000 ops=30000
+write_ops=1000 page_cache=64K`), compared against the previous commit
+`d0d2108`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async get loop | 1.049 Mops/s | 1.868 Mops/s |
+| async threaded get loop | 935.333 Kops/s | 1.488 Mops/s |
+| async-loop/blocking par | 0.977 | 1.968 |
+| async-thread-loop/par | 0.871 | 1.568 |
+| async-loop/blocking ser | 0.512 | 0.909 |
+| async-thread-loop/ser | 0.456 | 0.724 |
+
+This is still a per-item loop. A future resumable traversal design should be
+able to batch independent page misses without changing callback order.
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current

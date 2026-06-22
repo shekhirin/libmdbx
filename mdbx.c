@@ -17065,7 +17065,7 @@ static int async_op_execute(MDBX_async_op *op) {
       int rc = op->args.get_loop.key_func(op->args.get_loop.context, i, &key);
       if (unlikely(rc != MDBX_SUCCESS))
         return rc;
-      const int get_rc = mdbx_get(op->args.get_loop.txn, op->args.get_loop.dbi, &key, &data);
+      const int get_rc = async_cached_get(op->async, op->args.get_loop.txn, op->args.get_loop.dbi, &key, &data);
       rc = op->args.get_loop.result_func
                ? op->args.get_loop.result_func(op->args.get_loop.context, i, &key, &data, get_rc)
                : get_rc;

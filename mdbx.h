@@ -5513,11 +5513,12 @@ LIBMDBX_API int mdbx_async_get_equal_or_great_batch_cb(MDBX_async *async, const 
 /** \brief Asynchronously run a worker-side loop of get operations.
  * \ingroup c_async
  * \details This submits one async operation that invokes `key_func` for each
- *          index, calls \ref mdbx_get(), and then invokes `result_func` when it
- *          is non-NULL. If no result callback is supplied, the first non-success
- *          \ref mdbx_get() result stops the loop and becomes the async operation
- *          result. If `completed` is non-NULL, it receives the number of get
- *          attempts completed before the operation returned.
+ *          index, performs a get-equivalent lookup, and then invokes
+ *          `result_func` when it is non-NULL. If no result callback is
+ *          supplied, the first non-success get result stops the loop and
+ *          becomes the async operation result. If `completed` is non-NULL, it
+ *          receives the number of get attempts completed before the operation
+ *          returned.
  * \see mdbx_get() */
 LIBMDBX_API int mdbx_async_get_loop(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, size_t count,
                                     MDBX_get_loop_key_func key_func, MDBX_get_loop_result_func result_func,
