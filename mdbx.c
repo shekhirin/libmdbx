@@ -4000,6 +4000,8 @@ MDBX_INTERNAL int tree_deepen_lowest(MDBX_cursor *mc);
 MDBX_INTERNAL intptr_t tree_diff_level(const MDBX_cursor *left, const MDBX_cursor *right);
 MDBX_INTERNAL size_t tree_search_branch_configure(const MDBX_cursor *mc, const MDBX_val *key);
 MDBX_INTERNAL sfr_t tree_search_foliage_configure(MDBX_cursor *mc, const MDBX_val *key);
+static inline int cursor_branch_child_prepare_get(MDBX_cursor *mc, indx_t parent_ki,
+                                                  dxb_cursor_page_get_submit_io_t *get, intptr_t *parent_top);
 static inline int cursor_branch_child_edge_push(MDBX_cursor *mc, indx_t parent_ki, bool last_child_ki);
 
 enum page_search_flags {
@@ -16498,6 +16500,170 @@ static int async_cached_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi
   return result.errcode;
 }
 
+static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
+                                         MDBX_val data[], int results[], bool handled[],
+                                         const bool eligible[], size_t count) {
+  if (unlikely(!txn || !keys || !data || !results || !handled || !eligible || !count))
+    return 0;
+  if (unlikely(check_txn(txn, MDBX_TXN_BLOCKED) != MDBX_SUCCESS))
+    return 0;
+
+  cursor_couple_t *couples = osal_calloc(count, sizeof(couples[0]));
+  bool *initialized = osal_calloc(count, sizeof(initialized[0]));
+  dxb_cursor_page_get_submit_io_t *gets = osal_calloc(count, sizeof(gets[0]));
+  pgr_t *pgrs = osal_calloc(count, sizeof(pgrs[0]));
+  size_t *indices = osal_malloc(count * sizeof(indices[0]));
+  intptr_t *parent_tops = osal_malloc(count * sizeof(parent_tops[0]));
+  indx_t *parent_kis = osal_malloc(count * sizeof(parent_kis[0]));
+  if (unlikely(!couples || !initialized || !gets || !pgrs || !indices || !parent_tops || !parent_kis))
+    goto bailout;
+
+  size_t root_count = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (!eligible[i] || handled[i])
+      continue;
+
+    data[i].iov_base = nullptr;
+    data[i].iov_len = 0;
+    int err = cursor_init(&couples[i].outer, txn, dbi);
+    if (unlikely(err != MDBX_SUCCESS)) {
+      results[i] = err;
+      handled[i] = true;
+      continue;
+    }
+    initialized[i] = true;
+
+    MDBX_cursor *const mc = &couples[i].outer;
+    const pgno_t root = mc->tree->root;
+    if (unlikely(root == P_INVALID)) {
+      results[i] = MDBX_NOTFOUND;
+      handled[i] = true;
+      continue;
+    }
+    err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_LARGE, root,
+                                         tbl_root_txnid(mc->txn, cursor_dbi(mc)), &gets[root_count]);
+    if (unlikely(err != MDBX_SUCCESS)) {
+      results[i] = err;
+      handled[i] = true;
+      continue;
+    }
+    indices[root_count++] = i;
+  }
+
+  if (root_count) {
+    (void)page_submit_cursor_get_batch(gets, pgrs, root_count);
+    for (size_t j = 0; j < root_count; ++j) {
+      const size_t i = indices[j];
+      MDBX_cursor *const mc = &couples[i].outer;
+      int err = pgrs[j].err;
+      if (likely(err == MDBX_SUCCESS)) {
+        err = cursor_stack_set_pgr_consume_checked(mc, 0, &pgrs[j]);
+        if (likely(err == MDBX_SUCCESS)) {
+          mc->top = 0;
+          mc->ki[0] = 0;
+        } else {
+          pgr_release(mc, &pgrs[j]);
+        }
+      } else {
+        pgr_release(mc, &pgrs[j]);
+      }
+      if (unlikely(err != MDBX_SUCCESS)) {
+        results[i] = err;
+        handled[i] = true;
+      }
+    }
+  }
+
+  while (true) {
+    size_t child_count = 0;
+    for (size_t i = 0; i < count; ++i) {
+      if (!initialized[i] || handled[i])
+        continue;
+      MDBX_cursor *const mc = &couples[i].outer;
+      if (unlikely(mc->top < 0 || mc->top >= CURSOR_STACK_SIZE || !mc->pg[mc->top])) {
+        results[i] = MDBX_EINVAL;
+        handled[i] = true;
+        continue;
+      }
+      page_t *const mp = mc->pg[mc->top];
+      if (!is_branch(mp))
+        continue;
+
+      const intptr_t ki = tree_search_branch(mc, &keys[i]);
+      int err = cursor_branch_child_prepare_get(mc, (indx_t)ki, &gets[child_count],
+                                                &parent_tops[child_count]);
+      if (unlikely(err != MDBX_SUCCESS)) {
+        results[i] = err;
+        handled[i] = true;
+        continue;
+      }
+      parent_kis[child_count] = (indx_t)ki;
+      indices[child_count] = i;
+      ++child_count;
+    }
+    if (!child_count)
+      break;
+
+    (void)page_submit_cursor_get_batch(gets, pgrs, child_count);
+    for (size_t j = 0; j < child_count; ++j) {
+      const size_t i = indices[j];
+      MDBX_cursor *const mc = &couples[i].outer;
+      int err = pgrs[j].err;
+      if (likely(err == MDBX_SUCCESS)) {
+        mc->ki[parent_tops[j]] = parent_kis[j];
+        err = cursor_push_pgr_consume_checked(mc, &pgrs[j], 0);
+      } else {
+        pgr_release(mc, &pgrs[j]);
+      }
+      if (unlikely(err != MDBX_SUCCESS)) {
+        results[i] = err;
+        handled[i] = true;
+      }
+    }
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    if (!initialized[i] || handled[i])
+      continue;
+
+    MDBX_val key = keys[i];
+    MDBX_val value = {nullptr, 0};
+    int rc = cursor_seek(&couples[i].outer, &key, &value, MDBX_SET).err;
+    if (likely(rc == MDBX_SUCCESS))
+      rc = cursor_couple_capture_txn_pins(&couples[i]);
+    results[i] = rc;
+    if (rc == MDBX_SUCCESS)
+      data[i] = value;
+    else {
+      data[i].iov_base = nullptr;
+      data[i].iov_len = 0;
+    }
+    handled[i] = true;
+  }
+
+bailout:
+  if (couples && initialized) {
+    for (size_t i = 0; i < count; ++i) {
+      if (initialized[i]) {
+        cursor_stack_release_all(&couples[i].outer);
+        cursor_stack_release_all(&couples[i].inner.cursor);
+      }
+    }
+  }
+  size_t handled_count = 0;
+  if (handled)
+    for (size_t i = 0; i < count; ++i)
+      handled_count += handled[i] ? 1 : 0;
+  osal_free(parent_kis);
+  osal_free(parent_tops);
+  osal_free(indices);
+  osal_free(pgrs);
+  osal_free(gets);
+  osal_free(initialized);
+  osal_free(couples);
+  return handled_count;
+}
+
 static int async_cached_get_batch(MDBX_async_op *op) {
   const MDBX_txn *const txn = op->args.get_batch.txn;
   const MDBX_dbi dbi = op->args.get_batch.dbi;
@@ -16509,21 +16675,30 @@ static int async_cached_get_batch(MDBX_async_op *op) {
   MDBX_cache_entry_t *entries = osal_calloc(count, sizeof(entries[0]));
   MDBX_cache_result_t *cache_results = osal_calloc(count, sizeof(cache_results[0]));
   bool *handled = osal_calloc(count, sizeof(handled[0]));
+  bool *cold = osal_calloc(count, sizeof(cold[0]));
 
-  if (slots && entries && cache_results && handled) {
+  if (slots && entries && cache_results && handled && cold) {
     for (size_t i = 0; i < count; ++i) {
       data[i].iov_base = nullptr;
       data[i].iov_len = 0;
       slots[i] = async_get_cache_slot(op->async, txn, dbi, &keys[i]);
-      if (slots[i] && slots[i]->use_count > 1)
-        entries[i] = slots[i]->entry;
+      if (slots[i]) {
+        if (slots[i]->use_count == 0)
+          cold[i] = true;
+        else if (slots[i]->use_count > 1)
+          entries[i] = slots[i]->entry;
+      }
     }
     (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
+    (void)async_batched_get_traverse(txn, dbi, keys, data, results, handled, cold, count);
   }
 
   for (size_t i = 0; i < count; ++i) {
     if (handled && handled[i]) {
-      results[i] = cache_results[i].errcode;
+      if (cold && cold[i] && slots && slots[i])
+        slots[i]->use_count = 1;
+      if (!(cold && cold[i]))
+        results[i] = cache_results[i].errcode;
       if (results[i] != MDBX_SUCCESS) {
         data[i].iov_base = nullptr;
         data[i].iov_len = 0;
@@ -16563,6 +16738,7 @@ static int async_cached_get_batch(MDBX_async_op *op) {
   }
 
   osal_free(handled);
+  osal_free(cold);
   osal_free(cache_results);
   osal_free(entries);
   osal_free(slots);
@@ -16591,14 +16767,23 @@ static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], 
   MDBX_cache_result_t *cache_results = osal_calloc(count, sizeof(cache_results[0]));
   MDBX_val *data = osal_calloc(count, sizeof(data[0]));
   bool *handled = osal_calloc(count, sizeof(handled[0]));
+  bool *cold = osal_calloc(count, sizeof(cold[0]));
+  MDBX_val *keys = osal_calloc(count, sizeof(keys[0]));
+  int *tree_results = osal_calloc(count, sizeof(tree_results[0]));
 
-  if (slots && entries && cache_results && data && handled) {
+  if (slots && entries && cache_results && data && handled && cold && keys && tree_results) {
     for (size_t i = 0; i < count; ++i) {
+      keys[i] = ops[i]->key;
       slots[i] = async_get_cache_slot(async, txn, dbi, &ops[i]->key);
-      if (slots[i] && slots[i]->use_count > 1)
-        entries[i] = slots[i]->entry;
+      if (slots[i]) {
+        if (slots[i]->use_count == 0)
+          cold[i] = true;
+        else if (slots[i]->use_count > 1)
+          entries[i] = slots[i]->entry;
+      }
     }
     (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
+    (void)async_batched_get_traverse(txn, dbi, keys, data, tree_results, handled, cold, count);
   }
 
   for (size_t i = 0; i < count; ++i) {
@@ -16606,7 +16791,13 @@ static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], 
     MDBX_val value = {nullptr, 0};
     int rc;
     if (handled && handled[i]) {
-      rc = cache_results[i].errcode;
+      if (cold && cold[i]) {
+        if (slots && slots[i])
+          slots[i]->use_count = 1;
+        rc = tree_results ? tree_results[i] : MDBX_EINVAL;
+      } else {
+        rc = cache_results[i].errcode;
+      }
       if (rc == MDBX_SUCCESS)
         value = data[i];
     } else {
@@ -16644,6 +16835,9 @@ static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], 
   }
 
   osal_free(handled);
+  osal_free(tree_results);
+  osal_free(keys);
+  osal_free(cold);
   osal_free(data);
   osal_free(cache_results);
   osal_free(entries);
@@ -49119,9 +49313,8 @@ static int page_submit_cursor_get_batch(const dxb_cursor_page_get_submit_io_t *i
     return results[0].err;
   }
 
-  const MDBX_cursor *const mc = ios[0].cursor;
-  MDBX_txn *const txn = likely(mc) ? mc->txn : nullptr;
-  if (unlikely(!mc || !txn)) {
+  MDBX_txn *const txn = likely(ios[0].cursor) ? ios[0].cursor->txn : nullptr;
+  if (unlikely(!txn)) {
     for (size_t i = 0; i < count; ++i)
       results[i] = pgr_error(MDBX_EINVAL);
     return MDBX_EINVAL;
@@ -49155,7 +49348,7 @@ static int page_submit_cursor_get_batch(const dxb_cursor_page_get_submit_io_t *i
   size_t eligible = 0;
   for (size_t i = 0; i < count; ++i) {
     int err = page_cursor_get_submit_io_validate(&ios[i]);
-    if (unlikely(err == MDBX_SUCCESS && (ios[i].cursor != mc || ios[i].cursor->txn != txn)))
+    if (unlikely(err == MDBX_SUCCESS && ios[i].cursor->txn != txn))
       err = MDBX_EINVAL;
     if (unlikely(err != MDBX_SUCCESS)) {
       results[i] = pgr_error(err);

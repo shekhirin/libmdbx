@@ -371,7 +371,7 @@ Validation:
 
 Added `page_submit_cursor_get_batch()` on top of the raw page-get batch
 primitive. The helper validates each cursor page-get request, keeps all entries
-on one cursor/transaction, calls `page_submit_get_unchecked_batch()` for the
+on one transaction, calls `page_submit_get_unchecked_batch()` for the
 underlying page reads, then applies the same cursor-specific completion path as
 `page_submit_cursor_get()`: header checks, optional full page checks,
 large-page materialization, transaction error marking, and page-ref release on
@@ -404,6 +404,51 @@ This short benchmark is noisy and does not show a clean throughput win for the
 rebalance caller. The main value of this slice is structural: cursor page-get
 completion is now batch-capable, and one B-tree path with independent sibling
 reads uses it.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+
+## Batched Async Exact-Get Traversal Slice
+
+Added `async_batched_get_traverse()` for cold exact GET slots inside the async
+worker. The helper initializes one cursor per eligible key, batches root page
+fetches, then walks branch levels in rounds: each active cursor computes its
+next child slot from the branch page, all child page requests for that depth are
+submitted through `page_submit_cursor_get_batch()`, and the cursors are resumed
+after completion. Once a cursor reaches a leaf, the existing `cursor_seek()`
+logic finishes value extraction and duplicate/large-value handling.
+
+`mdbx_async_get_batch()` and worker-side groups of independently submitted
+`mdbx_async_get()` operations now try this traversal for cold async-get cache
+slots before falling back to the old per-item `mdbx_get()` path. Warm cache
+entries still use the cache materialization path first. This keeps the public
+API blocking/async semantics unchanged while moving common cold exact-get
+windows away from purely sequential worker-side `mdbx_get()` calls.
+
+Reduced forced no-mmap/io_uring benchmark (`items=1000 ops=10000
+large_items=256 large_ops=10000 large_value=10000 page_cache=64K`), compared
+against previous commit `faaee18`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking parallel get | 698.237 Kops/s | 473.854 Kops/s |
+| async parallel get | 658.623 Kops/s | 780.986 Kops/s |
+| async many parallel get | 1.261 Mops/s | 894.296 Kops/s |
+| async threaded get | 1.449 Mops/s | 1.775 Mops/s |
+| async threaded many get | 849.674 Kops/s | 1.811 Mops/s |
+| async threaded batch get | 1.528 Mops/s | 1.269 Mops/s |
+| async batch parallel get | 1.503 Mops/s | 804.815 Kops/s |
+| async batch callback get | 992.289 Kops/s | 867.025 Kops/s |
+
+The final short run is mixed. Grouped single async gets improved, especially
+the threaded rows, while the single-operation async batch rows regressed in
+this sample. The structural change is still important: cold exact-get windows
+now have a depth-wise batched traversal path instead of relying only on
+sequential blocking `mdbx_get()` calls inside the async worker.
 
 Validation:
 
