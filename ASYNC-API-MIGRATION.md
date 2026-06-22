@@ -620,6 +620,55 @@ Validation:
 - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
 - Release benchmark logs: `/tmp/mdbx-async-bench-getexbatch-before.txt`, `/tmp/mdbx-async-bench-getexbatch-after.txt`
 
+## Batched Async Regular Cache-Get Slice
+
+Regular `mdbx_async_cache_get_batch()` now snapshots each volatile
+`MDBX_cache_entry_t` into stable worker-local entries, then tries
+`cache_materialize_singlethreaded_batch()` before falling back to
+`mdbx_cache_get()` for races, misses, refreshes, or unhandled items. This moves
+regular cache-hit materialization onto the same batched page-cache read path
+already used by the SingleThreaded cache API, without changing volatile entry
+publication semantics.
+
+The worker also groups adjacent regular `async_op_cache_get` items with the
+same transaction and DBI, so `mdbx_async_cache_get()` and
+`mdbx_async_cache_get_many()` can use batched materialization when the queued
+operations are compatible. The existing SingleThreaded grouping now uses the
+same helper with direct non-volatile entry snapshots.
+
+Reduced forced no-mmap/io_uring benchmark (`items=1000 ops=10000
+large_items=256 large_ops=10000 large_value=10000 page_cache=64K`), compared
+against previous commit `9a345aa`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async cache many | 3.038 Mops/s | 2.848 Mops/s |
+| async cache st many | 3.894 Mops/s | 2.933 Mops/s |
+| async cache batch | 2.240 Mops/s | 2.284 Mops/s |
+| async cache st batch | 2.949 Mops/s | 2.138 Mops/s |
+| async cache batch cb | 1.879 Mops/s | 2.210 Mops/s |
+| async cache st batch cb | 3.105 Mops/s | 3.916 Mops/s |
+| async large cache batch | 136.943 Kops/s | 138.953 Kops/s |
+| async large cache st batch | 138.608 Kops/s | 137.474 Kops/s |
+| async threaded cache batch | 1.402 Mops/s | 2.637 Mops/s |
+| async threaded cache st batch | 3.850 Mops/s | 2.779 Mops/s |
+| async cache loop | 2.272 Mops/s | 3.265 Mops/s |
+| async threaded cache loop | 2.386 Mops/s | 3.137 Mops/s |
+
+The regular batch/callback/threaded rows improved, while regular many and some
+SingleThreaded rows regressed in this run. The slice is primarily about moving
+regular cache hits onto the batched page-cache materialization path; the mixed
+cache benchmark means the snapshot/grouping overhead still needs follow-up
+tuning.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+- Release benchmark logs: `/tmp/mdbx-async-bench-cacheget-before.txt`, `/tmp/mdbx-async-bench-cacheget-after.txt`
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current
