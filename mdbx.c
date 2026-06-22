@@ -15332,6 +15332,19 @@ enum mdbx_async_typed_option {
 #define MDBX_ASYNC_INLINE_BYTES (MDBX_ASYNC_INLINE_WORDS * sizeof(uint64_t))
 #define MDBX_ASYNC_SPARE_LIMIT 1024
 #define MDBX_ASYNC_COMPLETE_CHUNK 16
+#define MDBX_ASYNC_GET_CACHE_SLOTS 1024
+
+typedef struct MDBX_async_get_cache_slot {
+  const MDBX_env *env;
+  MDBX_dbi dbi;
+  uint64_t hash;
+  size_t key_len;
+  void *key_copy;
+  uint64_t key_inline[MDBX_ASYNC_INLINE_WORDS];
+  MDBX_cache_entry_t entry;
+  uint8_t use_count;
+  bool valid;
+} MDBX_async_get_cache_slot;
 
 struct MDBX_async {
   int32_t signature;
@@ -15348,6 +15361,7 @@ struct MDBX_async {
   uint64_t next_seq;
   uint64_t completed_seq;
   uint64_t min_wait_seq;
+  MDBX_async_get_cache_slot *get_cache;
   bool active;
   bool stop;
 };
@@ -16249,6 +16263,178 @@ static void async_op_discard(MDBX_async_op *op) {
   }
 }
 
+static uint64_t async_get_cache_hash(MDBX_dbi dbi, const MDBX_val *key) {
+  uint64_t hash = UINT64_C(1469598103934665603) ^ dbi;
+  const uint8_t *const bytes = (const uint8_t *)key->iov_base;
+  for (size_t i = 0; i < key->iov_len; ++i) {
+    hash ^= bytes[i];
+    hash *= UINT64_C(1099511628211);
+  }
+  hash ^= key->iov_len;
+  hash *= UINT64_C(1099511628211);
+  return hash;
+}
+
+static void async_get_cache_slot_clear(MDBX_async_get_cache_slot *slot) {
+  if (!slot)
+    return;
+  osal_free(slot->key_copy);
+  memset(slot, 0, sizeof(*slot));
+}
+
+static void async_get_cache_clear(MDBX_async *async) {
+  if (!async || !async->get_cache)
+    return;
+  for (size_t i = 0; i < MDBX_ASYNC_GET_CACHE_SLOTS; ++i)
+    async_get_cache_slot_clear(&async->get_cache[i]);
+  osal_free(async->get_cache);
+  async->get_cache = nullptr;
+}
+
+static bool async_get_cache_key_equal(const MDBX_async_get_cache_slot *slot, const MDBX_env *env, MDBX_dbi dbi,
+                                      uint64_t hash, const MDBX_val *key) {
+  if (!slot->valid || slot->env != env || slot->dbi != dbi || slot->hash != hash || slot->key_len != key->iov_len)
+    return false;
+  const void *const cached_key = slot->key_copy ? slot->key_copy : slot->key_inline;
+  return key->iov_len == 0 || memcmp(cached_key, key->iov_base, key->iov_len) == 0;
+}
+
+static MDBX_async_get_cache_slot *async_get_cache_slot(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi,
+                                                       const MDBX_val *key) {
+  if (unlikely(!async || !txn || !key || (!key->iov_base && key->iov_len) || (txn->flags & txn_ro_both) == 0))
+    return nullptr;
+  if (!async->get_cache) {
+    async->get_cache = osal_calloc(MDBX_ASYNC_GET_CACHE_SLOTS, sizeof(async->get_cache[0]));
+    if (unlikely(!async->get_cache))
+      return nullptr;
+  }
+
+  const uint64_t hash = async_get_cache_hash(dbi, key);
+  MDBX_async_get_cache_slot *const slot = &async->get_cache[hash & (MDBX_ASYNC_GET_CACHE_SLOTS - 1)];
+  if (async_get_cache_key_equal(slot, txn->env, dbi, hash, key))
+    return slot;
+
+  async_get_cache_slot_clear(slot);
+  slot->env = txn->env;
+  slot->dbi = dbi;
+  slot->hash = hash;
+  slot->key_len = key->iov_len;
+  if (key->iov_len) {
+    if (key->iov_len <= sizeof(slot->key_inline)) {
+      memcpy(slot->key_inline, key->iov_base, key->iov_len);
+    } else {
+      slot->key_copy = osal_malloc(key->iov_len);
+      if (unlikely(!slot->key_copy)) {
+        async_get_cache_slot_clear(slot);
+        return nullptr;
+      }
+      memcpy(slot->key_copy, key->iov_base, key->iov_len);
+    }
+  }
+  __inline_mdbx_cache_init(&slot->entry);
+  slot->valid = true;
+  return slot;
+}
+
+static int async_cached_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key,
+                            MDBX_val *data) {
+  MDBX_async_get_cache_slot *const slot = async_get_cache_slot(async, txn, dbi, key);
+  if (!slot)
+    return mdbx_get(txn, dbi, key, data);
+
+  if (slot->use_count > 1) {
+    MDBX_cache_result_t result;
+    bool handled = false;
+    (void)cache_materialize_singlethreaded_batch(txn, data, &slot->entry, &result, 1, &handled);
+    if (handled)
+      return result.errcode;
+  }
+
+  if (slot->use_count == 0) {
+    const int rc = mdbx_get(txn, dbi, key, data);
+    slot->use_count = 1;
+    return rc;
+  }
+
+  MDBX_cache_result_t result = mdbx_cache_get_SingleThreaded(txn, dbi, key, data, &slot->entry);
+  if (result.errcode == MDBX_SUCCESS || result.errcode == MDBX_NOTFOUND)
+    slot->use_count = 2;
+  return result.errcode;
+}
+
+static int async_cached_get_batch(MDBX_async_op *op) {
+  const MDBX_txn *const txn = op->args.get_batch.txn;
+  const MDBX_dbi dbi = op->args.get_batch.dbi;
+  const size_t count = op->args.get_batch.count;
+  const MDBX_val *const keys = op->args.get_batch.keys;
+  MDBX_val *const data = op->args.get_batch.data;
+  int *const results = op->args.get_batch.results;
+  MDBX_async_get_cache_slot **slots = osal_calloc(count, sizeof(slots[0]));
+  MDBX_cache_entry_t *entries = osal_calloc(count, sizeof(entries[0]));
+  MDBX_cache_result_t *cache_results = osal_calloc(count, sizeof(cache_results[0]));
+  bool *handled = osal_calloc(count, sizeof(handled[0]));
+
+  if (slots && entries && cache_results && handled) {
+    for (size_t i = 0; i < count; ++i) {
+      data[i].iov_base = nullptr;
+      data[i].iov_len = 0;
+      slots[i] = async_get_cache_slot(op->async, txn, dbi, &keys[i]);
+      if (slots[i] && slots[i]->use_count > 1)
+        entries[i] = slots[i]->entry;
+    }
+    (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, count, handled);
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    if (handled && handled[i]) {
+      results[i] = cache_results[i].errcode;
+      if (results[i] != MDBX_SUCCESS) {
+        data[i].iov_base = nullptr;
+        data[i].iov_len = 0;
+      }
+      continue;
+    }
+
+    MDBX_val value = {nullptr, 0};
+    int rc;
+    MDBX_async_get_cache_slot *slot = slots ? slots[i] : nullptr;
+    if (slot) {
+      const uint64_t hash = async_get_cache_hash(dbi, &keys[i]);
+      if (!async_get_cache_key_equal(slot, txn->env, dbi, hash, &keys[i]))
+        slot = async_get_cache_slot(op->async, txn, dbi, &keys[i]);
+    }
+    if (slot) {
+      if (slot->use_count == 0) {
+        rc = mdbx_get(txn, dbi, &keys[i], &value);
+        slot->use_count = 1;
+      } else {
+        MDBX_cache_result_t cache_result =
+            mdbx_cache_get_SingleThreaded(txn, dbi, &keys[i], &value, &slot->entry);
+        rc = cache_result.errcode;
+        if (cache_result.errcode == MDBX_SUCCESS || cache_result.errcode == MDBX_NOTFOUND)
+          slot->use_count = 2;
+      }
+    } else {
+      rc = async_cached_get(op->async, txn, dbi, &keys[i], &value);
+    }
+    results[i] = rc;
+    if (rc == MDBX_SUCCESS)
+      data[i] = value;
+    else {
+      data[i].iov_base = nullptr;
+      data[i].iov_len = 0;
+    }
+  }
+
+  osal_free(handled);
+  osal_free(cache_results);
+  osal_free(entries);
+  osal_free(slots);
+  if (op->args.get_batch.func)
+    return op->args.get_batch.func(op->args.get_batch.context, keys, data, results, count);
+  return MDBX_SUCCESS;
+}
+
 static int async_cursor_get_batches_execute(MDBX_async_op *op) {
   const size_t target_pairs = op->args.cursor_get_batches.target_pairs;
   const size_t batch_pairs = op->args.cursor_get_batches.batch_pairs;
@@ -16635,11 +16821,13 @@ static int async_op_execute(MDBX_async_op *op) {
     return mdbx_dbi_sequence(op->args.dbi_sequence.txn, op->args.dbi_sequence.dbi,
                              op->args.dbi_sequence.result, op->args.dbi_sequence.increment);
   case async_op_dbi_close:
+    async_get_cache_clear(op->async);
     return mdbx_dbi_close(op->async->env, op->args.dbi_close.dbi);
   case async_op_enumerate_tables:
     return mdbx_enumerate_tables(op->args.enumerate_tables.txn, op->args.enumerate_tables.func,
                                  op->args.enumerate_tables.ctx);
   case async_op_drop:
+    async_get_cache_clear(op->async);
     return mdbx_drop(op->args.drop.txn, op->args.drop.dbi, op->args.drop.del);
   case async_op_canary_put:
     return mdbx_canary_put(op->args.canary_put.txn,
@@ -16648,7 +16836,7 @@ static int async_op_execute(MDBX_async_op *op) {
     return mdbx_canary_get(op->args.canary_get.txn, op->args.canary_get.canary);
   case async_op_get: {
     MDBX_val data = {nullptr, 0};
-    const int rc = mdbx_get(op->args.get.txn, op->args.get.dbi, &op->key, &data);
+    const int rc = async_cached_get(op->async, op->args.get.txn, op->args.get.dbi, &op->key, &data);
     if (op->args.get.data)
       *op->args.get.data = data;
     return rc;
@@ -16823,22 +17011,7 @@ static int async_op_execute(MDBX_async_op *op) {
     return loop_rc;
   }
   case async_op_get_batch:
-    for (size_t i = 0; i < op->args.get_batch.count; ++i) {
-      MDBX_val data = {nullptr, 0};
-      const int rc = mdbx_get(op->args.get_batch.txn, op->args.get_batch.dbi, &op->args.get_batch.keys[i], &data);
-      op->args.get_batch.results[i] = rc;
-      if (rc == MDBX_SUCCESS) {
-        op->args.get_batch.data[i] = data;
-      } else {
-        op->args.get_batch.data[i].iov_base = nullptr;
-        op->args.get_batch.data[i].iov_len = 0;
-      }
-    }
-    if (op->args.get_batch.func)
-      return op->args.get_batch.func(op->args.get_batch.context, op->args.get_batch.keys,
-                                     op->args.get_batch.data, op->args.get_batch.results,
-                                     op->args.get_batch.count);
-    return MDBX_SUCCESS;
+    return async_cached_get_batch(op);
   case async_op_get_ex_batch:
     for (size_t i = 0; i < op->args.get_ex_batch.count; ++i) {
       MDBX_val key = op->args.get_ex_batch.keys[i];
@@ -16952,6 +17125,7 @@ static int async_op_execute(MDBX_async_op *op) {
     }
     return MDBX_SUCCESS;
   case async_op_put: {
+    async_get_cache_clear(op->async);
     MDBX_val data = op->data;
     const int rc = mdbx_put(op->args.put.txn, op->args.put.dbi, &op->key, &data, op->args.put.flags);
     if (rc == MDBX_KEYEXIST && op->args.put.data)
@@ -16959,6 +17133,7 @@ static int async_op_execute(MDBX_async_op *op) {
     return rc;
   }
   case async_op_put_batch:
+    async_get_cache_clear(op->async);
     for (size_t i = 0; i < op->args.put_batch.count; ++i) {
       MDBX_val data = op->args.put_batch.data[i];
       const int rc =
@@ -16970,6 +17145,7 @@ static int async_op_execute(MDBX_async_op *op) {
     }
     return MDBX_SUCCESS;
   case async_op_put_loop:
+    async_get_cache_clear(op->async);
     if (op->args.put_loop.completed)
       *op->args.put_loop.completed = 0;
     for (size_t i = 0; i < op->args.put_loop.count; ++i) {
@@ -16991,6 +17167,7 @@ static int async_op_execute(MDBX_async_op *op) {
     return MDBX_SUCCESS;
   case async_op_replace:
   case async_op_replace_ex: {
+    async_get_cache_clear(op->async);
     MDBX_val new_data = op->data;
     MDBX_val old_data = op->args.replace.old_data_copied ? op->old_data : *op->args.replace.old_data;
     const int rc =
@@ -17008,6 +17185,7 @@ static int async_op_execute(MDBX_async_op *op) {
   }
   case async_op_replace_batch:
   case async_op_replace_ex_batch:
+    async_get_cache_clear(op->async);
     for (size_t i = 0; i < op->args.replace_batch.count; ++i) {
       MDBX_val new_data;
       MDBX_val old_data = op->args.replace_batch.old_data[i];
@@ -17029,6 +17207,7 @@ static int async_op_execute(MDBX_async_op *op) {
     return MDBX_SUCCESS;
   case async_op_replace_loop:
   case async_op_replace_ex_loop:
+    async_get_cache_clear(op->async);
     if (op->args.replace_loop.completed)
       *op->args.replace_loop.completed = 0;
     for (size_t i = 0; i < op->args.replace_loop.count; ++i) {
@@ -17057,6 +17236,7 @@ static int async_op_execute(MDBX_async_op *op) {
     return MDBX_SUCCESS;
   case async_op_replace_delete_loop:
   case async_op_replace_ex_delete_loop:
+    async_get_cache_clear(op->async);
     if (op->args.replace_delete_loop.completed)
       *op->args.replace_delete_loop.completed = 0;
     for (size_t i = 0; i < op->args.replace_delete_loop.count; ++i) {
@@ -17084,14 +17264,17 @@ static int async_op_execute(MDBX_async_op *op) {
     }
     return MDBX_SUCCESS;
   case async_op_del:
+    async_get_cache_clear(op->async);
     return mdbx_del(op->args.del.txn, op->args.del.dbi, &op->key, op->args.del.has_data ? &op->data : nullptr);
   case async_op_del_batch:
+    async_get_cache_clear(op->async);
     for (size_t i = 0; i < op->args.del_batch.count; ++i)
       op->args.del_batch.results[i] =
           mdbx_del(op->args.del_batch.txn, op->args.del_batch.dbi, &op->args.del_batch.keys[i],
                    op->args.del_batch.has_data ? &op->args.del_batch.data[i] : nullptr);
     return MDBX_SUCCESS;
   case async_op_del_loop:
+    async_get_cache_clear(op->async);
     if (op->args.del_loop.completed)
       *op->args.del_loop.completed = 0;
     for (size_t i = 0; i < op->args.del_loop.count; ++i) {
@@ -17248,6 +17431,7 @@ static int async_op_execute(MDBX_async_op *op) {
     *op->args.cmp.result = mdbx_dcmp(op->args.cmp.txn, op->args.cmp.dbi, &op->key, &op->data);
     return MDBX_SUCCESS;
   case async_op_cursor_put: {
+    async_get_cache_clear(op->async);
     MDBX_val data = op->data;
     const int rc = mdbx_cursor_put(op->args.cursor_put.cursor, &op->key, &data, op->args.cursor_put.flags);
     if (rc == MDBX_KEYEXIST && op->args.cursor_put.data)
@@ -17255,6 +17439,7 @@ static int async_op_execute(MDBX_async_op *op) {
     return rc;
   }
   case async_op_cursor_put_batch:
+    async_get_cache_clear(op->async);
     for (size_t i = 0; i < op->args.cursor_put_batch.count; ++i) {
       MDBX_val data = op->args.cursor_put_batch.data[i];
       const int rc =
@@ -17266,6 +17451,7 @@ static int async_op_execute(MDBX_async_op *op) {
     }
     return MDBX_SUCCESS;
   case async_op_cursor_put_loop:
+    async_get_cache_clear(op->async);
     if (op->args.cursor_put_loop.completed)
       *op->args.cursor_put_loop.completed = 0;
     for (size_t i = 0; i < op->args.cursor_put_loop.count; ++i) {
@@ -17286,8 +17472,10 @@ static int async_op_execute(MDBX_async_op *op) {
     }
     return MDBX_SUCCESS;
   case async_op_cursor_del:
+    async_get_cache_clear(op->async);
     return mdbx_cursor_del(op->args.cursor_del.cursor, op->args.cursor_del.flags);
   case async_op_cursor_del_loop: {
+    async_get_cache_clear(op->async);
     if (op->args.cursor_del_loop.completed)
       *op->args.cursor_del_loop.completed = 0;
     for (size_t i = 0; i < op->args.cursor_del_loop.count; ++i) {
@@ -17307,10 +17495,12 @@ static int async_op_execute(MDBX_async_op *op) {
     return MDBX_SUCCESS;
   }
   case async_op_cursor_delete_range:
+    async_get_cache_clear(op->async);
     return mdbx_cursor_delete_range(op->args.cursor_delete_range.begin, op->args.cursor_delete_range.end,
                                     op->args.cursor_delete_range.end_including,
                                     op->args.cursor_delete_range.number_of_affected);
   case async_op_cursor_bunch_delete:
+    async_get_cache_clear(op->async);
     return mdbx_cursor_bunch_delete(op->args.cursor_bunch_delete.cursor, op->args.cursor_bunch_delete.action,
                                     op->args.cursor_bunch_delete.number_of_affected);
   case async_op_cursor_close:
@@ -17661,6 +17851,7 @@ int mdbx_async_destroy(MDBX_async *async, bool drain) {
     async->spare = op->next;
     osal_free(op);
   }
+  async_get_cache_clear(async);
   async->signature = 0;
   osal_free(async);
   return LOG_IFERR(rc != MDBX_SUCCESS ? rc : cond_err);

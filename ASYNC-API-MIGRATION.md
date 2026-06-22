@@ -132,6 +132,46 @@ write_ops=1000 page_cache=64K`), compared against a detached worktree at
 Single-run benchmark noise remains high across unrelated rows, especially the
 threaded variants, so these numbers should be treated as directional.
 
+## Public Async Get Cache Slice
+
+Added a worker-owned, direct-mapped cache-entry table inside `MDBX_async` and
+used it for `mdbx_async_get()`, `mdbx_async_get_many()`, and
+`mdbx_async_get_batch()`. The first sighting of a key records it but still uses
+the legacy `mdbx_get()` path; the second sighting refreshes the internal
+`MDBX_cache_entry_t`; later sightings can materialize through
+`cache_materialize_singlethreaded_batch()` and the explicit page-cache read
+path. Batch get copies eligible cached entries and submits their page
+materialization as one batch while preserving per-item result ordering.
+
+The hidden cache is used only for read-only transactions and falls back to
+`mdbx_get()` on allocation failure, unsupported transaction shape, cache miss,
+or validation failure. Async write, delete, drop, and DBI-close operations clear
+the hidden cache before mutating state.
+
+This is still not the final resumable B-tree traversal design: first and second
+key sightings can still run blocking traversal, and `mdbx_get()` itself is
+unchanged. It does move public async get APIs off the pure executor-offload path
+for repeated read workloads.
+
+Repeated-key forced no-mmap/io_uring benchmark (`items=1000 ops=30000
+write_ops=1000 page_cache=64K`), compared against the previous commit
+`688f3c8`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async parallel get | 1.135 Mops/s | 1.689 Mops/s |
+| async many parallel get | 762.935 Kops/s | 1.762 Mops/s |
+| async threaded get | 1.065 Mops/s | 1.810 Mops/s |
+| async threaded many get | 826.107 Kops/s | 1.354 Mops/s |
+| async threaded batch get | 1.191 Mops/s | 2.058 Mops/s |
+| async batch parallel get | 913.996 Kops/s | 2.009 Mops/s |
+| async batch callback get | 592.316 Kops/s | 1.876 Mops/s |
+
+A lower-reuse 10k-key forced no-mmap/io_uring smoke also passed after the
+adaptive first-sighting change; representative public get rows were async get
+`920.384 Kops/s`, async many `931.513 Kops/s`, async batch `856.293 Kops/s`,
+and async batch callback `882.005 Kops/s`.
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current
