@@ -5173,3 +5173,43 @@ Additional single get_ex/lowerbound traversal checkpoint:
   toward real internal async I/O; the full goal still requires exposing
   traversal suspension/resumption rather than running each public async op to
   completion inside the worker.
+
+Additional mixed not-found read coverage checkpoint:
+
+- extended `ut_and_examples/async-api-smoke.c` with explicit not-found coverage
+  for traversal-routed async reads:
+  `mdbx_async_get()`, `mdbx_async_get_ex()`,
+  `mdbx_async_get_equal_or_great()`, their `*_many()` variants, and their
+  explicit batch variants. The mixed tests verify success/not-found/result
+  ordering, empty values for misses, and zero `values_count` for missed
+  `get_ex` items.
+- the lowerbound miss probe uses an all-`0xff` byte key rather than a large
+  integer key because MDBX default key ordering is bytewise; this makes the
+  probe reliably sort after the populated little-endian integer keys.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - forced no-mmap/io_uring benchmark log:
+    `/tmp/mdbx-async-bench-notfound-coverage.txt`
+- representative benchmark rows from the forced no-mmap/io_uring sample:
+
+| metric | current |
+| --- | ---: |
+| blocking serial get | 1.522 Mops/s |
+| blocking parallel get | 855.146 Kops/s |
+| async single get | 328.218 Kops/s |
+| async single get_ex | 236.091 Kops/s |
+| async single lowerbound | 182.960 Kops/s |
+| async parallel get | 1.209 Mops/s |
+| async many parallel get | 1.237 Mops/s |
+| async get_ex batch | 1.196 Mops/s |
+| async get_ex many | 1.114 Mops/s |
+| async lowerbound batch | 1.104 Mops/s |
+| async lowerbound many | 1.185 Mops/s |
+
+- conclusion: this does not add a new async I/O mechanism, but it closes a
+  correctness-evidence gap in the current migration: traversal-routed public
+  async read APIs now have smoke coverage for per-item not-found behavior,
+  result ordering, and empty-result normalization in both normal and forced
+  no-mmap/io_uring runs.

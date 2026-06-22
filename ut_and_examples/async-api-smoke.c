@@ -746,6 +746,12 @@ static int expect_value(const MDBX_val *data, uint64_t key, const char *file, in
   return expect_payload(data, expected_value(key), file, line);
 }
 
+static int expect_empty_value(const MDBX_val *data, const char *file, int line) {
+  if (data->iov_base != NULL || data->iov_len != 0)
+    return fail_msg("unexpected non-empty value", file, line);
+  return MDBX_SUCCESS;
+}
+
 static int expect_large_value(const MDBX_val *data, uint64_t key, const char *file, int line) {
   if (!data || !data->iov_base || data->iov_len != LARGE_VALUE_BYTES)
     return fail_msg("unexpected large value size", file, line);
@@ -1829,6 +1835,75 @@ int main(void) {
     CHECK(expect_value(&equal_many_data[i], expected_key, __FILE__, __LINE__));
   }
 
+  uint8_t missing_key_bytes[sizeof(uint64_t)];
+  memset(missing_key_bytes, 0xff, sizeof(missing_key_bytes));
+  MDBX_val missing_key = val(missing_key_bytes, sizeof(missing_key_bytes));
+  MDBX_val missing_data = val(NULL, 0);
+  int missing_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_get(async, txn, dbi, &missing_key, &missing_data, &op));
+  CHECK(wait_result("mdbx_async_get missing", &op, &missing_result, __FILE__, __LINE__));
+  REQUIRE(missing_result == MDBX_NOTFOUND, "async get missing key returned wrong result");
+  CHECK(expect_empty_value(&missing_data, __FILE__, __LINE__));
+
+  MDBX_val missing_get_ex_key = missing_key;
+  MDBX_val missing_get_ex_data = val(NULL, 0);
+  size_t missing_values_count = SIZE_MAX;
+  missing_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_get_ex(async, txn, dbi, &missing_get_ex_key, &missing_get_ex_data,
+                          &missing_values_count, &op));
+  CHECK(wait_result("mdbx_async_get_ex missing", &op, &missing_result, __FILE__, __LINE__));
+  REQUIRE(missing_result == MDBX_NOTFOUND, "async get_ex missing key returned wrong result");
+  REQUIRE(missing_values_count == 0, "async get_ex missing key returned values");
+  CHECK(expect_empty_value(&missing_get_ex_data, __FILE__, __LINE__));
+
+  MDBX_val missing_lower_key = missing_key;
+  MDBX_val missing_lower_data = val(NULL, 0);
+  missing_result = MDBX_SUCCESS;
+  CHECK(mdbx_async_get_equal_or_great(async, txn, dbi, &missing_lower_key, &missing_lower_data, &op));
+  CHECK(wait_result("mdbx_async_get_equal_or_great missing", &op, &missing_result, __FILE__, __LINE__));
+  REQUIRE(missing_result == MDBX_NOTFOUND, "async equal-or-great missing key returned wrong result");
+  CHECK(expect_empty_value(&missing_lower_data, __FILE__, __LINE__));
+
+  MDBX_val mixed_keys[3] = {key_values[0], missing_key, key_values[1]};
+  MDBX_val mixed_data[3] = {val(NULL, 0), val(NULL, 0), val(NULL, 0)};
+  CHECK(mdbx_async_get_many(async, txn, dbi, mixed_keys, mixed_data, 3, ops));
+  CHECK(wait_many_result("mdbx_async_get_many mixed", ops, 3, op_results, __FILE__, __LINE__));
+  REQUIRE(op_results[0] == MDBX_SUCCESS && op_results[1] == MDBX_NOTFOUND &&
+              op_results[2] == MDBX_SUCCESS,
+          "async get many mixed results were wrong");
+  CHECK(expect_value(&mixed_data[0], keys[0], __FILE__, __LINE__));
+  CHECK(expect_empty_value(&mixed_data[1], __FILE__, __LINE__));
+  CHECK(expect_value(&mixed_data[2], keys[1], __FILE__, __LINE__));
+
+  MDBX_val mixed_get_ex_keys[3] = {key_values[2], missing_key, key_values[3]};
+  MDBX_val mixed_get_ex_data[3] = {val(NULL, 0), val(NULL, 0), val(NULL, 0)};
+  size_t mixed_get_ex_counts[3] = {SIZE_MAX, SIZE_MAX, SIZE_MAX};
+  CHECK(mdbx_async_get_ex_many(async, txn, dbi, mixed_get_ex_keys, mixed_get_ex_data,
+                               mixed_get_ex_counts, 3, ops));
+  CHECK(wait_many_result("mdbx_async_get_ex_many mixed", ops, 3, op_results, __FILE__, __LINE__));
+  REQUIRE(op_results[0] == MDBX_SUCCESS && op_results[1] == MDBX_NOTFOUND &&
+              op_results[2] == MDBX_SUCCESS,
+          "async get_ex many mixed results were wrong");
+  REQUIRE(mixed_get_ex_counts[0] == 1 && mixed_get_ex_counts[1] == 0 &&
+              mixed_get_ex_counts[2] == 1,
+          "async get_ex many mixed value counts were wrong");
+  CHECK(expect_value(&mixed_get_ex_data[0], keys[2], __FILE__, __LINE__));
+  CHECK(expect_empty_value(&mixed_get_ex_data[1], __FILE__, __LINE__));
+  CHECK(expect_value(&mixed_get_ex_data[2], keys[3], __FILE__, __LINE__));
+
+  MDBX_val mixed_lower_keys[3] = {key_values[4], missing_key, key_values[5]};
+  MDBX_val mixed_lower_data[3] = {val(NULL, 0), val(NULL, 0), val(NULL, 0)};
+  CHECK(mdbx_async_get_equal_or_great_many(async, txn, dbi, mixed_lower_keys, mixed_lower_data, 3,
+                                           ops));
+  CHECK(wait_many_result("mdbx_async_get_equal_or_great_many mixed", ops, 3, op_results, __FILE__,
+                         __LINE__));
+  REQUIRE(op_results[0] == MDBX_SUCCESS && op_results[1] == MDBX_NOTFOUND &&
+              op_results[2] == MDBX_SUCCESS,
+          "async equal-or-great many mixed results were wrong");
+  CHECK(expect_value(&mixed_lower_data[0], keys[4], __FILE__, __LINE__));
+  CHECK(expect_empty_value(&mixed_lower_data[1], __FILE__, __LINE__));
+  CHECK(expect_value(&mixed_lower_data[2], keys[5], __FILE__, __LINE__));
+
   for (unsigned i = 0; i < ITEM_COUNT; ++i)
     get_values[i] = val(NULL, 0);
   CHECK(mdbx_async_get_batch(async, txn, dbi, key_values, get_values, op_results, ITEM_COUNT, &op));
@@ -1849,6 +1924,18 @@ int main(void) {
   CHECK_OP(op);
   REQUIRE(get_batch_probe.calls == 1, "async get batch callback was not called");
   REQUIRE(get_batch_probe.successes == ITEM_COUNT, "async get batch callback saw wrong success count");
+
+  mixed_data[0] = val(NULL, 0);
+  mixed_data[1] = val(NULL, 0);
+  mixed_data[2] = val(NULL, 0);
+  CHECK(mdbx_async_get_batch(async, txn, dbi, mixed_keys, mixed_data, op_results, 3, &op));
+  CHECK_OP(op);
+  REQUIRE(op_results[0] == MDBX_SUCCESS && op_results[1] == MDBX_NOTFOUND &&
+              op_results[2] == MDBX_SUCCESS,
+          "async get batch mixed results were wrong");
+  CHECK(expect_value(&mixed_data[0], keys[0], __FILE__, __LINE__));
+  CHECK(expect_empty_value(&mixed_data[1], __FILE__, __LINE__));
+  CHECK(expect_value(&mixed_data[2], keys[1], __FILE__, __LINE__));
 
   MDBX_val get_ex_batch_keys[ITEM_COUNT];
   size_t get_ex_values_counts[ITEM_COUNT];
@@ -1885,6 +1972,25 @@ int main(void) {
   REQUIRE(get_ex_batch_probe.calls == 1, "async get_ex batch callback was not called");
   REQUIRE(get_ex_batch_probe.successes == ITEM_COUNT, "async get_ex batch callback saw wrong success count");
   REQUIRE(get_ex_batch_probe.values == ITEM_COUNT, "async get_ex batch callback saw wrong value count");
+
+  mixed_get_ex_data[0] = val(NULL, 0);
+  mixed_get_ex_data[1] = val(NULL, 0);
+  mixed_get_ex_data[2] = val(NULL, 0);
+  mixed_get_ex_counts[0] = SIZE_MAX;
+  mixed_get_ex_counts[1] = SIZE_MAX;
+  mixed_get_ex_counts[2] = SIZE_MAX;
+  CHECK(mdbx_async_get_ex_batch(async, txn, dbi, mixed_get_ex_keys, mixed_get_ex_data,
+                                mixed_get_ex_counts, op_results, 3, &op));
+  CHECK_OP(op);
+  REQUIRE(op_results[0] == MDBX_SUCCESS && op_results[1] == MDBX_NOTFOUND &&
+              op_results[2] == MDBX_SUCCESS,
+          "async get_ex batch mixed results were wrong");
+  REQUIRE(mixed_get_ex_counts[0] == 1 && mixed_get_ex_counts[1] == 0 &&
+              mixed_get_ex_counts[2] == 1,
+          "async get_ex batch mixed value counts were wrong");
+  CHECK(expect_value(&mixed_get_ex_data[0], keys[2], __FILE__, __LINE__));
+  CHECK(expect_empty_value(&mixed_get_ex_data[1], __FILE__, __LINE__));
+  CHECK(expect_value(&mixed_get_ex_data[2], keys[3], __FILE__, __LINE__));
 
   MDBX_val equal_batch_keys[8];
   MDBX_val equal_batch_data[8];
@@ -1937,6 +2043,19 @@ int main(void) {
           "async equal-or-great batch callback saw wrong success count");
   REQUIRE(get_equal_or_great_batch_probe.greater_results == 4,
           "async equal-or-great batch callback saw wrong greater-result count");
+
+  mixed_lower_data[0] = val(NULL, 0);
+  mixed_lower_data[1] = val(NULL, 0);
+  mixed_lower_data[2] = val(NULL, 0);
+  CHECK(mdbx_async_get_equal_or_great_batch(async, txn, dbi, mixed_lower_keys, mixed_lower_data,
+                                            op_results, 3, &op));
+  CHECK_OP(op);
+  REQUIRE(op_results[0] == MDBX_SUCCESS && op_results[1] == MDBX_NOTFOUND &&
+              op_results[2] == MDBX_SUCCESS,
+          "async equal-or-great batch mixed results were wrong");
+  CHECK(expect_value(&mixed_lower_data[0], keys[4], __FILE__, __LINE__));
+  CHECK(expect_empty_value(&mixed_lower_data[1], __FILE__, __LINE__));
+  CHECK(expect_value(&mixed_lower_data[2], keys[5], __FILE__, __LINE__));
 
   struct get_loop_probe get_loop_probe = {0, 0, 0};
   size_t get_loop_completed = 0;
