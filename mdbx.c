@@ -18705,6 +18705,7 @@ static int async_get_loop_pending_complete_chunk(async_get_loop_pending_t *pendi
     int rc = pending->drive_rc;
     while (rc == MDBX_RESULT_TRUE) {
       rc = async_batched_get_traverse_drive(&pending->traverse, wait);
+      pending->drive_rc = rc;
       if (rc == MDBX_RESULT_TRUE && !wait)
         return rc;
     }
@@ -18825,6 +18826,7 @@ static void async_get_loop_pending_drain_all(async_get_loop_pending_t *pending) 
 
       const size_t before_base = item->base;
       const bool before_traverse = item->traverse_started;
+      const int before_drive_rc = item->drive_rc;
       const int rc = async_get_loop_pending_step(item, false);
       if (rc == MDBX_RESULT_TRUE) {
         if (again_tail)
@@ -18832,7 +18834,9 @@ static void async_get_loop_pending_drain_all(async_get_loop_pending_t *pending) 
         else
           again_head = item;
         again_tail = item;
-        progressed = progressed || item->base != before_base || before_traverse != item->traverse_started;
+        progressed = progressed || item->base != before_base ||
+                     before_traverse != item->traverse_started ||
+                     before_drive_rc != item->drive_rc;
       } else {
         progressed = true;
       }
@@ -18955,6 +18959,7 @@ static int async_get_ex_loop_pending_complete_chunk(async_get_ex_loop_pending_t 
     int rc = pending->drive_rc;
     while (rc == MDBX_RESULT_TRUE) {
       rc = async_batched_get_traverse_drive(&pending->traverse, wait);
+      pending->drive_rc = rc;
       if (rc == MDBX_RESULT_TRUE && !wait)
         return rc;
     }
@@ -19082,6 +19087,7 @@ static void async_get_ex_loop_pending_drain_all(async_get_ex_loop_pending_t *pen
 
       const size_t before_base = item->base;
       const bool before_traverse = item->traverse_started;
+      const int before_drive_rc = item->drive_rc;
       const int rc = async_get_ex_loop_pending_step(item, false);
       if (rc == MDBX_RESULT_TRUE) {
         if (again_tail)
@@ -19089,7 +19095,9 @@ static void async_get_ex_loop_pending_drain_all(async_get_ex_loop_pending_t *pen
         else
           again_head = item;
         again_tail = item;
-        progressed = progressed || item->base != before_base || before_traverse != item->traverse_started;
+        progressed = progressed || item->base != before_base ||
+                     before_traverse != item->traverse_started ||
+                     before_drive_rc != item->drive_rc;
       } else {
         progressed = true;
       }
@@ -19213,6 +19221,7 @@ static int async_lowerbound_loop_pending_complete_chunk(async_lowerbound_loop_pe
     int rc = pending->drive_rc;
     while (rc == MDBX_RESULT_TRUE) {
       rc = async_batched_lowerbound_traverse_drive(&pending->traverse, wait);
+      pending->drive_rc = rc;
       if (rc == MDBX_RESULT_TRUE && !wait)
         return rc;
     }
@@ -19330,6 +19339,7 @@ static void async_lowerbound_loop_pending_drain_all(async_lowerbound_loop_pendin
 
       const size_t before_base = item->base;
       const bool before_traverse = item->traverse_started;
+      const int before_drive_rc = item->drive_rc;
       const int rc = async_lowerbound_loop_pending_step(item, false);
       if (rc == MDBX_RESULT_TRUE) {
         if (again_tail)
@@ -19337,7 +19347,9 @@ static void async_lowerbound_loop_pending_drain_all(async_lowerbound_loop_pendin
         else
           again_head = item;
         again_tail = item;
-        progressed = progressed || item->base != before_base || before_traverse != item->traverse_started;
+        progressed = progressed || item->base != before_base ||
+                     before_traverse != item->traverse_started ||
+                     before_drive_rc != item->drive_rc;
       } else {
         progressed = true;
       }
