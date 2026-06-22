@@ -24888,6 +24888,14 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
                                 pending_cache_get_loop_head || pending_cursor_get_head ||
                                 pending_cursor_get_batch_head || pending_cursor_get_batches_head ||
                                 pending_cursor_get_loop_head || pending_cursor_scan_head;
+      const bool next_cursor_read = next && (next->opcode == async_op_cursor_get ||
+                                             next->opcode == async_op_cursor_get_batch ||
+                                             next->opcode == async_op_cursor_get_batches ||
+                                             next->opcode == async_op_cursor_get_batches_from ||
+                                             next->opcode == async_op_cursor_get_loop ||
+                                             next->opcode == async_op_cursor_get_loop_from ||
+                                             next->opcode == async_op_cursor_scan ||
+                                             next->opcode == async_op_cursor_scan_from);
       const bool next_read = next && (next->opcode == async_op_get || next->opcode == async_op_get_ex ||
                                       next->opcode == async_op_get_equal_or_great ||
                                       next->opcode == async_op_get_batch ||
@@ -24902,16 +24910,8 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
                                       next->opcode == async_op_cache_get_singlethreaded_loop ||
                                       next->opcode == async_op_cache_get ||
                                       next->opcode == async_op_cache_get_singlethreaded ||
-                                      next->opcode == async_op_cursor_get ||
-                                      next->opcode == async_op_cursor_get_batch ||
-                                      next->opcode == async_op_cursor_get_batches ||
-                                      next->opcode == async_op_cursor_get_batches_from ||
-                                      next->opcode == async_op_cursor_get_loop ||
-                                      next->opcode == async_op_cursor_get_loop_from ||
-                                      next->opcode == async_op_cursor_scan ||
-                                      next->opcode == async_op_cursor_scan_from);
-      const bool pending_accepts_next =
-          !pending_read || (next_read && !pending_cursor_get_head);
+                                      next_cursor_read);
+      const bool pending_accepts_next = !pending_read || (next_read && (!pending_cursor_get_head || !next_cursor_read));
       if (next && ready_count < MDBX_ASYNC_COMPLETE_CHUNK && pending_accepts_next) {
         op = next;
         continue;
