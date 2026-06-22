@@ -8048,3 +8048,52 @@ Async lowerbound scheduler retained-state checkpoint:
   scheduler-retained traversal state, so the main grouped GET-family operations
   can all suspend after a nonblocking page-read drive and be completed through
   the same retained-state drain mechanism.
+
+Mixed GET-family retained-state checkpoint:
+
+- relaxed the async worker pending-read boundary so retained GET, GET_EX, and
+  lowerbound read states can coexist within the same completion chunk.
+- when any retained GET-family state exists, the worker may continue submitting
+  later GET-family operations, regardless of whether they are exact-key,
+  extended exact-key, or lowerbound reads.
+- the worker still drains all retained read states before publishing
+  `completed_seq`, and it still flushes before writes, cursor mutations, cache
+  invalidating operations, or other non-GET-family operations.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-mixed-read-retain-before.txt` and
+    `/tmp/mdbx-async-bench-mixed-read-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `44dfd4f`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async single get | 235.474 Kops/s | 337.418 Kops/s |
+| async single get_ex | 260.305 Kops/s | 298.097 Kops/s |
+| async single lowerbound | 274.675 Kops/s | 272.401 Kops/s |
+| async parallel get | 2.800 Mops/s | 2.088 Mops/s |
+| async many parallel get | 2.420 Mops/s | 2.163 Mops/s |
+| async threaded get | 2.120 Mops/s | 2.161 Mops/s |
+| async threaded many get | 2.978 Mops/s | 2.926 Mops/s |
+| async threaded batch get | 2.601 Mops/s | 3.525 Mops/s |
+| async get_ex batch | 2.538 Mops/s | 2.314 Mops/s |
+| async get_ex many | 2.860 Mops/s | 2.894 Mops/s |
+| async get_ex loop | 2.553 Mops/s | 3.482 Mops/s |
+| async lowerbound batch | 1.576 Mops/s | 1.670 Mops/s |
+| async lowerbound many | 1.425 Mops/s | 1.404 Mops/s |
+| async lowerbound loop | 1.528 Mops/s | 1.668 Mops/s |
+| async threaded lower loop | 1.775 Mops/s | 1.533 Mops/s |
+| async cache batch | 3.302 Mops/s | 4.073 Mops/s |
+
+- conclusion: the benchmark workload mostly measures each GET-family operation
+  separately, so this checkpoint primarily improves scheduler semantics rather
+  than a single isolated row. It removes the artificial family boundary between
+  retained exact-key, extended exact-key, and lowerbound page-read traversals,
+  allowing mixed read queues to submit more independent page misses before the
+  worker blocks for completion.

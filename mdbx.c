@@ -20409,15 +20409,10 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
         ready_count += 1;
       }
 
-      const bool pending_accepts_next =
-          !pending_get_head && !pending_get_ex_head && !pending_lowerbound_head
-              ? true
-              : (pending_get_head && !pending_get_ex_head && !pending_lowerbound_head && next &&
-                 next->opcode == async_op_get) ||
-                    (!pending_get_head && pending_get_ex_head && !pending_lowerbound_head && next &&
-                     next->opcode == async_op_get_ex) ||
-                    (!pending_get_head && !pending_get_ex_head && pending_lowerbound_head && next &&
-                     next->opcode == async_op_get_equal_or_great);
+      const bool pending_read = pending_get_head || pending_get_ex_head || pending_lowerbound_head;
+      const bool next_read = next && (next->opcode == async_op_get || next->opcode == async_op_get_ex ||
+                                      next->opcode == async_op_get_equal_or_great);
+      const bool pending_accepts_next = !pending_read || next_read;
       if (next && ready_count < MDBX_ASYNC_COMPLETE_CHUNK && pending_accepts_next) {
         op = next;
         continue;
