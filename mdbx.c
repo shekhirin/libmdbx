@@ -6725,6 +6725,7 @@ MDBX_INTERNAL int __must_check_result page_check(const MDBX_cursor *const mc, co
 static inline int page_make_cursor_get_submit_io(const MDBX_cursor *mc, const uint16_t ill, const pgno_t pgno,
                                                  const txnid_t front, dxb_cursor_page_get_submit_io_t *io);
 static __always_inline pgr_t page_submit_cursor_get(const dxb_cursor_page_get_submit_io_t *io);
+static int page_submit_cursor_get_batch(const dxb_cursor_page_get_submit_io_t *ios, pgr_t *results, size_t count);
 
 static inline int __must_check_result page_get_with_ref(const MDBX_cursor *mc, const pgno_t pgno, page_t **mp,
                                                         page_ref_t *ref, const txnid_t front) {
@@ -49048,23 +49049,9 @@ static inline int page_cursor_get_submit_io_validate(const dxb_cursor_page_get_s
   return MDBX_SUCCESS;
 }
 
-static __always_inline pgr_t page_submit_cursor_get(const dxb_cursor_page_get_submit_io_t *io) {
-  int validate_err = page_cursor_get_submit_io_validate(io);
-  if (unlikely(validate_err != MDBX_SUCCESS)) {
-    if (io && io->cursor && io->cursor->txn)
-      io->cursor->txn->flags |= MDBX_TXN_ERROR;
-    return pgr_error(validate_err);
-  }
-
+static pgr_t page_complete_cursor_get(const dxb_cursor_page_get_submit_io_t *io, pgr_t r) {
   const MDBX_cursor *const mc = io->cursor;
   MDBX_txn *const txn = mc->txn;
-  cASSERT0(txn, io->get.front <= txn->front_txnid);
-
-#if MDBX_ENABLE_PGET_STAT
-  txn->ops_pget += 1;
-#endif /* MDBX_ENABLE_PGET_STAT */
-
-  pgr_t r = page_submit_get_unchecked(txn, &io->get);
   if (likely(r.err == MDBX_SUCCESS)) {
     if (likely(mc->checking & z_pagecheck) == 0) {
 #if MDBX_DISABLE_VALIDATION
@@ -49102,6 +49089,112 @@ static __always_inline pgr_t page_submit_cursor_get(const dxb_cursor_page_get_su
   const int err = r.err;
   pgr_release(mc, &r);
   return pgr_error(err);
+}
+
+static __always_inline pgr_t page_submit_cursor_get(const dxb_cursor_page_get_submit_io_t *io) {
+  int validate_err = page_cursor_get_submit_io_validate(io);
+  if (unlikely(validate_err != MDBX_SUCCESS)) {
+    if (io && io->cursor && io->cursor->txn)
+      io->cursor->txn->flags |= MDBX_TXN_ERROR;
+    return pgr_error(validate_err);
+  }
+
+  const MDBX_cursor *const mc = io->cursor;
+  MDBX_txn *const txn = mc->txn;
+  cASSERT0(txn, io->get.front <= txn->front_txnid);
+
+#if MDBX_ENABLE_PGET_STAT
+  txn->ops_pget += 1;
+#endif /* MDBX_ENABLE_PGET_STAT */
+
+  return page_complete_cursor_get(io, page_submit_get_unchecked(txn, &io->get));
+}
+
+static int page_submit_cursor_get_batch(const dxb_cursor_page_get_submit_io_t *ios, pgr_t *results,
+                                        size_t count) {
+  if (unlikely(!ios || !results || !count))
+    return MDBX_EINVAL;
+  if (count == 1) {
+    results[0] = page_submit_cursor_get(&ios[0]);
+    return results[0].err;
+  }
+
+  const MDBX_cursor *const mc = ios[0].cursor;
+  MDBX_txn *const txn = likely(mc) ? mc->txn : nullptr;
+  if (unlikely(!mc || !txn)) {
+    for (size_t i = 0; i < count; ++i)
+      results[i] = pgr_error(MDBX_EINVAL);
+    return MDBX_EINVAL;
+  }
+
+  dxb_page_get_submit_io_t stack_gets[4];
+  pgr_t stack_raw[4];
+  size_t stack_indices[4];
+  dxb_page_get_submit_io_t *gets = stack_gets;
+  pgr_t *raw = stack_raw;
+  size_t *indices = stack_indices;
+  if (count > ARRAY_LENGTH(stack_gets)) {
+    gets = osal_calloc(count, sizeof(gets[0]));
+    raw = osal_calloc(count, sizeof(raw[0]));
+    indices = osal_malloc(count * sizeof(indices[0]));
+  }
+  if (unlikely(!gets || !raw || !indices)) {
+    if (indices != stack_indices)
+      osal_free(indices);
+    if (raw != stack_raw)
+      osal_free(raw);
+    if (gets != stack_gets)
+      osal_free(gets);
+    for (size_t i = 0; i < count; ++i)
+      results[i] = pgr_error(MDBX_ENOMEM);
+    txn->flags |= MDBX_TXN_ERROR;
+    return MDBX_ENOMEM;
+  }
+
+  int first_err = MDBX_SUCCESS;
+  size_t eligible = 0;
+  for (size_t i = 0; i < count; ++i) {
+    int err = page_cursor_get_submit_io_validate(&ios[i]);
+    if (unlikely(err == MDBX_SUCCESS && (ios[i].cursor != mc || ios[i].cursor->txn != txn)))
+      err = MDBX_EINVAL;
+    if (unlikely(err != MDBX_SUCCESS)) {
+      results[i] = pgr_error(err);
+      txn->flags |= MDBX_TXN_ERROR;
+      if (first_err == MDBX_SUCCESS)
+        first_err = err;
+      continue;
+    }
+
+    cASSERT0(txn, ios[i].get.front <= txn->front_txnid);
+    gets[eligible] = ios[i].get;
+    indices[eligible] = i;
+    ++eligible;
+  }
+
+#if MDBX_ENABLE_PGET_STAT
+  txn->ops_pget += eligible;
+#endif /* MDBX_ENABLE_PGET_STAT */
+
+  if (eligible) {
+    const int err = page_submit_get_unchecked_batch(txn, gets, raw, eligible);
+    if (unlikely(err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
+      first_err = err;
+  }
+
+  for (size_t j = 0; j < eligible; ++j) {
+    const size_t i = indices[j];
+    results[i] = page_complete_cursor_get(&ios[i], raw[j]);
+    if (unlikely(results[i].err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
+      first_err = results[i].err;
+  }
+
+  if (indices != stack_indices)
+    osal_free(indices);
+  if (raw != stack_raw)
+    osal_free(raw);
+  if (gets != stack_gets)
+    osal_free(gets);
+  return first_err;
 }
 
 static inline bool iov_page_io_equal(const dxb_page_io_t *a, const dxb_page_io_t *b) {
@@ -54544,20 +54637,45 @@ int tree_rebalance(MDBX_cursor *mc) {
     cursor_rebalance_refs_release(mc, mn, left, &left_ref, right, &right_ref);                                        \
     return (result);                                                                                                  \
   } while (0)
+  dxb_cursor_page_get_submit_io_t neighbor_gets[2];
+  pgr_t neighbor_pgrs[2];
+  bool neighbor_is_left[2];
+  size_t neighbor_count = 0;
+  const txnid_t neighbor_front = mc->pg[mc->top]->txnid;
   if (mn->ki[pre_top] > 0) {
-    rc = page_get_with_ref(mn, node_pgno(page_node(mn->pg[pre_top], mn->ki[pre_top] - 1)), &left, &left_ref,
-                           mc->pg[mc->top]->txnid);
+    rc = page_make_cursor_get_submit_io(mn, P_ILL_BITS | P_LARGE,
+                                        node_pgno(page_node(mn->pg[pre_top], mn->ki[pre_top] - 1)),
+                                        neighbor_front, &neighbor_gets[neighbor_count]);
     if (unlikely(rc != MDBX_SUCCESS))
       REBALANCE_RETURN(rc);
-    cASSERT0(mc, page_type(left) == page_type(mc->pg[mc->top]));
+    neighbor_is_left[neighbor_count++] = true;
   }
   if (mn->ki[pre_top] + (size_t)1 < page_numkeys(mn->pg[pre_top])) {
-    rc = page_get_with_ref(mn, node_pgno(page_node(mn->pg[pre_top], mn->ki[pre_top] + (size_t)1)), &right, &right_ref,
-                           mc->pg[mc->top]->txnid);
+    rc = page_make_cursor_get_submit_io(mn, P_ILL_BITS | P_LARGE,
+                                        node_pgno(page_node(mn->pg[pre_top], mn->ki[pre_top] + (size_t)1)),
+                                        neighbor_front, &neighbor_gets[neighbor_count]);
     if (unlikely(rc != MDBX_SUCCESS))
       REBALANCE_RETURN(rc);
-    cASSERT0(mc, page_type(right) == page_type(mc->pg[mc->top]));
+    neighbor_is_left[neighbor_count++] = false;
   }
+  rc = page_submit_cursor_get_batch(neighbor_gets, neighbor_pgrs, neighbor_count);
+  for (size_t i = 0; i < neighbor_count; ++i) {
+    if (neighbor_pgrs[i].err == MDBX_SUCCESS) {
+      if (neighbor_is_left[i]) {
+        left = neighbor_pgrs[i].page;
+        left_ref = neighbor_pgrs[i].ref;
+      } else {
+        right = neighbor_pgrs[i].page;
+        right_ref = neighbor_pgrs[i].ref;
+      }
+    }
+  }
+  if (unlikely(rc != MDBX_SUCCESS))
+    REBALANCE_RETURN(rc);
+  if (left)
+    cASSERT0(mc, page_type(left) == page_type(mc->pg[mc->top]));
+  if (right)
+    cASSERT0(mc, page_type(right) == page_type(mc->pg[mc->top]));
   cASSERT0(mc, left || right);
 
   const size_t ki_top = mc->ki[mc->top];

@@ -367,6 +367,51 @@ Validation:
 - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
 - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
 
+## Batched Cursor Neighbor Page-Get Slice
+
+Added `page_submit_cursor_get_batch()` on top of the raw page-get batch
+primitive. The helper validates each cursor page-get request, keeps all entries
+on one cursor/transaction, calls `page_submit_get_unchecked_batch()` for the
+underlying page reads, then applies the same cursor-specific completion path as
+`page_submit_cursor_get()`: header checks, optional full page checks,
+large-page materialization, transaction error marking, and page-ref release on
+failure.
+
+The first real cursor-side caller is rebalance neighbor lookup. When both left
+and right siblings exist, rebalance now prepares both sibling page-get requests
+and submits them through the cursor batch helper instead of reading the two
+siblings sequentially. This is still synchronous from the caller's point of
+view, but it moves another B-tree mutation path onto the internal multi-read
+primitive.
+
+Reduced forced no-mmap/io_uring benchmark (`items=1000 ops=10000
+large_items=256 large_ops=10000 large_value=10000 page_cache=64K`), compared
+against previous commit `0550492`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking cursor put | 4.399 Mops/s | 4.003 Mops/s |
+| async cursor put | 2.125 Mops/s | 2.273 Mops/s |
+| async cursor batch put | 4.092 Mops/s | 4.095 Mops/s |
+| async cursor loop put | 4.076 Mops/s | 4.099 Mops/s |
+| blocking replace delete | 1.986 Mops/s | 1.847 Mops/s |
+| async loop replace del | 2.015 Mops/s | 1.870 Mops/s |
+| blocking cursor range del | 64.313 Mops/s | 63.215 Mops/s |
+| async cursor range del | 49.806 Mops/s | 48.881 Mops/s |
+| async cursor bunch del | 50.008 Mops/s | 44.222 Mops/s |
+
+This short benchmark is noisy and does not show a clean throughput win for the
+rebalance caller. The main value of this slice is structural: cursor page-get
+completion is now batch-capable, and one B-tree path with independent sibling
+reads uses it.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current
