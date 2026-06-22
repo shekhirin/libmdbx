@@ -18755,6 +18755,9 @@ static void async_get_loop_pending_free(async_get_loop_pending_t *pending) {
 
 static int async_get_loop_pending_prepare(async_get_loop_pending_t *pending) {
   MDBX_async_op *const op = pending->op;
+  const MDBX_txn *const txn = op->args.get_loop.txn;
+  const MDBX_dbi dbi = op->args.get_loop.dbi;
+  const bool batchable = async_nodup_read_batchable(txn, dbi);
   enum { get_loop_window = 64 };
   const size_t remaining = op->args.get_loop.count - pending->base;
   const size_t chunk = remaining < get_loop_window ? remaining : get_loop_window;
@@ -18781,22 +18784,26 @@ static int async_get_loop_pending_prepare(async_get_loop_pending_t *pending) {
                           sizeof(pending->key_inline[j]), &key);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
-    pending->slots[j] =
-        async_get_cache_slot(op->async, op->args.get_loop.txn, op->args.get_loop.dbi, &pending->keys[j]);
+    if (batchable)
+      pending->slots[j] = async_get_cache_slot(op->async, txn, dbi, &pending->keys[j]);
   }
 
-  async_get_cache_prepare_batch_slots(op->args.get_loop.txn, op->args.get_loop.dbi, pending->keys,
-                                      pending->slots, pending->entries, pending->cold, chunk);
-  (void)cache_materialize_singlethreaded_batch(op->args.get_loop.txn, pending->data, pending->entries,
-                                               pending->cache_results, chunk, pending->handled);
-  int traverse_rc = async_batched_get_traverse_begin(
-      &pending->traverse, op->args.get_loop.txn, op->args.get_loop.dbi, pending->keys, pending->data,
-      pending->results, pending->handled, pending->cold, pending->slots, nullptr, chunk);
-  pending->traverse_started = true;
-  pending->drive_rc = likely(traverse_rc == MDBX_SUCCESS)
-                          ? async_batched_get_traverse_drive(&pending->traverse, false)
-                          : traverse_rc;
-  return pending->drive_rc;
+  if (batchable) {
+    async_get_cache_prepare_batch_slots(txn, dbi, pending->keys, pending->slots,
+                                        pending->entries, pending->cold, chunk);
+    (void)cache_materialize_singlethreaded_batch(txn, pending->data, pending->entries,
+                                                 pending->cache_results, chunk, pending->handled);
+    int traverse_rc = async_batched_get_traverse_begin(
+        &pending->traverse, txn, dbi, pending->keys, pending->data, pending->results,
+        pending->handled, pending->cold, pending->slots, nullptr, chunk);
+    pending->traverse_started = true;
+    pending->drive_rc = likely(traverse_rc == MDBX_SUCCESS)
+                            ? async_batched_get_traverse_drive(&pending->traverse, false)
+                            : traverse_rc;
+    return pending->drive_rc;
+  }
+
+  return MDBX_SUCCESS;
 }
 
 static int async_get_loop_pending_complete_chunk(async_get_loop_pending_t *pending, bool wait) {
@@ -25642,6 +25649,10 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_get_loop:
     if (op->args.get_loop.completed)
       *op->args.get_loop.completed = 0;
+    {
+      const MDBX_txn *const txn = op->args.get_loop.txn;
+      const MDBX_dbi dbi = op->args.get_loop.dbi;
+      const bool batchable = async_nodup_read_batchable(txn, dbi);
     for (size_t base = 0; base < op->args.get_loop.count;) {
       enum { get_loop_window = 64 };
       const size_t remaining = op->args.get_loop.count - base;
@@ -25678,21 +25689,23 @@ static int async_op_execute(MDBX_async_op *op) {
           loop_rc = rc;
           goto get_loop_bailout;
         }
-        slots[j] = async_get_cache_slot(op->async, op->args.get_loop.txn, op->args.get_loop.dbi, &keys[j]);
+        if (batchable)
+          slots[j] = async_get_cache_slot(op->async, txn, dbi, &keys[j]);
       }
 
-      async_get_cache_prepare_batch_slots(op->args.get_loop.txn, op->args.get_loop.dbi, keys, slots,
-                                          entries, cold, chunk);
-      (void)cache_materialize_singlethreaded_batch(op->args.get_loop.txn, data, entries,
-                                                   cache_results, chunk, handled);
-      async_batched_get_traverse_state_t traverse;
-      int traverse_rc =
-          async_batched_get_traverse_begin(&traverse, op->args.get_loop.txn, op->args.get_loop.dbi,
-                                           keys, data, results, handled, cold, slots, nullptr, chunk);
-      if (likely(traverse_rc == MDBX_SUCCESS))
-        (void)async_batched_get_traverse_drive_to_completion(&traverse);
-      else
-        (void)async_batched_get_traverse_finish(&traverse);
+      if (batchable) {
+        async_get_cache_prepare_batch_slots(txn, dbi, keys, slots, entries, cold, chunk);
+        (void)cache_materialize_singlethreaded_batch(txn, data, entries, cache_results, chunk,
+                                                     handled);
+        async_batched_get_traverse_state_t traverse;
+        int traverse_rc =
+            async_batched_get_traverse_begin(&traverse, txn, dbi, keys, data, results, handled,
+                                             cold, slots, nullptr, chunk);
+        if (likely(traverse_rc == MDBX_SUCCESS))
+          (void)async_batched_get_traverse_drive_to_completion(&traverse);
+        else
+          (void)async_batched_get_traverse_finish(&traverse);
+      }
 
       for (size_t j = 0; j < chunk; ++j) {
         const size_t i = base + j;
@@ -25709,8 +25722,8 @@ static int async_op_execute(MDBX_async_op *op) {
           if (get_rc == MDBX_SUCCESS)
             value = data[j];
         } else {
-          get_rc = async_cached_get(op->async, op->args.get_loop.txn, op->args.get_loop.dbi, &keys[j],
-                                    &value);
+          get_rc = batchable ? async_cached_get(op->async, txn, dbi, &keys[j], &value)
+                             : mdbx_get(txn, dbi, &keys[j], &value);
         }
         int rc = op->args.get_loop.result_func
                      ? op->args.get_loop.result_func(op->args.get_loop.context, i, &keys[j], &value, get_rc)
@@ -25731,6 +25744,7 @@ static int async_op_execute(MDBX_async_op *op) {
       for (size_t j = 0; j < chunk; ++j)
         osal_free(key_copies[j]);
       return loop_rc;
+    }
     }
     return MDBX_SUCCESS;
   case async_op_get_ex_loop:

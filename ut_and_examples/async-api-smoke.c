@@ -125,6 +125,14 @@ struct async_read_loop_probe {
   int expected_result;
 };
 
+struct async_dupsort_loop_probe {
+  uint64_t keys[3];
+  uint64_t values[3];
+  int expected_results[3];
+  size_t keys_seen;
+  size_t results_seen;
+};
+
 struct get_ex_loop_probe {
   uint64_t key;
   size_t keys;
@@ -726,6 +734,41 @@ static int async_read_get_ex_loop_result_func(void *context, size_t index, const
       memcmp(data->iov_base, probe->values[index], ASYNC_READ_BATCH_VALUE_BYTES) != 0)
     return MDBX_PROBLEM;
   probe->results += 1;
+  return MDBX_SUCCESS;
+}
+
+static int async_dupsort_loop_key_func(void *context, size_t index, MDBX_val *key) {
+  struct async_dupsort_loop_probe *const probe = (struct async_dupsort_loop_probe *)context;
+  if (!probe || !key || index >= sizeof(probe->keys) / sizeof(probe->keys[0]))
+    return MDBX_PROBLEM;
+  *key = val(&probe->keys[index], sizeof(probe->keys[index]));
+  probe->keys_seen += 1;
+  return MDBX_SUCCESS;
+}
+
+static int async_dupsort_loop_result_func(void *context, size_t index, const MDBX_val *key,
+                                          const MDBX_val *data, int result) {
+  struct async_dupsort_loop_probe *const probe = (struct async_dupsort_loop_probe *)context;
+  if (!probe || !key || !data || index >= sizeof(probe->keys) / sizeof(probe->keys[0]) ||
+      result != probe->expected_results[index])
+    return MDBX_PROBLEM;
+  if (key->iov_len != sizeof(uint64_t))
+    return MDBX_PROBLEM;
+  uint64_t actual_key = UINT64_MAX;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  if (actual_key != probe->keys[index])
+    return MDBX_PROBLEM;
+  if (result == MDBX_SUCCESS) {
+    if (data->iov_len != sizeof(uint64_t))
+      return MDBX_PROBLEM;
+    uint64_t actual_value = UINT64_MAX;
+    memcpy(&actual_value, data->iov_base, sizeof(actual_value));
+    if (actual_value != probe->values[index])
+      return MDBX_PROBLEM;
+  } else if (data->iov_base != NULL || data->iov_len != 0) {
+    return MDBX_PROBLEM;
+  }
+  probe->results_seen += 1;
   return MDBX_SUCCESS;
 }
 
@@ -2589,6 +2632,12 @@ static int exercise_async_dupsort_read_fallback(const char *path) {
   MDBX_val keys[3] = {dup_key_value, missing_key, key1_value};
   MDBX_val values[3] = {val(NULL, 0), val(NULL, 0), val(NULL, 0)};
   size_t counts[3] = {SIZE_MAX, SIZE_MAX, SIZE_MAX};
+  size_t completed = 0;
+  struct async_dupsort_loop_probe loop_probe = {{dup_key, UINT64_MAX, key1},
+                                                {dup0, 0, value1},
+                                                {MDBX_SUCCESS, MDBX_NOTFOUND, MDBX_SUCCESS},
+                                                0,
+                                                0};
 
   memset(missing_key_bytes, 0xff, sizeof(missing_key_bytes));
   memset(&read_stats, 0, sizeof(read_stats));
@@ -2659,6 +2708,13 @@ static int exercise_async_dupsort_read_fallback(const char *path) {
   REQUIRE(operation_result == MDBX_SUCCESS, "dupsort async get_ex fallback returned wrong result");
   REQUIRE(values_count == 2, "dupsort async get_ex fallback returned wrong duplicate count");
   CHECK(expect_payload(&data, dup0, __FILE__, __LINE__));
+
+  CHECK(mdbx_async_get_loop(async, txn, dbi, 3, async_dupsort_loop_key_func,
+                            async_dupsort_loop_result_func, &loop_probe, &completed, &op));
+  CHECK(wait_result("mdbx_async_get_loop dupsort fallback", &op, &operation_result, __FILE__, __LINE__));
+  REQUIRE(operation_result == MDBX_SUCCESS, "dupsort async get_loop fallback returned wrong result");
+  REQUIRE(completed == 3 && loop_probe.keys_seen == 3 && loop_probe.results_seen == 3,
+          "dupsort async get_loop fallback did not visit every item");
 
   CHECK(mdbx_async_get_many(async, txn, dbi, keys, values, 3, ops));
   CHECK(wait_many_result("mdbx_async_get_many dupsort fallback", ops, 3, op_results, __FILE__, __LINE__));
