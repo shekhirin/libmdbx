@@ -5998,3 +5998,79 @@ Additional async lower-bound fallback helper consolidation checkpoint:
   likely cache-sensitive: cache loop, many parallel get, direct cursor loops,
   and threaded lower/cursor ratios improved, while lower-bound batch/many/loop,
   single lowerbound, get loop, and get_ex loop regressed in this sample.
+
+Additional async cursor loop batch-start checkpoint:
+
+- changed `async_cursor_get_loop_execute()` so unpositioned, non-dupsort
+  `MDBX_FIRST`/`MDBX_NEXT` loops with no start key fetch their first window via
+  `mdbx_cursor_get_batch(MDBX_FIRST)` instead of first calling
+  `mdbx_cursor_get(MDBX_FIRST)` and then switching to cursor batches.
+- kept one-item requests and one-item tails on the single cursor operation
+  because `mdbx_cursor_get_batch()` requires space for at least two key/value
+  pairs and would otherwise advance the cursor too far.
+- constrained the new path to `!is_filled(cursor)`. This preserves existing
+  `MDBX_FIRST` repositioning semantics for reused cursors; the first attempt
+  without this guard failed `async_api` because `mdbx_cursor_get_batch(FIRST)`
+  does not reposition an already-filled cursor.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - `git diff --check`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cursor-loop-first-batch-before.txt` and
+    `/tmp/mdbx-async-bench-cursor-loop-first-batch-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `176f06b`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.863 Mops/s | 1.868 Mops/s |
+| blocking parallel get | 1.088 Mops/s | 1.058 Mops/s |
+| async single get | 417.856 Kops/s | 407.933 Kops/s |
+| async single get_ex | 405.719 Kops/s | 204.063 Kops/s |
+| async single lowerbound | 189.924 Kops/s | 340.540 Kops/s |
+| async parallel get | 2.418 Mops/s | 2.603 Mops/s |
+| async many parallel get | 2.671 Mops/s | 2.415 Mops/s |
+| async get_ex batch | 2.461 Mops/s | 2.335 Mops/s |
+| async get_ex many | 2.856 Mops/s | 2.813 Mops/s |
+| async cache many | 4.142 Mops/s | 4.453 Mops/s |
+| async cache loop | 5.024 Mops/s | 2.781 Mops/s |
+| async threaded cache loop | 4.947 Mops/s | 4.189 Mops/s |
+| async lowerbound batch | 1.498 Mops/s | 1.625 Mops/s |
+| async lowerbound many | 1.649 Mops/s | 1.675 Mops/s |
+| async get loop | 3.437 Mops/s | 3.396 Mops/s |
+| async get_ex loop | 3.025 Mops/s | 3.131 Mops/s |
+| async lowerbound loop | 1.914 Mops/s | 1.815 Mops/s |
+| blocking cursor get | 84.658 Mops/s | 87.473 Mops/s |
+| parallel cursor get | 67.033 Mops/s | 96.279 Mops/s |
+| async cursor get | 944.587 Kops/s | 868.436 Kops/s |
+| async cursor get loop | 71.870 Mops/s | 120.542 Mops/s |
+| async cursor get loop_from | 70.716 Mops/s | 67.212 Mops/s |
+| async threaded cursor get loop | 120.479 Mops/s | 62.422 Mops/s |
+| async threaded cget loop_from | 98.971 Mops/s | 69.260 Mops/s |
+| blocking cursor batch | 202.336 Mops/s | 219.047 Mops/s |
+| parallel cursor batch | 58.797 Mops/s | 70.998 Mops/s |
+| async cursor batch | 67.080 Mops/s | 56.632 Mops/s |
+| async threaded cursor batch | 117.138 Mops/s | 126.200 Mops/s |
+| async cursor loop | 74.922 Mops/s | 78.334 Mops/s |
+| async cursor loop_from | 75.352 Mops/s | 76.858 Mops/s |
+| async threaded cursor loop | 138.761 Mops/s | 134.956 Mops/s |
+| async threaded cursor loop_from | 139.469 Mops/s | 113.371 Mops/s |
+| async-cursor-get-loop/par | 1.072 | 1.252 |
+| async-cursor-get-loop/get | 76.086 | 138.803 |
+| async-thread-cget-loop/par | 1.797 | 0.648 |
+| async-thread-cget-loop/get | 127.547 | 71.878 |
+| async-thread-cget-loop/loop | 1.676 | 0.518 |
+| async-get-loop/batch | 1.071 | 2.129 |
+| async-loop-cursor/par | 1.274 | 1.103 |
+| async-thread-cursor-loop/par | 2.360 | 1.901 |
+
+- conclusion: this checkpoint moves one common unpositioned cursor-loop startup
+  case onto the cursor batch primitive immediately, reducing direct
+  one-by-one cursor reads on that path while preserving reused-cursor
+  semantics. The one-run benchmark is mixed: direct async cursor get loop and
+  `async-get-loop/batch` improved substantially, while threaded cursor get loop
+  and cache-loop rows regressed in this sample.

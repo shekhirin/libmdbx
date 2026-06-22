@@ -17875,6 +17875,68 @@ static int async_cursor_get_loop_execute(MDBX_async_op *op) {
     *completed = 0;
 
   MDBX_cursor *const cursor = op->args.cursor_get_loop.cursor;
+  if (count && !is_filled(cursor) && cursor->subcur == nullptr && op->args.cursor_get_loop.turn_op == MDBX_NEXT &&
+      !op->args.cursor_get_loop.from_key && op->args.cursor_get_loop.start_op == MDBX_FIRST) {
+    enum { cursor_get_loop_batch_pairs = 64 };
+    MDBX_val pairs[cursor_get_loop_batch_pairs * 2];
+    size_t done = 0;
+    MDBX_cursor_op cursor_op = MDBX_FIRST;
+
+    while (done < count) {
+      const size_t remaining = count - done;
+      if (remaining == 1) {
+        MDBX_val key = {nullptr, 0};
+        MDBX_val data = {nullptr, 0};
+        const MDBX_cursor_op tail_op = cursor_op == MDBX_FIRST ? MDBX_FIRST : MDBX_GET_CURRENT;
+        int rc = mdbx_cursor_get(cursor, &key, &data, tail_op);
+        if (unlikely(rc == MDBX_NOTFOUND))
+          return MDBX_RESULT_TRUE;
+        if (unlikely(rc != MDBX_SUCCESS))
+          return rc;
+        if (op->args.cursor_get_loop.func) {
+          rc = op->args.cursor_get_loop.func(op->args.cursor_get_loop.context, done, &key, &data);
+          if (unlikely(rc != MDBX_SUCCESS))
+            return rc;
+        }
+        done += 1;
+        if (completed)
+          *completed = done;
+        return MDBX_SUCCESS;
+      }
+
+      const size_t want_pairs = remaining < cursor_get_loop_batch_pairs ? remaining : cursor_get_loop_batch_pairs;
+      size_t fetched = 0;
+      int rc = mdbx_cursor_get_batch(cursor, &fetched, pairs, want_pairs * 2, cursor_op);
+      if (unlikely(rc == MDBX_NOTFOUND))
+        return MDBX_RESULT_TRUE;
+      if (unlikely(rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE))
+        return rc;
+      const int batch_rc = rc;
+      if (unlikely(fetched == 0))
+        return done ? MDBX_RESULT_TRUE : batch_rc;
+
+      for (size_t n = 0; n < fetched && done < count; n += 2) {
+        MDBX_val *const key = &pairs[n];
+        MDBX_val *const data = &pairs[n + 1];
+        if (op->args.cursor_get_loop.func) {
+          rc = op->args.cursor_get_loop.func(op->args.cursor_get_loop.context, done, key, data);
+          if (unlikely(rc != MDBX_SUCCESS))
+            return rc;
+        }
+        done += 1;
+        if (completed)
+          *completed = done;
+      }
+
+      if (done == count)
+        return MDBX_SUCCESS;
+      if (batch_rc == MDBX_RESULT_TRUE)
+        return MDBX_RESULT_TRUE;
+      cursor_op = MDBX_NEXT;
+    }
+    return MDBX_SUCCESS;
+  }
+
   if (count && cursor->subcur == nullptr && op->args.cursor_get_loop.turn_op == MDBX_NEXT &&
       (!op->args.cursor_get_loop.from_key || op->args.cursor_get_loop.start_op == MDBX_SET_LOWERBOUND ||
        op->args.cursor_get_loop.start_op == MDBX_SET_KEY) &&
