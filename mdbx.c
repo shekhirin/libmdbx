@@ -16526,12 +16526,16 @@ static int async_cached_get(MDBX_async *async, const MDBX_txn *txn, MDBX_dbi dbi
   return result.errcode;
 }
 
-static bool async_get_ex_batchable(const MDBX_txn *txn, MDBX_dbi dbi) {
+static bool async_nodup_read_batchable(const MDBX_txn *txn, MDBX_dbi dbi) {
   if (unlikely(check_txn(txn, MDBX_TXN_BLOCKED) != MDBX_SUCCESS))
     return false;
   const uint8_t state = dbi_state(txn, dbi);
   return (state & (DBI_LINDO | DBI_VALID)) == (DBI_LINDO | DBI_VALID) && !dbi_changed(txn, dbi) &&
          !(txn->dbs[dbi].flags & MDBX_DUPSORT);
+}
+
+static bool async_get_ex_batchable(const MDBX_txn *txn, MDBX_dbi dbi) {
+  return async_nodup_read_batchable(txn, dbi);
 }
 
 static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
@@ -16698,6 +16702,176 @@ static size_t async_batched_get_traverse(const MDBX_txn *txn, MDBX_dbi dbi, cons
     if (rc == MDBX_SUCCESS) {
       if (found_keys)
         found_keys[i] = key;
+      data[i] = value;
+    } else {
+      data[i].iov_base = nullptr;
+      data[i].iov_len = 0;
+    }
+    handled[i] = true;
+  }
+
+bailout:
+  if (couples && initialized) {
+    for (size_t i = 0; i < count; ++i) {
+      if (initialized[i]) {
+        cursor_stack_release_all(&couples[i].outer);
+        cursor_stack_release_all(&couples[i].inner.cursor);
+      }
+    }
+  }
+  size_t handled_count = 0;
+  if (handled)
+    for (size_t i = 0; i < count; ++i)
+      handled_count += handled[i] ? 1 : 0;
+  osal_free(parent_kis);
+  osal_free(parent_tops);
+  osal_free(indices);
+  osal_free(pgrs);
+  osal_free(gets);
+  osal_free(initialized);
+  osal_free(couples);
+  return handled_count;
+}
+
+static size_t async_batched_lowerbound_traverse(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val keys[],
+                                                MDBX_val data[], int results[], bool handled[],
+                                                const bool eligible[], MDBX_val found_keys[],
+                                                size_t count) {
+  if (unlikely(!txn || !keys || !data || !results || !handled || !eligible || !found_keys || !count))
+    return 0;
+  if (unlikely(check_txn(txn, MDBX_TXN_BLOCKED) != MDBX_SUCCESS))
+    return 0;
+
+  cursor_couple_t *couples = osal_calloc(count, sizeof(couples[0]));
+  bool *initialized = osal_calloc(count, sizeof(initialized[0]));
+  dxb_cursor_page_get_submit_io_t *gets = osal_calloc(count, sizeof(gets[0]));
+  pgr_t *pgrs = osal_calloc(count, sizeof(pgrs[0]));
+  size_t *indices = osal_malloc(count * sizeof(indices[0]));
+  intptr_t *parent_tops = osal_malloc(count * sizeof(parent_tops[0]));
+  indx_t *parent_kis = osal_malloc(count * sizeof(parent_kis[0]));
+  if (unlikely(!couples || !initialized || !gets || !pgrs || !indices || !parent_tops || !parent_kis))
+    goto bailout;
+
+  size_t root_count = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (!eligible[i] || handled[i])
+      continue;
+
+    int err = cursor_init(&couples[i].outer, txn, dbi);
+    if (unlikely(err != MDBX_SUCCESS)) {
+      results[i] = err;
+      handled[i] = true;
+      continue;
+    }
+    initialized[i] = true;
+
+    MDBX_cursor *const mc = &couples[i].outer;
+    const pgno_t root = mc->tree->root;
+    if (unlikely(root == P_INVALID)) {
+      results[i] = MDBX_NOTFOUND;
+      data[i].iov_base = nullptr;
+      data[i].iov_len = 0;
+      handled[i] = true;
+      continue;
+    }
+    err = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_LARGE, root,
+                                         tbl_root_txnid(mc->txn, cursor_dbi(mc)), &gets[root_count]);
+    if (unlikely(err != MDBX_SUCCESS)) {
+      results[i] = err;
+      handled[i] = true;
+      continue;
+    }
+    indices[root_count++] = i;
+  }
+
+  if (root_count) {
+    (void)page_submit_cursor_get_batch(gets, pgrs, root_count);
+    for (size_t j = 0; j < root_count; ++j) {
+      const size_t i = indices[j];
+      MDBX_cursor *const mc = &couples[i].outer;
+      int err = pgrs[j].err;
+      if (likely(err == MDBX_SUCCESS)) {
+        err = cursor_stack_set_pgr_consume_checked(mc, 0, &pgrs[j]);
+        if (likely(err == MDBX_SUCCESS)) {
+          mc->top = 0;
+          mc->ki[0] = 0;
+        } else {
+          pgr_release(mc, &pgrs[j]);
+        }
+      } else {
+        pgr_release(mc, &pgrs[j]);
+      }
+      if (unlikely(err != MDBX_SUCCESS)) {
+        results[i] = err;
+        handled[i] = true;
+      }
+    }
+  }
+
+  while (true) {
+    size_t child_count = 0;
+    for (size_t i = 0; i < count; ++i) {
+      if (!initialized[i] || handled[i])
+        continue;
+      MDBX_cursor *const mc = &couples[i].outer;
+      if (unlikely(mc->top < 0 || mc->top >= CURSOR_STACK_SIZE || !mc->pg[mc->top])) {
+        results[i] = MDBX_EINVAL;
+        handled[i] = true;
+        continue;
+      }
+      page_t *const mp = mc->pg[mc->top];
+      if (!is_branch(mp))
+        continue;
+
+      const intptr_t ki = tree_search_branch(mc, &keys[i]);
+      int err = cursor_branch_child_prepare_get(mc, (indx_t)ki, &gets[child_count],
+                                                &parent_tops[child_count]);
+      if (unlikely(err != MDBX_SUCCESS)) {
+        results[i] = err;
+        handled[i] = true;
+        continue;
+      }
+      parent_kis[child_count] = (indx_t)ki;
+      indices[child_count] = i;
+      ++child_count;
+    }
+    if (!child_count)
+      break;
+
+    (void)page_submit_cursor_get_batch(gets, pgrs, child_count);
+    for (size_t j = 0; j < child_count; ++j) {
+      const size_t i = indices[j];
+      MDBX_cursor *const mc = &couples[i].outer;
+      int err = pgrs[j].err;
+      if (likely(err == MDBX_SUCCESS)) {
+        mc->ki[parent_tops[j]] = parent_kis[j];
+        err = cursor_push_pgr_consume_checked(mc, &pgrs[j], 0);
+      } else {
+        pgr_release(mc, &pgrs[j]);
+      }
+      if (unlikely(err != MDBX_SUCCESS)) {
+        results[i] = err;
+        handled[i] = true;
+      }
+    }
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    if (!initialized[i] || handled[i])
+      continue;
+
+    MDBX_val key = keys[i];
+    MDBX_val value = data[i];
+    int rc = cursor_ops(&couples[i].outer, &key, &value, MDBX_SET_LOWERBOUND);
+    if (likely(rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE)) {
+      const int seek_status = rc;
+      rc = cursor_couple_capture_txn_pins(&couples[i]);
+      if (likely(rc == MDBX_SUCCESS))
+        rc = seek_status;
+    }
+    results[i] = rc;
+    if (rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE) {
+      found_keys[i] = key;
       data[i] = value;
     } else {
       data[i].iov_base = nullptr;
@@ -16950,6 +17124,128 @@ static void async_get_ex_ops_batch(MDBX_async *async, MDBX_async_op *ops[], size
   osal_free(found_keys);
   osal_free(keys);
   osal_free(slots);
+}
+
+static int async_get_equal_or_great_batch_execute(MDBX_async_op *op) {
+  const MDBX_txn *const txn = op->args.get_equal_or_great_batch.txn;
+  const MDBX_dbi dbi = op->args.get_equal_or_great_batch.dbi;
+  const size_t count = op->args.get_equal_or_great_batch.count;
+  MDBX_val *const keys = op->args.get_equal_or_great_batch.keys;
+  MDBX_val *const data = op->args.get_equal_or_great_batch.data;
+  int *const results = op->args.get_equal_or_great_batch.results;
+  MDBX_val *found_keys = nullptr;
+  bool *handled = nullptr;
+  bool *eligible = nullptr;
+
+  const bool batchable = async_nodup_read_batchable(txn, dbi);
+  if (batchable) {
+    found_keys = osal_calloc(count, sizeof(found_keys[0]));
+    handled = osal_calloc(count, sizeof(handled[0]));
+    eligible = osal_calloc(count, sizeof(eligible[0]));
+  }
+
+  if (batchable && found_keys && handled && eligible) {
+    for (size_t i = 0; i < count; ++i) {
+      found_keys[i] = keys[i];
+      eligible[i] = true;
+    }
+    (void)async_batched_lowerbound_traverse(txn, dbi, keys, data, results, handled, eligible,
+                                            found_keys, count);
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    if (handled && handled[i]) {
+      if (results[i] == MDBX_SUCCESS || results[i] == MDBX_RESULT_TRUE)
+        keys[i] = found_keys[i];
+      else {
+        data[i].iov_base = nullptr;
+        data[i].iov_len = 0;
+      }
+      continue;
+    }
+
+    MDBX_val key = keys[i];
+    MDBX_val value = data[i];
+    const int rc = mdbx_get_equal_or_great(txn, dbi, &key, &value);
+    results[i] = rc;
+    if (rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE) {
+      keys[i] = key;
+      data[i] = value;
+    } else {
+      data[i].iov_base = nullptr;
+      data[i].iov_len = 0;
+    }
+  }
+
+  osal_free(eligible);
+  osal_free(handled);
+  osal_free(found_keys);
+  if (op->args.get_equal_or_great_batch.func)
+    return op->args.get_equal_or_great_batch.func(op->args.get_equal_or_great_batch.context, keys, data,
+                                                  results, count);
+  return MDBX_SUCCESS;
+}
+
+static void async_get_equal_or_great_ops_batch(MDBX_async_op *ops[], size_t count) {
+  if (unlikely(!ops || !count))
+    return;
+
+  const MDBX_txn *const txn = ops[0]->args.get_equal_or_great.txn;
+  const MDBX_dbi dbi = ops[0]->args.get_equal_or_great.dbi;
+  MDBX_val *keys = nullptr;
+  MDBX_val *found_keys = nullptr;
+  MDBX_val *data = nullptr;
+  int *results = nullptr;
+  bool *handled = nullptr;
+  bool *eligible = nullptr;
+
+  const bool batchable = async_nodup_read_batchable(txn, dbi);
+  if (batchable) {
+    keys = osal_calloc(count, sizeof(keys[0]));
+    found_keys = osal_calloc(count, sizeof(found_keys[0]));
+    data = osal_calloc(count, sizeof(data[0]));
+    results = osal_calloc(count, sizeof(results[0]));
+    handled = osal_calloc(count, sizeof(handled[0]));
+    eligible = osal_calloc(count, sizeof(eligible[0]));
+  }
+  const bool can_batch = batchable && keys && found_keys && data && results && handled && eligible;
+  if (can_batch) {
+    for (size_t i = 0; i < count; ++i) {
+      keys[i] = ops[i]->key;
+      found_keys[i] = keys[i];
+      data[i] = ops[i]->data;
+      eligible[i] = true;
+    }
+    (void)async_batched_lowerbound_traverse(txn, dbi, keys, data, results, handled, eligible,
+                                            found_keys, count);
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    MDBX_async_op *const op = ops[i];
+    MDBX_val key = can_batch ? keys[i] : op->key;
+    MDBX_val value = can_batch ? data[i] : op->data;
+    int rc;
+    if (handled && handled[i]) {
+      rc = results[i];
+      if (rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE)
+        key = found_keys[i];
+    } else {
+      rc = mdbx_get_equal_or_great(txn, dbi, &key, &value);
+    }
+
+    if (rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE) {
+      *op->args.get_equal_or_great.key = key;
+      *op->args.get_equal_or_great.data = value;
+    }
+    op->result = rc;
+  }
+
+  osal_free(eligible);
+  osal_free(handled);
+  osal_free(results);
+  osal_free(data);
+  osal_free(found_keys);
+  osal_free(keys);
 }
 
 static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], size_t count) {
@@ -17691,27 +17987,7 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_get_ex_batch:
     return async_get_ex_batch_execute(op);
   case async_op_get_equal_or_great_batch:
-    for (size_t i = 0; i < op->args.get_equal_or_great_batch.count; ++i) {
-      MDBX_val key = op->args.get_equal_or_great_batch.keys[i];
-      MDBX_val data = op->args.get_equal_or_great_batch.data[i];
-      const int rc = mdbx_get_equal_or_great(op->args.get_equal_or_great_batch.txn,
-                                             op->args.get_equal_or_great_batch.dbi, &key, &data);
-      op->args.get_equal_or_great_batch.results[i] = rc;
-      if (rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE) {
-        op->args.get_equal_or_great_batch.keys[i] = key;
-        op->args.get_equal_or_great_batch.data[i] = data;
-      } else {
-        op->args.get_equal_or_great_batch.data[i].iov_base = nullptr;
-        op->args.get_equal_or_great_batch.data[i].iov_len = 0;
-      }
-    }
-    if (op->args.get_equal_or_great_batch.func)
-      return op->args.get_equal_or_great_batch.func(op->args.get_equal_or_great_batch.context,
-                                                    op->args.get_equal_or_great_batch.keys,
-                                                    op->args.get_equal_or_great_batch.data,
-                                                    op->args.get_equal_or_great_batch.results,
-                                                    op->args.get_equal_or_great_batch.count);
-    return MDBX_SUCCESS;
+    return async_get_equal_or_great_batch_execute(op);
   case async_op_get_loop:
     if (op->args.get_loop.completed)
       *op->args.get_loop.completed = 0;
@@ -17898,28 +18174,92 @@ static int async_op_execute(MDBX_async_op *op) {
   case async_op_get_equal_or_great_loop:
     if (op->args.get_equal_or_great_loop.completed)
       *op->args.get_equal_or_great_loop.completed = 0;
-    for (size_t i = 0; i < op->args.get_equal_or_great_loop.count; ++i) {
-      MDBX_val key = {nullptr, 0};
-      MDBX_val data = {nullptr, 0};
-      int rc = op->args.get_equal_or_great_loop.key_func(op->args.get_equal_or_great_loop.context, i, &key);
-      if (unlikely(rc != MDBX_SUCCESS))
-        return rc;
-      if (op->args.get_equal_or_great_loop.data_func) {
-        rc = op->args.get_equal_or_great_loop.data_func(op->args.get_equal_or_great_loop.context, i, &key,
-                                                        &data);
-        if (unlikely(rc != MDBX_SUCCESS))
-          return rc;
+    {
+      const MDBX_txn *const txn = op->args.get_equal_or_great_loop.txn;
+      const MDBX_dbi dbi = op->args.get_equal_or_great_loop.dbi;
+      const bool batchable = async_nodup_read_batchable(txn, dbi);
+
+      for (size_t base = 0; base < op->args.get_equal_or_great_loop.count;) {
+        enum { lowerbound_loop_window = 64 };
+        const size_t remaining = op->args.get_equal_or_great_loop.count - base;
+        const size_t chunk = remaining < lowerbound_loop_window ? remaining : lowerbound_loop_window;
+        MDBX_val keys[lowerbound_loop_window];
+        MDBX_val found_keys[lowerbound_loop_window];
+        MDBX_val data[lowerbound_loop_window];
+        void *key_copies[lowerbound_loop_window];
+        uint64_t key_inline[lowerbound_loop_window][MDBX_ASYNC_INLINE_WORDS];
+        int results[lowerbound_loop_window];
+        bool handled[lowerbound_loop_window];
+        bool eligible[lowerbound_loop_window];
+        int loop_rc = MDBX_SUCCESS;
+
+        memset(keys, 0, chunk * sizeof(keys[0]));
+        memset(found_keys, 0, chunk * sizeof(found_keys[0]));
+        memset(data, 0, chunk * sizeof(data[0]));
+        memset(key_copies, 0, chunk * sizeof(key_copies[0]));
+        memset(results, 0, chunk * sizeof(results[0]));
+        memset(handled, 0, chunk * sizeof(handled[0]));
+        memset(eligible, 0, chunk * sizeof(eligible[0]));
+
+        for (size_t j = 0; j < chunk; ++j) {
+          const size_t i = base + j;
+          MDBX_val key = {nullptr, 0};
+          int rc = op->args.get_equal_or_great_loop.key_func(op->args.get_equal_or_great_loop.context, i,
+                                                             &key);
+          if (unlikely(rc == MDBX_SUCCESS))
+            rc = async_copy_val(&keys[j], &key_copies[j], key_inline[j], sizeof(key_inline[j]), &key);
+          if (unlikely(rc != MDBX_SUCCESS)) {
+            loop_rc = rc;
+            goto lowerbound_loop_bailout;
+          }
+          found_keys[j] = keys[j];
+          if (op->args.get_equal_or_great_loop.data_func) {
+            rc = op->args.get_equal_or_great_loop.data_func(op->args.get_equal_or_great_loop.context, i,
+                                                            &keys[j], &data[j]);
+            if (unlikely(rc != MDBX_SUCCESS)) {
+              loop_rc = rc;
+              goto lowerbound_loop_bailout;
+            }
+          }
+          eligible[j] = batchable;
+        }
+
+        if (batchable)
+          (void)async_batched_lowerbound_traverse(txn, dbi, keys, data, results, handled, eligible,
+                                                  found_keys, chunk);
+
+        for (size_t j = 0; j < chunk; ++j) {
+          const size_t i = base + j;
+          MDBX_val key = found_keys[j];
+          MDBX_val value = data[j];
+          int get_rc;
+          if (handled[j]) {
+            get_rc = results[j];
+          } else {
+            key = keys[j];
+            get_rc = mdbx_get_equal_or_great(txn, dbi, &key, &value);
+          }
+          int rc = op->args.get_equal_or_great_loop.result_func
+                       ? op->args.get_equal_or_great_loop.result_func(
+                             op->args.get_equal_or_great_loop.context, i, &key, &value, get_rc)
+                       : (get_rc == MDBX_RESULT_TRUE ? MDBX_SUCCESS : get_rc);
+          if (op->args.get_equal_or_great_loop.completed)
+            *op->args.get_equal_or_great_loop.completed = i + 1;
+          if (unlikely(rc != MDBX_SUCCESS)) {
+            loop_rc = rc;
+            goto lowerbound_loop_bailout;
+          }
+        }
+        base += chunk;
+        for (size_t j = 0; j < chunk; ++j)
+          osal_free(key_copies[j]);
+        continue;
+
+      lowerbound_loop_bailout:
+        for (size_t j = 0; j < chunk; ++j)
+          osal_free(key_copies[j]);
+        return loop_rc;
       }
-      const int get_rc = mdbx_get_equal_or_great(op->args.get_equal_or_great_loop.txn,
-                                                 op->args.get_equal_or_great_loop.dbi, &key, &data);
-      rc = op->args.get_equal_or_great_loop.result_func
-               ? op->args.get_equal_or_great_loop.result_func(op->args.get_equal_or_great_loop.context, i,
-                                                              &key, &data, get_rc)
-               : (get_rc == MDBX_RESULT_TRUE ? MDBX_SUCCESS : get_rc);
-      if (op->args.get_equal_or_great_loop.completed)
-        *op->args.get_equal_or_great_loop.completed = i + 1;
-      if (unlikely(rc != MDBX_SUCCESS))
-        return rc;
     }
     return MDBX_SUCCESS;
   case async_op_put: {
@@ -18371,6 +18711,28 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
           batch[batch_count++] = item;
         }
         async_get_ex_ops_batch(async, batch, batch_count);
+        for (size_t i = 0; i < batch_count; ++i) {
+          if (ready_tail)
+            ready_tail->next = batch[i];
+          else
+            ready_head = batch[i];
+          ready_tail = batch[i];
+        }
+        ready_count += batch_count;
+      } else if (op->opcode == async_op_get_equal_or_great) {
+        MDBX_async_op *batch[MDBX_ASYNC_COMPLETE_CHUNK];
+        size_t batch_count = 1;
+        const size_t batch_limit = MDBX_ASYNC_COMPLETE_CHUNK - ready_count;
+        batch[0] = op;
+        while (next && batch_count < batch_limit && next->opcode == async_op_get_equal_or_great &&
+               next->args.get_equal_or_great.txn == op->args.get_equal_or_great.txn &&
+               next->args.get_equal_or_great.dbi == op->args.get_equal_or_great.dbi) {
+          MDBX_async_op *const item = next;
+          next = item->next;
+          item->next = nullptr;
+          batch[batch_count++] = item;
+        }
+        async_get_equal_or_great_ops_batch(batch, batch_count);
         for (size_t i = 0; i < batch_count; ++i) {
           if (ready_tail)
             ready_tail->next = batch[i];

@@ -669,6 +669,48 @@ Validation:
 - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
 - Release benchmark logs: `/tmp/mdbx-async-bench-cacheget-before.txt`, `/tmp/mdbx-async-bench-cacheget-after.txt`
 
+## Batched Async Lower-Bound Slice
+
+`mdbx_async_get_equal_or_great_batch()` and adjacent
+`async_op_get_equal_or_great` operations now use a batched non-dupsort
+lower-bound traversal. The helper submits root and branch page reads for many
+keys together, then completes each cursor with
+`cursor_ops(..., MDBX_SET_LOWERBOUND)`, preserving `MDBX_SUCCESS` for exact
+matches and `MDBX_RESULT_TRUE` for greater matches.
+
+`mdbx_async_get_equal_or_great_loop()` now uses the same traversal in bounded
+64-item windows with stable key copies, optional data callback inputs, ordered
+result callbacks, and compatible `completed` accounting. `MDBX_DUPSORT` tables,
+allocation fallback, stale/invalid DBI, and unhandled items still call
+`mdbx_get_equal_or_great()` to preserve nested duplicate-data semantics.
+
+Reduced forced no-mmap/io_uring benchmark (`items=1000 ops=10000
+large_items=256 large_ops=10000 large_value=10000 page_cache=64K`), compared
+against previous commit `8b94b7e`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async parallel get | 1.295 Mops/s | 2.321 Mops/s |
+| async many parallel get | 1.276 Mops/s | 2.429 Mops/s |
+| async batch parallel get | 2.231 Mops/s | 2.216 Mops/s |
+| async get_ex batch | 963.725 Kops/s | 1.683 Mops/s |
+| async get_ex many | 1.641 Mops/s | 1.662 Mops/s |
+| async lowerbound batch | 561.826 Kops/s | 1.660 Mops/s |
+| async lowerbound many | 878.692 Kops/s | 1.642 Mops/s |
+| async lowerbound loop | 576.198 Kops/s | 1.877 Mops/s |
+| async threaded lower loop | 1.179 Mops/s | 1.128 Mops/s |
+
+The targeted lower-bound batch, many, and loop rows improved in this run. The
+other get rows moved as run-to-run noise from the same reduced benchmark.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+- Release benchmark logs: `/tmp/mdbx-async-bench-lowerbound-before.txt`, `/tmp/mdbx-async-bench-lowerbound-after.txt`
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current
