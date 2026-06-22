@@ -2678,6 +2678,28 @@ int main(void) {
           "unexpected cursor batch loop-from key");
   CHECK(expect_value(&batch_from_data, batch_from_actual_key, __FILE__, __LINE__));
 
+  uint64_t batch_setkey_data = 19;
+  MDBX_val batch_setkey_key = val(&batch_setkey_data, sizeof(batch_setkey_data));
+  MDBX_val batch_setkey_value = val(NULL, 0);
+  struct batch_probe batch_setkey_probe = {0, 0};
+  size_t batch_setkey_pairs = 0;
+  CHECK(mdbx_async_cursor_get_batches_from(async, cursor, 3, 2, MDBX_SET_KEY,
+                                           &batch_setkey_key, &batch_setkey_value,
+                                           batch_probe_func, &batch_setkey_probe,
+                                           &batch_setkey_pairs, &op));
+  CHECK_OP(op);
+  REQUIRE(batch_setkey_pairs >= 3, "async cursor batch set-key consumed too few pairs");
+  REQUIRE(batch_setkey_probe.pairs == batch_setkey_pairs,
+          "async cursor batch set-key probe mismatch");
+  REQUIRE(batch_setkey_key.iov_len == sizeof(uint64_t),
+          "unexpected cursor batch set-key key size");
+  uint64_t batch_setkey_actual_key = 0;
+  memcpy(&batch_setkey_actual_key, batch_setkey_key.iov_base,
+         sizeof(batch_setkey_actual_key));
+  REQUIRE(batch_setkey_actual_key == batch_setkey_data + batch_setkey_pairs - 1,
+          "unexpected cursor batch set-key key");
+  CHECK(expect_value(&batch_setkey_value, batch_setkey_actual_key, __FILE__, __LINE__));
+
   uint64_t batch_lowerbound_seed = 18;
   uint8_t batch_lowerbound_bytes[sizeof(batch_lowerbound_seed) + 1];
   memcpy(batch_lowerbound_bytes, &batch_lowerbound_seed, sizeof(batch_lowerbound_seed));

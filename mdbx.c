@@ -22004,17 +22004,20 @@ typedef struct async_cursor_get_batches_pending {
   MDBX_async_op *op;
   MDBX_async_op batch_op;
   async_cursor_get_batch_pending_t *batch_pending;
+  async_cursor_seek_pending_t seek;
   MDBX_val *pairs;
   size_t batch_count;
   size_t limit;
   size_t completed;
   MDBX_cursor_op cursor_op;
+  bool positioning;
   int result;
 } async_cursor_get_batches_pending_t;
 
 static void async_cursor_get_batches_pending_free(async_cursor_get_batches_pending_t *pending) {
   if (!pending)
     return;
+  async_cursor_seek_pending_finish(&pending->seek);
   if (pending->batch_pending) {
     async_cursor_get_batch_pending_free(pending->batch_pending);
     pending->batch_pending = nullptr;
@@ -22079,12 +22082,38 @@ static int async_cursor_get_batches_pending_start_batch(async_cursor_get_batches
   return async_cursor_get_batches_pending_consume(pending);
 }
 
+static int async_cursor_get_batches_pending_finish_positioned(async_cursor_get_batches_pending_t *pending,
+                                                              int rc) {
+  MDBX_async_op *const op = pending->op;
+  if (rc == MDBX_NOTFOUND)
+    return MDBX_RESULT_TRUE;
+  if (unlikely(rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE))
+    return rc;
+
+  *op->args.cursor_get_batches.from_key = pending->seek.key;
+  if (op->args.cursor_get_batches.has_from_value)
+    *op->args.cursor_get_batches.from_value = pending->seek.data;
+  pending->cursor_op = MDBX_NEXT;
+  pending->positioning = false;
+  return MDBX_SUCCESS;
+}
+
 static int async_cursor_get_batches_pending_drive(async_cursor_get_batches_pending_t *pending,
                                                   bool wait) {
   MDBX_async_op *const op = pending->op;
   const size_t target_pairs = op->args.cursor_get_batches.target_pairs;
 
   while (pending->completed < target_pairs) {
+    if (pending->positioning) {
+      int rc = async_cursor_seek_drive(&pending->seek, wait);
+      if (rc == MDBX_RESULT_TRUE && pending->seek.seek_started)
+        return MDBX_RESULT_TRUE;
+      rc = async_cursor_get_batches_pending_finish_positioned(pending, rc);
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+      continue;
+    }
+
     if (pending->batch_pending) {
       if (!wait)
         return MDBX_RESULT_TRUE;
@@ -22143,29 +22172,53 @@ static async_cursor_get_batches_pending_t *async_cursor_get_batches_start(MDBX_a
   }
 
   if (op->args.cursor_get_batches.from_key) {
-    MDBX_val key = op->key;
-    MDBX_val data = op->data;
-    MDBX_val *const data_ptr = op->args.cursor_get_batches.has_from_value ? &data : nullptr;
-    int rc = mdbx_cursor_get(op->args.cursor_get_batches.cursor, &key, data_ptr,
-                             op->args.cursor_get_batches.from_op);
-    if (unlikely(rc == MDBX_NOTFOUND)) {
-      op->result = MDBX_RESULT_TRUE;
-      async_cursor_get_batches_pending_free(pending);
-      return nullptr;
+    MDBX_cursor *const cursor = op->args.cursor_get_batches.cursor;
+    const MDBX_cursor_op from_op = op->args.cursor_get_batches.from_op;
+    if ((from_op == MDBX_SET_LOWERBOUND || from_op == MDBX_SET_KEY) &&
+        cursor->subcur == nullptr && (cursor->txn->flags & txn_ro_both)) {
+      int rc = cursor_check_ro(cursor);
+      if (unlikely(rc != MDBX_SUCCESS)) {
+        op->result = rc;
+        async_cursor_get_batches_pending_free(pending);
+        return nullptr;
+      }
+      MDBX_val data = op->args.cursor_get_batches.has_from_value ? op->data : (MDBX_val){nullptr, 0};
+      rc = async_cursor_seek_prepare(&pending->seek, cursor, &op->key, &data, from_op);
+      if (unlikely(rc == MDBX_NOTFOUND)) {
+        op->result = MDBX_RESULT_TRUE;
+        async_cursor_get_batches_pending_free(pending);
+        return nullptr;
+      }
+      if (unlikely(rc != MDBX_SUCCESS)) {
+        op->result = rc;
+        async_cursor_get_batches_pending_free(pending);
+        return nullptr;
+      }
+      pending->positioning = true;
+    } else {
+      MDBX_val key = op->key;
+      MDBX_val data = op->data;
+      MDBX_val *const data_ptr = op->args.cursor_get_batches.has_from_value ? &data : nullptr;
+      int rc = mdbx_cursor_get(cursor, &key, data_ptr, from_op);
+      if (unlikely(rc == MDBX_NOTFOUND)) {
+        op->result = MDBX_RESULT_TRUE;
+        async_cursor_get_batches_pending_free(pending);
+        return nullptr;
+      }
+      if (unlikely(rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE)) {
+        op->result = rc;
+        async_cursor_get_batches_pending_free(pending);
+        return nullptr;
+      }
+      *op->args.cursor_get_batches.from_key = key;
+      if (op->args.cursor_get_batches.has_from_value)
+        *op->args.cursor_get_batches.from_value = data;
+      pending->cursor_op = MDBX_NEXT;
     }
-    if (unlikely(rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE)) {
-      op->result = rc;
-      async_cursor_get_batches_pending_free(pending);
-      return nullptr;
-    }
-    *op->args.cursor_get_batches.from_key = key;
-    if (op->args.cursor_get_batches.has_from_value)
-      *op->args.cursor_get_batches.from_value = data;
-    pending->cursor_op = MDBX_NEXT;
   }
 
   const int rc = async_cursor_get_batches_pending_drive(pending, false);
-  if (rc == MDBX_RESULT_TRUE && pending->batch_pending)
+  if (rc == MDBX_RESULT_TRUE && (pending->batch_pending || pending->seek.seek_started))
     return pending;
 
   op->result = rc;

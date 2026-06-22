@@ -9420,3 +9420,54 @@ As before, cache-hot cursor rows are noisy. The direct structural gain is that
 the supported public cursor seek path can now suspend through root, branch,
 right-sibling, and overflow-value page reads without falling back to a blocking
 `cursor_ops()` finish.
+
+## Public Async Cursor Batches Positioned-Start Slice
+
+Routed `mdbx_async_cursor_get_batches_from()` through the retained async seek
+state for plain read-only non-dupsort positioned starts with
+`MDBX_SET_KEY` or `MDBX_SET_LOWERBOUND`. The operation now submits and resumes
+the initial root/branch/leaf/overflow seek before continuing with the existing
+retained cursor batch loop, instead of always starting with a blocking
+`mdbx_cursor_get()`.
+
+The batch API's existing continuation semantics are preserved: the positioned
+row is the first row visible to the following retained batch, and output
+`from_key` / `from_value` continue to track the last returned pair after batch
+callbacks run.
+
+Smoke coverage now includes exact `MDBX_SET_KEY` cursor batch-from. The
+benchmark harness also adds `async cursor loop set-key` and normalized ratios
+against the existing cursor batch and lower-bound batch-from rows.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+- Benchmark log: `/tmp/mdbx-async-bench-batches-setkey-retain-after.txt`
+
+Reduced forced no-mmap/io_uring benchmark with `MDBX_ASYNC_BENCH_ITEMS=10000`,
+`MDBX_ASYNC_BENCH_OPS=30000`, `MDBX_ASYNC_BENCH_WRITE_OPS=1000`,
+`MDBX_ASYNC_BENCH_LARGE_OPS=30000`, and
+`MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against the previous checkpoint
+`45ca3ef`.
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking cursor batch | 77.021 Mops/s | 75.762 Mops/s |
+| parallel cursor batch | 33.890 Mops/s | 53.466 Mops/s |
+| async cursor batch | 70.207 Mops/s | 51.270 Mops/s |
+| async cursor loop | 50.665 Mops/s | 51.611 Mops/s |
+| async cursor loop_from | 52.554 Mops/s | 53.350 Mops/s |
+| async cursor loop set-key | n/a | 51.473 Mops/s |
+| async threaded cursor loop | 68.561 Mops/s | 70.977 Mops/s |
+| async-loop-cursor/par | 1.495 | 0.965 |
+| async-loop-cursor/ser | 0.658 | 0.681 |
+| async-loop-csetkey/par | n/a | 0.963 |
+| async-loop-csetkey/ser | n/a | 0.679 |
+| async-loop-csetkey/from | n/a | 0.965 |
+
+The direct structural result is that public async cursor batch-from positioned
+starts now share the retained seek machinery used by single cursor get,
+cursor get loops, and scans for the supported plain read-only cases.
