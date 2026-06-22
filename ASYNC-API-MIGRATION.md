@@ -299,9 +299,28 @@ write_ops=1000 page_cache=64K`), compared against the previous commit
 | async threaded cache st batch | 5.329 Mops/s | 5.154 Mops/s |
 | async cache st loop | 4.990 Mops/s | 4.315 Mops/s |
 
-This benchmark uses small 8-byte values, so it does not directly measure the
-new overflow materialization path. The row movement is treated as single-run
-noise; the functional coverage above is the targeted evidence for this slice.
+Follow-up benchmark coverage adds direct 10 KiB value rows to
+`mdbx_async_api_bench`. The harness seeds a temporary named DBI after the
+cursor-read benchmarks, warms cache entries before timing, measures regular
+and single-threaded cache batch materialization, then drops the temporary DBI
+before write/delete measurements so cursor assumptions for the main DB remain
+unchanged.
+
+Forced no-mmap/io_uring large-value benchmark (`items=1000 ops=10000
+large_items=256 large_ops=10000 large_value=10000 page_cache=64K`), using the
+same benchmark harness applied to previous commit `80a26f7`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async large cache batch | 138.040 Kops/s | 137.846 Kops/s |
+| async large cache st batch | 124.865 Kops/s | 130.890 Kops/s |
+| async-large-cache-st/batch | 0.905 | 0.950 |
+| async cache st batch | 3.255 Mops/s | 3.527 Mops/s |
+| async-cache-st-batch/batch | 1.323 | 2.417 |
+
+The direct large-value single-threaded row is slightly faster in this run and
+now measures the overflow materialization path instead of inferring behavior
+from small 8-byte value rows.
 
 ## Benchmark Baseline
 
