@@ -17505,6 +17505,11 @@ static bool async_get_ex_batchable(const MDBX_txn *txn, MDBX_dbi dbi) {
   return async_nodup_read_batchable(txn, dbi);
 }
 
+static bool async_cursor_nodup_read_batchable(const MDBX_cursor *mc) {
+  return mc && mc->subcur == nullptr && (mc->txn->flags & txn_ro_both) &&
+         async_nodup_read_batchable(mc->txn, cursor_dbi(mc));
+}
+
 static bool async_get_cache_slot_matches(const MDBX_txn *txn, MDBX_dbi dbi,
                                          MDBX_async_get_cache_slot *slot, const MDBX_val *key) {
   return slot && async_get_cache_key_equal(slot, txn->env, dbi, async_get_cache_hash(dbi, key), key);
@@ -23005,7 +23010,7 @@ static async_cursor_get_batch_pending_t *async_cursor_get_batch_start(MDBX_async
     op->result = MDBX_INCOMPATIBLE;
     return nullptr;
   }
-  if (unlikely((mc->txn->flags & txn_ro_both) == 0)) {
+  if (unlikely(!async_cursor_nodup_read_batchable(mc))) {
     op->result = async_cursor_get_batch_execute_sync(op);
     return nullptr;
   }
@@ -23500,7 +23505,7 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
     op->result = async_cursor_get_execute(op);
     return nullptr;
   }
-  if (unlikely((mc->txn->flags & txn_ro_both) == 0)) {
+  if (unlikely(!async_cursor_nodup_read_batchable(mc))) {
     op->result = async_cursor_get_execute(op);
     return nullptr;
   }
@@ -23871,7 +23876,7 @@ static async_cursor_get_batches_pending_t *async_cursor_get_batches_start(MDBX_a
     MDBX_cursor *const cursor = op->args.cursor_get_batches.cursor;
     const MDBX_cursor_op from_op = op->args.cursor_get_batches.from_op;
     if ((from_op == MDBX_SET_LOWERBOUND || from_op == MDBX_SET_KEY) &&
-        cursor->subcur == nullptr && (cursor->txn->flags & txn_ro_both)) {
+        async_cursor_nodup_read_batchable(cursor)) {
       int rc = cursor_check_ro(cursor);
       if (unlikely(rc != MDBX_SUCCESS)) {
         op->result = rc;
@@ -24322,7 +24327,7 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
       async_cursor_get_loop_pending_free(pending);
       return nullptr;
     }
-    if (unlikely((cursor->txn->flags & txn_ro_both) == 0)) {
+    if (unlikely(!async_cursor_nodup_read_batchable(cursor))) {
       op->result = async_cursor_get_loop_execute(op);
       async_cursor_get_loop_pending_free(pending);
       return nullptr;
@@ -24331,7 +24336,7 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
   } else if (positioned_loop) {
     if ((op->args.cursor_get_loop.start_op == MDBX_SET_LOWERBOUND ||
          op->args.cursor_get_loop.start_op == MDBX_SET_KEY) &&
-        (cursor->txn->flags & txn_ro_both)) {
+        async_cursor_nodup_read_batchable(cursor)) {
       int rc = cursor_check_ro(cursor);
       if (unlikely(rc != MDBX_SUCCESS)) {
         op->result = rc;
@@ -24740,7 +24745,7 @@ static async_cursor_scan_pending_t *async_cursor_scan_start(MDBX_async_op *op) {
         async_cursor_scan_pending_free(pending);
         return nullptr;
       }
-      if (unlikely((cursor->txn->flags & txn_ro_both) == 0)) {
+      if (unlikely(!async_cursor_nodup_read_batchable(cursor))) {
         op->result = async_cursor_scan_execute(op);
         async_cursor_scan_pending_free(pending);
         return nullptr;
@@ -24748,7 +24753,7 @@ static async_cursor_scan_pending_t *async_cursor_scan_start(MDBX_async_op *op) {
       be_poor(cursor);
     } else if (positioned_scan && (start_op == MDBX_SET_LOWERBOUND ||
                                    start_op == MDBX_SET_KEY) &&
-        (cursor->txn->flags & txn_ro_both)) {
+        async_cursor_nodup_read_batchable(cursor)) {
       int rc = cursor_check_ro(cursor);
       if (unlikely(rc != MDBX_SUCCESS)) {
         op->result = rc;

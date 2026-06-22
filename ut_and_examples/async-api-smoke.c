@@ -141,6 +141,12 @@ struct async_dupsort_cache_loop_probe {
   size_t results_seen;
 };
 
+struct async_dupsort_cursor_probe {
+  uint64_t keys[4];
+  uint64_t values[4];
+  size_t items_seen;
+};
+
 struct get_ex_loop_probe {
   uint64_t key;
   size_t keys;
@@ -836,6 +842,48 @@ static int async_dupsort_cache_loop_result_func(void *context, size_t index, con
     return MDBX_PROBLEM;
   probe->results_seen += 1;
   return MDBX_SUCCESS;
+}
+
+static int async_dupsort_cursor_loop_func(void *context, size_t index, const MDBX_val *key,
+                                          const MDBX_val *data) {
+  struct async_dupsort_cursor_probe *const probe =
+      (struct async_dupsort_cursor_probe *)context;
+  if (!probe || !key || !data || index >= sizeof(probe->keys) / sizeof(probe->keys[0]))
+    return MDBX_PROBLEM;
+  if (key->iov_len != sizeof(uint64_t) || data->iov_len != sizeof(uint64_t))
+    return MDBX_PROBLEM;
+  uint64_t actual_key = UINT64_MAX;
+  uint64_t actual_value = UINT64_MAX;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  memcpy(&actual_value, data->iov_base, sizeof(actual_value));
+  if (actual_key != probe->keys[index] || actual_value != probe->values[index])
+    return MDBX_PROBLEM;
+  probe->items_seen += 1;
+  return MDBX_SUCCESS;
+}
+
+static int async_dupsort_cursor_scan_func(void *context, MDBX_val *key, MDBX_val *data,
+                                          void *arg) {
+  struct async_dupsort_cursor_probe *const probe =
+      (struct async_dupsort_cursor_probe *)context;
+  (void)arg;
+  if (!probe || !key || !data)
+    return MDBX_PROBLEM;
+  if (probe->items_seen >= sizeof(probe->keys) / sizeof(probe->keys[0]))
+    return MDBX_PROBLEM;
+  const size_t index = probe->items_seen;
+  if (key->iov_len != sizeof(uint64_t) || data->iov_len != sizeof(uint64_t))
+    return MDBX_PROBLEM;
+  uint64_t actual_key = UINT64_MAX;
+  uint64_t actual_value = UINT64_MAX;
+  memcpy(&actual_key, key->iov_base, sizeof(actual_key));
+  memcpy(&actual_value, data->iov_base, sizeof(actual_value));
+  if (actual_key != probe->keys[index] || actual_value != probe->values[index])
+    return MDBX_PROBLEM;
+  probe->items_seen += 1;
+  return probe->items_seen == sizeof(probe->keys) / sizeof(probe->keys[0])
+             ? MDBX_SUCCESS
+             : MDBX_RESULT_FALSE;
 }
 
 static int async_read_lowerbound_loop_data_func(void *context, size_t index, const MDBX_val *key,
@@ -2669,6 +2717,7 @@ static int exercise_async_dupsort_read_fallback(const char *path) {
   MDBX_async *async = NULL;
   MDBX_env *env = NULL;
   MDBX_txn *txn = NULL;
+  MDBX_cursor *cursor = NULL;
   MDBX_async_op *op = NULL;
   MDBX_dbi dbi = 0;
   int rc = MDBX_SUCCESS;
@@ -2708,6 +2757,7 @@ static int exercise_async_dupsort_read_fallback(const char *path) {
   MDBX_val cache_data[2] = {val(NULL, 0), val(NULL, 0)};
   MDBX_cache_entry_t cache_entries[2];
   MDBX_cache_result_t cache_results[2];
+  MDBX_val cursor_pairs[8];
   size_t completed = 0;
   struct async_dupsort_loop_probe loop_probe = {{dup_key, UINT64_MAX, key1},
                                                 {dup0, 0, value1},
@@ -2719,6 +2769,9 @@ static int exercise_async_dupsort_read_fallback(const char *path) {
                                                             {MDBX_CACHE_ERROR, MDBX_CACHE_UNABLE},
                                                             0,
                                                             0};
+  struct async_dupsort_cursor_probe cursor_probe = {{dup_key, dup_key, key0, key1},
+                                                    {dup0, dup1, value0, value1},
+                                                    0};
 
   memset(missing_key_bytes, 0xff, sizeof(missing_key_bytes));
   memset(&read_stats, 0, sizeof(read_stats));
@@ -2985,6 +3038,60 @@ static int exercise_async_dupsort_read_fallback(const char *path) {
   CHECK(expect_empty_value(&values[1], __FILE__, __LINE__));
   CHECK(expect_payload(&values[2], value1, __FILE__, __LINE__));
 
+  CHECK(mdbx_async_cursor_open(async, txn, dbi, &cursor, &op));
+  CHECK_OP(op);
+
+  MDBX_val cursor_key = dup_key_value;
+  MDBX_val cursor_data = val(NULL, 0);
+  CHECK(mdbx_async_cursor_get(async, cursor, &cursor_key, &cursor_data, MDBX_SET_KEY, &op));
+  CHECK(wait_result("mdbx_async_cursor_get dupsort fallback", &op, &operation_result,
+                    __FILE__, __LINE__));
+  REQUIRE(operation_result == MDBX_SUCCESS,
+          "dupsort async cursor_get fallback returned wrong result");
+  REQUIRE(cursor_key.iov_len == sizeof(uint64_t),
+          "dupsort async cursor_get fallback returned wrong key size");
+  uint64_t cursor_actual_key = UINT64_MAX;
+  memcpy(&cursor_actual_key, cursor_key.iov_base, sizeof(cursor_actual_key));
+  REQUIRE(cursor_actual_key == dup_key, "dupsort async cursor_get fallback returned wrong key");
+  CHECK(expect_payload(&cursor_data, dup0, __FILE__, __LINE__));
+
+  completed = 0;
+  cursor_probe.items_seen = 0;
+  CHECK(mdbx_async_cursor_get_loop(async, cursor, 4, MDBX_FIRST, MDBX_NEXT,
+                                   async_dupsort_cursor_loop_func, &cursor_probe,
+                                   &completed, &op));
+  CHECK(wait_result("mdbx_async_cursor_get_loop dupsort fallback", &op, &operation_result,
+                    __FILE__, __LINE__));
+  REQUIRE(operation_result == MDBX_SUCCESS,
+          "dupsort async cursor_get_loop fallback returned wrong result");
+  REQUIRE(completed == 4 && cursor_probe.items_seen == 4,
+          "dupsort async cursor_get_loop fallback did not visit every item");
+
+  cursor_probe.items_seen = 0;
+  CHECK(mdbx_async_cursor_scan(async, cursor, async_dupsort_cursor_scan_func,
+                               &cursor_probe, MDBX_FIRST, MDBX_NEXT, NULL, &op));
+  CHECK(wait_result("mdbx_async_cursor_scan dupsort fallback", &op, &operation_result,
+                    __FILE__, __LINE__));
+  REQUIRE(operation_result == MDBX_SUCCESS,
+          "dupsort async cursor_scan fallback returned wrong result");
+  REQUIRE(cursor_probe.items_seen == 4,
+          "dupsort async cursor_scan fallback did not visit every item");
+
+  size_t cursor_pair_count = 0;
+  CHECK(mdbx_async_cursor_get_batch(async, cursor, &cursor_pair_count, cursor_pairs,
+                                    sizeof(cursor_pairs) / sizeof(cursor_pairs[0]),
+                                    MDBX_FIRST, &op));
+  CHECK(wait_result("mdbx_async_cursor_get_batch dupsort fallback", &op,
+                    &operation_result, __FILE__, __LINE__));
+  REQUIRE(operation_result == MDBX_INCOMPATIBLE,
+          "dupsort async cursor_get_batch fallback returned wrong result");
+  REQUIRE(cursor_pair_count == 0,
+          "dupsort async cursor_get_batch fallback unexpectedly returned pairs");
+
+  CHECK(mdbx_async_cursor_close(async, cursor, &op));
+  CHECK_OP(op);
+  cursor = NULL;
+
   CHECK(mdbx_env_get_async_read_stats(env, &read_stats, sizeof(read_stats), false));
   REQUIRE(read_stats.storage_read_items > 0, "dupsort fallback async reads did not submit storage reads");
   REQUIRE(read_stats.storage_read_completed >= read_stats.storage_read_items,
@@ -3021,6 +3128,23 @@ bailout:
       (void)mdbx_async_op_release(ops[i]);
       ops[i] = NULL;
     }
+  }
+  for (unsigned i = 0; i < 2; ++i) {
+    if (cache_ops[i]) {
+      int ignored = MDBX_SUCCESS;
+      (void)mdbx_async_wait(cache_ops[i], &ignored);
+      (void)mdbx_async_op_release(cache_ops[i]);
+      cache_ops[i] = NULL;
+    }
+  }
+  if (cursor && async) {
+    MDBX_async_op *cleanup_op = NULL;
+    int ignored = MDBX_SUCCESS;
+    if (mdbx_async_cursor_close(async, cursor, &cleanup_op) == MDBX_SUCCESS && cleanup_op) {
+      (void)mdbx_async_wait(cleanup_op, &ignored);
+      (void)mdbx_async_op_release(cleanup_op);
+    }
+    cursor = NULL;
   }
   if (txn && async) {
     MDBX_async_op *cleanup_op = NULL;
