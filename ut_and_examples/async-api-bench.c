@@ -6763,6 +6763,12 @@ int main(void) {
     printf("%-28s %8.3f\n", "async-thread-many/par", async_threaded_many_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_threaded_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-batch/par", async_threaded_batch_parallel / blocking_parallel);
+  if (async_threaded_parallel > 0.0 && async_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async/threaded get", async_parallel / async_threaded_parallel);
+  if (async_threaded_many_parallel > 0.0 && async_many_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-many/threaded", async_many_parallel / async_threaded_many_parallel);
+  if (async_threaded_batch_parallel > 0.0 && async_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-batch/threaded", async_batch_parallel / async_threaded_batch_parallel);
   if (blocking_parallel > 0.0 && async_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-batch/blocking parallel", async_batch_parallel / blocking_parallel);
   if (blocking_parallel > 0.0 && async_batch_callback_parallel > 0.0)
@@ -6809,6 +6815,9 @@ int main(void) {
   if (async_cursor_large_batch_parallel > 0.0 && async_threaded_cursor_large_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-clarge/batch",
            async_threaded_cursor_large_batch_parallel / async_cursor_large_batch_parallel);
+  if (async_threaded_cursor_large_batch_parallel > 0.0 && async_cursor_large_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-clarge/threaded",
+           async_cursor_large_batch_parallel / async_threaded_cursor_large_batch_parallel);
   if (blocking_parallel > 0.0 && async_threaded_cache_batch_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-cache-batch/par",
            async_threaded_cache_batch_parallel / blocking_parallel);
@@ -6825,6 +6834,12 @@ int main(void) {
   if (blocking_parallel > 0.0 && async_threaded_cache_st_loop_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-cache-st-l/par",
            async_threaded_cache_st_loop_parallel / blocking_parallel);
+  if (async_threaded_cache_batch_parallel > 0.0 && async_cache_batch_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-cache-batch/thread",
+           async_cache_batch_parallel / async_threaded_cache_batch_parallel);
+  if (async_threaded_cache_loop_parallel > 0.0 && async_cache_loop_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-cache-loop/thread",
+           async_cache_loop_parallel / async_threaded_cache_loop_parallel);
   if (async_parallel > 0.0 && async_mixed_cursor_get_rate > 0.0)
     printf("%-28s %8.3f\n", "async-mixed-cget-get/async", async_mixed_cursor_get_rate / async_parallel);
   if (async_cache_many_parallel > 0.0 && async_mixed_cursor_cache_rate > 0.0)
@@ -6847,6 +6862,14 @@ int main(void) {
   if (blocking_parallel > 0.0 && async_threaded_lowerbound_loop_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-lower-loop/par",
            async_threaded_lowerbound_loop_parallel / blocking_parallel);
+  if (async_threaded_loop_parallel > 0.0 && async_loop_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-loop/threaded", async_loop_parallel / async_threaded_loop_parallel);
+  if (async_threaded_get_ex_loop_parallel > 0.0 && async_get_ex_loop_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-get-ex-loop/thread",
+           async_get_ex_loop_parallel / async_threaded_get_ex_loop_parallel);
+  if (async_threaded_lowerbound_loop_parallel > 0.0 && async_lowerbound_loop_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-lower-loop/thread",
+           async_lowerbound_loop_parallel / async_threaded_lowerbound_loop_parallel);
   if (async_parallel > 0.0 && async_many_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-many/async", async_many_parallel / async_parallel);
   if (async_threaded_parallel > 0.0 && async_threaded_many_parallel > 0.0)
@@ -7040,6 +7063,9 @@ int main(void) {
   if (async_cursor_get_loop_parallel > 0.0 && async_threaded_cursor_get_loop_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-cget-loop/loop",
            async_threaded_cursor_get_loop_parallel / async_cursor_get_loop_parallel);
+  if (async_threaded_cursor_get_loop_parallel > 0.0 && async_cursor_get_loop_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-cget-loop/thread",
+           async_cursor_get_loop_parallel / async_threaded_cursor_get_loop_parallel);
   if (async_cursor_get_loop_from_parallel > 0.0 && async_threaded_cursor_get_loop_from_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-cget-from/loop",
            async_threaded_cursor_get_loop_from_parallel / async_cursor_get_loop_from_parallel);
@@ -7072,6 +7098,9 @@ int main(void) {
   if (async_cursor_parallel > 0.0 && async_threaded_cursor_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-cbatch/batch",
            async_threaded_cursor_parallel / async_cursor_parallel);
+  if (async_threaded_cursor_parallel > 0.0 && async_cursor_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-cbatch/threaded",
+           async_cursor_parallel / async_threaded_cursor_parallel);
   if (blocking_cursor_parallel > 0.0 && async_loop_cursor_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-loop-cursor/par", async_loop_cursor_parallel / blocking_cursor_parallel);
   if (blocking_cursor_serial > 0.0 && async_loop_cursor_parallel > 0.0)
@@ -7122,6 +7151,9 @@ int main(void) {
   if (async_cursor_scan_parallel > 0.0 && async_threaded_cursor_scan_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-thread-scan/scan",
            async_threaded_cursor_scan_parallel / async_cursor_scan_parallel);
+  if (async_threaded_cursor_scan_parallel > 0.0 && async_cursor_scan_parallel > 0.0)
+    printf("%-28s %8.3f\n", "async-scan/threaded",
+           async_cursor_scan_parallel / async_threaded_cursor_scan_parallel);
   if (async_loop_cursor_parallel > 0.0 && async_cursor_scan_parallel > 0.0)
     printf("%-28s %8.3f\n", "async-scan/cursor-loop", async_cursor_scan_parallel / async_loop_cursor_parallel);
   if (blocking_cursor_scan_from_parallel > 0.0 && async_cursor_scan_from_parallel > 0.0)
