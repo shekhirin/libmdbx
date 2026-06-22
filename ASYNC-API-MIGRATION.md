@@ -8649,3 +8649,53 @@ Async cursor get_batch retained sibling-read checkpoint:
   the worker at every right-sibling page-cache miss on the covered path. Future
   work should extend the same retained state through `async_cursor_get_batches`
   and cursor loop/scan paths, then reduce the overhead in the hot in-page case.
+
+Async cursor get_batches retained sibling-read checkpoint:
+
+- added `async_cursor_get_batches_pending_t`, a retained state for
+  `mdbx_async_cursor_get_batches()` and
+  `mdbx_async_cursor_get_batches_from()`. It owns the temporary pair buffer and
+  drives an embedded cursor-batch operation through the retained
+  right-sibling-read state introduced in the previous checkpoint.
+- the multi-batch API now preserves callback order and `completed_pairs`
+  updates while allowing the first outstanding sibling page read to suspend the
+  operation. Initial `from_key` positioning still uses the synchronous cursor
+  seek path and remains a follow-up target.
+- fixed EOF/restart handling so `MDBX_RESULT_TRUE` from a cursor batch is
+  treated as end-of-data only when there was no wrapped-scan progress to
+  continue, matching the existing synchronous multi-batch loop behavior.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cursorbatches-retain-before.txt` and
+    `/tmp/mdbx-async-bench-cursorbatches-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `a052b5b`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking cursor batch | 152.361 Mops/s | 150.447 Mops/s |
+| parallel cursor batch | 119.098 Mops/s | 55.536 Mops/s |
+| async cursor batch | 64.260 Mops/s | 96.419 Mops/s |
+| async threaded cursor batch | 128.179 Mops/s | 118.846 Mops/s |
+| async cursor loop | 142.105 Mops/s | 71.314 Mops/s |
+| async cursor loop_from | 139.426 Mops/s | 70.657 Mops/s |
+| async threaded cursor loop | 130.745 Mops/s | 125.593 Mops/s |
+| async threaded cursor loop_from | 123.826 Mops/s | 134.681 Mops/s |
+| async-cursor-batch/get | 63.217 | 72.866 |
+| async-cursor/blocking par | 0.540 | 1.736 |
+| async-thread-cbatch/par | 1.076 | 2.140 |
+| async-thread-cbatch/batch | 1.995 | 1.233 |
+
+- conclusion: this checkpoint extends the retained cursor sibling-read state
+  through the public multi-batch cursor API. The direct async cursor batch row
+  improved in this run and the relative-to-parallel ratios improved because the
+  parallel cursor baseline was slower; cursor loop rows were mixed and remain
+  dominated by their own synchronous `mdbx_cursor_get_batch()` calls. The next
+  cursor target is to share this retained batch state with cursor loop/scan
+  helpers rather than only the public batch/batches operations.
