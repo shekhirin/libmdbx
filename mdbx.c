@@ -22779,7 +22779,7 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
     return nullptr;
   }
   const bool plain_first_loop =
-      !op->args.cursor_get_loop.from_key && !is_filled(cursor) &&
+      !op->args.cursor_get_loop.from_key &&
       op->args.cursor_get_loop.start_op == MDBX_FIRST;
   const bool positioned_loop =
       op->args.cursor_get_loop.from_key &&
@@ -22799,7 +22799,20 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
   pending->op = op;
   pending->cursor_op = plain_first_loop ? MDBX_FIRST : MDBX_NEXT;
 
-  if (positioned_loop) {
+  if (plain_first_loop) {
+    int rc = cursor_check_ro(cursor);
+    if (unlikely(rc != MDBX_SUCCESS)) {
+      op->result = rc;
+      async_cursor_get_loop_pending_free(pending);
+      return nullptr;
+    }
+    if (unlikely((cursor->txn->flags & txn_ro_both) == 0)) {
+      op->result = async_cursor_get_loop_execute(op);
+      async_cursor_get_loop_pending_free(pending);
+      return nullptr;
+    }
+    be_poor(cursor);
+  } else if (positioned_loop) {
     if ((op->args.cursor_get_loop.start_op == MDBX_SET_LOWERBOUND ||
          op->args.cursor_get_loop.start_op == MDBX_SET_KEY) &&
         (cursor->txn->flags & txn_ro_both)) {

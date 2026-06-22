@@ -2745,6 +2745,17 @@ int main(void) {
   REQUIRE(cursor_get_loop_completed == ITEM_COUNT, "unexpected async cursor get loop count");
   REQUIRE(cursor_get_loop_probe.calls == ITEM_COUNT, "async cursor get loop probe mismatch");
 
+  struct cursor_get_loop_probe cursor_get_loop_repeat_probe = {0};
+  size_t cursor_get_loop_repeat_completed = 0;
+  CHECK(mdbx_async_cursor_get_loop(async, cursor, ITEM_COUNT, MDBX_FIRST, MDBX_NEXT,
+                                   cursor_get_loop_probe_func, &cursor_get_loop_repeat_probe,
+                                   &cursor_get_loop_repeat_completed, &op));
+  CHECK_OP(op);
+  REQUIRE(cursor_get_loop_repeat_completed == ITEM_COUNT,
+          "unexpected repeated async cursor get loop count");
+  REQUIRE(cursor_get_loop_repeat_probe.calls == ITEM_COUNT,
+          "repeated async cursor get loop probe mismatch");
+
   uint64_t cursor_loop_from_key_data = 18;
   MDBX_val cursor_loop_from_key = val(&cursor_loop_from_key_data, sizeof(cursor_loop_from_key_data));
   MDBX_val cursor_loop_from_data = val(NULL, 0);
