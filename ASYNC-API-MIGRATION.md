@@ -9020,3 +9020,60 @@ Async cursor large-value benchmark coverage checkpoint:
   while threaded async cursor-large is slightly above blocking parallel. These
   rows now give future retained large-value changes direct evidence instead of
   relying on ordinary cursor rows as an indirect proxy.
+
+## Public Async Cursor Get Retained NEXT Slice
+
+Routed `mdbx_async_cursor_get(..., MDBX_NEXT)` for plain non-dupsort read
+cursors through a retained single-row cursor state when the next step may block
+on explicit I/O: crossing to a sibling leaf page or reading an `N_BIG` overflow
+value. The normal in-leaf small-value path still uses the existing
+`mdbx_cursor_get()` fallback, because there is no page read to overlap and the
+extra retained-state allocation only adds overhead.
+
+The retained path reuses the cursor-batch page-read drive internally, but
+restores ordinary single-cursor positioning before completing the public async
+operation. This avoids the batch API's continuation semantics, where the cursor
+is advanced past the returned pair. The worker scheduler now treats
+`async_op_cursor_get` as a retained read operation, while draining a pending
+single cursor-get before starting later operations to preserve FIFO cursor-state
+semantics for callers that queue multiple operations on one cursor.
+
+Unsupported cursor shapes still fall back to the blocking implementation:
+`MDBX_FIRST`, seek operations, dupsort cursors, fresh/EOF/hollow/after-delete
+cursor states, allocation failure, and non-readable cursors.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+- `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+- Benchmark log: `/tmp/mdbx-async-bench-cursorget-retain-after.txt`
+
+Reduced forced no-mmap/io_uring benchmark with `MDBX_ASYNC_BENCH_ITEMS=10000`,
+`MDBX_ASYNC_BENCH_OPS=30000`, `MDBX_ASYNC_BENCH_WRITE_OPS=1000`,
+`MDBX_ASYNC_BENCH_LARGE_OPS=30000`, and
+`MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against the latest same-shape
+saved 10k cursor-get log `/tmp/mdbx-async-bench-singleget-after.txt`. The
+large-op count differs, but the ordinary cursor-get measurements run before the
+large-value benchmark section.
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking cursor get | 44.974 Mops/s | 39.773 Mops/s |
+| parallel cursor get | 51.444 Mops/s | 42.539 Mops/s |
+| async cursor get | 1.124 Mops/s | 1.261 Mops/s |
+| async cursor get loop | 55.434 Mops/s | 72.008 Mops/s |
+| async cursor get loop_from | 52.630 Mops/s | 74.537 Mops/s |
+| blocking cursor batch | 93.213 Mops/s | 72.417 Mops/s |
+| async cursor batch | 74.441 Mops/s | 71.256 Mops/s |
+| async-cursor-get/par | 0.022 | 0.030 |
+| async-cursor-get/ser | 0.025 | 0.032 |
+| async-cursor-get-loop/get | 49.316 | 57.095 |
+| async-cursor-batch/get | 66.225 | 56.499 |
+
+Single-run noise remains substantial in the cursor microbenchmarks. The direct
+`async cursor get` row improved modestly in this sample, but the main result of
+this checkpoint is structural: public async cursor `NEXT` is no longer purely a
+worker-offloaded blocking call when it must fetch a sibling page or overflow
+value from explicit I/O.
