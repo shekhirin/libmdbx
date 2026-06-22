@@ -711,6 +711,106 @@ Validation:
 - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
 - Release benchmark logs: `/tmp/mdbx-async-bench-lowerbound-before.txt`, `/tmp/mdbx-async-bench-lowerbound-after.txt`
 
+## Pending Async Read Progress Slice
+
+The async worker now keeps internal read operations pending while their
+batched page reads are still in flight instead of immediately driving every
+batch to completion before accepting more compatible read work. Exact get,
+get_ex, lower-bound, cache-get materialization/refresh, and cursor read
+families have pending-state wrappers that:
+
+- start their root/branch/cache page batch with a non-waiting drive;
+- keep the operation in an internal pending list when the page batch reports
+  `MDBX_RESULT_TRUE`;
+- continue accepting independent read work until the completion chunk is full,
+  the next operation is not read-like, or the next cursor operation conflicts
+  with an already-pending cursor;
+- drain pending reads with non-waiting polls and only block when no pending
+  read can make progress.
+
+This still runs inside the existing async worker thread, so it is not a public
+API coroutine scheduler. It does, however, satisfy an important internal
+requirement of the migration: independent cache misses and page reads can be
+submitted before earlier pending reads have completed, and compatible read
+operations can make progress as their page I/O completes.
+
+Smoke coverage now queues exact get, get_ex batch, lower-bound batch,
+cache-get batch, cursor batch, exact-get loop, get_ex loop, lower-bound loop,
+cache-get loop, and cursor loop reads ahead of transaction abort operations,
+forcing the worker to drain pending read state before it executes the abort.
+The same-cursor tests also verify that cursor operations sharing one cursor are
+not overlapped in a way that corrupts cursor position.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build -R async_api --output-on-failure`: passed 4/4
+- `MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=. ./mdbx_async_api_smoke`: passed
+
+## io_uring Smoke and Ratio Reporting Slice
+
+CTest now includes `async_api_nommap_io_uring`, which runs
+`mdbx_async_api_smoke` with data-file mmap disabled, the explicit page-cache
+limited to 64 KiB, and the `io_uring` backend requested. This keeps the
+storage-backed async read path under regular focused test coverage instead of
+only ad hoc manual runs.
+
+`mdbx_async_api_bench` now prints ratios that compare internal async read
+paths against the executor-threaded variants. Those rows make it easier to
+track whether the internal page-cache/batched traversal path is replacing
+plain worker offload for the targeted workloads.
+
+Current full-size forced no-mmap/io_uring benchmark
+(`/tmp/mdbx-async-bench-migration-log-final.txt`) compared with the
+previous internal-threaded ratio run
+(`/tmp/mdbx-async-bench-internal-threaded-ratios-final.txt`):
+
+| metric | previous | current |
+| --- | ---: | ---: |
+| async/threaded get | 1.107 | 1.083 |
+| async-many/threaded | 1.101 | 1.113 |
+| async-batch/threaded | 1.151 | 1.104 |
+| async-cache-batch/thread | 1.057 | 1.114 |
+| async-cache-loop/thread | 1.027 | 1.010 |
+| async-get-ex-loop/thread | 1.037 | 1.102 |
+| async-cget-loop/thread | 1.030 | 0.762 |
+| async-cbatch/threaded | 0.659 | 0.812 |
+| async-scan/threaded | 0.751 | 1.032 |
+
+The point-get, get_ex loop, and cache ratios remain around or above the
+previous run. Cursor ratios still move enough between single benchmark runs
+that they should be read as directional, not as pass/fail gates.
+
+## Blocking Public API Compatibility Slice
+
+Focused smoke coverage now also exercises the blocking public `mdbx_get()`,
+`mdbx_get_ex()`, and `mdbx_get_equal_or_great()` APIs on a caller-owned read
+transaction while the explicit async read implementation is enabled. The checks
+cover exact hits, lower-bound greater-key results, and not-found results. This
+guards the compatibility rule that synchronous public APIs can keep blocking
+externally while using the same explicit page-cache/traversal internals.
+
+Validation:
+
+- `git diff --check`: passed
+- `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `ctest --test-dir @cmake-ninja-build -R async_api --output-on-failure`: passed 4/4
+- `make -j2 mdbx_async_api_smoke mdbx_async_api_bench`: passed
+- `MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=. ./mdbx_async_api_smoke`: passed
+
+## Remaining Async I/O Gap
+
+The current implementation has a real async page-read primitive, explicit
+page-cache materialization through `io_uring`, depth-wise batched traversal for
+many async get/get_ex/lower-bound paths, and worker-side pending read state.
+The remaining gap against the full goal is narrower but still real: the public
+blocking B-tree/cursor APIs are not themselves implemented as exposed
+coroutines, and the async executor is still the scheduler boundary. More cursor
+movement and scan paths should continue moving from per-operation blocking
+calls to explicit pending read state, and completion should keep being proven
+with forced no-mmap/io_uring tests and benchmarks.
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current
