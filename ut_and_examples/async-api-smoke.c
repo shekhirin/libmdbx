@@ -1825,6 +1825,39 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
               "faulted async cache get loop prepared wrong key count");
       REQUIRE(loop_read_probe.results == ASYNC_READ_BATCH_COUNT,
               "faulted async cache get loop saw wrong result count");
+    } else if (mode == async_read_cursor_get) {
+      REQUIRE(operation_result == MDBX_EIO,
+              "faulted async cursor get did not propagate read-completion failure");
+      CHECK(expect_empty_value(&data, __FILE__, __LINE__));
+    } else if (mode == async_read_cursor_get_batch) {
+      REQUIRE(operation_result == MDBX_EIO,
+              "faulted async cursor get batch did not propagate read-completion failure");
+      REQUIRE(cursor_batch_result == MDBX_EIO,
+              "faulted async cursor get batch recorded wrong cursor result");
+      REQUIRE(cursor_batch_count == 0,
+              "faulted async cursor get batch returned items");
+    } else if (mode == async_read_cursor_get_loop ||
+               mode == async_read_cursor_get_loop_from) {
+      REQUIRE(operation_result == MDBX_EIO,
+              "faulted async cursor get loop did not propagate read-completion failure");
+      REQUIRE(cursor_stream_completed == 0,
+              "faulted async cursor get loop completed items");
+      REQUIRE(loop_read_probe.results == 0,
+              "faulted async cursor get loop invoked result callback");
+    } else if (mode == async_read_cursor_get_batches ||
+               mode == async_read_cursor_get_batches_from) {
+      REQUIRE(operation_result == MDBX_EIO,
+              "faulted async cursor batches did not propagate read-completion failure");
+      REQUIRE(cursor_stream_completed == 0,
+              "faulted async cursor batches completed items");
+      REQUIRE(loop_read_probe.results == 0,
+              "faulted async cursor batches invoked result callback");
+    } else if (mode == async_read_cursor_scan ||
+               mode == async_read_cursor_scan_from) {
+      REQUIRE(operation_result == MDBX_EIO,
+              "faulted async cursor scan did not propagate read-completion failure");
+      REQUIRE(loop_read_probe.results == 0,
+              "faulted async cursor scan invoked predicate");
     } else {
       REQUIRE(false, "unhandled async read fault mode");
     }
@@ -2398,6 +2431,22 @@ int main(void) {
     return exercise_async_read_path(path, true, async_read_lowerbound_loop);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CACHE_LOOP_ONLY"))
     return exercise_async_read_path(path, true, async_read_cache_get_loop);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_GET_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_BATCH_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_batch);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_LOOP_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_loop);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_LOOP_FROM_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_loop_from);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_BATCHES_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_batches);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_BATCHES_FROM_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_batches_from);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_SCAN_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_scan);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_SCAN_FROM_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_scan_from);
 
   rc = mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
   if (rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE) {
