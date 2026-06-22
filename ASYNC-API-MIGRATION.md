@@ -8253,3 +8253,58 @@ Async lowerbound_batch scheduler retained-state checkpoint:
   all explicit GET-family batch APIs now enter the same retained read drain
   mechanism instead of leaving lowerbound batch as a synchronous
   drive-to-completion outlier.
+
+Async cache_batch retained page-cache read checkpoint:
+
+- added an internal retained materialization state for cache-entry batches. The
+  begin path validates warm cache entries, prepares page-cache read submissions,
+  and starts `page_cache_read_batch_begin/drive(..., false)` without forcing the
+  worker to wait immediately.
+- routed explicit `async_op_cache_get_batch` and
+  `async_op_cache_get_singlethreaded_batch` through a retained start/complete
+  path. The worker can now keep cache-batch page-cache misses pending alongside
+  retained GET-family reads before draining and publishing completions.
+- the retained materializer handles ordinary cached-page hits. Large/overflow
+  page materialization is intentionally left unhandled and falls back to the
+  existing synchronous cache-get path for correctness.
+- callbacks still run only during completion, before the operation is marked
+  done. Allocation failures and unsupported materialization paths fall back to
+  the previous synchronous batch execution path.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cachebatch-retain-before.txt` and
+    `/tmp/mdbx-async-bench-cachebatch-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `64912c0`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking parallel get | 941.680 Kops/s | 1.029 Mops/s |
+| async parallel get | 2.183 Mops/s | 2.755 Mops/s |
+| async many parallel get | 2.698 Mops/s | 2.599 Mops/s |
+| async get_ex batch | 2.225 Mops/s | 2.705 Mops/s |
+| async cache many | 2.156 Mops/s | 4.262 Mops/s |
+| async cache st many | 2.076 Mops/s | 4.279 Mops/s |
+| async cache batch | 3.135 Mops/s | 4.196 Mops/s |
+| async cache st batch | 3.432 Mops/s | 3.545 Mops/s |
+| async cache batch cb | 3.523 Mops/s | 3.896 Mops/s |
+| async cache st batch cb | 3.676 Mops/s | 3.503 Mops/s |
+| async large cache batch | 139.447 Kops/s | 111.045 Kops/s |
+| async large cache st batch | 134.576 Kops/s | 122.545 Kops/s |
+| async threaded cache batch | 4.574 Mops/s | 5.484 Mops/s |
+| async threaded cache st batch | 2.895 Mops/s | 4.608 Mops/s |
+| async cache loop | 3.263 Mops/s | 4.930 Mops/s |
+| async cache st loop | 4.852 Mops/s | 5.027 Mops/s |
+
+- conclusion: this checkpoint moves explicit cache-batch page-cache reads into
+  the retained scheduler path and the direct cache-batch rows improved in this
+  run. Large cache rows regressed, which is expected risk from conservatively
+  falling back for large-page materialization after the retained page read. A
+  later slice should add retained large-page materialization rather than
+  bouncing those entries back through the synchronous fallback.

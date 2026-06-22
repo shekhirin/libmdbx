@@ -13173,6 +13173,248 @@ static size_t cache_materialize_singlethreaded_batch(const MDBX_txn *txn, MDBX_v
   return handled_count;
 }
 
+typedef struct async_cache_materialize_batch_state {
+  const MDBX_txn *txn;
+  MDBX_val *data;
+  MDBX_cache_entry_t *entries;
+  MDBX_cache_result_t *results;
+  bool *handled;
+  size_t count;
+  size_t eligible;
+  dxb_page_cache_read_submit_io_t stack_submits[4];
+  dxb_cache_entry_read_io_t stack_reads[4];
+  dxb_cache_page_result_t stack_page_results[4];
+  size_t stack_indices[4];
+  dxb_page_cache_read_submit_io_t *submits;
+  dxb_cache_entry_read_io_t *reads;
+  dxb_cache_page_result_t *page_results;
+  size_t *indices;
+  dxb_page_cache_read_batch_t page_batch;
+  bool page_batch_started;
+  bool prepared;
+  bool completed;
+} async_cache_materialize_batch_state_t;
+
+static void async_cache_materialize_batch_cleanup(async_cache_materialize_batch_state_t *state) {
+  if (!state)
+    return;
+  if (state->page_batch_started) {
+    (void)page_cache_read_batch_finish(&state->page_batch);
+    state->page_batch_started = false;
+  }
+  if (state->indices && state->indices != state->stack_indices)
+    osal_free(state->indices);
+  if (state->page_results && state->page_results != state->stack_page_results)
+    osal_free(state->page_results);
+  if (state->reads && state->reads != state->stack_reads)
+    osal_free(state->reads);
+  if (state->submits && state->submits != state->stack_submits)
+    osal_free(state->submits);
+  memset(state, 0, sizeof(*state));
+}
+
+static int async_cache_materialize_batch_begin(async_cache_materialize_batch_state_t *state,
+                                               const MDBX_txn *txn, MDBX_val data[],
+                                               MDBX_cache_entry_t entries[],
+                                               MDBX_cache_result_t results[], size_t count,
+                                               bool handled[]) {
+  if (unlikely(!state || !txn || !data || !entries || !results || !handled || !count))
+    return MDBX_EINVAL;
+
+  memset(state, 0, sizeof(*state));
+  memset(handled, 0, count * sizeof(handled[0]));
+  state->txn = txn;
+  state->data = data;
+  state->entries = entries;
+  state->results = results;
+  state->handled = handled;
+  state->count = count;
+  state->submits = state->stack_submits;
+  state->reads = state->stack_reads;
+  state->page_results = state->stack_page_results;
+  state->indices = state->stack_indices;
+
+  if (unlikely(check_txn(txn, MDBX_TXN_BLOCKED) != MDBX_SUCCESS))
+    return MDBX_SUCCESS;
+  if (unlikely((txn->flags & txn_ro_both) == 0))
+    return MDBX_SUCCESS;
+
+  if (count > ARRAY_LENGTH(state->stack_submits)) {
+    state->submits = osal_calloc(count, sizeof(state->submits[0]));
+    state->reads = osal_calloc(count, sizeof(state->reads[0]));
+    state->page_results = osal_calloc(count, sizeof(state->page_results[0]));
+    state->indices = osal_malloc(count * sizeof(state->indices[0]));
+    if (unlikely(!state->submits || !state->reads || !state->page_results || !state->indices)) {
+      async_cache_materialize_batch_cleanup(state);
+      return MDBX_ENOMEM;
+    }
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    MDBX_cache_entry_t *const entry = &entries[i];
+    data[i].iov_base = nullptr;
+    data[i].iov_len = 0;
+
+    if (unlikely(entry->trunk_txnid > entry->last_confirmed_txnid)) {
+      results[i] = cache_error(LOG_IFERR(MDBX_INVALID));
+      handled[i] = true;
+      continue;
+    }
+    if (txn->txnid < entry->trunk_txnid)
+      continue;
+    if (txn->txnid > entry->last_confirmed_txnid)
+      continue;
+
+    if (!entry->offset) {
+      if (txn->txnid == entry->last_confirmed_txnid || txn->txnid == entry->trunk_txnid) {
+        results[i] = cache_result(MDBX_NOTFOUND, MDBX_CACHE_HIT);
+        handled[i] = true;
+      }
+      continue;
+    }
+
+    dxb_cache_entry_read_submit_io_t read_submit;
+    int err = cache_make_entry_read_submit_io(txn, entry, &read_submit);
+    if (unlikely(err != MDBX_SUCCESS)) {
+      if (cache_materialize_fallbackable(err))
+        continue;
+      results[i] = cache_error(LOG_IFERR(err));
+      handled[i] = true;
+      continue;
+    }
+    err = cache_entry_read_submit_io_validate(txn, entry, &read_submit);
+    if (unlikely(err != MDBX_SUCCESS)) {
+      if (cache_materialize_fallbackable(err))
+        continue;
+      results[i] = cache_error(LOG_IFERR(err));
+      handled[i] = true;
+      continue;
+    }
+
+    state->reads[state->eligible] = read_submit.read;
+    state->submits[state->eligible] = read_submit.cache;
+    state->indices[state->eligible] = i;
+    ++state->eligible;
+  }
+
+  if (state->eligible) {
+    const int err = page_cache_read_batch_begin(&state->page_batch, (MDBX_txn *)txn,
+                                                state->submits, state->page_results,
+                                                state->eligible);
+    if (unlikely(err != MDBX_SUCCESS))
+      return err;
+    state->page_batch_started = true;
+  }
+
+  state->prepared = true;
+  return MDBX_SUCCESS;
+}
+
+static int async_cache_materialize_batch_complete(async_cache_materialize_batch_state_t *state) {
+  if (unlikely(!state || !state->prepared || state->completed))
+    return unlikely(state && state->completed) ? MDBX_SUCCESS : MDBX_EINVAL;
+
+  int first_err = MDBX_SUCCESS;
+  for (size_t j = 0; j < state->eligible; ++j) {
+    const size_t i = state->indices[j];
+    const dxb_cache_entry_read_io_t *const read = &state->reads[j];
+    pgr_t pgr = state->page_results[j].page;
+    int err = pgr.err;
+    if (unlikely(err != MDBX_SUCCESS)) {
+      if (cache_materialize_fallbackable(err))
+        continue;
+      state->results[i] = cache_error(LOG_IFERR(err));
+      state->handled[i] = true;
+      if (first_err == MDBX_SUCCESS)
+        first_err = err;
+      continue;
+    }
+
+    if (unlikely(pgr.page->pgno != read->page.data.pages.pgno ||
+                 (pgr.page->flags & P_ILL_BITS) != 0 ||
+                 pgr.page->txnid > txn_basis_snapshot(state->txn))) {
+      err = MDBX_INVALID;
+      goto item_bailout;
+    }
+    if (unlikely(is_largepage(pgr.page))) {
+      err = MDBX_RESULT_TRUE;
+      goto item_bailout;
+    }
+
+    MDBX_val materialized_data = {.iov_base = ptr_disp(pgr.page, read->page_offset),
+                                  .iov_len = read->value.bytes};
+    cache_value_io_t materialized_value;
+    err = cache_value_io_from_ref(&state->txn->env->dxb_storage, &pgr.ref,
+                                  &materialized_data, &materialized_value);
+    if (unlikely(err != MDBX_SUCCESS || materialized_value.bytes.offset != read->value.offset ||
+                 materialized_value.bytes.bytes != read->value.bytes ||
+                 materialized_value.page_offset != read->page_offset))
+      goto item_bailout;
+
+    const size_t retain = page_ref_requires_txn_pin(&pgr.ref);
+    err = txn_retained_refs_reserve((MDBX_txn *)state->txn, retain);
+    if (unlikely(err != MDBX_SUCCESS))
+      goto item_bailout;
+    if (retain) {
+      err = txn_retained_ref_append((MDBX_txn *)state->txn, nullptr, pgr.ref);
+      if (unlikely(err != MDBX_SUCCESS))
+        goto item_bailout;
+    }
+
+    state->data[i] = materialized_data;
+    state->results[i] = cache_result(MDBX_SUCCESS, MDBX_CACHE_HIT);
+    state->handled[i] = true;
+    pgr_release(nullptr, &pgr);
+    continue;
+
+  item_bailout:
+    pgr_release(nullptr, &pgr);
+    if (err == MDBX_RESULT_TRUE || cache_materialize_fallbackable(err))
+      continue;
+    state->results[i] = cache_error(LOG_IFERR(err));
+    state->handled[i] = true;
+    if (first_err == MDBX_SUCCESS)
+      first_err = err;
+  }
+
+  if (state->page_batch_started) {
+    const int finish_err = page_cache_read_batch_finish(&state->page_batch);
+    state->page_batch_started = false;
+    if (unlikely(finish_err != MDBX_SUCCESS && first_err == MDBX_SUCCESS))
+      first_err = finish_err;
+  }
+  state->completed = true;
+  return first_err;
+}
+
+static int async_cache_materialize_batch_drive(async_cache_materialize_batch_state_t *state,
+                                               bool wait) {
+  if (unlikely(!state || !state->prepared))
+    return MDBX_EINVAL;
+  if (state->completed)
+    return MDBX_SUCCESS;
+
+  if (state->page_batch_started) {
+    int rc = page_cache_read_batch_drive(&state->page_batch, wait);
+    if (rc == MDBX_RESULT_TRUE)
+      return MDBX_RESULT_TRUE;
+  }
+  return async_cache_materialize_batch_complete(state);
+}
+
+static size_t async_cache_materialize_batch_finish(async_cache_materialize_batch_state_t *state) {
+  if (!state)
+    return 0;
+  if (state->prepared && !state->completed)
+    (void)async_cache_materialize_batch_complete(state);
+  size_t handled_count = 0;
+  if (state->handled)
+    for (size_t i = 0; i < state->count; ++i)
+      handled_count += state->handled[i] ? 1 : 0;
+  async_cache_materialize_batch_cleanup(state);
+  return handled_count;
+}
+
 static MDBX_cache_result_t cache_get_uncached(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *data,
                                              MDBX_cache_status_t status) {
   cursor_couple_t cx;
@@ -19150,7 +19392,7 @@ static MDBX_cache_result_t async_cache_get_one_materialized(const MDBX_txn *txn,
                                                             volatile MDBX_cache_entry_t *entry,
                                                             bool singlethreaded);
 
-static int async_cache_get_batch_execute(MDBX_async_op *op) {
+static int async_cache_get_batch_execute_sync(MDBX_async_op *op) {
   const bool singlethreaded = op->opcode == async_op_cache_get_singlethreaded_batch;
   const MDBX_txn *const txn = op->args.cache_get_batch.txn;
   const MDBX_dbi dbi = op->args.cache_get_batch.dbi;
@@ -19193,6 +19435,132 @@ static int async_cache_get_batch_execute(MDBX_async_op *op) {
     return op->args.cache_get_batch.func(op->args.cache_get_batch.context,
                                          op->args.cache_get_batch.keys, data, results, count);
   return MDBX_SUCCESS;
+}
+
+typedef struct async_cache_get_batch_pending {
+  struct async_cache_get_batch_pending *next;
+  MDBX_async_op *op;
+  bool singlethreaded;
+  MDBX_cache_entry_t *entries;
+  bool *handled;
+  async_cache_materialize_batch_state_t materialize;
+  bool materialize_started;
+  int drive_rc;
+} async_cache_get_batch_pending_t;
+
+static void async_cache_get_batch_pending_free(async_cache_get_batch_pending_t *pending) {
+  if (!pending)
+    return;
+  if (pending->materialize_started) {
+    (void)async_cache_materialize_batch_finish(&pending->materialize);
+    pending->materialize_started = false;
+  }
+  osal_free(pending->handled);
+  osal_free(pending->entries);
+  osal_free(pending);
+}
+
+static void async_cache_get_batch_pending_complete(async_cache_get_batch_pending_t *pending) {
+  if (unlikely(!pending))
+    return;
+
+  MDBX_async_op *const op = pending->op;
+  const MDBX_txn *const txn = op->args.cache_get_batch.txn;
+  const MDBX_dbi dbi = op->args.cache_get_batch.dbi;
+  const size_t count = op->args.cache_get_batch.count;
+  MDBX_val *const data = op->args.cache_get_batch.data;
+  MDBX_cache_result_t *const results = op->args.cache_get_batch.results;
+  volatile MDBX_cache_entry_t *const entries_arg = op->args.cache_get_batch.entries;
+
+  if (pending->materialize_started) {
+    int rc = pending->drive_rc;
+    while (rc == MDBX_RESULT_TRUE)
+      rc = async_cache_materialize_batch_drive(&pending->materialize, true);
+    (void)async_cache_materialize_batch_finish(&pending->materialize);
+    pending->materialize_started = false;
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    if (pending->handled && pending->handled[i])
+      continue;
+    MDBX_val value = {nullptr, 0};
+    MDBX_cache_result_t result =
+        async_cache_get_one_materialized(txn, dbi, &op->args.cache_get_batch.keys[i], &value,
+                                         &entries_arg[i], pending->singlethreaded);
+    results[i] = result;
+    if (result.errcode == MDBX_SUCCESS) {
+      data[i] = value;
+    } else {
+      data[i].iov_base = nullptr;
+      data[i].iov_len = 0;
+    }
+  }
+
+  op->result = op->args.cache_get_batch.func
+                   ? op->args.cache_get_batch.func(op->args.cache_get_batch.context,
+                                                   op->args.cache_get_batch.keys, data,
+                                                   results, count)
+                   : MDBX_SUCCESS;
+  async_cache_get_batch_pending_free(pending);
+}
+
+static async_cache_get_batch_pending_t *async_cache_get_batch_start(MDBX_async_op *op) {
+  if (unlikely(!op))
+    return nullptr;
+
+  async_cache_get_batch_pending_t *const pending = osal_calloc(1, sizeof(*pending));
+  if (unlikely(!pending)) {
+    op->result = async_cache_get_batch_execute_sync(op);
+    return nullptr;
+  }
+  pending->op = op;
+  pending->singlethreaded = op->opcode == async_op_cache_get_singlethreaded_batch;
+
+  const MDBX_txn *const txn = op->args.cache_get_batch.txn;
+  const size_t count = op->args.cache_get_batch.count;
+  volatile MDBX_cache_entry_t *const entries_arg = op->args.cache_get_batch.entries;
+  pending->entries = osal_calloc(count, sizeof(pending->entries[0]));
+  pending->handled = osal_calloc(count, sizeof(pending->handled[0]));
+  if (unlikely(!pending->entries || !pending->handled)) {
+    async_cache_get_batch_pending_free(pending);
+    op->result = async_cache_get_batch_execute_sync(op);
+    return nullptr;
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    if (pending->singlethreaded)
+      pending->entries[i] = ((MDBX_cache_entry_t *)entries_arg)[i];
+    else
+      (void)cache_entry_snapshot_volatile(&entries_arg[i], &pending->entries[i]);
+  }
+
+  int rc = async_cache_materialize_batch_begin(&pending->materialize, txn,
+                                               op->args.cache_get_batch.data,
+                                               pending->entries,
+                                               op->args.cache_get_batch.results,
+                                               count, pending->handled);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    async_cache_get_batch_pending_free(pending);
+    op->result = async_cache_get_batch_execute_sync(op);
+    return nullptr;
+  }
+  pending->materialize_started = true;
+  pending->drive_rc = async_cache_materialize_batch_drive(&pending->materialize, false);
+
+  if (pending->drive_rc == MDBX_RESULT_TRUE)
+    return pending;
+
+  async_cache_get_batch_pending_complete(pending);
+  return nullptr;
+}
+
+static void async_cache_get_batch_pending_drain_all(async_cache_get_batch_pending_t *pending) {
+  while (pending) {
+    async_cache_get_batch_pending_t *const next = pending->next;
+    pending->next = nullptr;
+    async_cache_get_batch_pending_complete(pending);
+    pending = next;
+  }
 }
 
 static MDBX_cache_result_t async_cache_get_one_materialized(const MDBX_txn *txn, MDBX_dbi dbi,
@@ -19920,7 +20288,7 @@ static int async_op_execute(MDBX_async_op *op) {
   }
   case async_op_cache_get_batch:
   case async_op_cache_get_singlethreaded_batch:
-    return async_cache_get_batch_execute(op);
+    return async_cache_get_batch_execute_sync(op);
   case async_op_cache_get_loop:
   case async_op_cache_get_singlethreaded_loop: {
     enum { cache_get_loop_prefetch_window = 64 };
@@ -20738,6 +21106,8 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
     async_get_ex_batch_pending_t *pending_get_ex_batch_tail = nullptr;
     async_lowerbound_batch_pending_t *pending_lowerbound_batch_head = nullptr;
     async_lowerbound_batch_pending_t *pending_lowerbound_batch_tail = nullptr;
+    async_cache_get_batch_pending_t *pending_cache_get_batch_head = nullptr;
+    async_cache_get_batch_pending_t *pending_cache_get_batch_tail = nullptr;
     for (;;) {
       MDBX_async_op *next = op->next;
       op->next = nullptr;
@@ -20871,6 +21241,22 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
           ready_head = op;
         ready_tail = op;
         ready_count += 1;
+      } else if (op->opcode == async_op_cache_get_batch ||
+                 op->opcode == async_op_cache_get_singlethreaded_batch) {
+        async_cache_get_batch_pending_t *const pending = async_cache_get_batch_start(op);
+        if (pending) {
+          if (pending_cache_get_batch_tail)
+            pending_cache_get_batch_tail->next = pending;
+          else
+            pending_cache_get_batch_head = pending;
+          pending_cache_get_batch_tail = pending;
+        }
+        if (ready_tail)
+          ready_tail->next = op;
+        else
+          ready_head = op;
+        ready_tail = op;
+        ready_count += 1;
       } else if (op->opcode == async_op_cache_get || op->opcode == async_op_cache_get_singlethreaded) {
         MDBX_async_op *batch[MDBX_ASYNC_COMPLETE_CHUNK];
         size_t batch_count = 1;
@@ -20906,12 +21292,14 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
 
       const bool pending_read = pending_get_head || pending_get_ex_head || pending_lowerbound_head ||
                                 pending_get_batch_head || pending_get_ex_batch_head ||
-                                pending_lowerbound_batch_head;
+                                pending_lowerbound_batch_head || pending_cache_get_batch_head;
       const bool next_read = next && (next->opcode == async_op_get || next->opcode == async_op_get_ex ||
                                       next->opcode == async_op_get_equal_or_great ||
                                       next->opcode == async_op_get_batch ||
                                       next->opcode == async_op_get_ex_batch ||
-                                      next->opcode == async_op_get_equal_or_great_batch);
+                                      next->opcode == async_op_get_equal_or_great_batch ||
+                                      next->opcode == async_op_cache_get_batch ||
+                                      next->opcode == async_op_cache_get_singlethreaded_batch);
       const bool pending_accepts_next = !pending_read || next_read;
       if (next && ready_count < MDBX_ASYNC_COMPLETE_CHUNK && pending_accepts_next) {
         op = next;
@@ -20936,6 +21324,9 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
       async_lowerbound_batch_pending_drain_all(pending_lowerbound_batch_head);
       pending_lowerbound_batch_head = nullptr;
       pending_lowerbound_batch_tail = nullptr;
+      async_cache_get_batch_pending_drain_all(pending_cache_get_batch_head);
+      pending_cache_get_batch_head = nullptr;
+      pending_cache_get_batch_tail = nullptr;
 
       rc = osal_condpair_lock(&async->condpair);
       if (unlikely(rc != MDBX_SUCCESS))
