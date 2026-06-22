@@ -24062,21 +24062,128 @@ static async_cursor_scan_pending_t *async_cursor_scan_start(MDBX_async_op *op) {
   return nullptr;
 }
 
-static void async_cursor_scan_pending_complete(async_cursor_scan_pending_t *pending) {
-  if (unlikely(!pending))
-    return;
-  MDBX_async_op *const op = pending->op;
-  const int rc = async_cursor_scan_pending_drive(pending, true);
-  op->result = rc;
+static int async_cursor_scan_pending_finish(async_cursor_scan_pending_t *pending,
+                                            int rc) {
+  pending->op->result = rc;
   async_cursor_scan_pending_free(pending);
+  return MDBX_SUCCESS;
+}
+
+static int async_cursor_scan_pending_step(async_cursor_scan_pending_t *pending,
+                                          bool wait, bool *made_progress) {
+  if (unlikely(!pending))
+    return MDBX_EINVAL;
+
+  const bool before_done = pending->done;
+  const bool before_positioning = pending->positioning;
+  const bool before_batch = pending->batch_pending != nullptr;
+  int rc = MDBX_RESULT_FALSE;
+
+  if (pending->done) {
+    if (made_progress)
+      *made_progress = false;
+    return async_cursor_scan_pending_finish(pending, MDBX_RESULT_FALSE);
+  }
+
+  if (pending->positioning) {
+    const bool before_started = pending->seek.seek_started;
+    const enum async_cursor_get_batch_first_phase before_phase =
+        pending->seek.seek_phase;
+    rc = async_cursor_seek_drive(&pending->seek, wait);
+    if (made_progress)
+      *made_progress = pending->seek.seek_started != before_started ||
+                       pending->seek.seek_phase != before_phase;
+    if (rc == MDBX_RESULT_TRUE && pending->seek.seek_started)
+      return MDBX_RESULT_TRUE;
+
+    rc = async_cursor_scan_pending_finish_positioned(pending, rc);
+    if (rc != MDBX_RESULT_FALSE)
+      return async_cursor_scan_pending_finish(pending, rc);
+    if (made_progress)
+      *made_progress = true;
+    return pending->done
+               ? async_cursor_scan_pending_finish(pending, MDBX_RESULT_FALSE)
+               : MDBX_RESULT_TRUE;
+  }
+
+  if (pending->batch_pending) {
+    bool nested_progress = false;
+    rc = async_cursor_get_batch_pending_step(pending->batch_pending, wait,
+                                             &nested_progress);
+    if (made_progress)
+      *made_progress = nested_progress;
+    if (rc == MDBX_RESULT_TRUE)
+      return MDBX_RESULT_TRUE;
+
+    pending->batch_pending = nullptr;
+    rc = async_cursor_scan_pending_consume(pending);
+    if (pending->done || rc != MDBX_RESULT_FALSE)
+      return async_cursor_scan_pending_finish(pending, rc);
+    if (made_progress)
+      *made_progress = true;
+    return MDBX_RESULT_TRUE;
+  }
+
+  rc = async_cursor_scan_pending_start_batch(pending, false);
+  if (made_progress) {
+    *made_progress = pending->done != before_done ||
+                     pending->positioning != before_positioning ||
+                     (pending->batch_pending != nullptr) != before_batch;
+    if (rc == MDBX_RESULT_FALSE)
+      *made_progress = true;
+  }
+  if (rc == MDBX_RESULT_TRUE && pending->batch_pending)
+    return MDBX_RESULT_TRUE;
+  if (pending->done || rc != MDBX_RESULT_FALSE)
+    return async_cursor_scan_pending_finish(pending, rc);
+  return MDBX_RESULT_TRUE;
 }
 
 static void async_cursor_scan_pending_drain_all(async_cursor_scan_pending_t *pending) {
   while (pending) {
-    async_cursor_scan_pending_t *const next = pending->next;
-    pending->next = nullptr;
-    async_cursor_scan_pending_complete(pending);
-    pending = next;
+    async_cursor_scan_pending_t *again_head = nullptr;
+    async_cursor_scan_pending_t *again_tail = nullptr;
+    bool progressed = false;
+
+    while (pending) {
+      async_cursor_scan_pending_t *const item = pending;
+      pending = item->next;
+      item->next = nullptr;
+
+      bool made_progress = false;
+      const int rc =
+          async_cursor_scan_pending_step(item, false, &made_progress);
+      if (rc == MDBX_RESULT_TRUE) {
+        if (again_tail)
+          again_tail->next = item;
+        else
+          again_head = item;
+        again_tail = item;
+        progressed = progressed || made_progress;
+      } else {
+        progressed = true;
+      }
+    }
+
+    if (again_head && !progressed) {
+      async_cursor_scan_pending_t *const item = again_head;
+      again_head = item->next;
+      if (!again_head)
+        again_tail = nullptr;
+      item->next = nullptr;
+
+      const int rc =
+          async_cursor_scan_pending_step(item, true, nullptr);
+      if (rc == MDBX_RESULT_TRUE) {
+        if (again_tail)
+          again_tail->next = item;
+        else
+          again_head = item;
+        again_tail = item;
+      }
+    }
+
+    pending = again_head;
   }
 }
 
