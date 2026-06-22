@@ -5118,3 +5118,58 @@ Additional single async-get traversal checkpoint:
   public async single-get path now reaches the same internal page-read traversal
   engine as batched async get, while true caller-visible nonblocking progress
   still requires a resumable continuation API below cursor traversal.
+
+Additional single get_ex/lowerbound traversal checkpoint:
+
+- changed single-operation `mdbx_async_get_ex()` execution so eligible
+  read-only, non-dupsort DBIs try `async_batched_get_traverse()` before
+  falling back to blocking `mdbx_get_ex()`. The fast path preserves the
+  non-dupsort `values_count == 1` result shape; dupsort and unsupported
+  transactions continue to use the existing blocking implementation.
+- changed single-operation `mdbx_async_get_equal_or_great()` execution so
+  eligible read-only, non-dupsort DBIs try
+  `async_batched_lowerbound_traverse()` before falling back to
+  `mdbx_get_equal_or_great()`. The same helper is used for count-one
+  coalesced worker runs.
+- added a one-item stack-storage path to `async_batched_lowerbound_traverse()`
+  matching the point-get traversal fast path, avoiding heap setup for single
+  lowerbound traversal.
+- extended `ut_and_examples/async-api-bench.c` with `async single get_ex` and
+  `async single lowerbound` rows so non-windowed public async variants are
+  measured separately from many/batch/loop coalescing.
+- validation:
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-singlevariants-before.txt` and
+    `/tmp/mdbx-async-bench-singlevariants-after.txt`
+- reduced forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=10000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1000`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `77a717d` with the
+  benchmark rows applied:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.496 Mops/s | 1.537 Mops/s |
+| blocking parallel get | 576.329 Kops/s | 739.688 Kops/s |
+| async single get | 254.493 Kops/s | 329.604 Kops/s |
+| async single get_ex | 321.630 Kops/s | 301.210 Kops/s |
+| async single lowerbound | 304.791 Kops/s | 347.389 Kops/s |
+| async get_ex batch | 1.104 Mops/s | 1.205 Mops/s |
+| async get_ex many | 1.103 Mops/s | 1.063 Mops/s |
+| async lowerbound batch | 785.252 Kops/s | 1.184 Mops/s |
+| async lowerbound many | 601.537 Kops/s | 1.087 Mops/s |
+| async-single-ex/par | 0.558 | 0.407 |
+| async-single-lower/par | 0.529 | 0.470 |
+
+- conclusion: the remaining single public point-read variants now reach the
+  internal traversal/page-read engine for eligible non-dupsort reads instead of
+  relying only on worker-offloaded blocking calls. The current reduced
+  benchmark is mixed: single lowerbound improved in absolute throughput, single
+  `get_ex` regressed slightly, and the lowerbound batch/many rows improved
+  substantially in the same spot sample. This is still semantic migration work
+  toward real internal async I/O; the full goal still requires exposing
+  traversal suspension/resumption rather than running each public async op to
+  completion inside the worker.
