@@ -21396,6 +21396,199 @@ static void async_cursor_get_batches_pending_drain_all(async_cursor_get_batches_
   }
 }
 
+static int async_cursor_get_loop_execute(MDBX_async_op *op);
+
+typedef struct async_cursor_get_loop_pending {
+  struct async_cursor_get_loop_pending *next;
+  MDBX_async_op *op;
+  MDBX_async_op batch_op;
+  async_cursor_get_batch_pending_t *batch_pending;
+  MDBX_val pairs[128];
+  size_t batch_count;
+  size_t done;
+  MDBX_cursor_op cursor_op;
+  int result;
+} async_cursor_get_loop_pending_t;
+
+static void async_cursor_get_loop_pending_free(async_cursor_get_loop_pending_t *pending) {
+  if (!pending)
+    return;
+  if (pending->batch_pending) {
+    async_cursor_get_batch_pending_free(pending->batch_pending);
+    pending->batch_pending = nullptr;
+  }
+  osal_free(pending);
+}
+
+static int async_cursor_get_loop_pending_tail(async_cursor_get_loop_pending_t *pending) {
+  MDBX_async_op *const op = pending->op;
+  MDBX_cursor *const cursor = op->args.cursor_get_loop.cursor;
+  MDBX_val key = {nullptr, 0};
+  MDBX_val data = {nullptr, 0};
+  const MDBX_cursor_op tail_op = pending->cursor_op == MDBX_FIRST ? MDBX_FIRST : MDBX_GET_CURRENT;
+  int rc = mdbx_cursor_get(cursor, &key, &data, tail_op);
+  if (unlikely(rc == MDBX_NOTFOUND))
+    return MDBX_RESULT_TRUE;
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+  if (op->args.cursor_get_loop.func) {
+    rc = op->args.cursor_get_loop.func(op->args.cursor_get_loop.context, pending->done, &key, &data);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+  }
+  pending->done += 1;
+  if (op->args.cursor_get_loop.completed)
+    *op->args.cursor_get_loop.completed = pending->done;
+  return MDBX_SUCCESS;
+}
+
+static int async_cursor_get_loop_pending_consume(async_cursor_get_loop_pending_t *pending) {
+  MDBX_async_op *const op = pending->op;
+  const size_t target = op->args.cursor_get_loop.count;
+  const int batch_rc = pending->batch_op.result;
+  const size_t fetched = pending->batch_count;
+  int rc = MDBX_SUCCESS;
+
+  if (unlikely(batch_rc == MDBX_NOTFOUND))
+    return MDBX_RESULT_TRUE;
+  if (unlikely(batch_rc != MDBX_SUCCESS && batch_rc != MDBX_RESULT_TRUE))
+    return batch_rc;
+  if (unlikely(fetched == 0))
+    return pending->done ? MDBX_RESULT_TRUE : batch_rc;
+
+  for (size_t n = 0; n < fetched && pending->done < target; n += 2) {
+    MDBX_val *const key = &pending->pairs[n];
+    MDBX_val *const data = &pending->pairs[n + 1];
+    if (op->args.cursor_get_loop.func) {
+      rc = op->args.cursor_get_loop.func(op->args.cursor_get_loop.context, pending->done, key, data);
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+    }
+    pending->done += 1;
+    if (op->args.cursor_get_loop.completed)
+      *op->args.cursor_get_loop.completed = pending->done;
+  }
+
+  if (pending->done == target)
+    return MDBX_SUCCESS;
+  if (batch_rc == MDBX_RESULT_TRUE)
+    return MDBX_RESULT_TRUE;
+  pending->cursor_op = MDBX_NEXT;
+  return MDBX_SUCCESS;
+}
+
+static int async_cursor_get_loop_pending_start_batch(async_cursor_get_loop_pending_t *pending,
+                                                     bool wait) {
+  MDBX_async_op *const op = pending->op;
+  const size_t target = op->args.cursor_get_loop.count;
+  enum { cursor_get_loop_batch_pairs = 64 };
+  const size_t remaining = target - pending->done;
+  const size_t want_pairs =
+      remaining < cursor_get_loop_batch_pairs ? remaining : cursor_get_loop_batch_pairs;
+
+  memset(&pending->batch_op, 0, sizeof(pending->batch_op));
+  pending->batch_count = 0;
+  pending->batch_op.opcode = async_op_cursor_get_batch;
+  pending->batch_op.args.cursor_get_batch.cursor = op->args.cursor_get_loop.cursor;
+  pending->batch_op.args.cursor_get_batch.count = &pending->batch_count;
+  pending->batch_op.args.cursor_get_batch.pairs = pending->pairs;
+  pending->batch_op.args.cursor_get_batch.limit = want_pairs * 2;
+  pending->batch_op.args.cursor_get_batch.op = pending->cursor_op;
+
+  pending->batch_pending = async_cursor_get_batch_start(&pending->batch_op);
+  if (pending->batch_pending) {
+    if (!wait)
+      return MDBX_RESULT_TRUE;
+    async_cursor_get_batch_pending_complete(pending->batch_pending);
+    pending->batch_pending = nullptr;
+  }
+  return async_cursor_get_loop_pending_consume(pending);
+}
+
+static int async_cursor_get_loop_pending_drive(async_cursor_get_loop_pending_t *pending,
+                                               bool wait) {
+  MDBX_async_op *const op = pending->op;
+  const size_t target = op->args.cursor_get_loop.count;
+
+  while (pending->done < target) {
+    if (pending->batch_pending) {
+      if (!wait)
+        return MDBX_RESULT_TRUE;
+      async_cursor_get_batch_pending_complete(pending->batch_pending);
+      pending->batch_pending = nullptr;
+      const int rc = async_cursor_get_loop_pending_consume(pending);
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+      continue;
+    }
+
+    if (target - pending->done == 1)
+      return async_cursor_get_loop_pending_tail(pending);
+
+    const int rc = async_cursor_get_loop_pending_start_batch(pending, wait);
+    if (rc == MDBX_RESULT_TRUE && pending->batch_pending)
+      return rc;
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+  }
+
+  return MDBX_SUCCESS;
+}
+
+static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_op *op) {
+  if (unlikely(!op))
+    return nullptr;
+  if (op->args.cursor_get_loop.completed)
+    *op->args.cursor_get_loop.completed = 0;
+
+  MDBX_cursor *const cursor = op->args.cursor_get_loop.cursor;
+  const size_t count = op->args.cursor_get_loop.count;
+  if (!count) {
+    op->result = MDBX_SUCCESS;
+    return nullptr;
+  }
+  if (!(count && !is_filled(cursor) && cursor->subcur == nullptr &&
+        op->args.cursor_get_loop.turn_op == MDBX_NEXT && !op->args.cursor_get_loop.from_key &&
+        op->args.cursor_get_loop.start_op == MDBX_FIRST)) {
+    op->result = async_cursor_get_loop_execute(op);
+    return nullptr;
+  }
+
+  async_cursor_get_loop_pending_t *const pending = osal_calloc(1, sizeof(*pending));
+  if (unlikely(!pending)) {
+    op->result = async_cursor_get_loop_execute(op);
+    return nullptr;
+  }
+  pending->op = op;
+  pending->cursor_op = MDBX_FIRST;
+
+  const int rc = async_cursor_get_loop_pending_drive(pending, false);
+  if (rc == MDBX_RESULT_TRUE && pending->batch_pending)
+    return pending;
+
+  op->result = rc;
+  async_cursor_get_loop_pending_free(pending);
+  return nullptr;
+}
+
+static void async_cursor_get_loop_pending_complete(async_cursor_get_loop_pending_t *pending) {
+  if (unlikely(!pending))
+    return;
+  MDBX_async_op *const op = pending->op;
+  const int rc = async_cursor_get_loop_pending_drive(pending, true);
+  op->result = rc;
+  async_cursor_get_loop_pending_free(pending);
+}
+
+static void async_cursor_get_loop_pending_drain_all(async_cursor_get_loop_pending_t *pending) {
+  while (pending) {
+    async_cursor_get_loop_pending_t *const next = pending->next;
+    pending->next = nullptr;
+    async_cursor_get_loop_pending_complete(pending);
+    pending = next;
+  }
+}
+
 static int async_cursor_get_loop_execute(MDBX_async_op *op) {
   const size_t count = op->args.cursor_get_loop.count;
   size_t *const completed = op->args.cursor_get_loop.completed;
@@ -22766,6 +22959,8 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
     async_cursor_get_batch_pending_t *pending_cursor_get_batch_tail = nullptr;
     async_cursor_get_batches_pending_t *pending_cursor_get_batches_head = nullptr;
     async_cursor_get_batches_pending_t *pending_cursor_get_batches_tail = nullptr;
+    async_cursor_get_loop_pending_t *pending_cursor_get_loop_head = nullptr;
+    async_cursor_get_loop_pending_t *pending_cursor_get_loop_tail = nullptr;
     for (;;) {
       MDBX_async_op *next = op->next;
       op->next = nullptr;
@@ -22991,6 +23186,22 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
           ready_head = op;
         ready_tail = op;
         ready_count += 1;
+      } else if (op->opcode == async_op_cursor_get_loop ||
+                 op->opcode == async_op_cursor_get_loop_from) {
+        async_cursor_get_loop_pending_t *const pending = async_cursor_get_loop_start(op);
+        if (pending) {
+          if (pending_cursor_get_loop_tail)
+            pending_cursor_get_loop_tail->next = pending;
+          else
+            pending_cursor_get_loop_head = pending;
+          pending_cursor_get_loop_tail = pending;
+        }
+        if (ready_tail)
+          ready_tail->next = op;
+        else
+          ready_head = op;
+        ready_tail = op;
+        ready_count += 1;
       } else if (op->opcode == async_op_cache_get_batch ||
                  op->opcode == async_op_cache_get_singlethreaded_batch) {
         async_cache_get_batch_pending_t *const pending = async_cache_get_batch_start(op);
@@ -23054,7 +23265,7 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
                                 pending_cache_get_head || pending_get_loop_head ||
                                 pending_get_ex_loop_head || pending_lowerbound_loop_head ||
                                 pending_cache_get_loop_head || pending_cursor_get_batch_head ||
-                                pending_cursor_get_batches_head;
+                                pending_cursor_get_batches_head || pending_cursor_get_loop_head;
       const bool next_read = next && (next->opcode == async_op_get || next->opcode == async_op_get_ex ||
                                       next->opcode == async_op_get_equal_or_great ||
                                       next->opcode == async_op_get_batch ||
@@ -23071,7 +23282,9 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
                                       next->opcode == async_op_cache_get_singlethreaded ||
                                       next->opcode == async_op_cursor_get_batch ||
                                       next->opcode == async_op_cursor_get_batches ||
-                                      next->opcode == async_op_cursor_get_batches_from);
+                                      next->opcode == async_op_cursor_get_batches_from ||
+                                      next->opcode == async_op_cursor_get_loop ||
+                                      next->opcode == async_op_cursor_get_loop_from);
       const bool pending_accepts_next = !pending_read || next_read;
       if (next && ready_count < MDBX_ASYNC_COMPLETE_CHUNK && pending_accepts_next) {
         op = next;
@@ -23114,6 +23327,9 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
       async_cursor_get_batches_pending_drain_all(pending_cursor_get_batches_head);
       pending_cursor_get_batches_head = nullptr;
       pending_cursor_get_batches_tail = nullptr;
+      async_cursor_get_loop_pending_drain_all(pending_cursor_get_loop_head);
+      pending_cursor_get_loop_head = nullptr;
+      pending_cursor_get_loop_tail = nullptr;
       async_cache_get_batch_pending_drain_all(pending_cache_get_batch_head);
       pending_cache_get_batch_head = nullptr;
       pending_cache_get_batch_tail = nullptr;

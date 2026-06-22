@@ -8699,3 +8699,73 @@ Async cursor get_batches retained sibling-read checkpoint:
   dominated by their own synchronous `mdbx_cursor_get_batch()` calls. The next
   cursor target is to share this retained batch state with cursor loop/scan
   helpers rather than only the public batch/batches operations.
+
+Async cursor get_loop retained sibling-read checkpoint:
+
+- added `async_cursor_get_loop_pending_t`, a retained state for the simple
+  `mdbx_async_cursor_get_loop()` fast path that starts from an unfilled,
+  non-dupsort cursor with `MDBX_FIRST` and then advances with `MDBX_NEXT`.
+  Unsupported loop shapes, including the current `_from` seek path, still
+  fall back to `async_cursor_get_loop_execute()`.
+- the retained loop owns a small pair buffer and drives an embedded
+  `async_cursor_get_batch` operation through the retained sibling-read state
+  introduced for cursor batches. This lets the async worker keep the cursor
+  loop suspended while a right-sibling page-cache read is outstanding and
+  collect later retained reads before publishing completions.
+- callback order, completed-count updates, EOF handling, and the single-item
+  tail case remain compatible with the previous loop body. Initial seeks,
+  duplicate-subcursor loops, `_from` positioning, cursor scans, and
+  large/overflow value materialization are still follow-up retained-state
+  targets.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-cursorloop-retain-before.txt` and
+    `/tmp/mdbx-async-bench-cursorloop-retain-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `72fb9b7`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking cursor get | 74.446 Mops/s | 72.884 Mops/s |
+| parallel cursor get | 104.304 Mops/s | 59.361 Mops/s |
+| async cursor get loop | 112.604 Mops/s | 64.456 Mops/s |
+| async cursor get loop_from | 59.183 Mops/s | 111.063 Mops/s |
+| async threaded cursor get loop | 104.446 Mops/s | 112.367 Mops/s |
+| async threaded cget loop_from | 111.609 Mops/s | 114.040 Mops/s |
+| async cursor loop | 131.901 Mops/s | 75.351 Mops/s |
+| async cursor loop_from | 121.310 Mops/s | 72.047 Mops/s |
+| async threaded cursor loop | 132.502 Mops/s | 130.164 Mops/s |
+| async threaded cursor loop_from | 114.995 Mops/s | 131.890 Mops/s |
+| async-cursor-get-loop/par | 1.080 | 1.086 |
+| async-cget-loop-from/par | 0.445 | 1.776 |
+| async-cursor-get-loop/ser | 1.513 | 0.884 |
+| async-cget-loop-from/ser | 0.523 | 1.002 |
+| async-cursor-get-loop/get | 100.449 | 75.907 |
+| async-thread-cget-loop/par | 1.001 | 1.893 |
+| async-thread-cget-from/par | 0.840 | 1.824 |
+| async-thread-cget-loop/ser | 1.403 | 1.542 |
+| async-thread-cget-from/ser | 0.986 | 1.029 |
+| async-thread-cget-loop/get | 93.172 | 132.330 |
+| async-thread-cget-loop/loop | 0.928 | 1.743 |
+| async-loop-cursor/par | 2.264 | 1.373 |
+| async-loop-cursor/ser | 0.894 | 0.511 |
+| async-thread-cursor-loop/par | 2.274 | 2.372 |
+| async-thread-cursor-loop/ser | 0.898 | 0.883 |
+| async-thread-cursor/batch | 2.138 | 2.059 |
+| async-thread-cursor/loop | 1.005 | 1.727 |
+
+- conclusion: this checkpoint is another semantic migration step with mixed
+  single-run performance. The direct `async cursor get loop` and
+  `async cursor loop` rows regressed, while the threaded cursor-get loop rows
+  and several loop-from ratios improved. The important structural change is
+  that the covered cursor loop can now suspend around retained sibling
+  page-cache reads instead of driving every batch to completion synchronously.
+  The next cursor work should retain `_from` seek positioning, scan helpers,
+  duplicate-subcursor cases, and large/overflow value reads, then reduce the
+  added hot in-page overhead.
