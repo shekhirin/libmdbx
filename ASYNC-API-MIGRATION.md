@@ -231,6 +231,37 @@ write_ops=1000 page_cache=64K`), compared against the previous commit
 Single-run noise is visible in related rows, and the separate batch-operation
 row was lower in this run (`2.052 Mops/s` before, `1.963 Mops/s` after).
 
+## Async Single-Threaded Cache Many Run Batching Slice
+
+The async worker now coalesces contiguous
+`async_op_cache_get_singlethreaded` operations with the same transaction and
+DBI, up to the existing completion chunk size. This targets
+`mdbx_async_cache_get_SingleThreaded_many()`, whose previous implementation
+submitted many independent single-item operations. Eligible cache entries are
+copied into a temporary batch and materialized with
+`cache_materialize_singlethreaded_batch()` before per-item fallback.
+
+The regular volatile-entry `mdbx_async_cache_get_many()` path is intentionally
+not coalesced, because those cache entries may be shared across threads.
+
+Repeated-key forced no-mmap/io_uring benchmark (`items=1000 ops=30000
+write_ops=1000 page_cache=64K`), compared against the previous commit
+`8c0e3a5`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| async cache st many | 1.661 Mops/s | 4.396 Mops/s |
+| async-cache-st-many/par | 1.756 | 4.958 |
+| async-cache-st/cache | 0.552 | 2.455 |
+| async-cache-st-many/ser | 0.810 | 2.157 |
+| async cache st batch | 2.653 Mops/s | 4.028 Mops/s |
+| async threaded cache st batch | 4.291 Mops/s | 5.065 Mops/s |
+| async cache st loop | 4.782 Mops/s | 4.894 Mops/s |
+
+Single-run noise is visible in non-target rows; regular `async cache many` was
+lower in this run (`3.010 Mops/s` before, `1.790 Mops/s` after), and that path
+is not coalesced by this slice.
+
 ## Benchmark Baseline
 
 Machine-local ioarena lazy-mode logs already in the workspace show the current

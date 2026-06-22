@@ -16514,6 +16514,55 @@ static void async_cached_get_ops_batch(MDBX_async *async, MDBX_async_op *ops[], 
   osal_free(slots);
 }
 
+static void async_cache_get_singlethreaded_ops_batch(MDBX_async_op *ops[], size_t count) {
+  if (unlikely(!ops || !count))
+    return;
+
+  const MDBX_txn *const txn = ops[0]->args.cache_get.txn;
+  const MDBX_dbi dbi = ops[0]->args.cache_get.dbi;
+  MDBX_cache_entry_t *entries = osal_calloc(count, sizeof(entries[0]));
+  MDBX_val *data = osal_calloc(count, sizeof(data[0]));
+  MDBX_cache_result_t *results = osal_calloc(count, sizeof(results[0]));
+  bool *handled = osal_calloc(count, sizeof(handled[0]));
+
+  if (entries && data && results && handled) {
+    for (size_t i = 0; i < count; ++i)
+      entries[i] = *(MDBX_cache_entry_t *)ops[i]->args.cache_get.entry;
+    (void)cache_materialize_singlethreaded_batch(txn, data, entries, results, count, handled);
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    MDBX_async_op *const op = ops[i];
+    MDBX_val value = {nullptr, 0};
+    MDBX_cache_result_t result;
+    if (handled && handled[i]) {
+      result = results[i];
+      if (result.errcode == MDBX_SUCCESS)
+        value = data[i];
+    } else {
+      result = mdbx_cache_get_SingleThreaded(txn, dbi, &op->key, &value,
+                                             (MDBX_cache_entry_t *)op->args.cache_get.entry);
+    }
+
+    if (op->args.cache_get.result)
+      *op->args.cache_get.result = result;
+    if (op->args.cache_get.data) {
+      if (result.errcode == MDBX_SUCCESS) {
+        *op->args.cache_get.data = value;
+      } else {
+        op->args.cache_get.data->iov_base = nullptr;
+        op->args.cache_get.data->iov_len = 0;
+      }
+    }
+    op->result = result.errcode;
+  }
+
+  osal_free(handled);
+  osal_free(results);
+  osal_free(data);
+  osal_free(entries);
+}
+
 static int async_cursor_get_batches_execute(MDBX_async_op *op) {
   const size_t target_pairs = op->args.cursor_get_batches.target_pairs;
   const size_t batch_pairs = op->args.cursor_get_batches.batch_pairs;
@@ -17631,6 +17680,28 @@ static THREAD_RESULT THREAD_CALL async_thread(void *arg) {
           batch[batch_count++] = item;
         }
         async_cached_get_ops_batch(async, batch, batch_count);
+        for (size_t i = 0; i < batch_count; ++i) {
+          if (ready_tail)
+            ready_tail->next = batch[i];
+          else
+            ready_head = batch[i];
+          ready_tail = batch[i];
+        }
+        ready_count += batch_count;
+      } else if (op->opcode == async_op_cache_get_singlethreaded) {
+        MDBX_async_op *batch[MDBX_ASYNC_COMPLETE_CHUNK];
+        size_t batch_count = 1;
+        const size_t batch_limit = MDBX_ASYNC_COMPLETE_CHUNK - ready_count;
+        batch[0] = op;
+        while (next && batch_count < batch_limit && next->opcode == async_op_cache_get_singlethreaded &&
+               next->args.cache_get.txn == op->args.cache_get.txn &&
+               next->args.cache_get.dbi == op->args.cache_get.dbi) {
+          MDBX_async_op *const item = next;
+          next = item->next;
+          item->next = nullptr;
+          batch[batch_count++] = item;
+        }
+        async_cache_get_singlethreaded_ops_batch(batch, batch_count);
         for (size_t i = 0; i < batch_count; ++i) {
           if (ready_tail)
             ready_tail->next = batch[i];
