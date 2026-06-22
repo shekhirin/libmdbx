@@ -8501,3 +8501,48 @@ Async get_ex_loop retained traversal checkpoint:
   improvement is that batchable get_ex loops can now suspend on explicit
   page-cache misses and resume from retained traversal state instead of driving
   every window to completion inside the executor.
+
+Async lower-bound loop retained traversal checkpoint:
+
+- added `async_lowerbound_loop_pending_t`, a retained state for
+  `mdbx_async_get_equal_or_great_loop()` windows. It owns copied search keys,
+  found-key outputs, optional caller-provided data values, result slots, and
+  the `async_batched_lowerbound_traverse_state_t` continuation while explicit
+  page reads are pending.
+- changed the worker to route `async_op_get_equal_or_great_loop` through the
+  retained read scheduler for batchable no-dup read transactions. Unsupported
+  DBI shapes and allocation failures still fall back to the existing
+  synchronous executor path.
+- callbacks and `completed` updates remain in index order. Items not handled
+  by retained traversal fall back through `async_get_equal_or_great_one()`.
+- validation:
+  - `git diff --check`: passed
+  - `cmake --build @cmake-ninja-build --target mdbx_async_api_smoke mdbx_async_api_bench`: passed
+  - `ctest --test-dir @cmake-ninja-build --output-on-failure -R '^(async_api|c_api|migration_smoke)'`: passed 11/11
+  - `MDBX_FORCE_NO_DATA_MMAP=1 MDBX_EXPLICIT_IO_BACKEND=io_uring MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K LD_LIBRARY_PATH=@cmake-ninja-build @cmake-ninja-build/mdbx_async_api_smoke`: passed
+  - Release before/after benchmark logs:
+    `/tmp/mdbx-async-bench-lowerloop-before.txt` and
+    `/tmp/mdbx-async-bench-lowerloop-after.txt`
+- repeated-key forced no-mmap/io_uring benchmark with
+  `MDBX_ASYNC_BENCH_ITEMS=1000`, `MDBX_ASYNC_BENCH_OPS=30000`,
+  `MDBX_ASYNC_BENCH_WRITE_OPS=1`, `MDBX_ASYNC_BENCH_LARGE_OPS=2000`, and
+  `MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K`, compared against `a119944`:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| blocking serial get | 1.011 Mops/s | 1.003 Mops/s |
+| blocking parallel get | 947.079 Kops/s | 949.887 Kops/s |
+| async lowerbound loop | 1.895 Mops/s | 1.873 Mops/s |
+| async threaded lower loop | 1.884 Mops/s | 1.898 Mops/s |
+| async-lower-loop/par | 2.000 | 1.972 |
+| async-thread-lower-loop/par | 1.989 | 1.998 |
+| async-lower-batch/loop | 0.886 | 0.909 |
+| async-thread-lower-loop/loop | 0.994 | 1.013 |
+
+- conclusion: this checkpoint completes the retained-state migration for the
+  get-family loop traversal APIs. The warm repeated-key benchmark is neutral:
+  direct lower-bound loop was slightly lower, threaded lower loop and
+  lower-batch/loop ratios were slightly higher. The important change is that
+  lower-bound loop traversal now has a suspension point on explicit page-cache
+  misses instead of always driving the traversal window to completion inside the
+  worker.
