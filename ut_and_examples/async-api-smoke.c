@@ -3295,10 +3295,14 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     goto bailout;
   if (inject_fault) {
     if (mode == async_read_get || mode == async_read_large_get ||
-        mode == async_read_large_lowerbound) {
+        mode == async_read_large_lowerbound ||
+        mode == async_read_sync_large_get ||
+        mode == async_read_sync_large_lowerbound ||
+        mode == async_read_sync_large_cursor_get) {
       REQUIRE(operation_result == MDBX_EIO, "async get did not propagate injected read-completion failure");
       REQUIRE(data.iov_base == NULL && data.iov_len == 0, "failed async get returned data");
-    } else if (mode == async_read_large_get_ex) {
+    } else if (mode == async_read_large_get_ex ||
+               mode == async_read_sync_large_get_ex) {
       REQUIRE(operation_result == MDBX_EIO,
               "async get_ex did not propagate injected read-completion failure");
       REQUIRE(values_count == 0, "failed async get_ex returned value count");
@@ -5330,6 +5334,14 @@ int main(void) {
     return exercise_async_read_path(path, true, async_read_large_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LARGE_GET_EX_ONLY"))
     return exercise_async_read_path(path, true, async_read_large_get_ex);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_LARGE_GET_ONLY"))
+    return exercise_async_read_path(path, true, async_read_sync_large_get);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_LARGE_GET_EX_ONLY"))
+    return exercise_async_read_path(path, true, async_read_sync_large_get_ex);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_LARGE_LOWERBOUND_ONLY"))
+    return exercise_async_read_path(path, true, async_read_sync_large_lowerbound);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_LARGE_CURSOR_GET_ONLY"))
+    return exercise_async_read_path(path, true, async_read_sync_large_cursor_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LARGE_GET_MANY_ONLY"))
     return exercise_async_read_path(path, true, async_read_large_get_many);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LARGE_GET_EX_MANY_ONLY"))
