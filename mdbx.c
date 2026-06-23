@@ -24760,10 +24760,14 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
   const bool positioned_loop =
       op->args.cursor_get_loop.from_key &&
       async_cursor_seek_start_op_supported(op->args.cursor_get_loop.start_op);
+  const bool forward_turn_loop =
+      op->args.cursor_get_loop.turn_op == MDBX_NEXT ||
+      op->args.cursor_get_loop.turn_op == MDBX_NEXT_NODUP;
+  const bool positioned_reverse_loop =
+      positioned_loop && op->args.cursor_get_loop.turn_op == MDBX_PREV;
   if (!(count && cursor->subcur == nullptr &&
-        (((op->args.cursor_get_loop.turn_op == MDBX_NEXT ||
-           op->args.cursor_get_loop.turn_op == MDBX_NEXT_NODUP) &&
-          (plain_first_loop || positioned_loop)) ||
+        ((forward_turn_loop && (plain_first_loop || positioned_loop)) ||
+         positioned_reverse_loop ||
          plain_last_loop))) {
     op->result = async_cursor_get_loop_execute(op);
     return nullptr;
@@ -24775,9 +24779,9 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
     return nullptr;
   }
   pending->op = op;
-  pending->reverse = plain_last_loop;
-  pending->cursor_op = plain_last_loop ? MDBX_PREV
-                                       : plain_first_loop ? MDBX_FIRST : MDBX_NEXT;
+  pending->reverse = plain_last_loop || positioned_reverse_loop;
+  pending->cursor_op = pending->reverse ? MDBX_PREV
+                                        : plain_first_loop ? MDBX_FIRST : MDBX_NEXT;
 
   if (plain_first_loop) {
     int rc = cursor_check_ro(cursor);
