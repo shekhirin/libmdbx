@@ -9730,12 +9730,28 @@ int mdbx_cursor_eof(const MDBX_cursor *mc) {
   return is_eof(mc) ? MDBX_RESULT_TRUE : MDBX_RESULT_FALSE;
 }
 
-int mdbx_cursor_get(MDBX_cursor *mc, MDBX_val *key, MDBX_val *data, MDBX_cursor_op op) {
+static bool async_cursor_get_blocking_try(MDBX_cursor *mc, MDBX_val *key,
+                                          MDBX_val *data, MDBX_cursor_op op,
+                                          int *result);
+static bool async_cursor_get_batch_blocking_try(MDBX_cursor *mc, size_t *count,
+                                                MDBX_val *pairs, size_t limit,
+                                                MDBX_cursor_op op, int *result);
+
+static int cursor_get_plain(MDBX_cursor *mc, MDBX_val *key, MDBX_val *data,
+                            MDBX_cursor_op op) {
   int rc = cursor_check_ro(mc);
   if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  return cursor_ops(mc, key, data, op);
+}
+
+int mdbx_cursor_get(MDBX_cursor *mc, MDBX_val *key, MDBX_val *data, MDBX_cursor_op op) {
+  int rc = MDBX_SUCCESS;
+  if (async_cursor_get_blocking_try(mc, key, data, op, &rc))
     return LOG_IFERR(rc);
 
-  return LOG_IFERR(cursor_ops(mc, key, data, op));
+  return LOG_IFERR(cursor_get_plain(mc, key, data, op));
 }
 
 __hot static int scan_confinue(MDBX_cursor *mc, MDBX_predicate_func predicate, void *context, void *arg, MDBX_val *key,
@@ -9854,20 +9870,21 @@ int mdbx_cursor_scan_from(MDBX_cursor *mc, MDBX_predicate_func predicate, void *
   return LOG_IFERR(scan_confinue(mc, predicate, context, arg, key, value, turn_op));
 }
 
-int mdbx_cursor_get_batch(MDBX_cursor *mc, size_t *count, MDBX_val *pairs, size_t limit, MDBX_cursor_op op) {
+static int cursor_get_batch_plain(MDBX_cursor *mc, size_t *count, MDBX_val *pairs,
+                                  size_t limit, MDBX_cursor_op op) {
   if (unlikely(!count))
-    return LOG_IFERR(MDBX_EINVAL);
+    return MDBX_EINVAL;
 
   *count = 0;
   if (unlikely(limit < 4 || limit > INTPTR_MAX - 2))
-    return LOG_IFERR(MDBX_EINVAL);
+    return MDBX_EINVAL;
 
   int rc = cursor_check_ro(mc);
   if (unlikely(rc != MDBX_SUCCESS))
-    return LOG_IFERR(rc);
+    return rc;
 
   if (unlikely(mc->subcur))
-    return LOG_IFERR(MDBX_INCOMPATIBLE) /* must be a non-dupsort table */;
+    return MDBX_INCOMPATIBLE /* must be a non-dupsort table */;
 
   switch (op) {
   case MDBX_NEXT:
@@ -9885,7 +9902,7 @@ int mdbx_cursor_get_batch(MDBX_cursor *mc, size_t *count, MDBX_val *pairs, size_
 
   default:
     DEBUG("unhandled/unimplemented cursor operation %u", op);
-    return LOG_IFERR(MDBX_EINVAL);
+    return MDBX_EINVAL;
   }
 
   const page_t *mp = mc->pg[mc->top];
@@ -9934,7 +9951,15 @@ int mdbx_cursor_get_batch(MDBX_cursor *mc, size_t *count, MDBX_val *pairs, size_
 
 bailout:
   *count = n;
-  return LOG_IFERR(rc);
+  return rc;
+}
+
+int mdbx_cursor_get_batch(MDBX_cursor *mc, size_t *count, MDBX_val *pairs, size_t limit, MDBX_cursor_op op) {
+  int rc = MDBX_SUCCESS;
+  if (async_cursor_get_batch_blocking_try(mc, count, pairs, limit, op, &rc))
+    return LOG_IFERR(rc);
+
+  return LOG_IFERR(cursor_get_batch_plain(mc, count, pairs, limit, op));
 }
 
 /*----------------------------------------------------------------------------*/
@@ -22532,9 +22557,9 @@ typedef struct async_cursor_get_batch_pending {
 } async_cursor_get_batch_pending_t;
 
 static int async_cursor_get_batch_execute_sync(MDBX_async_op *op) {
-  return mdbx_cursor_get_batch(op->args.cursor_get_batch.cursor, op->args.cursor_get_batch.count,
-                               op->args.cursor_get_batch.pairs, op->args.cursor_get_batch.limit,
-                               op->args.cursor_get_batch.op);
+  return cursor_get_batch_plain(op->args.cursor_get_batch.cursor, op->args.cursor_get_batch.count,
+                                op->args.cursor_get_batch.pairs, op->args.cursor_get_batch.limit,
+                                op->args.cursor_get_batch.op);
 }
 
 static void async_cursor_get_batch_pending_free(async_cursor_get_batch_pending_t *pending) {
@@ -23110,11 +23135,41 @@ static void async_cursor_get_batch_pending_drain_all(async_cursor_get_batch_pend
   }
 }
 
+static bool async_cursor_get_batch_blocking_try(MDBX_cursor *mc, size_t *count,
+                                                MDBX_val *pairs, size_t limit,
+                                                MDBX_cursor_op op, int *result) {
+  if (unlikely(!result || !count || !pairs || limit < 4 || limit > INTPTR_MAX - 2))
+    return false;
+  if (unlikely(op != MDBX_FIRST && op != MDBX_NEXT))
+    return false;
+
+  int rc = cursor_check_ro(mc);
+  if (unlikely(rc != MDBX_SUCCESS || mc->subcur != nullptr ||
+               !async_cursor_nodup_read_batchable(mc)))
+    return false;
+
+  MDBX_async_op operation;
+  memset(&operation, 0, sizeof(operation));
+  operation.opcode = async_op_cursor_get_batch;
+  operation.args.cursor_get_batch.cursor = mc;
+  operation.args.cursor_get_batch.count = count;
+  operation.args.cursor_get_batch.pairs = pairs;
+  operation.args.cursor_get_batch.limit = limit;
+  operation.args.cursor_get_batch.op = op;
+
+  async_cursor_get_batch_pending_t *const pending =
+      async_cursor_get_batch_start(&operation);
+  if (pending)
+    async_cursor_get_batch_pending_complete(pending);
+  *result = operation.result;
+  return true;
+}
+
 static int async_cursor_get_execute(MDBX_async_op *op) {
   MDBX_val key = *op->args.cursor_get.key;
   MDBX_val data = *op->args.cursor_get.data;
-  const int rc = mdbx_cursor_get(op->args.cursor_get.cursor, &key, &data,
-                                 op->args.cursor_get.op);
+  const int rc = cursor_get_plain(op->args.cursor_get.cursor, &key, &data,
+                                  op->args.cursor_get.op);
   *op->args.cursor_get.key = key;
   *op->args.cursor_get.data = data;
   return rc;
@@ -23652,6 +23707,43 @@ static void async_cursor_get_pending_complete(async_cursor_get_pending_t *pendin
   int rc = MDBX_RESULT_TRUE;
   while (rc == MDBX_RESULT_TRUE)
     rc = async_cursor_get_pending_step(pending, true, nullptr);
+}
+
+static bool async_cursor_get_blocking_try(MDBX_cursor *mc, MDBX_val *key,
+                                          MDBX_val *data, MDBX_cursor_op op,
+                                          int *result) {
+  if (unlikely(!result || !key || !data))
+    return false;
+
+  switch (op) {
+  case MDBX_FIRST:
+  case MDBX_GET_CURRENT:
+  case MDBX_NEXT:
+  case MDBX_SET_LOWERBOUND:
+  case MDBX_SET_KEY:
+    break;
+  default:
+    return false;
+  }
+
+  int rc = cursor_check_ro(mc);
+  if (unlikely(rc != MDBX_SUCCESS || mc->subcur != nullptr ||
+               !async_cursor_nodup_read_batchable(mc)))
+    return false;
+
+  MDBX_async_op operation;
+  memset(&operation, 0, sizeof(operation));
+  operation.opcode = async_op_cursor_get;
+  operation.args.cursor_get.cursor = mc;
+  operation.args.cursor_get.key = key;
+  operation.args.cursor_get.data = data;
+  operation.args.cursor_get.op = op;
+
+  async_cursor_get_pending_t *const pending = async_cursor_get_start(&operation);
+  if (pending)
+    async_cursor_get_pending_complete(pending);
+  *result = operation.result;
+  return true;
 }
 
 static void async_cursor_get_pending_drain_all(async_cursor_get_pending_t *pending) {
