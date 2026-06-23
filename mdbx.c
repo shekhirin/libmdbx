@@ -23407,7 +23407,9 @@ static int async_cursor_seek_finish_leaf(async_cursor_seek_pending_t *seek) {
       mc->flags |= z_hollow;
       return MDBX_NOTFOUND;
     }
-    status = seek->op == MDBX_SET_RANGE ? MDBX_SUCCESS : MDBX_RESULT_TRUE;
+    status = seek->op == MDBX_SET_RANGE || seek->op == MDBX_SET_UPPERBOUND
+                 ? MDBX_SUCCESS
+                 : MDBX_RESULT_TRUE;
     if (node == nullptr) {
       int rc = async_cursor_seek_prepare_sibling(seek);
       if (rc == MDBX_RESULT_TRUE)
@@ -23423,6 +23425,23 @@ static int async_cursor_seek_finish_leaf(async_cursor_seek_pending_t *seek) {
     be_poor(mc);
     return MDBX_CORRUPTED;
   }
+
+  if (sr.exact && seek->op == MDBX_SET_UPPERBOUND) {
+    const size_t nkeys = page_numkeys(mp);
+    cASSERT0(mc, mc->ki[mc->top] < nkeys);
+    if (mc->ki[mc->top] + (size_t)1 >= nkeys) {
+      int rc = async_cursor_seek_prepare_sibling(seek);
+      if (rc == MDBX_RESULT_TRUE)
+        return rc;
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+      return MDBX_RESULT_TRUE;
+    }
+    mc->ki[mc->top] += 1;
+    node = page_node(mp, mc->ki[mc->top]);
+    status = MDBX_SUCCESS;
+  }
+
   seek->key = get_key(node);
   if (unlikely(node_flags(node) & N_DUP)) {
     int rc = cursor_ops(mc, &seek->key, &seek->data, seek->op);
@@ -23586,8 +23605,9 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   if (unlikely(cursor_op != MDBX_FIRST && cursor_op != MDBX_GET_CURRENT &&
                !next_like &&
                cursor_op != MDBX_SET_RANGE &&
-               cursor_op != MDBX_SET_LOWERBOUND && cursor_op != MDBX_SET_KEY &&
-               cursor_op != MDBX_SET)) {
+               cursor_op != MDBX_SET_LOWERBOUND &&
+               cursor_op != MDBX_SET_UPPERBOUND &&
+               cursor_op != MDBX_SET_KEY && cursor_op != MDBX_SET)) {
     op->result = async_cursor_get_execute(op);
     return nullptr;
   }
@@ -23656,8 +23676,9 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   batch->stop_after_limit = true;
 
   if (cursor_op == MDBX_SET_RANGE ||
-      cursor_op == MDBX_SET_LOWERBOUND || cursor_op == MDBX_SET_KEY ||
-      cursor_op == MDBX_SET) {
+      cursor_op == MDBX_SET_LOWERBOUND ||
+      cursor_op == MDBX_SET_UPPERBOUND ||
+      cursor_op == MDBX_SET_KEY || cursor_op == MDBX_SET) {
     async_cursor_get_batch_pending_free(batch);
     pending->batch_pending = nullptr;
     rc = async_cursor_seek_prepare(&pending->seek, mc, op->args.cursor_get.key,
@@ -23762,6 +23783,7 @@ static bool async_cursor_get_blocking_try(MDBX_cursor *mc, MDBX_val *key,
   case MDBX_NEXT_NODUP:
   case MDBX_SET_RANGE:
   case MDBX_SET_LOWERBOUND:
+  case MDBX_SET_UPPERBOUND:
   case MDBX_SET_KEY:
   case MDBX_SET:
     break;
