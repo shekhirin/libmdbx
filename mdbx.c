@@ -25328,8 +25328,8 @@ static int async_cursor_get_loop_execute(MDBX_async_op *op) {
   if (count && cursor->subcur == nullptr &&
       (op->args.cursor_get_loop.turn_op == MDBX_NEXT ||
        op->args.cursor_get_loop.turn_op == MDBX_NEXT_NODUP) &&
-      (!op->args.cursor_get_loop.from_key || op->args.cursor_get_loop.start_op == MDBX_SET_LOWERBOUND ||
-       op->args.cursor_get_loop.start_op == MDBX_SET_KEY) &&
+      (!op->args.cursor_get_loop.from_key ||
+       async_cursor_seek_start_op_supported(op->args.cursor_get_loop.start_op)) &&
       (op->args.cursor_get_loop.from_key || op->args.cursor_get_loop.start_op == MDBX_FIRST)) {
     enum { cursor_get_loop_batch_pairs = 64 };
     MDBX_val pairs[(cursor_get_loop_batch_pairs + 1) * 2];
