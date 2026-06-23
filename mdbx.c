@@ -23271,6 +23271,7 @@ static bool async_cursor_seek_start_op_supported(MDBX_cursor_op op) {
   case MDBX_SET_RANGE:
   case MDBX_SET_LOWERBOUND:
   case MDBX_SET_UPPERBOUND:
+  case MDBX_TO_KEY_EQUAL:
   case MDBX_TO_KEY_GREATER_OR_EQUAL:
   case MDBX_TO_KEY_GREATER_THAN:
     return true;
@@ -23622,6 +23623,32 @@ static bool async_cursor_get_should_apply_seek_result(
     int rc, const async_cursor_seek_pending_t *seek) {
   return rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE ||
          (rc == MDBX_NOTFOUND && seek->has_result);
+}
+
+static bool async_cursor_seek_notfound_has_result(
+    int rc, const async_cursor_seek_pending_t *seek) {
+  return rc == MDBX_NOTFOUND && seek->has_result;
+}
+
+static void async_cursor_seek_copy_loop_from_result(
+    MDBX_async_op *op, const async_cursor_seek_pending_t *seek) {
+  *op->args.cursor_get_loop.from_key = seek->key;
+  if (op->args.cursor_get_loop.has_from_value)
+    *op->args.cursor_get_loop.from_value = seek->data;
+}
+
+static void async_cursor_seek_copy_batches_from_result(
+    MDBX_async_op *op, const async_cursor_seek_pending_t *seek) {
+  *op->args.cursor_get_batches.from_key = seek->key;
+  if (op->args.cursor_get_batches.has_from_value)
+    *op->args.cursor_get_batches.from_value = seek->data;
+}
+
+static void async_cursor_seek_copy_scan_from_result(
+    MDBX_async_op *op, const async_cursor_seek_pending_t *seek) {
+  *op->args.cursor_scan_from.key = seek->key;
+  if (op->args.cursor_scan_from.has_value)
+    *op->args.cursor_scan_from.value = seek->data;
 }
 
 static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
@@ -23978,14 +24005,16 @@ static int async_cursor_get_batches_pending_start_batch(async_cursor_get_batches
 static int async_cursor_get_batches_pending_finish_positioned(async_cursor_get_batches_pending_t *pending,
                                                               int rc) {
   MDBX_async_op *const op = pending->op;
+  if (async_cursor_seek_notfound_has_result(rc, &pending->seek)) {
+    async_cursor_seek_copy_batches_from_result(op, &pending->seek);
+    return MDBX_RESULT_TRUE;
+  }
   if (rc == MDBX_NOTFOUND)
     return MDBX_RESULT_TRUE;
   if (unlikely(rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE))
     return rc;
 
-  *op->args.cursor_get_batches.from_key = pending->seek.key;
-  if (op->args.cursor_get_batches.has_from_value)
-    *op->args.cursor_get_batches.from_value = pending->seek.data;
+  async_cursor_seek_copy_batches_from_result(op, &pending->seek);
   pending->cursor_op = MDBX_NEXT;
   pending->positioning = false;
   return MDBX_SUCCESS;
@@ -24094,6 +24123,11 @@ static async_cursor_get_batches_pending_t *async_cursor_get_batches_start(MDBX_a
       MDBX_val *const data_ptr = op->args.cursor_get_batches.has_from_value ? &data : nullptr;
       int rc = mdbx_cursor_get(cursor, &key, data_ptr, from_op);
       if (unlikely(rc == MDBX_NOTFOUND)) {
+        if (from_op == MDBX_TO_KEY_EQUAL) {
+          *op->args.cursor_get_batches.from_key = key;
+          if (op->args.cursor_get_batches.has_from_value)
+            *op->args.cursor_get_batches.from_value = data;
+        }
         op->result = MDBX_RESULT_TRUE;
         async_cursor_get_batches_pending_free(pending);
         return nullptr;
@@ -24403,6 +24437,10 @@ static int async_cursor_get_loop_pending_start_batch(async_cursor_get_loop_pendi
 static int async_cursor_get_loop_pending_finish_positioned(async_cursor_get_loop_pending_t *pending,
                                                            int rc) {
   MDBX_async_op *const op = pending->op;
+  if (async_cursor_seek_notfound_has_result(rc, &pending->seek)) {
+    async_cursor_seek_copy_loop_from_result(op, &pending->seek);
+    return MDBX_RESULT_TRUE;
+  }
   if (rc == MDBX_NOTFOUND)
     return MDBX_RESULT_TRUE;
   if (unlikely(rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE))
@@ -24410,9 +24448,7 @@ static int async_cursor_get_loop_pending_finish_positioned(async_cursor_get_loop
 
   MDBX_val key = pending->seek.key;
   MDBX_val data = pending->seek.data;
-  *op->args.cursor_get_loop.from_key = key;
-  if (op->args.cursor_get_loop.has_from_value)
-    *op->args.cursor_get_loop.from_value = data;
+  async_cursor_seek_copy_loop_from_result(op, &pending->seek);
   if (op->args.cursor_get_loop.func) {
     rc = op->args.cursor_get_loop.func(op->args.cursor_get_loop.context, 0, &key, &data);
     if (unlikely(rc != MDBX_SUCCESS))
@@ -24553,6 +24589,11 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
       MDBX_val data = op->args.cursor_get_loop.has_from_value ? op->data : (MDBX_val){nullptr, 0};
       int rc = mdbx_cursor_get(cursor, &key, &data, op->args.cursor_get_loop.start_op);
       if (unlikely(rc == MDBX_NOTFOUND)) {
+        if (op->args.cursor_get_loop.start_op == MDBX_TO_KEY_EQUAL) {
+          *op->args.cursor_get_loop.from_key = key;
+          if (op->args.cursor_get_loop.has_from_value)
+            *op->args.cursor_get_loop.from_value = data;
+        }
         op->result = MDBX_RESULT_TRUE;
         async_cursor_get_loop_pending_free(pending);
         return nullptr;
@@ -24855,6 +24896,11 @@ static int async_cursor_scan_pending_start_batch(async_cursor_scan_pending_t *pe
 
 static int async_cursor_scan_pending_finish_positioned(async_cursor_scan_pending_t *pending,
                                                        int rc) {
+  if (async_cursor_seek_notfound_has_result(rc, &pending->seek)) {
+    async_cursor_seek_copy_scan_from_result(pending->op, &pending->seek);
+    pending->positioning = false;
+    return MDBX_NOTFOUND;
+  }
   if (unlikely(MDBX_IS_ERROR(rc)))
     return rc;
   MDBX_val key = pending->seek.key;
@@ -24964,6 +25010,11 @@ static async_cursor_scan_pending_t *async_cursor_scan_start(MDBX_async_op *op) {
           positioned_scan && !op->args.cursor_scan_from.has_value ? nullptr : &data;
       int rc = mdbx_cursor_get(cursor, &key, data_ptr, start_op);
       if (unlikely(MDBX_IS_ERROR(rc))) {
+        if (positioned_scan && start_op == MDBX_TO_KEY_EQUAL && rc == MDBX_NOTFOUND) {
+          *op->args.cursor_scan_from.key = key;
+          if (op->args.cursor_scan_from.has_value)
+            *op->args.cursor_scan_from.value = data;
+        }
         op->result = rc;
         async_cursor_scan_pending_free(pending);
         return nullptr;
@@ -25339,8 +25390,15 @@ static int async_cursor_get_loop_execute(MDBX_async_op *op) {
     MDBX_val key = op->args.cursor_get_loop.from_key ? op->key : (MDBX_val){nullptr, 0};
     MDBX_val data = op->args.cursor_get_loop.has_from_value ? op->data : (MDBX_val){nullptr, 0};
     rc = mdbx_cursor_get(cursor, &key, &data, op->args.cursor_get_loop.start_op);
-    if (unlikely(rc == MDBX_NOTFOUND))
+    if (unlikely(rc == MDBX_NOTFOUND)) {
+      if (op->args.cursor_get_loop.from_key &&
+          op->args.cursor_get_loop.start_op == MDBX_TO_KEY_EQUAL) {
+        *op->args.cursor_get_loop.from_key = key;
+        if (op->args.cursor_get_loop.has_from_value)
+          *op->args.cursor_get_loop.from_value = data;
+      }
       return MDBX_RESULT_TRUE;
+    }
     if (unlikely(rc != MDBX_SUCCESS &&
                  !(rc == MDBX_RESULT_TRUE && op->args.cursor_get_loop.from_key)))
       return rc;
@@ -25432,8 +25490,15 @@ static int async_cursor_get_loop_execute(MDBX_async_op *op) {
     MDBX_val data = (i == 0 && op->args.cursor_get_loop.has_from_value) ? start_data : (MDBX_val){nullptr, 0};
     const MDBX_cursor_op cursor_op = i ? op->args.cursor_get_loop.turn_op : op->args.cursor_get_loop.start_op;
     int rc = mdbx_cursor_get(op->args.cursor_get_loop.cursor, &key, &data, cursor_op);
-    if (unlikely(rc == MDBX_NOTFOUND))
+    if (unlikely(rc == MDBX_NOTFOUND)) {
+      if (i == 0 && op->args.cursor_get_loop.from_key &&
+          op->args.cursor_get_loop.start_op == MDBX_TO_KEY_EQUAL) {
+        *op->args.cursor_get_loop.from_key = key;
+        if (op->args.cursor_get_loop.has_from_value)
+          *op->args.cursor_get_loop.from_value = data;
+      }
       return MDBX_RESULT_TRUE;
+    }
     if (unlikely(rc != MDBX_SUCCESS &&
                  !(rc == MDBX_RESULT_TRUE && i == 0 && op->args.cursor_get_loop.from_key)))
       return rc;
@@ -25468,7 +25533,8 @@ static int async_cursor_scan_execute(MDBX_async_op *op) {
                                         op->args.cursor_scan_from.from_op, &key, value_ptr,
                                         op->args.cursor_scan_from.turn_op,
                                         op->args.cursor_scan_from.arg);
-  if (!MDBX_IS_ERROR(rc)) {
+  if (!MDBX_IS_ERROR(rc) ||
+      (rc == MDBX_NOTFOUND && op->args.cursor_scan_from.from_op == MDBX_TO_KEY_EQUAL)) {
     *op->args.cursor_scan_from.key = key;
     if (op->args.cursor_scan_from.has_value)
       *op->args.cursor_scan_from.value = value;
