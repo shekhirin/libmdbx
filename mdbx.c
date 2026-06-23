@@ -25280,9 +25280,12 @@ static async_cursor_scan_pending_t *async_cursor_scan_start(MDBX_async_op *op) {
                                turn_op == MDBX_PREV;
   const bool positioned_scan =
       from_scan && async_cursor_seek_start_op_supported(start_op);
+  const bool forward_turn_scan =
+      turn_op == MDBX_NEXT || turn_op == MDBX_NEXT_NODUP;
+  const bool positioned_reverse_scan = positioned_scan && turn_op == MDBX_PREV;
   if (!(cursor->subcur == nullptr &&
-        (((turn_op == MDBX_NEXT || turn_op == MDBX_NEXT_NODUP) &&
-          (plain_first_scan || positioned_scan)) ||
+        ((forward_turn_scan && (plain_first_scan || positioned_scan)) ||
+         positioned_reverse_scan ||
          plain_last_scan))) {
     op->result = async_cursor_scan_execute(op);
     return nullptr;
@@ -25295,10 +25298,9 @@ static async_cursor_scan_pending_t *async_cursor_scan_start(MDBX_async_op *op) {
   }
   pending->op = op;
   pending->from_scan = from_scan;
-  pending->reverse = plain_last_scan;
-  pending->cursor_op = plain_first_scan ? MDBX_FIRST : MDBX_NEXT;
-  if (plain_last_scan)
-    pending->cursor_op = MDBX_PREV;
+  pending->reverse = plain_last_scan || positioned_reverse_scan;
+  pending->cursor_op = pending->reverse ? MDBX_PREV
+                                        : plain_first_scan ? MDBX_FIRST : MDBX_NEXT;
 
   if (plain_first_scan || plain_last_scan || positioned_scan) {
     if (plain_first_scan) {
