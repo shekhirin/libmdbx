@@ -23222,6 +23222,7 @@ typedef struct async_cursor_seek_pending {
   int value_status;
   enum async_cursor_get_batch_first_phase seek_phase;
   bool seek_started;
+  bool has_result;
 } async_cursor_seek_pending_t;
 
 static void async_cursor_seek_pending_finish(async_cursor_seek_pending_t *seek) {
@@ -23407,11 +23408,15 @@ static int async_cursor_seek_finish_leaf(async_cursor_seek_pending_t *seek) {
       mc->flags |= z_hollow;
       return MDBX_NOTFOUND;
     }
-    const bool greater_key_status =
-        seek->op == MDBX_SET_RANGE || seek->op == MDBX_SET_UPPERBOUND ||
-        seek->op == MDBX_TO_KEY_GREATER_OR_EQUAL ||
-        seek->op == MDBX_TO_KEY_GREATER_THAN;
-    status = greater_key_status ? MDBX_SUCCESS : MDBX_RESULT_TRUE;
+    if (seek->op == MDBX_TO_KEY_EQUAL)
+      status = MDBX_NOTFOUND;
+    else {
+      const bool greater_key_status =
+          seek->op == MDBX_SET_RANGE || seek->op == MDBX_SET_UPPERBOUND ||
+          seek->op == MDBX_TO_KEY_GREATER_OR_EQUAL ||
+          seek->op == MDBX_TO_KEY_GREATER_THAN;
+      status = greater_key_status ? MDBX_SUCCESS : MDBX_RESULT_TRUE;
+    }
     if (node == nullptr) {
       int rc = async_cursor_seek_prepare_sibling(seek);
       if (rc == MDBX_RESULT_TRUE)
@@ -23463,6 +23468,7 @@ static int async_cursor_seek_finish_leaf(async_cursor_seek_pending_t *seek) {
   int rc = node_read(mc, node, &seek->data, mp);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
+  seek->has_result = true;
   be_filled(mc);
   return async_cursor_seek_capture_result(seek, status);
 }
@@ -23525,6 +23531,7 @@ static int async_cursor_seek_drive(async_cursor_seek_pending_t *seek,
       cursor_value_set(mc, &page);
       seek->data.iov_base = page2payload(page.page);
       seek->data.iov_len = seek->large_bytes;
+      seek->has_result = true;
       pgr_release(mc, &page);
       be_filled(mc);
       return async_cursor_seek_capture_result(seek, seek->value_status);
@@ -23596,6 +23603,12 @@ static void async_cursor_get_apply_seek_result(MDBX_async_op *op,
   *op->args.cursor_get.data = seek->data;
 }
 
+static bool async_cursor_get_should_apply_seek_result(
+    int rc, const async_cursor_seek_pending_t *seek) {
+  return rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE ||
+         (rc == MDBX_NOTFOUND && seek->has_result);
+}
+
 static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   if (unlikely(!op)) {
     return nullptr;
@@ -23610,6 +23623,7 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
                cursor_op != MDBX_SET_RANGE &&
                cursor_op != MDBX_SET_LOWERBOUND &&
                cursor_op != MDBX_SET_UPPERBOUND &&
+               cursor_op != MDBX_TO_KEY_EQUAL &&
                cursor_op != MDBX_TO_KEY_GREATER_OR_EQUAL &&
                cursor_op != MDBX_TO_KEY_GREATER_THAN &&
                cursor_op != MDBX_SET_KEY && cursor_op != MDBX_SET)) {
@@ -23683,6 +23697,7 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   if (cursor_op == MDBX_SET_RANGE ||
       cursor_op == MDBX_SET_LOWERBOUND ||
       cursor_op == MDBX_SET_UPPERBOUND ||
+      cursor_op == MDBX_TO_KEY_EQUAL ||
       cursor_op == MDBX_TO_KEY_GREATER_OR_EQUAL ||
       cursor_op == MDBX_TO_KEY_GREATER_THAN ||
       cursor_op == MDBX_SET_KEY || cursor_op == MDBX_SET) {
@@ -23698,7 +23713,7 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
     rc = async_cursor_seek_drive(&pending->seek, false);
     if (rc == MDBX_RESULT_TRUE && pending->seek.seek_started)
       return pending;
-    if (rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE)
+    if (async_cursor_get_should_apply_seek_result(rc, &pending->seek))
       async_cursor_get_apply_seek_result(op, &pending->seek);
     op->result = rc;
     async_cursor_get_pending_free(pending);
@@ -23742,7 +23757,7 @@ static int async_cursor_get_pending_step(async_cursor_get_pending_t *pending,
     if (rc == MDBX_RESULT_TRUE && pending->seek.seek_started)
       return MDBX_RESULT_TRUE;
 
-    if (rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE)
+    if (async_cursor_get_should_apply_seek_result(rc, &pending->seek))
       async_cursor_get_apply_seek_result(op, &pending->seek);
     op->result = rc;
     async_cursor_get_pending_free(pending);
@@ -23791,6 +23806,7 @@ static bool async_cursor_get_blocking_try(MDBX_cursor *mc, MDBX_val *key,
   case MDBX_SET_RANGE:
   case MDBX_SET_LOWERBOUND:
   case MDBX_SET_UPPERBOUND:
+  case MDBX_TO_KEY_EQUAL:
   case MDBX_TO_KEY_GREATER_OR_EQUAL:
   case MDBX_TO_KEY_GREATER_THAN:
   case MDBX_SET_KEY:
