@@ -1415,6 +1415,7 @@ enum async_read_mode {
   async_read_cache_get_many_mixed,
   async_read_cache_get_singlethreaded_many_mixed,
   async_read_large_get,
+  async_read_large_lowerbound,
   async_read_large_cache_get,
   async_read_abort_order,
   async_read_abort_order_batch,
@@ -1749,7 +1750,9 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
                                 mode == async_read_cache_get_singlethreaded_many_mixed;
   const bool cache_loop_read = mode == async_read_cache_get_loop ||
                                mode == async_read_cache_get_singlethreaded_loop;
-  const bool large_read = mode == async_read_large_get || mode == async_read_large_cache_get;
+  const bool large_read = mode == async_read_large_get ||
+                          mode == async_read_large_lowerbound ||
+                          mode == async_read_large_cache_get;
   const bool cache_hit_read = mode == async_read_get_cache_hit;
   MDBX_val *read_key_value = notfound_read ? &missing_key_value : &key_value;
 
@@ -2145,6 +2148,8 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     read_name = "mdbx_async_cache_get_SingleThreaded_many cold read";
   } else if (mode == async_read_large_get) {
     read_name = "mdbx_async_get cold large read";
+  } else if (mode == async_read_large_lowerbound) {
+    read_name = "mdbx_async_get_equal_or_great cold large read";
   } else if (mode == async_read_large_cache_get) {
     mdbx_cache_init(&cache_entry);
     read_name = "mdbx_async_cache_get cold large read";
@@ -2806,6 +2811,8 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
                                             async_read_lowerbound_loop_data_func,
                                             async_read_lowerbound_loop_result_func,
                                             &loop_read_probe, &loop_completed, &op);
+  else if (mode == async_read_large_lowerbound)
+    rc = mdbx_async_get_equal_or_great(async, txn, dbi, read_key_value, &data, &op);
   else
     rc = mdbx_async_get(async, txn, dbi, read_key_value, &data, &op);
   if (abort_order_read)
@@ -2842,7 +2849,8 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   if (rc != MDBX_SUCCESS)
     goto bailout;
   if (inject_fault) {
-    if (mode == async_read_get || mode == async_read_large_get) {
+    if (mode == async_read_get || mode == async_read_large_get ||
+        mode == async_read_large_lowerbound) {
       REQUIRE(operation_result == MDBX_EIO, "async get did not propagate injected read-completion failure");
       REQUIRE(data.iov_base == NULL && data.iov_len == 0, "failed async get returned data");
     } else if (mode == async_read_get_many) {
@@ -3181,7 +3189,8 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
               "cold sync cursor get NEXT_NODUP returned wrong value size");
       REQUIRE(memcmp(data.iov_base, batch_values[1], sizeof(batch_values[1])) == 0,
               "cold sync cursor get NEXT_NODUP returned wrong value");
-    } else if (mode == async_read_large_get) {
+    } else if (mode == async_read_large_get ||
+               mode == async_read_large_lowerbound) {
       CHECK(expect_large_value(&data, key, __FILE__, __LINE__));
     } else if (mode == async_read_large_cache_get) {
       REQUIRE(cache_result.errcode == MDBX_SUCCESS && cache_result.status != MDBX_CACHE_ERROR,
@@ -4439,6 +4448,8 @@ int main(void) {
     return exercise_async_read_path(path, false, async_read_cache_get_notfound);
   if (env_enabled("MDBX_ASYNC_SMOKE_LARGE_GET_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_large_get);
+  if (env_enabled("MDBX_ASYNC_SMOKE_LARGE_LOWERBOUND_READ_ONLY"))
+    return exercise_async_read_path(path, false, async_read_large_lowerbound);
   if (env_enabled("MDBX_ASYNC_SMOKE_LARGE_CACHE_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_large_cache_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_ABORT_ORDER_READ_ONLY"))
@@ -4585,6 +4596,8 @@ int main(void) {
     return exercise_async_read_path(path, true, async_read_cache_get_singlethreaded_batch);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LARGE_GET_ONLY"))
     return exercise_async_read_path(path, true, async_read_large_get);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LARGE_LOWERBOUND_ONLY"))
+    return exercise_async_read_path(path, true, async_read_large_lowerbound);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_GET_LOOP_ONLY"))
     return exercise_async_read_path(path, true, async_read_get_loop);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_GET_EX_LOOP_ONLY"))
