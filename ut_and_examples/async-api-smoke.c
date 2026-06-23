@@ -3771,6 +3771,7 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
               "faulted async cursor get did not propagate read-completion failure");
       CHECK(expect_empty_value(&data, __FILE__, __LINE__));
     } else if (mode == async_read_cursor_get_batch ||
+               mode == async_read_sync_cursor_get_batch ||
                mode == async_read_large_cursor_batch ||
                mode == async_read_sync_large_cursor_batch) {
       REQUIRE(operation_result == MDBX_EIO,
@@ -3779,6 +3780,13 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
               "faulted cursor get batch recorded wrong cursor result");
       REQUIRE(cursor_batch_count == 0,
               "faulted cursor get batch returned items");
+    } else if (mode == async_read_sync_cursor_get_batch_nodup) {
+      REQUIRE(operation_result == MDBX_EIO,
+              "faulted cursor get batch NEXT_NODUP did not propagate read-completion failure");
+      REQUIRE(cursor_prime_result == MDBX_EIO || cursor_batch_result == MDBX_EIO,
+              "faulted cursor get batch NEXT_NODUP recorded wrong cursor result");
+      REQUIRE(cursor_batch_count == 0,
+              "faulted cursor get batch NEXT_NODUP returned items");
     } else if (large_cursor_stream_read) {
       REQUIRE(operation_result == MDBX_EIO,
               "faulted large cursor stream did not propagate read-completion failure");
@@ -5714,6 +5722,10 @@ int main(void) {
     return exercise_async_read_path(path, true, async_read_sync_cursor_get_prev_positioned);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_CURSOR_GET_NODUP_ONLY"))
     return exercise_async_read_path(path, true, async_read_sync_cursor_get_nodup);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_CURSOR_BATCH_ONLY"))
+    return exercise_async_read_path(path, true, async_read_sync_cursor_get_batch);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_CURSOR_BATCH_NODUP_ONLY"))
+    return exercise_async_read_path(path, true, async_read_sync_cursor_get_batch_nodup);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_LARGE_GET_ONLY"))
     return exercise_async_read_path(path, true, async_read_sync_large_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_LARGE_GET_EX_ONLY"))
