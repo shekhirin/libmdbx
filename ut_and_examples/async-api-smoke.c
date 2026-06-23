@@ -1476,6 +1476,10 @@ enum async_read_mode {
   async_read_cache_get_singlethreaded_many_mixed,
   async_read_large_get,
   async_read_large_get_ex,
+  async_read_large_get_many,
+  async_read_large_get_ex_many,
+  async_read_large_get_batch,
+  async_read_large_get_ex_batch,
   async_read_large_lowerbound,
   async_read_large_cursor_batch,
   async_read_large_cursor_loop,
@@ -1651,9 +1655,15 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   const bool loop_read = mode == async_read_get_loop || mode == async_read_cache_get_loop ||
                          mode == async_read_cache_get_singlethreaded_loop ||
                          mode == async_read_get_ex_loop || mode == async_read_lowerbound_loop;
+  const bool large_indexed_read = mode == async_read_large_get_many ||
+                                  mode == async_read_large_get_ex_many ||
+                                  mode == async_read_large_get_batch ||
+                                  mode == async_read_large_get_ex_batch;
   const bool many_read = mode == async_read_get_many ||
                          mode == async_read_get_ex_many ||
                          mode == async_read_lowerbound_many ||
+                         mode == async_read_large_get_many ||
+                         mode == async_read_large_get_ex_many ||
                          mode == async_read_get_many_mixed ||
                          mode == async_read_get_ex_many_mixed ||
                          mode == async_read_lowerbound_many_mixed ||
@@ -1756,6 +1766,8 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
                                   mode == async_read_lowerbound_batch ||
                                   mode == async_read_cache_get_batch ||
                                   mode == async_read_cache_get_singlethreaded_batch ||
+                                  mode == async_read_large_get_batch ||
+                                  mode == async_read_large_get_ex_batch ||
                                   mixed_batch_read ||
                                   many_read ||
                                   loop_read || abort_order_batch_read ||
@@ -1784,6 +1796,8 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   const unsigned forward_seek_expected_index =
       to_key_equal_miss_read ? 0u : (upperbound_read || to_key_gt_read) ? 2u : 1u;
   const bool batch_read = indexed_batch_read || cursor_stream_read;
+  const size_t indexed_read_count =
+      large_indexed_read ? LARGE_ITEM_COUNT : ASYNC_READ_BATCH_COUNT;
   const bool cursor_from_equal_miss_read =
       mode == async_read_cursor_get_loop_from_equal_miss ||
       mode == async_read_cursor_get_batches_from_equal_miss ||
@@ -1861,11 +1875,18 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   }
 
   if (batch_read || batch_dataset_read) {
-    for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
+    const size_t setup_count = large_indexed_read ? indexed_read_count
+                                                  : ASYNC_READ_BATCH_COUNT;
+    for (unsigned i = 0; i < setup_count; ++i) {
       batch_keys[i] = i;
-      fill_large_value(batch_values[i], sizeof(batch_values[i]), batch_keys[i]);
+      if (large_indexed_read) {
+        fill_large_value(large_batch_values[i], sizeof(large_batch_values[i]), batch_keys[i]);
+        batch_put_values[i] = val(large_batch_values[i], sizeof(large_batch_values[i]));
+      } else {
+        fill_large_value(batch_values[i], sizeof(batch_values[i]), batch_keys[i]);
+        batch_put_values[i] = val(batch_values[i], sizeof(batch_values[i]));
+      }
       batch_key_values[i] = val(&batch_keys[i], sizeof(batch_keys[i]));
-      batch_put_values[i] = val(batch_values[i], sizeof(batch_values[i]));
       batch_data[i] = val(NULL, 0);
       batch_values_counts[i] = SIZE_MAX;
       batch_results[i] = MDBX_PROBLEM;
@@ -1910,7 +1931,9 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
       CHECK_OP(op);
     }
   } else if (batch_read || batch_dataset_read) {
-    for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
+    const size_t populate_count = large_indexed_read ? indexed_read_count
+                                                     : ASYNC_READ_BATCH_COUNT;
+    for (unsigned i = 0; i < populate_count; ++i) {
       CHECK(mdbx_async_put(async, txn, dbi, &batch_key_values[i], &batch_put_values[i], 0, &op));
       CHECK_OP(op);
     }
@@ -2236,6 +2259,14 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     read_name = "mdbx_async_get cold large read";
   } else if (mode == async_read_large_get_ex) {
     read_name = "mdbx_async_get_ex cold large read";
+  } else if (mode == async_read_large_get_many) {
+    read_name = "mdbx_async_get_many cold large read";
+  } else if (mode == async_read_large_get_ex_many) {
+    read_name = "mdbx_async_get_ex_many cold large read";
+  } else if (mode == async_read_large_get_batch) {
+    read_name = "mdbx_async_get_batch cold large read";
+  } else if (mode == async_read_large_get_ex_batch) {
+    read_name = "mdbx_async_get_ex_batch cold large read";
   } else if (mode == async_read_large_lowerbound) {
     read_name = "mdbx_async_get_equal_or_great cold large read";
   } else if (mode == async_read_large_cursor_batch) {
@@ -2550,10 +2581,16 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
            mode == async_read_get_many_mixed)
     rc = mdbx_async_get_many(async, txn, dbi, batch_key_values, batch_data,
                              ASYNC_READ_BATCH_COUNT, many_ops);
+  else if (mode == async_read_large_get_many)
+    rc = mdbx_async_get_many(async, txn, dbi, batch_key_values, batch_data,
+                             indexed_read_count, many_ops);
   else if (mode == async_read_get_ex_many ||
            mode == async_read_get_ex_many_mixed)
     rc = mdbx_async_get_ex_many(async, txn, dbi, batch_key_values, batch_data,
                                 batch_values_counts, ASYNC_READ_BATCH_COUNT, many_ops);
+  else if (mode == async_read_large_get_ex_many)
+    rc = mdbx_async_get_ex_many(async, txn, dbi, batch_key_values, batch_data,
+                                batch_values_counts, indexed_read_count, many_ops);
   else if (mode == async_read_lowerbound_many ||
            mode == async_read_lowerbound_many_mixed)
     rc = mdbx_async_get_equal_or_great_many(async, txn, dbi, batch_key_values,
@@ -2892,11 +2929,18 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
            mode == async_read_get_batch_mixed)
     rc = mdbx_async_get_batch(async, txn, dbi, batch_key_values, batch_data, batch_results,
                               ASYNC_READ_BATCH_COUNT, &op);
+  else if (mode == async_read_large_get_batch)
+    rc = mdbx_async_get_batch(async, txn, dbi, batch_key_values, batch_data,
+                              batch_results, indexed_read_count, &op);
   else if (mode == async_read_get_ex_batch ||
            mode == async_read_get_ex_batch_mixed)
     rc = mdbx_async_get_ex_batch(async, txn, dbi, batch_key_values, batch_data,
                                  batch_values_counts, batch_results,
                                  ASYNC_READ_BATCH_COUNT, &op);
+  else if (mode == async_read_large_get_ex_batch)
+    rc = mdbx_async_get_ex_batch(async, txn, dbi, batch_key_values, batch_data,
+                                 batch_values_counts, batch_results,
+                                 indexed_read_count, &op);
   else if (mode == async_read_lowerbound_batch ||
            mode == async_read_lowerbound_batch_mixed)
     rc = mdbx_async_get_equal_or_great_batch(async, txn, dbi, batch_key_values,
@@ -2943,7 +2987,7 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   if (abort_order_read)
     operation_result = MDBX_SUCCESS;
   else if (many_read && rc == MDBX_SUCCESS) {
-    rc = wait_many_result(read_name, many_ops, ASYNC_READ_BATCH_COUNT,
+    rc = wait_many_result(read_name, many_ops, indexed_read_count,
                           many_operation_results, __FILE__, __LINE__);
     operation_result = MDBX_SUCCESS;
   } else if (sync_read) {
@@ -2988,6 +3032,49 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
       REQUIRE(values_count == 0, "failed async get_ex returned value count");
       REQUIRE(data.iov_base == NULL && data.iov_len == 0,
               "failed async get_ex returned data");
+    } else if (mode == async_read_large_get_many) {
+      REQUIRE(operation_result == MDBX_SUCCESS,
+              "faulted large async get many operation returned wrong result");
+      bool saw_eio = false;
+      for (unsigned i = 0; i < indexed_read_count; ++i) {
+        saw_eio = saw_eio || many_operation_results[i] == MDBX_EIO;
+        REQUIRE(async_read_fault_result(many_operation_results[i]),
+                "faulted large async get many returned wrong item result");
+        CHECK(expect_empty_value(&batch_data[i], __FILE__, __LINE__));
+      }
+      REQUIRE(saw_eio, "faulted large async get many did not observe injected read failure");
+    } else if (mode == async_read_large_get_ex_many) {
+      REQUIRE(operation_result == MDBX_SUCCESS,
+              "faulted large async get_ex many operation returned wrong result");
+      bool saw_eio = false;
+      for (unsigned i = 0; i < indexed_read_count; ++i) {
+        saw_eio = saw_eio || many_operation_results[i] == MDBX_EIO;
+        REQUIRE(async_read_fault_result(many_operation_results[i]),
+                "faulted large async get_ex many returned wrong item result");
+        REQUIRE(many_operation_results[i] == MDBX_BAD_TXN ||
+                    batch_values_counts[i] == 0,
+                "faulted large async get_ex many returned value count");
+        CHECK(expect_empty_value(&batch_data[i], __FILE__, __LINE__));
+      }
+      REQUIRE(saw_eio, "faulted large async get_ex many did not observe injected read failure");
+    } else if (mode == async_read_large_get_batch) {
+      REQUIRE(operation_result == MDBX_SUCCESS,
+              "faulted large async get batch operation returned wrong result");
+      for (unsigned i = 0; i < indexed_read_count; ++i) {
+        REQUIRE(batch_results[i] == MDBX_EIO,
+                "faulted large async get batch returned wrong item result");
+        CHECK(expect_empty_value(&batch_data[i], __FILE__, __LINE__));
+      }
+    } else if (mode == async_read_large_get_ex_batch) {
+      REQUIRE(operation_result == MDBX_SUCCESS,
+              "faulted large async get_ex batch operation returned wrong result");
+      for (unsigned i = 0; i < indexed_read_count; ++i) {
+        REQUIRE(batch_results[i] == MDBX_EIO,
+                "faulted large async get_ex batch returned wrong item result");
+        REQUIRE(batch_values_counts[i] == 0,
+                "faulted large async get_ex batch returned value count");
+        CHECK(expect_empty_value(&batch_data[i], __FILE__, __LINE__));
+      }
     } else if (mode == async_read_get_many) {
       REQUIRE(operation_result == MDBX_SUCCESS, "faulted async get many operation returned wrong result");
       bool saw_eio = false;
@@ -3344,6 +3431,46 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
       memcpy(&actual_key, read_key_value->iov_base, sizeof(actual_key));
       REQUIRE(actual_key == key, "cold large async get_ex returned wrong key");
       CHECK(expect_large_value(&data, key, __FILE__, __LINE__));
+    } else if (mode == async_read_large_get_many) {
+      for (unsigned i = 0; i < indexed_read_count; ++i) {
+        REQUIRE(many_operation_results[i] == MDBX_SUCCESS,
+                "cold large async get many returned wrong item result");
+        CHECK(expect_large_value(&batch_data[i], batch_keys[i], __FILE__, __LINE__));
+      }
+    } else if (mode == async_read_large_get_batch) {
+      for (unsigned i = 0; i < indexed_read_count; ++i) {
+        REQUIRE(batch_results[i] == MDBX_SUCCESS,
+                "cold large async get batch returned wrong item result");
+        CHECK(expect_large_value(&batch_data[i], batch_keys[i], __FILE__, __LINE__));
+      }
+    } else if (mode == async_read_large_get_ex_many) {
+      for (unsigned i = 0; i < indexed_read_count; ++i) {
+        REQUIRE(many_operation_results[i] == MDBX_SUCCESS,
+                "cold large async get_ex many returned wrong item result");
+        REQUIRE(batch_values_counts[i] == 1,
+                "cold large async get_ex many returned wrong value count");
+        REQUIRE(batch_key_values[i].iov_len == sizeof(batch_keys[i]),
+                "cold large async get_ex many returned wrong key size");
+        uint64_t actual_key = UINT64_MAX;
+        memcpy(&actual_key, batch_key_values[i].iov_base, sizeof(actual_key));
+        REQUIRE(actual_key == batch_keys[i],
+                "cold large async get_ex many returned wrong key");
+        CHECK(expect_large_value(&batch_data[i], batch_keys[i], __FILE__, __LINE__));
+      }
+    } else if (mode == async_read_large_get_ex_batch) {
+      for (unsigned i = 0; i < indexed_read_count; ++i) {
+        REQUIRE(batch_results[i] == MDBX_SUCCESS,
+                "cold large async get_ex batch returned wrong item result");
+        REQUIRE(batch_values_counts[i] == 1,
+                "cold large async get_ex batch returned wrong value count");
+        REQUIRE(batch_key_values[i].iov_len == sizeof(batch_keys[i]),
+                "cold large async get_ex batch returned wrong key size");
+        uint64_t actual_key = UINT64_MAX;
+        memcpy(&actual_key, batch_key_values[i].iov_base, sizeof(actual_key));
+        REQUIRE(actual_key == batch_keys[i],
+                "cold large async get_ex batch returned wrong key");
+        CHECK(expect_large_value(&batch_data[i], batch_keys[i], __FILE__, __LINE__));
+      }
     } else if (mode == async_read_large_cursor_batch) {
       REQUIRE(cursor_batch_result == MDBX_SUCCESS ||
                   cursor_batch_result == MDBX_RESULT_TRUE,
@@ -4626,6 +4753,14 @@ int main(void) {
     return exercise_async_read_path(path, false, async_read_large_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_LARGE_GET_EX_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_large_get_ex);
+  if (env_enabled("MDBX_ASYNC_SMOKE_LARGE_GET_MANY_READ_ONLY"))
+    return exercise_async_read_path(path, false, async_read_large_get_many);
+  if (env_enabled("MDBX_ASYNC_SMOKE_LARGE_GET_EX_MANY_READ_ONLY"))
+    return exercise_async_read_path(path, false, async_read_large_get_ex_many);
+  if (env_enabled("MDBX_ASYNC_SMOKE_LARGE_GET_BATCH_READ_ONLY"))
+    return exercise_async_read_path(path, false, async_read_large_get_batch);
+  if (env_enabled("MDBX_ASYNC_SMOKE_LARGE_GET_EX_BATCH_READ_ONLY"))
+    return exercise_async_read_path(path, false, async_read_large_get_ex_batch);
   if (env_enabled("MDBX_ASYNC_SMOKE_LARGE_LOWERBOUND_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_large_lowerbound);
   if (env_enabled("MDBX_ASYNC_SMOKE_LARGE_CURSOR_BATCH_READ_ONLY"))
@@ -4784,6 +4919,14 @@ int main(void) {
     return exercise_async_read_path(path, true, async_read_large_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LARGE_GET_EX_ONLY"))
     return exercise_async_read_path(path, true, async_read_large_get_ex);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LARGE_GET_MANY_ONLY"))
+    return exercise_async_read_path(path, true, async_read_large_get_many);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LARGE_GET_EX_MANY_ONLY"))
+    return exercise_async_read_path(path, true, async_read_large_get_ex_many);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LARGE_GET_BATCH_ONLY"))
+    return exercise_async_read_path(path, true, async_read_large_get_batch);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LARGE_GET_EX_BATCH_ONLY"))
+    return exercise_async_read_path(path, true, async_read_large_get_ex_batch);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LARGE_LOWERBOUND_ONLY"))
     return exercise_async_read_path(path, true, async_read_large_lowerbound);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LARGE_CURSOR_BATCH_ONLY"))
