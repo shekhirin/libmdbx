@@ -3752,6 +3752,30 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
         CHECK(expect_empty_value(&batch_data[i], __FILE__, __LINE__));
       }
       REQUIRE(saw_eio, "faulted async cache get many did not observe injected read failure");
+    } else if (mode == async_read_cache_get_many_mixed ||
+               mode == async_read_cache_get_singlethreaded_many_mixed) {
+      REQUIRE(operation_result == MDBX_SUCCESS,
+              "faulted mixed async cache get many operation returned wrong result");
+      bool saw_eio = false;
+      for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
+        const bool missing = i == 1;
+        saw_eio = saw_eio || many_operation_results[i] == MDBX_EIO ||
+                  batch_cache_results[i].errcode == MDBX_EIO;
+        REQUIRE(missing ? (many_operation_results[i] == MDBX_NOTFOUND ||
+                           async_read_fault_result(many_operation_results[i]))
+                        : async_read_fault_result(many_operation_results[i]),
+                "faulted mixed async cache get many returned wrong operation result");
+        REQUIRE(missing ? (batch_cache_results[i].errcode == MDBX_NOTFOUND ||
+                           async_read_fault_result(batch_cache_results[i].errcode))
+                        : async_read_fault_result(batch_cache_results[i].errcode),
+                "faulted mixed async cache get many returned wrong item result");
+        if (batch_cache_results[i].errcode == MDBX_EIO ||
+            batch_cache_results[i].errcode == MDBX_BAD_TXN)
+          REQUIRE(batch_cache_results[i].status == MDBX_CACHE_ERROR,
+                  "faulted mixed async cache get many returned wrong cache status");
+        CHECK(expect_empty_value(&batch_data[i], __FILE__, __LINE__));
+      }
+      REQUIRE(saw_eio, "faulted mixed async cache get many did not observe injected read failure");
     } else if (mode == async_read_cache_get_batch ||
                mode == async_read_cache_get_singlethreaded_batch ||
                mode == async_read_large_cache_get_batch ||
@@ -3764,6 +3788,25 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
                 "faulted async cache get batch returned wrong item result");
         CHECK(expect_empty_value(&batch_data[i], __FILE__, __LINE__));
       }
+    } else if (mode == async_read_cache_get_batch_mixed ||
+               mode == async_read_cache_get_singlethreaded_batch_mixed) {
+      REQUIRE(operation_result == MDBX_SUCCESS,
+              "faulted mixed async cache get batch operation returned wrong result");
+      bool saw_eio = false;
+      for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
+        const bool missing = i == 1;
+        saw_eio = saw_eio || batch_cache_results[i].errcode == MDBX_EIO;
+        REQUIRE(missing ? (batch_cache_results[i].errcode == MDBX_NOTFOUND ||
+                           async_read_fault_result(batch_cache_results[i].errcode))
+                        : async_read_fault_result(batch_cache_results[i].errcode),
+                "faulted mixed async cache get batch returned wrong item result");
+        if (batch_cache_results[i].errcode == MDBX_EIO ||
+            batch_cache_results[i].errcode == MDBX_BAD_TXN)
+          REQUIRE(batch_cache_results[i].status == MDBX_CACHE_ERROR,
+                  "faulted mixed async cache get batch returned wrong cache status");
+        CHECK(expect_empty_value(&batch_data[i], __FILE__, __LINE__));
+      }
+      REQUIRE(saw_eio, "faulted mixed async cache get batch did not observe injected read failure");
     } else if (mode == async_read_get_loop ||
                mode == async_read_large_get_loop) {
       REQUIRE(operation_result == MDBX_SUCCESS,
@@ -5775,8 +5818,16 @@ int main(void) {
     return exercise_async_read_path(path, true, async_read_cache_get_many);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CACHE_ST_MANY_ONLY"))
     return exercise_async_read_path(path, true, async_read_cache_get_singlethreaded_many);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CACHE_MANY_MIXED_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cache_get_many_mixed);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CACHE_ST_MANY_MIXED_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cache_get_singlethreaded_many_mixed);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CACHE_ST_BATCH_ONLY"))
     return exercise_async_read_path(path, true, async_read_cache_get_singlethreaded_batch);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CACHE_BATCH_MIXED_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cache_get_batch_mixed);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CACHE_ST_BATCH_MIXED_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cache_get_singlethreaded_batch_mixed);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LARGE_GET_ONLY"))
     return exercise_async_read_path(path, true, async_read_large_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_LARGE_GET_EX_ONLY"))
