@@ -231,6 +231,8 @@ else()
   add_test(NAME async_api_lowerbound_loop_nommap_io_uring COMMAND mdbx_async_api_smoke)
   add_test(NAME async_api_cursor_loop_nommap_fallback COMMAND mdbx_async_api_smoke)
   add_test(NAME async_api_cursor_loop_nommap_io_uring COMMAND mdbx_async_api_smoke)
+  add_test(NAME async_api_cursor_loop_prev_nommap_fallback COMMAND mdbx_async_api_smoke)
+  add_test(NAME async_api_cursor_loop_prev_nommap_io_uring COMMAND mdbx_async_api_smoke)
   add_test(NAME async_api_cursor_loop_nodup_nommap_fallback COMMAND mdbx_async_api_smoke)
   add_test(NAME async_api_cursor_loop_nodup_nommap_io_uring COMMAND mdbx_async_api_smoke)
   add_test(NAME async_api_cursor_loop_from_nommap_fallback COMMAND mdbx_async_api_smoke)
@@ -1057,6 +1059,16 @@ else()
                          RESOURCE_LOCK mdbx_async_api_database
                          ENVIRONMENT
                            "MDBX_ASYNC_SMOKE_CURSOR_LOOP_READ_ONLY=1;MDBX_ASYNC_SMOKE_EXPECT_IOURING=1;MDBX_FORCE_NO_DATA_MMAP=1;MDBX_EXPLICIT_IO_BACKEND=io_uring;MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K")
+  set_tests_properties(async_api_cursor_loop_prev_nommap_fallback
+                       PROPERTIES
+                         RESOURCE_LOCK mdbx_async_api_database
+                         ENVIRONMENT
+                           "MDBX_ASYNC_SMOKE_CURSOR_LOOP_PREV_READ_ONLY=1;MDBX_ASYNC_SMOKE_EXPECT_NO_IOURING=1;MDBX_FORCE_NO_DATA_MMAP=1;MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K")
+  set_tests_properties(async_api_cursor_loop_prev_nommap_io_uring
+                       PROPERTIES
+                         RESOURCE_LOCK mdbx_async_api_database
+                         ENVIRONMENT
+                           "MDBX_ASYNC_SMOKE_CURSOR_LOOP_PREV_READ_ONLY=1;MDBX_ASYNC_SMOKE_EXPECT_IOURING=1;MDBX_FORCE_NO_DATA_MMAP=1;MDBX_EXPLICIT_IO_BACKEND=io_uring;MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K")
   set_tests_properties(async_api_cursor_loop_nodup_nommap_fallback
                        PROPERTIES
                          RESOURCE_LOCK mdbx_async_api_database
@@ -1422,6 +1434,7 @@ else()
     add_test(NAME async_api_read_fault_cursor_prev_nommap_io_uring COMMAND mdbx_async_api_smoke)
     add_test(NAME async_api_read_fault_cursor_batch_nommap_io_uring COMMAND mdbx_async_api_smoke)
     add_test(NAME async_api_read_fault_cursor_loop_nommap_io_uring COMMAND mdbx_async_api_smoke)
+    add_test(NAME async_api_read_fault_cursor_loop_prev_nommap_io_uring COMMAND mdbx_async_api_smoke)
     add_test(NAME async_api_read_fault_cursor_loop_from_nommap_io_uring COMMAND mdbx_async_api_smoke)
     add_test(NAME async_api_read_fault_cursor_loop_from_setkey_nommap_io_uring COMMAND mdbx_async_api_smoke)
     add_test(NAME async_api_read_fault_cursor_loop_from_setkey_miss_nommap_io_uring COMMAND mdbx_async_api_smoke)
@@ -1555,6 +1568,11 @@ else()
                            RESOURCE_LOCK mdbx_async_api_database
                            ENVIRONMENT
                              "MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_LOOP_ONLY=1;MDBX_ASYNC_SMOKE_EXPECT_IOURING=1;MDBX_FORCE_NO_DATA_MMAP=1;MDBX_EXPLICIT_IO_BACKEND=io_uring;MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K")
+    set_tests_properties(async_api_read_fault_cursor_loop_prev_nommap_io_uring
+                         PROPERTIES
+                           RESOURCE_LOCK mdbx_async_api_database
+                           ENVIRONMENT
+                             "MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_LOOP_PREV_ONLY=1;MDBX_ASYNC_SMOKE_EXPECT_IOURING=1;MDBX_FORCE_NO_DATA_MMAP=1;MDBX_EXPLICIT_IO_BACKEND=io_uring;MDBX_EXPLICIT_PAGE_CACHE_LIMIT=64K")
     set_tests_properties(async_api_read_fault_cursor_loop_from_nommap_io_uring
                          PROPERTIES
                            RESOURCE_LOCK mdbx_async_api_database

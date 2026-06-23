@@ -24516,6 +24516,7 @@ typedef struct async_cursor_get_loop_pending {
   size_t done;
   MDBX_cursor_op cursor_op;
   bool skip_current;
+  bool reverse;
   bool positioning;
   int result;
 } async_cursor_get_loop_pending_t;
@@ -24569,7 +24570,8 @@ static int async_cursor_get_loop_pending_tail(async_cursor_get_loop_pending_t *p
   pending->tail_op.args.cursor_get.key = &pending->tail_key;
   pending->tail_op.args.cursor_get.data = &pending->tail_data;
   pending->tail_op.args.cursor_get.op =
-      pending->cursor_op == MDBX_FIRST ? MDBX_FIRST : MDBX_GET_CURRENT;
+      pending->reverse ? pending->cursor_op
+                       : pending->cursor_op == MDBX_FIRST ? MDBX_FIRST : MDBX_GET_CURRENT;
 
   pending->tail_pending = async_cursor_get_start(&pending->tail_op);
   if (pending->tail_pending) {
@@ -24656,7 +24658,8 @@ static int async_cursor_get_loop_pending_finish_positioned(async_cursor_get_loop
                                                            int rc) {
   MDBX_async_op *const op = pending->op;
   if (async_cursor_seek_notfound_has_result(rc, &pending->seek)) {
-    async_cursor_seek_copy_loop_from_result(op, &pending->seek);
+    if (op->args.cursor_get_loop.from_key)
+      async_cursor_seek_copy_loop_from_result(op, &pending->seek);
     return MDBX_RESULT_TRUE;
   }
   if (rc == MDBX_NOTFOUND)
@@ -24666,14 +24669,15 @@ static int async_cursor_get_loop_pending_finish_positioned(async_cursor_get_loop
 
   MDBX_val key = pending->seek.key;
   MDBX_val data = pending->seek.data;
-  async_cursor_seek_copy_loop_from_result(op, &pending->seek);
+  if (op->args.cursor_get_loop.from_key)
+    async_cursor_seek_copy_loop_from_result(op, &pending->seek);
   if (op->args.cursor_get_loop.func) {
     rc = op->args.cursor_get_loop.func(op->args.cursor_get_loop.context, 0, &key, &data);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
   }
   pending->done = 1;
-  pending->skip_current = true;
+  pending->skip_current = !pending->reverse;
   pending->positioning = false;
   if (op->args.cursor_get_loop.completed)
     *op->args.cursor_get_loop.completed = pending->done;
@@ -24720,7 +24724,8 @@ static int async_cursor_get_loop_pending_drive(async_cursor_get_loop_pending_t *
       continue;
     }
 
-    if (target - pending->done == 1 && !pending->skip_current)
+    if (pending->reverse ||
+        (target - pending->done == 1 && !pending->skip_current))
       return async_cursor_get_loop_pending_tail(pending, wait);
 
     const int rc = async_cursor_get_loop_pending_start_batch(pending, wait);
@@ -24748,13 +24753,18 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
   const bool plain_first_loop =
       !op->args.cursor_get_loop.from_key &&
       op->args.cursor_get_loop.start_op == MDBX_FIRST;
+  const bool plain_last_loop =
+      !op->args.cursor_get_loop.from_key &&
+      op->args.cursor_get_loop.start_op == MDBX_LAST &&
+      op->args.cursor_get_loop.turn_op == MDBX_PREV;
   const bool positioned_loop =
       op->args.cursor_get_loop.from_key &&
       async_cursor_seek_start_op_supported(op->args.cursor_get_loop.start_op);
   if (!(count && cursor->subcur == nullptr &&
-        (op->args.cursor_get_loop.turn_op == MDBX_NEXT ||
-         op->args.cursor_get_loop.turn_op == MDBX_NEXT_NODUP) &&
-        (plain_first_loop || positioned_loop))) {
+        (((op->args.cursor_get_loop.turn_op == MDBX_NEXT ||
+           op->args.cursor_get_loop.turn_op == MDBX_NEXT_NODUP) &&
+          (plain_first_loop || positioned_loop)) ||
+         plain_last_loop))) {
     op->result = async_cursor_get_loop_execute(op);
     return nullptr;
   }
@@ -24765,7 +24775,9 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
     return nullptr;
   }
   pending->op = op;
-  pending->cursor_op = plain_first_loop ? MDBX_FIRST : MDBX_NEXT;
+  pending->reverse = plain_last_loop;
+  pending->cursor_op = plain_last_loop ? MDBX_PREV
+                                       : plain_first_loop ? MDBX_FIRST : MDBX_NEXT;
 
   if (plain_first_loop) {
     int rc = cursor_check_ro(cursor);
@@ -24780,6 +24792,25 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
       return nullptr;
     }
     be_poor(cursor);
+  } else if (plain_last_loop) {
+    int rc = cursor_check_ro(cursor);
+    if (unlikely(rc != MDBX_SUCCESS)) {
+      op->result = rc;
+      async_cursor_get_loop_pending_free(pending);
+      return nullptr;
+    }
+    if (unlikely(!async_cursor_nodup_read_batchable(cursor))) {
+      op->result = async_cursor_get_loop_execute(op);
+      async_cursor_get_loop_pending_free(pending);
+      return nullptr;
+    }
+    rc = async_cursor_seek_prepare_last(&pending->seek, cursor);
+    if (unlikely(rc != MDBX_SUCCESS)) {
+      op->result = rc;
+      async_cursor_get_loop_pending_free(pending);
+      return nullptr;
+    }
+    pending->positioning = true;
   } else if (positioned_loop) {
     if (async_cursor_nodup_read_batchable(cursor)) {
       int rc = cursor_check_ro(cursor);
@@ -24848,7 +24879,8 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
   }
 
   const int rc = async_cursor_get_loop_pending_drive(pending, false);
-  if (rc == MDBX_RESULT_TRUE && (pending->batch_pending || pending->seek.seek_started))
+  if (rc == MDBX_RESULT_TRUE &&
+      (pending->batch_pending || pending->tail_pending || pending->seek.seek_started))
     return pending;
 
   op->result = rc;
@@ -24943,7 +24975,8 @@ static int async_cursor_get_loop_pending_step(async_cursor_get_loop_pending_t *p
                : MDBX_RESULT_TRUE;
   }
 
-  if (target - pending->done == 1 && !pending->skip_current)
+  if (pending->reverse ||
+      (target - pending->done == 1 && !pending->skip_current))
     rc = async_cursor_get_loop_pending_tail(pending, false);
   else
     rc = async_cursor_get_loop_pending_start_batch(pending, false);
