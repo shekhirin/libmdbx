@@ -23572,8 +23572,10 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
 
   const MDBX_cursor_op cursor_op = op->args.cursor_get.op;
   MDBX_cursor *const mc = op->args.cursor_get.cursor;
+  const bool next_like =
+      cursor_op == MDBX_NEXT || cursor_op == MDBX_NEXT_NODUP;
   if (unlikely(cursor_op != MDBX_FIRST && cursor_op != MDBX_GET_CURRENT &&
-               cursor_op != MDBX_NEXT &&
+               !next_like &&
                cursor_op != MDBX_SET_LOWERBOUND && cursor_op != MDBX_SET_KEY)) {
     op->result = async_cursor_get_execute(op);
     return nullptr;
@@ -23597,7 +23599,7 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   const page_t *mp = nullptr;
   size_t nkeys = 0;
   size_t ki = 0;
-  if (cursor_op == MDBX_NEXT || cursor_op == MDBX_GET_CURRENT) {
+  if (next_like || cursor_op == MDBX_GET_CURRENT) {
     if (unlikely(!is_filled(mc) ||
                  (mc->flags & (z_after_delete | z_hollow | z_eof_hard | z_eof_soft)))) {
       op->result = async_cursor_get_execute(op);
@@ -23611,10 +23613,10 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
       op->result = async_cursor_get_execute(op);
       return nullptr;
     }
-    const size_t read_ki = cursor_op == MDBX_NEXT ? ki + 1 : ki;
+    const size_t read_ki = next_like ? ki + 1 : ki;
     if (read_ki < nkeys) {
       const node_t *const next = page_node(mp, read_ki);
-      if (node_flags(next) != N_BIG && cursor_op == MDBX_NEXT) {
+      if (node_flags(next) != N_BIG && next_like) {
         op->result = async_cursor_get_execute(op);
         return nullptr;
       }
@@ -23672,7 +23674,7 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   } else {
     batch->mp = mp;
     batch->nkeys = nkeys;
-    batch->ki = cursor_op == MDBX_NEXT ? ki + 1 : ki;
+    batch->ki = next_like ? ki + 1 : ki;
   }
 
   rc = async_cursor_get_batch_pending_drive(batch, false);
@@ -23748,6 +23750,7 @@ static bool async_cursor_get_blocking_try(MDBX_cursor *mc, MDBX_val *key,
   case MDBX_FIRST:
   case MDBX_GET_CURRENT:
   case MDBX_NEXT:
+  case MDBX_NEXT_NODUP:
   case MDBX_SET_LOWERBOUND:
   case MDBX_SET_KEY:
     break;
