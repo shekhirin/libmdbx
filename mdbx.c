@@ -24843,7 +24843,7 @@ static async_cursor_scan_pending_t *async_cursor_scan_start(MDBX_async_op *op) {
   const bool plain_first_scan = !from_scan && start_op == MDBX_FIRST;
   const bool positioned_scan =
       from_scan && (start_op == MDBX_SET_LOWERBOUND || start_op == MDBX_SET_KEY);
-  if (!(cursor->subcur == nullptr && turn_op == MDBX_NEXT &&
+  if (!(cursor->subcur == nullptr && (turn_op == MDBX_NEXT || turn_op == MDBX_NEXT_NODUP) &&
         (plain_first_scan || positioned_scan))) {
     op->result = async_cursor_scan_execute(op);
     return nullptr;
