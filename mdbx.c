@@ -25062,9 +25062,11 @@ typedef struct async_cursor_scan_pending {
   MDBX_val single_data;
   size_t batch_count;
   MDBX_cursor_op cursor_op;
+  MDBX_cursor_op turn_op;
   bool skip_current;
   bool from_scan;
   bool reverse;
+  bool initial_get;
   bool positioning;
   bool done;
 } async_cursor_scan_pending_t;
@@ -25166,6 +25168,8 @@ static int async_cursor_scan_pending_start_batch(async_cursor_scan_pending_t *pe
 static int async_cursor_scan_pending_consume_get(async_cursor_scan_pending_t *pending) {
   const int rc = pending->get_op.result;
   if (rc == MDBX_NOTFOUND) {
+    if (pending->initial_get)
+      return rc;
     pending->done = true;
     return MDBX_RESULT_FALSE;
   }
@@ -25176,6 +25180,11 @@ static int async_cursor_scan_pending_consume_get(async_cursor_scan_pending_t *pe
                                                        &pending->single_data);
   if (pred_rc != MDBX_RESULT_FALSE)
     return pred_rc;
+  if (pending->initial_get) {
+    pending->initial_get = false;
+    pending->skip_current = false;
+    pending->cursor_op = pending->turn_op;
+  }
   return MDBX_RESULT_FALSE;
 }
 
@@ -25278,14 +25287,18 @@ static async_cursor_scan_pending_t *async_cursor_scan_start(MDBX_async_op *op) {
   const bool plain_first_scan = !from_scan && start_op == MDBX_FIRST;
   const bool plain_last_scan = !from_scan && start_op == MDBX_LAST &&
                                turn_op == MDBX_PREV;
+  const bool plain_current_scan = !from_scan && start_op == MDBX_GET_CURRENT;
   const bool positioned_scan =
       from_scan && async_cursor_seek_start_op_supported(start_op);
   const bool forward_turn_scan =
       turn_op == MDBX_NEXT || turn_op == MDBX_NEXT_NODUP;
   const bool positioned_reverse_scan = positioned_scan && turn_op == MDBX_PREV;
+  const bool current_reverse_scan = plain_current_scan && turn_op == MDBX_PREV;
   if (!(cursor->subcur == nullptr &&
-        ((forward_turn_scan && (plain_first_scan || positioned_scan)) ||
+        ((forward_turn_scan &&
+          (plain_first_scan || plain_current_scan || positioned_scan)) ||
          positioned_reverse_scan ||
+         current_reverse_scan ||
          plain_last_scan))) {
     op->result = async_cursor_scan_execute(op);
     return nullptr;
@@ -25298,11 +25311,13 @@ static async_cursor_scan_pending_t *async_cursor_scan_start(MDBX_async_op *op) {
   }
   pending->op = op;
   pending->from_scan = from_scan;
-  pending->reverse = plain_last_scan || positioned_reverse_scan;
+  pending->reverse = plain_last_scan || positioned_reverse_scan || current_reverse_scan;
+  pending->turn_op = turn_op;
   pending->cursor_op = pending->reverse ? MDBX_PREV
                                         : plain_first_scan ? MDBX_FIRST : MDBX_NEXT;
 
-  if (plain_first_scan || plain_last_scan || positioned_scan) {
+  if (plain_first_scan || plain_last_scan || plain_current_scan ||
+      positioned_scan) {
     if (plain_first_scan) {
       int rc = cursor_check_ro(cursor);
       if (unlikely(rc != MDBX_SUCCESS)) {
@@ -25335,6 +25350,24 @@ static async_cursor_scan_pending_t *async_cursor_scan_start(MDBX_async_op *op) {
         return nullptr;
       }
       pending->positioning = true;
+    } else if (plain_current_scan) {
+      int rc = cursor_check_ro(cursor);
+      if (unlikely(rc != MDBX_SUCCESS)) {
+        op->result = rc;
+        async_cursor_scan_pending_free(pending);
+        return nullptr;
+      }
+      if (unlikely(!async_cursor_nodup_read_batchable(cursor))) {
+        op->result = async_cursor_scan_execute(op);
+        async_cursor_scan_pending_free(pending);
+        return nullptr;
+      }
+      if (current_reverse_scan) {
+        pending->initial_get = true;
+        pending->cursor_op = MDBX_GET_CURRENT;
+      } else {
+        pending->cursor_op = turn_op;
+      }
     } else if (positioned_scan && async_cursor_nodup_read_batchable(cursor)) {
       int rc = cursor_check_ro(cursor);
       if (unlikely(rc != MDBX_SUCCESS)) {
