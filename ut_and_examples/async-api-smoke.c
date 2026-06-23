@@ -3814,6 +3814,12 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
               "faulted async cursor batches completed items");
       REQUIRE(loop_read_probe.results == 0,
               "faulted async cursor batches invoked result callback");
+    } else if (mode == async_read_sync_cursor_scan_current_prev) {
+      REQUIRE(operation_result == MDBX_EIO,
+              "faulted sync cursor scan current-prev did not propagate read-completion failure");
+      REQUIRE(loop_read_probe.results > 0 &&
+                  loop_read_probe.results < cursor_stream_target,
+              "faulted sync cursor scan current-prev saw wrong partial predicate count");
     } else if (mode == async_read_cursor_scan ||
                mode == async_read_cursor_scan_current ||
                mode == async_read_cursor_scan_current_prev ||
@@ -3831,6 +3837,10 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
                mode == async_read_cursor_scan_from_gt ||
                mode == async_read_cursor_scan_from_upperbound ||
                mode == async_read_cursor_scan_from_nodup ||
+               mode == async_read_sync_cursor_scan ||
+               mode == async_read_sync_cursor_scan_current ||
+               mode == async_read_sync_cursor_scan_prev ||
+               mode == async_read_sync_cursor_scan_nodup ||
                mode == async_read_sync_cursor_scan_from ||
                mode == async_read_sync_cursor_scan_from_prev ||
                mode == async_read_sync_cursor_scan_from_lt ||
@@ -5677,6 +5687,16 @@ int main(void) {
     return exercise_async_read_path(path, true, async_read_sync_large_cursor_batch);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_LARGE_CURSOR_SCAN_ONLY"))
     return exercise_async_read_path(path, true, async_read_sync_large_cursor_scan);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_CURSOR_SCAN_ONLY"))
+    return exercise_async_read_path(path, true, async_read_sync_cursor_scan);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_CURSOR_SCAN_CURRENT_ONLY"))
+    return exercise_async_read_path(path, true, async_read_sync_cursor_scan_current);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_CURSOR_SCAN_CURRENT_PREV_ONLY"))
+    return exercise_async_read_path(path, true, async_read_sync_cursor_scan_current_prev);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_CURSOR_SCAN_PREV_ONLY"))
+    return exercise_async_read_path(path, true, async_read_sync_cursor_scan_prev);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_CURSOR_SCAN_NODUP_ONLY"))
+    return exercise_async_read_path(path, true, async_read_sync_cursor_scan_nodup);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_CURSOR_SCAN_FROM_ONLY"))
     return exercise_async_read_path(path, true, async_read_sync_cursor_scan_from);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_SYNC_CURSOR_SCAN_FROM_PREV_ONLY"))
