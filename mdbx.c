@@ -23776,7 +23776,7 @@ static int async_cursor_get_pending_consume(async_cursor_get_pending_t *pending)
   cASSERT0(mc, batch->ki > 0);
   mc->ki[mc->top] = (indx_t)(batch->ki - 1);
   be_filled(mc);
-  mc->flags &= ~z_eof_hard;
+  mc->flags &= ~(z_eof_hard | z_eof_soft);
   ((cursor_couple_t *)mc)->inner.cursor.flags &= ~z_eof_hard;
 
   *op->args.cursor_get.key = pending->pairs[0];
@@ -23868,9 +23868,13 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   size_t ki = 0;
   const bool prev_from_fresh = prev_like && is_poor(mc) && (mc->flags & z_fresh);
   if (next_like || prev_like || cursor_op == MDBX_GET_CURRENT) {
+    const uint8_t state =
+        mc->flags & (z_after_delete | z_hollow | z_eof_hard | z_eof_soft);
+    const bool current_at_eof_soft =
+        cursor_op == MDBX_GET_CURRENT && state == z_eof_soft &&
+        mc->top >= 0 && mc->ki[mc->top] < page_numkeys(mc->pg[mc->top]);
     if (!prev_from_fresh &&
-        unlikely(!is_filled(mc) ||
-                 (mc->flags & (z_after_delete | z_hollow | z_eof_hard | z_eof_soft)))) {
+        unlikely(!current_at_eof_soft && (!is_filled(mc) || state))) {
       op->result = async_cursor_get_execute(op);
       return nullptr;
     }
@@ -24515,8 +24519,10 @@ typedef struct async_cursor_get_loop_pending {
   size_t batch_count;
   size_t done;
   MDBX_cursor_op cursor_op;
+  MDBX_cursor_op turn_op;
   bool skip_current;
   bool reverse;
+  bool initial_get;
   bool positioning;
   int result;
 } async_cursor_get_loop_pending_t;
@@ -24539,8 +24545,11 @@ static void async_cursor_get_loop_pending_free(async_cursor_get_loop_pending_t *
 static int async_cursor_get_loop_pending_consume_tail(async_cursor_get_loop_pending_t *pending) {
   MDBX_async_op *const op = pending->op;
   int rc = pending->tail_op.result;
-  if (unlikely(rc == MDBX_NOTFOUND))
+  if (unlikely(rc == MDBX_NOTFOUND)) {
+    if (pending->initial_get)
+      return rc;
     return MDBX_RESULT_TRUE;
+  }
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
   if (op->args.cursor_get_loop.from_key)
@@ -24556,6 +24565,13 @@ static int async_cursor_get_loop_pending_consume_tail(async_cursor_get_loop_pend
   pending->done += 1;
   if (op->args.cursor_get_loop.completed)
     *op->args.cursor_get_loop.completed = pending->done;
+  if (pending->initial_get) {
+    MDBX_cursor *const cursor = op->args.cursor_get_loop.cursor;
+    cursor->flags &= ~(z_eof_hard | z_eof_soft);
+    pending->initial_get = false;
+    pending->skip_current = false;
+    pending->cursor_op = pending->turn_op;
+  }
   return MDBX_SUCCESS;
 }
 
@@ -24724,9 +24740,16 @@ static int async_cursor_get_loop_pending_drive(async_cursor_get_loop_pending_t *
       continue;
     }
 
-    if (pending->reverse ||
-        (target - pending->done == 1 && !pending->skip_current))
-      return async_cursor_get_loop_pending_tail(pending, wait);
+    if (pending->initial_get ||
+        pending->reverse ||
+        (target - pending->done == 1 && !pending->skip_current)) {
+      const int rc = async_cursor_get_loop_pending_tail(pending, wait);
+      if (rc == MDBX_RESULT_TRUE && pending->tail_pending)
+        return rc;
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+      continue;
+    }
 
     const int rc = async_cursor_get_loop_pending_start_batch(pending, wait);
     if (rc == MDBX_RESULT_TRUE && pending->batch_pending)
@@ -24757,6 +24780,9 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
       !op->args.cursor_get_loop.from_key &&
       op->args.cursor_get_loop.start_op == MDBX_LAST &&
       op->args.cursor_get_loop.turn_op == MDBX_PREV;
+  const bool plain_current_loop =
+      !op->args.cursor_get_loop.from_key &&
+      op->args.cursor_get_loop.start_op == MDBX_GET_CURRENT;
   const bool positioned_loop =
       op->args.cursor_get_loop.from_key &&
       async_cursor_seek_start_op_supported(op->args.cursor_get_loop.start_op);
@@ -24765,9 +24791,13 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
       op->args.cursor_get_loop.turn_op == MDBX_NEXT_NODUP;
   const bool positioned_reverse_loop =
       positioned_loop && op->args.cursor_get_loop.turn_op == MDBX_PREV;
+  const bool current_reverse_loop =
+      plain_current_loop && op->args.cursor_get_loop.turn_op == MDBX_PREV;
   if (!(count && cursor->subcur == nullptr &&
-        ((forward_turn_loop && (plain_first_loop || positioned_loop)) ||
+        ((forward_turn_loop &&
+          (plain_first_loop || plain_current_loop || positioned_loop)) ||
          positioned_reverse_loop ||
+         current_reverse_loop ||
          plain_last_loop))) {
     op->result = async_cursor_get_loop_execute(op);
     return nullptr;
@@ -24779,7 +24809,8 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
     return nullptr;
   }
   pending->op = op;
-  pending->reverse = plain_last_loop || positioned_reverse_loop;
+  pending->reverse = plain_last_loop || positioned_reverse_loop || current_reverse_loop;
+  pending->turn_op = op->args.cursor_get_loop.turn_op;
   pending->cursor_op = pending->reverse ? MDBX_PREV
                                         : plain_first_loop ? MDBX_FIRST : MDBX_NEXT;
 
@@ -24815,6 +24846,24 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
       return nullptr;
     }
     pending->positioning = true;
+  } else if (plain_current_loop) {
+    int rc = cursor_check_ro(cursor);
+    if (unlikely(rc != MDBX_SUCCESS)) {
+      op->result = rc;
+      async_cursor_get_loop_pending_free(pending);
+      return nullptr;
+    }
+    if (unlikely(!async_cursor_nodup_read_batchable(cursor))) {
+      op->result = async_cursor_get_loop_execute(op);
+      async_cursor_get_loop_pending_free(pending);
+      return nullptr;
+    }
+    if (current_reverse_loop) {
+      pending->initial_get = true;
+      pending->cursor_op = MDBX_GET_CURRENT;
+    } else {
+      pending->cursor_op = pending->turn_op;
+    }
   } else if (positioned_loop) {
     if (async_cursor_nodup_read_batchable(cursor)) {
       int rc = cursor_check_ro(cursor);
