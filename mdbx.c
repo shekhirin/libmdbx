@@ -9917,6 +9917,7 @@ static int cursor_get_batch_plain(MDBX_cursor *mc, size_t *count, MDBX_val *pair
 
   switch (op) {
   case MDBX_NEXT:
+  case MDBX_NEXT_NODUP:
     if (unlikely(is_eof(mc)))
       return LOG_IFERR(is_pointed(mc) ? MDBX_NOTFOUND : MDBX_ENODATA);
     break;
@@ -23072,6 +23073,7 @@ static async_cursor_get_batch_pending_t *async_cursor_get_batch_start(MDBX_async
   bool first_start = false;
   switch (op->args.cursor_get_batch.op) {
   case MDBX_NEXT:
+  case MDBX_NEXT_NODUP:
     if (unlikely(is_eof(mc))) {
       op->result = is_pointed(mc) ? MDBX_NOTFOUND : MDBX_ENODATA;
       return nullptr;
@@ -23169,7 +23171,7 @@ static bool async_cursor_get_batch_blocking_try(MDBX_cursor *mc, size_t *count,
                                                 MDBX_cursor_op op, int *result) {
   if (unlikely(!result || !count || !pairs || limit < 4 || limit > INTPTR_MAX - 2))
     return false;
-  if (unlikely(op != MDBX_FIRST && op != MDBX_NEXT))
+  if (unlikely(op != MDBX_FIRST && op != MDBX_NEXT && op != MDBX_NEXT_NODUP))
     return false;
 
   int rc = cursor_check_ro(mc);

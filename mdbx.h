@@ -8074,7 +8074,8 @@ LIBMDBX_API int mdbx_async_cursor_scan_from(MDBX_async *async, MDBX_cursor *curs
  * \param [in] limit      The size of pairs buffer as the number of items,
  *                        but not a pairs.
  * \param [in] op         A cursor operation \ref MDBX_cursor_op (only
- *                        \ref MDBX_FIRST and \ref MDBX_NEXT are supported).
+ *                        \ref MDBX_FIRST, \ref MDBX_NEXT and
+ *                        \ref MDBX_NEXT_NODUP are supported).
  *
  * \returns A non-zero error value on failure and 0 on success,
  *          some possible errors are:

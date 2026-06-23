@@ -1347,6 +1347,7 @@ enum async_read_mode {
   async_read_sync_cursor_get,
   async_read_sync_cursor_get_nodup,
   async_read_sync_cursor_get_batch,
+  async_read_sync_cursor_get_batch_nodup,
   async_read_sync_cursor_scan,
   async_read_sync_cursor_scan_nodup,
   async_read_sync_cursor_scan_from,
@@ -1364,6 +1365,7 @@ enum async_read_mode {
   async_read_lowerbound_many_mixed,
   async_read_cursor_get,
   async_read_cursor_get_batch,
+  async_read_cursor_get_batch_nodup,
   async_read_cache_get,
   async_read_cache_get_notfound,
   async_read_cache_get_singlethreaded,
@@ -1444,9 +1446,13 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   MDBX_cache_result_t batch_cache_results[ASYNC_READ_BATCH_COUNT];
   uint8_t batch_values[ASYNC_READ_BATCH_COUNT][ASYNC_READ_BATCH_VALUE_BYTES];
   MDBX_val cursor_batch_pairs[ASYNC_READ_BATCH_COUNT * 2];
+  MDBX_val cursor_prime_pairs[4];
   size_t cursor_batch_count = 0;
+  size_t cursor_prime_count = 0;
+  unsigned cursor_batch_start_index = 0;
   size_t cursor_stream_completed = 0;
   int cursor_batch_result = MDBX_SUCCESS;
+  int cursor_prime_result = MDBX_SUCCESS;
   struct async_read_loop_probe loop_read_probe = {0, 0, 0, 0, batch_values, MDBX_SUCCESS};
   MDBX_val abort_get_batch_data[ASYNC_READ_BATCH_COUNT];
   int abort_get_batch_results[ASYNC_READ_BATCH_COUNT];
@@ -1482,6 +1488,7 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
                          mode == async_read_sync_cursor_get ||
                          mode == async_read_sync_cursor_get_nodup ||
                          mode == async_read_sync_cursor_get_batch ||
+                         mode == async_read_sync_cursor_get_batch_nodup ||
                          mode == async_read_sync_cursor_scan ||
                          mode == async_read_sync_cursor_scan_nodup ||
                          mode == async_read_sync_cursor_scan_from ||
@@ -1514,11 +1521,13 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   const bool abort_order_read = mode == async_read_abort_order ||
                                 abort_order_batch_read || abort_order_loop_read;
   const bool sync_cursor_stream_read = mode == async_read_sync_cursor_get_batch ||
+                                       mode == async_read_sync_cursor_get_batch_nodup ||
                                        mode == async_read_sync_cursor_scan ||
                                        mode == async_read_sync_cursor_scan_nodup ||
                                        mode == async_read_sync_cursor_scan_from ||
                                        mode == async_read_sync_cursor_scan_from_nodup;
   const bool cursor_stream_read = mode == async_read_cursor_get_batch ||
+                                  mode == async_read_cursor_get_batch_nodup ||
                                   mode == async_read_cursor_get_loop ||
                                   mode == async_read_cursor_get_loop_nodup ||
                                   mode == async_read_cursor_get_loop_from ||
@@ -1664,6 +1673,9 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   } else if (mode == async_read_sync_cursor_get_batch) {
     CHECK(mdbx_cursor_open(txn, dbi, &cursor));
     read_name = "mdbx_cursor_get_batch cold sync read";
+  } else if (mode == async_read_sync_cursor_get_batch_nodup) {
+    CHECK(mdbx_cursor_open(txn, dbi, &cursor));
+    read_name = "mdbx_cursor_get_batch NEXT_NODUP cold sync read";
   } else if (mode == async_read_sync_cursor_scan) {
     CHECK(mdbx_cursor_open(txn, dbi, &cursor));
     read_name = "mdbx_cursor_scan cold sync read";
@@ -1702,6 +1714,8 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     cursor_is_async = true;
     if (mode == async_read_cursor_get_batch)
       read_name = "mdbx_async_cursor_get_batch cold read";
+    else if (mode == async_read_cursor_get_batch_nodup)
+      read_name = "mdbx_async_cursor_get_batch NEXT_NODUP cold read";
     else if (mode == async_read_cursor_get_loop)
       read_name = "mdbx_async_cursor_get_loop cold read";
     else if (mode == async_read_cursor_get_loop_nodup)
@@ -1924,6 +1938,18 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     memset(cursor_batch_pairs, 0, sizeof(cursor_batch_pairs));
     rc = mdbx_cursor_get_batch(cursor, &cursor_batch_count, cursor_batch_pairs,
                                ASYNC_READ_BATCH_COUNT * 2, MDBX_FIRST);
+  } else if (mode == async_read_sync_cursor_get_batch_nodup) {
+    cursor_prime_count = 0;
+    cursor_batch_count = 0;
+    cursor_batch_start_index = 2;
+    memset(cursor_prime_pairs, 0, sizeof(cursor_prime_pairs));
+    memset(cursor_batch_pairs, 0, sizeof(cursor_batch_pairs));
+    rc = mdbx_cursor_get_batch(cursor, &cursor_prime_count, cursor_prime_pairs,
+                               4, MDBX_FIRST);
+    cursor_prime_result = rc;
+    if (rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE)
+      rc = mdbx_cursor_get_batch(cursor, &cursor_batch_count, cursor_batch_pairs,
+                                 ASYNC_READ_BATCH_COUNT * 2, MDBX_NEXT_NODUP);
   } else if (mode == async_read_sync_cursor_scan) {
     rc = mdbx_cursor_scan(cursor, async_read_cursor_scan_result_func, &loop_read_probe,
                           MDBX_FIRST, MDBX_NEXT, NULL);
@@ -1965,6 +1991,24 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     memset(cursor_batch_pairs, 0, sizeof(cursor_batch_pairs));
     rc = mdbx_async_cursor_get_batch(async, cursor, &cursor_batch_count, cursor_batch_pairs,
                                      ASYNC_READ_BATCH_COUNT * 2, MDBX_FIRST, &op);
+  } else if (mode == async_read_cursor_get_batch_nodup) {
+    MDBX_async_op *prime_op = NULL;
+    cursor_prime_count = 0;
+    cursor_batch_count = 0;
+    cursor_batch_start_index = 2;
+    memset(cursor_prime_pairs, 0, sizeof(cursor_prime_pairs));
+    memset(cursor_batch_pairs, 0, sizeof(cursor_batch_pairs));
+    rc = mdbx_async_cursor_get_batch(async, cursor, &cursor_prime_count, cursor_prime_pairs,
+                                     4, MDBX_FIRST, &prime_op);
+    if (rc == MDBX_SUCCESS) {
+      rc = wait_result("mdbx_async_cursor_get_batch NEXT_NODUP prime", &prime_op,
+                       &cursor_prime_result, __FILE__, __LINE__);
+      if (rc == MDBX_SUCCESS &&
+          (cursor_prime_result == MDBX_SUCCESS || cursor_prime_result == MDBX_RESULT_TRUE))
+        rc = mdbx_async_cursor_get_batch(async, cursor, &cursor_batch_count,
+                                         cursor_batch_pairs, ASYNC_READ_BATCH_COUNT * 2,
+                                         MDBX_NEXT_NODUP, &op);
+    }
   } else if (mode == async_read_cursor_get_loop) {
     rc = mdbx_async_cursor_get_loop(async, cursor, ASYNC_READ_BATCH_COUNT, MDBX_FIRST,
                                     MDBX_NEXT, async_read_cursor_loop_result_func,
@@ -2096,7 +2140,8 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     operation_result = MDBX_SUCCESS;
   } else if (sync_read) {
     operation_result = rc;
-    if (mode == async_read_sync_cursor_get_batch) {
+    if (mode == async_read_sync_cursor_get_batch ||
+        mode == async_read_sync_cursor_get_batch_nodup) {
       cursor_batch_result = operation_result;
       if (operation_result == MDBX_RESULT_TRUE)
         operation_result = MDBX_SUCCESS;
@@ -2110,7 +2155,8 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
     rc = MDBX_SUCCESS;
   } else if (rc == MDBX_SUCCESS) {
     rc = wait_result(read_name, &op, &operation_result, __FILE__, __LINE__);
-    if (mode == async_read_cursor_get_batch) {
+    if (mode == async_read_cursor_get_batch ||
+        mode == async_read_cursor_get_batch_nodup) {
       cursor_batch_result = operation_result;
       if (operation_result == MDBX_RESULT_TRUE)
         operation_result = MDBX_SUCCESS;
@@ -2429,15 +2475,26 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
       REQUIRE(actual_key == key, "cold async lowerbound returned wrong key");
       CHECK(expect_payload(&data, payload, __FILE__, __LINE__));
     } else if (mode == async_read_cursor_get_batch ||
-               mode == async_read_sync_cursor_get_batch) {
+               mode == async_read_cursor_get_batch_nodup ||
+               mode == async_read_sync_cursor_get_batch ||
+               mode == async_read_sync_cursor_get_batch_nodup) {
       REQUIRE(cursor_batch_result == MDBX_SUCCESS || cursor_batch_result == MDBX_RESULT_TRUE,
               "cold cursor get batch returned wrong result");
-      REQUIRE(cursor_batch_count == ASYNC_READ_BATCH_COUNT * 2,
+      if (mode == async_read_cursor_get_batch_nodup ||
+          mode == async_read_sync_cursor_get_batch_nodup) {
+        REQUIRE(cursor_prime_result == MDBX_SUCCESS || cursor_prime_result == MDBX_RESULT_TRUE,
+                "cold cursor get batch NEXT_NODUP prime returned wrong result");
+        REQUIRE(cursor_prime_count == 4,
+                "cold cursor get batch NEXT_NODUP prime returned wrong item count");
+      }
+      REQUIRE(cursor_batch_count == (ASYNC_READ_BATCH_COUNT - cursor_batch_start_index) * 2,
               "cold cursor get batch returned wrong item count");
-      for (unsigned i = 0; i < ASYNC_READ_BATCH_COUNT; ++i) {
-        MDBX_val *const batch_key = &cursor_batch_pairs[i * 2];
-        MDBX_val *const batch_data_value = &cursor_batch_pairs[i * 2 + 1];
-        REQUIRE(batch_key->iov_len == sizeof(batch_keys[i]), "cold cursor get batch returned wrong key size");
+      for (unsigned i = cursor_batch_start_index; i < ASYNC_READ_BATCH_COUNT; ++i) {
+        const unsigned pair_index = i - cursor_batch_start_index;
+        MDBX_val *const batch_key = &cursor_batch_pairs[pair_index * 2];
+        MDBX_val *const batch_data_value = &cursor_batch_pairs[pair_index * 2 + 1];
+        REQUIRE(batch_key->iov_len == sizeof(batch_keys[i]),
+                "cold cursor get batch returned wrong key size");
         uint64_t actual_key = UINT64_MAX;
         memcpy(&actual_key, batch_key->iov_base, sizeof(actual_key));
         REQUIRE(actual_key == batch_keys[i], "cold cursor get batch returned wrong key");
@@ -3368,6 +3425,8 @@ int main(void) {
     return exercise_async_read_path(path, false, async_read_sync_cursor_get_nodup);
   if (env_enabled("MDBX_ASYNC_SMOKE_SYNC_CURSOR_BATCH_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_sync_cursor_get_batch);
+  if (env_enabled("MDBX_ASYNC_SMOKE_SYNC_CURSOR_BATCH_NODUP_READ_ONLY"))
+    return exercise_async_read_path(path, false, async_read_sync_cursor_get_batch_nodup);
   if (env_enabled("MDBX_ASYNC_SMOKE_SYNC_CURSOR_SCAN_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_sync_cursor_scan);
   if (env_enabled("MDBX_ASYNC_SMOKE_SYNC_CURSOR_SCAN_NODUP_READ_ONLY"))
@@ -3402,6 +3461,8 @@ int main(void) {
     return exercise_async_read_path(path, false, async_read_cursor_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_CURSOR_BATCH_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_cursor_get_batch);
+  if (env_enabled("MDBX_ASYNC_SMOKE_CURSOR_BATCH_NODUP_READ_ONLY"))
+    return exercise_async_read_path(path, false, async_read_cursor_get_batch_nodup);
   if (env_enabled("MDBX_ASYNC_SMOKE_CACHE_READ_ONLY"))
     return exercise_async_read_path(path, false, async_read_cache_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_CACHE_ST_READ_ONLY"))
