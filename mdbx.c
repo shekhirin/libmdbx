@@ -9736,6 +9736,15 @@ static bool async_cursor_get_blocking_try(MDBX_cursor *mc, MDBX_val *key,
 static bool async_cursor_get_batch_blocking_try(MDBX_cursor *mc, size_t *count,
                                                 MDBX_val *pairs, size_t limit,
                                                 MDBX_cursor_op op, int *result);
+static bool async_cursor_scan_blocking_try(MDBX_cursor *mc, MDBX_predicate_func predicate,
+                                           void *context, MDBX_cursor_op start_op,
+                                           MDBX_cursor_op turn_op, void *arg,
+                                           int *result);
+static bool async_cursor_scan_from_blocking_try(MDBX_cursor *mc, MDBX_predicate_func predicate,
+                                                void *context, MDBX_cursor_op from_op,
+                                                MDBX_val *key, MDBX_val *value,
+                                                MDBX_cursor_op turn_op, void *arg,
+                                                int *result);
 
 static int cursor_get_plain(MDBX_cursor *mc, MDBX_val *key, MDBX_val *data,
                             MDBX_cursor_op op) {
@@ -9816,58 +9825,78 @@ __hot static int scan_confinue(MDBX_cursor *mc, MDBX_predicate_func predicate, v
   }
 }
 
-int mdbx_cursor_scan(MDBX_cursor *mc, MDBX_predicate_func predicate, void *context, MDBX_cursor_op start_op,
-                     MDBX_cursor_op turn_op, void *arg) {
+static int cursor_scan_plain(MDBX_cursor *mc, MDBX_predicate_func predicate, void *context,
+                             MDBX_cursor_op start_op, MDBX_cursor_op turn_op, void *arg) {
   if (unlikely(!predicate))
-    return LOG_IFERR(MDBX_EINVAL);
+    return MDBX_EINVAL;
 
   const unsigned valid_start_mask = 1 << MDBX_FIRST | 1 << MDBX_FIRST_DUP | 1 << MDBX_LAST | 1 << MDBX_LAST_DUP |
                                     1 << MDBX_GET_CURRENT | 1 << MDBX_GET_MULTIPLE;
   if (unlikely(start_op > 30 || ((1 << start_op) & valid_start_mask) == 0))
-    return LOG_IFERR(MDBX_EINVAL);
+    return MDBX_EINVAL;
 
   const unsigned valid_turn_mask = 1 << MDBX_NEXT | 1 << MDBX_NEXT_DUP | 1 << MDBX_NEXT_NODUP | 1 << MDBX_PREV |
                                    1 << MDBX_PREV_DUP | 1 << MDBX_PREV_NODUP | 1 << MDBX_NEXT_MULTIPLE |
                                    1 << MDBX_PREV_MULTIPLE;
   if (unlikely(turn_op > 30 || ((1 << turn_op) & valid_turn_mask) == 0))
-    return LOG_IFERR(MDBX_EINVAL);
+    return MDBX_EINVAL;
 
   MDBX_val key = {nullptr, 0}, value = {nullptr, 0};
-  int rc = mdbx_cursor_get(mc, &key, &value, start_op);
+  int rc = cursor_get_plain(mc, &key, &value, start_op);
   if (unlikely(rc != MDBX_SUCCESS))
-    return LOG_IFERR(rc);
-  return LOG_IFERR(scan_confinue(mc, predicate, context, arg, &key, &value, turn_op));
+    return rc;
+  return scan_confinue(mc, predicate, context, arg, &key, &value, turn_op);
 }
 
-int mdbx_cursor_scan_from(MDBX_cursor *mc, MDBX_predicate_func predicate, void *context, MDBX_cursor_op from_op,
-                          MDBX_val *key, MDBX_val *value, MDBX_cursor_op turn_op, void *arg) {
+int mdbx_cursor_scan(MDBX_cursor *mc, MDBX_predicate_func predicate, void *context, MDBX_cursor_op start_op,
+                     MDBX_cursor_op turn_op, void *arg) {
+  int rc = MDBX_SUCCESS;
+  if (async_cursor_scan_blocking_try(mc, predicate, context, start_op, turn_op, arg, &rc))
+    return LOG_IFERR(rc);
+
+  return LOG_IFERR(cursor_scan_plain(mc, predicate, context, start_op, turn_op, arg));
+}
+
+static int cursor_scan_from_plain(MDBX_cursor *mc, MDBX_predicate_func predicate, void *context,
+                                  MDBX_cursor_op from_op, MDBX_val *key, MDBX_val *value,
+                                  MDBX_cursor_op turn_op, void *arg) {
   if (unlikely(!predicate || !key))
-    return LOG_IFERR(MDBX_EINVAL);
+    return MDBX_EINVAL;
 
   const unsigned valid_start_mask = 1 << MDBX_GET_BOTH | 1 << MDBX_GET_BOTH_RANGE | 1 << MDBX_SET_KEY |
                                     1 << MDBX_GET_MULTIPLE | 1 << MDBX_SET_LOWERBOUND | 1 << MDBX_SET_UPPERBOUND;
   if (unlikely(from_op < MDBX_TO_KEY_LESSER_THAN && ((1 << from_op) & valid_start_mask) == 0))
-    return LOG_IFERR(MDBX_EINVAL);
+    return MDBX_EINVAL;
 
   const unsigned valid_turn_mask = 1 << MDBX_NEXT | 1 << MDBX_NEXT_DUP | 1 << MDBX_NEXT_NODUP | 1 << MDBX_PREV |
                                    1 << MDBX_PREV_DUP | 1 << MDBX_PREV_NODUP | 1 << MDBX_NEXT_MULTIPLE |
                                    1 << MDBX_PREV_MULTIPLE;
   if (unlikely(turn_op > 30 || ((1 << turn_op) & valid_turn_mask) == 0))
-    return LOG_IFERR(MDBX_EINVAL);
+    return MDBX_EINVAL;
 
-  int rc = mdbx_cursor_get(mc, key, value, from_op);
+  int rc = cursor_get_plain(mc, key, value, from_op);
   if (unlikely(MDBX_IS_ERROR(rc)))
-    return LOG_IFERR(rc);
+    return rc;
 
   cASSERT0(mc, key != nullptr);
   MDBX_val stub;
   if (!value) {
     value = &stub;
-    rc = cursor_ops(mc, key, value, MDBX_GET_CURRENT);
+    rc = cursor_get_plain(mc, key, value, MDBX_GET_CURRENT);
     if (unlikely(rc != MDBX_SUCCESS))
-      return LOG_IFERR(rc);
+      return rc;
   }
-  return LOG_IFERR(scan_confinue(mc, predicate, context, arg, key, value, turn_op));
+  return scan_confinue(mc, predicate, context, arg, key, value, turn_op);
+}
+
+int mdbx_cursor_scan_from(MDBX_cursor *mc, MDBX_predicate_func predicate, void *context, MDBX_cursor_op from_op,
+                          MDBX_val *key, MDBX_val *value, MDBX_cursor_op turn_op, void *arg) {
+  int rc = MDBX_SUCCESS;
+  if (async_cursor_scan_from_blocking_try(mc, predicate, context, from_op, key, value,
+                                          turn_op, arg, &rc))
+    return LOG_IFERR(rc);
+
+  return LOG_IFERR(cursor_scan_from_plain(mc, predicate, context, from_op, key, value, turn_op, arg));
 }
 
 static int cursor_get_batch_plain(MDBX_cursor *mc, size_t *count, MDBX_val *pairs,
@@ -24984,6 +25013,73 @@ static int async_cursor_scan_pending_step(async_cursor_scan_pending_t *pending,
   return MDBX_RESULT_TRUE;
 }
 
+static void async_cursor_scan_pending_complete(async_cursor_scan_pending_t *pending) {
+  if (unlikely(!pending))
+    return;
+
+  int rc = MDBX_RESULT_TRUE;
+  while (rc == MDBX_RESULT_TRUE)
+    rc = async_cursor_scan_pending_step(pending, true, nullptr);
+}
+
+static bool async_cursor_scan_blocking_try(MDBX_cursor *mc, MDBX_predicate_func predicate,
+                                           void *context, MDBX_cursor_op start_op,
+                                           MDBX_cursor_op turn_op, void *arg,
+                                           int *result) {
+  if (unlikely(!result || !predicate))
+    return false;
+  if (unlikely(cursor_check_ro(mc) != MDBX_SUCCESS))
+    return false;
+
+  MDBX_async_op operation;
+  memset(&operation, 0, sizeof(operation));
+  operation.opcode = async_op_cursor_scan;
+  operation.args.cursor_scan.cursor = mc;
+  operation.args.cursor_scan.predicate = predicate;
+  operation.args.cursor_scan.context = context;
+  operation.args.cursor_scan.start_op = start_op;
+  operation.args.cursor_scan.turn_op = turn_op;
+  operation.args.cursor_scan.arg = arg;
+
+  async_cursor_scan_pending_t *const pending = async_cursor_scan_start(&operation);
+  if (pending)
+    async_cursor_scan_pending_complete(pending);
+  *result = operation.result;
+  return true;
+}
+
+static bool async_cursor_scan_from_blocking_try(MDBX_cursor *mc, MDBX_predicate_func predicate,
+                                                void *context, MDBX_cursor_op from_op,
+                                                MDBX_val *key, MDBX_val *value,
+                                                MDBX_cursor_op turn_op, void *arg,
+                                                int *result) {
+  if (unlikely(!result || !predicate || !key))
+    return false;
+  if (unlikely(cursor_check_ro(mc) != MDBX_SUCCESS))
+    return false;
+
+  MDBX_async_op operation;
+  memset(&operation, 0, sizeof(operation));
+  operation.opcode = async_op_cursor_scan_from;
+  operation.key = *key;
+  operation.data = value ? *value : (MDBX_val){nullptr, 0};
+  operation.args.cursor_scan_from.cursor = mc;
+  operation.args.cursor_scan_from.predicate = predicate;
+  operation.args.cursor_scan_from.context = context;
+  operation.args.cursor_scan_from.from_op = from_op;
+  operation.args.cursor_scan_from.key = key;
+  operation.args.cursor_scan_from.value = value;
+  operation.args.cursor_scan_from.turn_op = turn_op;
+  operation.args.cursor_scan_from.arg = arg;
+  operation.args.cursor_scan_from.has_value = value != nullptr;
+
+  async_cursor_scan_pending_t *const pending = async_cursor_scan_start(&operation);
+  if (pending)
+    async_cursor_scan_pending_complete(pending);
+  *result = operation.result;
+  return true;
+}
+
 static void async_cursor_scan_pending_drain_all(async_cursor_scan_pending_t *pending) {
   while (pending) {
     async_cursor_scan_pending_t *again_head = nullptr;
@@ -25287,19 +25383,19 @@ static int async_cursor_get_loop_execute(MDBX_async_op *op) {
 
 static int async_cursor_scan_execute(MDBX_async_op *op) {
   if (op->opcode == async_op_cursor_scan)
-    return mdbx_cursor_scan(op->args.cursor_scan.cursor, op->args.cursor_scan.predicate,
-                            op->args.cursor_scan.context, op->args.cursor_scan.start_op,
-                            op->args.cursor_scan.turn_op, op->args.cursor_scan.arg);
+    return cursor_scan_plain(op->args.cursor_scan.cursor, op->args.cursor_scan.predicate,
+                             op->args.cursor_scan.context, op->args.cursor_scan.start_op,
+                             op->args.cursor_scan.turn_op, op->args.cursor_scan.arg);
 
   MDBX_val key = op->key;
   MDBX_val value = op->data;
   MDBX_val *const value_ptr = op->args.cursor_scan_from.has_value ? &value : nullptr;
-  const int rc = mdbx_cursor_scan_from(op->args.cursor_scan_from.cursor,
-                                       op->args.cursor_scan_from.predicate,
-                                       op->args.cursor_scan_from.context,
-                                       op->args.cursor_scan_from.from_op, &key, value_ptr,
-                                       op->args.cursor_scan_from.turn_op,
-                                       op->args.cursor_scan_from.arg);
+  const int rc = cursor_scan_from_plain(op->args.cursor_scan_from.cursor,
+                                        op->args.cursor_scan_from.predicate,
+                                        op->args.cursor_scan_from.context,
+                                        op->args.cursor_scan_from.from_op, &key, value_ptr,
+                                        op->args.cursor_scan_from.turn_op,
+                                        op->args.cursor_scan_from.arg);
   if (!MDBX_IS_ERROR(rc)) {
     *op->args.cursor_scan_from.key = key;
     if (op->args.cursor_scan_from.has_value)
