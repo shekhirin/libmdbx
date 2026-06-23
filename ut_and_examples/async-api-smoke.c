@@ -5882,6 +5882,8 @@ int main(void) {
     return exercise_async_read_path(path, true, async_read_cursor_get_loop_current);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_LOOP_PREV_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_get_loop_prev);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_LOOP_NODUP_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_loop_nodup);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_LOOP_FROM_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_get_loop_from);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_LOOP_FROM_PREV_ONLY"))
@@ -5904,6 +5906,8 @@ int main(void) {
     return exercise_async_read_path(path, true, async_read_cursor_get_loop_from_gt);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_LOOP_FROM_UPPERBOUND_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_get_loop_from_upperbound);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_LOOP_FROM_NODUP_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_loop_from_nodup);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_BATCHES_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_get_batches);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_BATCHES_CURRENT_ONLY"))
@@ -5934,6 +5938,8 @@ int main(void) {
     return exercise_async_read_path(path, true, async_read_cursor_scan_current);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_SCAN_PREV_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_scan_prev);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_SCAN_NODUP_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_scan_nodup);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_SCAN_FROM_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_scan_from);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_SCAN_FROM_PREV_ONLY"))
@@ -5956,6 +5962,8 @@ int main(void) {
     return exercise_async_read_path(path, true, async_read_cursor_scan_from_gt);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_SCAN_FROM_UPPERBOUND_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_scan_from_upperbound);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_SCAN_FROM_NODUP_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_scan_from_nodup);
 
   rc = mdbx_env_delete(path, MDBX_ENV_JUST_DELETE);
   if (rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE) {
