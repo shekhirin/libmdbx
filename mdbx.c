@@ -23280,6 +23280,10 @@ static bool async_cursor_seek_start_op_supported(MDBX_cursor_op op) {
   }
 }
 
+static bool async_cursor_seek_last_like(MDBX_cursor_op op) {
+  return op == MDBX_LAST || op == MDBX_PREV || op == MDBX_PREV_NODUP;
+}
+
 static int async_cursor_seek_prepare(async_cursor_seek_pending_t *seek,
                                      MDBX_cursor *mc,
                                      const MDBX_val *key,
@@ -23454,7 +23458,7 @@ static int async_cursor_seek_finish_leaf(async_cursor_seek_pending_t *seek) {
     return MDBX_CORRUPTED;
   }
 
-  if (seek->op == MDBX_LAST) {
+  if (async_cursor_seek_last_like(seek->op)) {
     const size_t nkeys = page_numkeys(mp);
     if (unlikely(nkeys == 0)) {
       be_poor(mc);
@@ -23467,7 +23471,8 @@ static int async_cursor_seek_finish_leaf(async_cursor_seek_pending_t *seek) {
     if (unlikely(node_flags(node) & N_DUP)) {
       int rc = cursor_ops(mc, &seek->key, &seek->data, seek->op);
       if (likely(rc == MDBX_SUCCESS || rc == MDBX_RESULT_TRUE)) {
-        mc->flags |= z_eof_soft;
+        if (seek->op == MDBX_LAST)
+          mc->flags |= z_eof_soft;
         rc = async_cursor_seek_capture_result(seek, rc);
       }
       return rc;
@@ -23485,7 +23490,8 @@ static int async_cursor_seek_finish_leaf(async_cursor_seek_pending_t *seek) {
       return rc;
     seek->has_result = true;
     be_filled(mc);
-    mc->flags |= z_eof_soft;
+    if (seek->op == MDBX_LAST)
+      mc->flags |= z_eof_soft;
     return async_cursor_seek_capture_result(seek, MDBX_SUCCESS);
   }
 
@@ -23601,14 +23607,14 @@ static int async_cursor_seek_drive(async_cursor_seek_pending_t *seek,
           return MDBX_CORRUPTED;
         }
         mc->top = 0;
-        mc->ki[0] = seek->op == MDBX_LAST ? (indx_t)(nkeys - 1) : 0;
+        mc->ki[0] = async_cursor_seek_last_like(seek->op) ? (indx_t)(nkeys - 1) : 0;
       } else {
         pgr_release(mc, &page);
       }
       break;
     case async_cursor_get_batch_first_child:
       mc->ki[seek->seek_parent_top] = seek->seek_parent_ki;
-      if (seek->op == MDBX_LAST) {
+      if (async_cursor_seek_last_like(seek->op)) {
         const size_t nkeys = page_numkeys(page.page);
         if (unlikely(nkeys == 0)) {
           pgr_release(mc, &page);
@@ -23668,7 +23674,7 @@ static int async_cursor_seek_drive(async_cursor_seek_pending_t *seek,
       be_poor(mc);
       return MDBX_CORRUPTED;
     }
-    const intptr_t ki = seek->op == MDBX_LAST
+    const intptr_t ki = async_cursor_seek_last_like(seek->op)
                             ? (intptr_t)(branch_keys - 1)
                             : (intptr_t)tree_search_branch(mc, &seek->aligned.key);
     rc = cursor_branch_child_prepare_get(mc, (indx_t)ki, &seek->seek_get,
@@ -23711,7 +23717,7 @@ static int async_cursor_get_pending_consume(async_cursor_get_pending_t *pending)
 
 static void async_cursor_get_apply_seek_result(MDBX_async_op *op,
                                                const async_cursor_seek_pending_t *seek) {
-  if (seek->op == MDBX_LAST || seek->op >= MDBX_SET_KEY)
+  if (async_cursor_seek_last_like(seek->op) || seek->op >= MDBX_SET_KEY)
     *op->args.cursor_get.key = seek->key;
   *op->args.cursor_get.data = seek->data;
 }
@@ -23757,9 +23763,11 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   MDBX_cursor *const mc = op->args.cursor_get.cursor;
   const bool next_like =
       cursor_op == MDBX_NEXT || cursor_op == MDBX_NEXT_NODUP;
+  const bool prev_like =
+      cursor_op == MDBX_PREV || cursor_op == MDBX_PREV_NODUP;
   if (unlikely(cursor_op != MDBX_FIRST && cursor_op != MDBX_LAST &&
                cursor_op != MDBX_GET_CURRENT &&
-               !next_like &&
+               !next_like && !prev_like &&
                cursor_op != MDBX_SET_RANGE &&
                cursor_op != MDBX_SET_LOWERBOUND &&
                cursor_op != MDBX_SET_UPPERBOUND &&
@@ -23789,26 +23797,34 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   const page_t *mp = nullptr;
   size_t nkeys = 0;
   size_t ki = 0;
-  if (next_like || cursor_op == MDBX_GET_CURRENT) {
-    if (unlikely(!is_filled(mc) ||
+  const bool prev_from_fresh = prev_like && is_poor(mc) && (mc->flags & z_fresh);
+  if (next_like || prev_like || cursor_op == MDBX_GET_CURRENT) {
+    if (!prev_from_fresh &&
+        unlikely(!is_filled(mc) ||
                  (mc->flags & (z_after_delete | z_hollow | z_eof_hard | z_eof_soft)))) {
       op->result = async_cursor_get_execute(op);
       return nullptr;
     }
 
-    mp = mc->pg[mc->top];
-    nkeys = page_numkeys(mp);
-    ki = mc->ki[mc->top];
-    if (unlikely(ki >= nkeys)) {
-      op->result = async_cursor_get_execute(op);
-      return nullptr;
-    }
-    const size_t read_ki = next_like ? ki + 1 : ki;
-    if (read_ki < nkeys) {
-      const node_t *const next = page_node(mp, read_ki);
-      if (node_flags(next) != N_BIG && next_like) {
+    if (!prev_from_fresh) {
+      mp = mc->pg[mc->top];
+      nkeys = page_numkeys(mp);
+      ki = mc->ki[mc->top];
+      if (unlikely(ki >= nkeys)) {
         op->result = async_cursor_get_execute(op);
         return nullptr;
+      }
+      if (prev_like && ki == 0) {
+        op->result = async_cursor_get_execute(op);
+        return nullptr;
+      }
+      const size_t read_ki = next_like ? ki + 1 : prev_like ? ki - 1 : ki;
+      if (read_ki < nkeys) {
+        const node_t *const next = page_node(mp, read_ki);
+        if (node_flags(next) != N_BIG && next_like) {
+          op->result = async_cursor_get_execute(op);
+          return nullptr;
+        }
       }
     }
   }
@@ -23834,11 +23850,12 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   batch->result = MDBX_SUCCESS;
   batch->stop_after_limit = true;
 
-  if (cursor_op == MDBX_LAST || async_cursor_seek_start_op_supported(cursor_op) ||
+  if (prev_from_fresh || cursor_op == MDBX_LAST ||
+      async_cursor_seek_start_op_supported(cursor_op) ||
       cursor_op == MDBX_TO_KEY_EQUAL) {
     async_cursor_get_batch_pending_free(batch);
     pending->batch_pending = nullptr;
-    rc = cursor_op == MDBX_LAST
+    rc = (cursor_op == MDBX_LAST || prev_from_fresh)
              ? async_cursor_seek_prepare_last(&pending->seek, mc)
              : async_cursor_seek_prepare(&pending->seek, mc, op->args.cursor_get.key,
                                          op->args.cursor_get.data, cursor_op);
@@ -23847,6 +23864,8 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
       async_cursor_get_pending_free(pending);
       return nullptr;
     }
+    if (prev_from_fresh)
+      pending->seek.op = cursor_op;
     rc = async_cursor_seek_drive(&pending->seek, false);
     if (rc == MDBX_RESULT_TRUE && pending->seek.seek_started)
       return pending;
@@ -23862,17 +23881,33 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
       batch->result = rc;
       batch->done = true;
     }
+  } else if (prev_like) {
+    async_cursor_get_batch_pending_free(batch);
+    pending->batch_pending = nullptr;
+    memset(&pending->seek, 0, sizeof(pending->seek));
+    pending->seek.cursor = mc;
+    pending->seek.op = cursor_op;
+    pending->seek.seek_phase = async_cursor_get_batch_first_none;
+    mc->ki[mc->top] = (indx_t)(ki - 1);
   } else {
     batch->mp = mp;
     batch->nkeys = nkeys;
     batch->ki = next_like ? ki + 1 : ki;
   }
 
-  rc = async_cursor_get_batch_pending_drive(batch, false);
-  if (rc == MDBX_RESULT_TRUE)
-    return pending;
-
-  op->result = async_cursor_get_pending_consume(pending);
+  if (pending->batch_pending) {
+    rc = async_cursor_get_batch_pending_drive(batch, false);
+    if (rc == MDBX_RESULT_TRUE)
+      return pending;
+    op->result = async_cursor_get_pending_consume(pending);
+  } else {
+    rc = async_cursor_seek_drive(&pending->seek, false);
+    if (rc == MDBX_RESULT_TRUE && pending->seek.seek_started)
+      return pending;
+    if (async_cursor_get_should_apply_seek_result(rc, &pending->seek))
+      async_cursor_get_apply_seek_result(op, &pending->seek);
+    op->result = rc;
+  }
   async_cursor_get_pending_free(pending);
   return nullptr;
 }
@@ -23941,6 +23976,8 @@ static bool async_cursor_get_blocking_try(MDBX_cursor *mc, MDBX_val *key,
   case MDBX_GET_CURRENT:
   case MDBX_NEXT:
   case MDBX_NEXT_NODUP:
+  case MDBX_PREV:
+  case MDBX_PREV_NODUP:
   case MDBX_SET_RANGE:
   case MDBX_SET_LOWERBOUND:
   case MDBX_SET_UPPERBOUND:
