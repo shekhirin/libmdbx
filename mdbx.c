@@ -23407,7 +23407,7 @@ static int async_cursor_seek_finish_leaf(async_cursor_seek_pending_t *seek) {
       mc->flags |= z_hollow;
       return MDBX_NOTFOUND;
     }
-    status = MDBX_RESULT_TRUE;
+    status = seek->op == MDBX_SET_RANGE ? MDBX_SUCCESS : MDBX_RESULT_TRUE;
     if (node == nullptr) {
       int rc = async_cursor_seek_prepare_sibling(seek);
       if (rc == MDBX_RESULT_TRUE)
@@ -23578,6 +23578,7 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
       cursor_op == MDBX_NEXT || cursor_op == MDBX_NEXT_NODUP;
   if (unlikely(cursor_op != MDBX_FIRST && cursor_op != MDBX_GET_CURRENT &&
                !next_like &&
+               cursor_op != MDBX_SET_RANGE &&
                cursor_op != MDBX_SET_LOWERBOUND && cursor_op != MDBX_SET_KEY)) {
     op->result = async_cursor_get_execute(op);
     return nullptr;
@@ -23646,7 +23647,8 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   batch->result = MDBX_SUCCESS;
   batch->stop_after_limit = true;
 
-  if (cursor_op == MDBX_SET_LOWERBOUND || cursor_op == MDBX_SET_KEY) {
+  if (cursor_op == MDBX_SET_RANGE ||
+      cursor_op == MDBX_SET_LOWERBOUND || cursor_op == MDBX_SET_KEY) {
     async_cursor_get_batch_pending_free(batch);
     pending->batch_pending = nullptr;
     rc = async_cursor_seek_prepare(&pending->seek, mc, op->args.cursor_get.key,
@@ -23753,6 +23755,7 @@ static bool async_cursor_get_blocking_try(MDBX_cursor *mc, MDBX_val *key,
   case MDBX_GET_CURRENT:
   case MDBX_NEXT:
   case MDBX_NEXT_NODUP:
+  case MDBX_SET_RANGE:
   case MDBX_SET_LOWERBOUND:
   case MDBX_SET_KEY:
     break;
