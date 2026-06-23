@@ -17596,7 +17596,9 @@ enum async_batched_get_traverse_phase {
   async_batched_get_traverse_child_prepare,
   async_batched_get_traverse_child_read,
   async_batched_get_traverse_child_consume,
-  async_batched_get_traverse_seek
+  async_batched_get_traverse_seek,
+  async_batched_get_traverse_large_read,
+  async_batched_get_traverse_large_consume
 };
 
 typedef struct async_batched_get_traverse_state {
@@ -17821,54 +17823,144 @@ static size_t async_batched_get_traverse_prepare_child(async_batched_get_travers
   return child_count;
 }
 
-static void async_batched_get_traverse_seek_complete(async_batched_get_traverse_state_t *state) {
+static void async_batched_get_traverse_store_result(async_batched_get_traverse_state_t *state,
+                                                    size_t i, MDBX_val key, MDBX_val value,
+                                                    int rc) {
+  if (rc == MDBX_SUCCESS) {
+    MDBX_cursor *const mc = &state->couples[i].outer;
+    MDBX_async_get_cache_slot *const slot = state->slots ? state->slots[i] : nullptr;
+    bool cached = false;
+    bool captured = false;
+    if (slot && likely(mc->top >= 0 && mc->pg[mc->top])) {
+      const page_t *const mp = mc->pg[mc->top];
+      const node_t *const node = page_node(mp, mc->ki[mc->top]);
+      const txnid_t trunk_txnid = mp->txnid;
+      const uint64_t committed_snapshot_txnid = txn_basis_snapshot(state->txn);
+      if ((node_flags(node) & N_DUP) == 0 && trunk_txnid <= committed_snapshot_txnid) {
+        cache_value_io_t value_io;
+        const int value_io_err = cache_value_io(mc, &value, &value_io);
+        if (value_io_err == MDBX_SUCCESS) {
+          rc = cursor_couple_capture_txn_pins(&state->couples[i]);
+          captured = rc == MDBX_SUCCESS;
+          if (likely(rc == MDBX_SUCCESS)) {
+            const int store_err = cache_store_entry_io(&slot->entry, &value_io.bytes, trunk_txnid,
+                                                       committed_snapshot_txnid);
+            if (store_err == MDBX_SUCCESS) {
+              slot->use_count = 2;
+              cached = true;
+            }
+          }
+        }
+      }
+    }
+    if (likely(rc == MDBX_SUCCESS && !cached && !captured))
+      rc = cursor_couple_capture_txn_pins(&state->couples[i]);
+  }
+
+  state->results[i] = rc;
+  if (rc == MDBX_SUCCESS) {
+    if (state->found_keys)
+      state->found_keys[i] = key;
+    state->data[i] = value;
+  } else {
+    state->data[i].iov_base = nullptr;
+    state->data[i].iov_len = 0;
+  }
+  state->handled[i] = true;
+}
+
+static int async_batched_get_traverse_seek_complete(async_batched_get_traverse_state_t *state) {
+  size_t large_count = 0;
   for (size_t i = 0; i < state->count; ++i) {
     if (!state->initialized[i] || state->handled[i])
       continue;
 
     MDBX_val key = state->keys[i];
     MDBX_val value = {nullptr, 0};
-    int rc = cursor_seek(&state->couples[i].outer, &key, &value, MDBX_SET_KEY).err;
+    MDBX_cursor *const mc = &state->couples[i].outer;
+    alignkey_t aligned;
+    int rc = check_key(mc, &key, &aligned);
+    if (unlikely(rc != MDBX_SUCCESS)) {
+      async_batched_get_traverse_store_result(state, i, key, value, rc);
+      continue;
+    }
+
+    page_t *const mp = mc->pg[mc->top];
+    if (!MDBX_DISABLE_VALIDATION && unlikely(!check_leaf_type(mc, mp))) {
+      rc = MDBX_CORRUPTED;
+      async_batched_get_traverse_store_result(state, i, key, value, rc);
+      continue;
+    }
+
+    sfr_t sr = tree_search_foliage(mc, &aligned.key);
+    node_t *const node = sr.node;
+    if (!sr.exact) {
+      mc->flags |= z_hollow;
+      async_batched_get_traverse_store_result(state, i, key, value, MDBX_NOTFOUND);
+      continue;
+    }
+    if (unlikely(node == nullptr)) {
+      async_batched_get_traverse_store_result(state, i, key, value, MDBX_CORRUPTED);
+      continue;
+    }
+
+    if (unlikely(node_flags(node) & N_DUP)) {
+      rc = cursor_seek(mc, &key, &value, MDBX_SET_KEY).err;
+      async_batched_get_traverse_store_result(state, i, key, value, rc);
+      continue;
+    }
+
+    if (node_flags(node) == N_BIG) {
+      value.iov_len = node_ds(node);
+      const pgno_t large_pgno = node_largedata_pgno(node);
+      rc = page_make_cursor_get_submit_io(mc, P_ILL_BITS | P_BRANCH | P_LEAF | P_DUPFIX,
+                                          large_pgno, mp->txnid, &state->gets[large_count]);
+      if (unlikely(rc != MDBX_SUCCESS)) {
+        async_batched_get_traverse_store_result(state, i, key, value, rc);
+        continue;
+      }
+      state->data[i] = value;
+      state->indices[large_count++] = i;
+      continue;
+    }
+
+    rc = node_read(mc, node, &value, mp);
+    if (likely(rc == MDBX_SUCCESS))
+      be_filled(mc);
+    async_batched_get_traverse_store_result(state, i, key, value, rc);
+  }
+
+  return large_count ? async_batched_get_traverse_start_page_batch(
+                           state, large_count, async_batched_get_traverse_large_read)
+                     : (state->phase = async_batched_get_traverse_done, MDBX_SUCCESS);
+}
+
+static void async_batched_get_traverse_consume_large(async_batched_get_traverse_state_t *state) {
+  for (size_t j = 0; j < state->level_count; ++j) {
+    const size_t i = state->indices[j];
+    MDBX_cursor *const mc = &state->couples[i].outer;
+    pgr_t page = state->pgrs[j];
+    MDBX_val value = state->data[i];
+    int rc = page.err;
     if (likely(rc == MDBX_SUCCESS)) {
-      MDBX_cursor *const mc = &state->couples[i].outer;
-      MDBX_async_get_cache_slot *const slot = state->slots ? state->slots[i] : nullptr;
-      bool cached = false;
-      bool captured = false;
-      if (slot && likely(mc->top >= 0 && mc->pg[mc->top])) {
-        const page_t *const mp = mc->pg[mc->top];
-        const node_t *const node = page_node(mp, mc->ki[mc->top]);
-        const txnid_t trunk_txnid = mp->txnid;
-        const uint64_t committed_snapshot_txnid = txn_basis_snapshot(state->txn);
-        if ((node_flags(node) & N_DUP) == 0 && trunk_txnid <= committed_snapshot_txnid) {
-          cache_value_io_t value_io;
-          const int value_io_err = cache_value_io(mc, &value, &value_io);
-          if (value_io_err == MDBX_SUCCESS) {
-            rc = cursor_couple_capture_txn_pins(&state->couples[i]);
-            captured = rc == MDBX_SUCCESS;
-            if (likely(rc == MDBX_SUCCESS)) {
-              const int store_err = cache_store_entry_io(&slot->entry, &value_io.bytes, trunk_txnid,
-                                                         committed_snapshot_txnid);
-              if (store_err == MDBX_SUCCESS) {
-                slot->use_count = 2;
-                cached = true;
-              }
-            }
-          }
+      if (unlikely(page_type(page.page) != P_LARGE)) {
+        rc = MDBX_CORRUPTED;
+      } else {
+        const size_t bytes = value.iov_len;
+        const unsigned npages = largechunk_npages(mc->txn->env, bytes);
+        if (!MDBX_DISABLE_VALIDATION && unlikely(page.page->pages < npages)) {
+          rc = bad_page(page.page, "too less n-pages %u for bigdata-node (%zu bytes)",
+                        page.page->pages, bytes);
+        } else {
+          cursor_value_set(mc, &page);
+          value.iov_base = page2payload(page.page);
+          value.iov_len = bytes;
+          be_filled(mc);
         }
       }
-      if (likely(rc == MDBX_SUCCESS) && !cached && !captured)
-        rc = cursor_couple_capture_txn_pins(&state->couples[i]);
     }
-    state->results[i] = rc;
-    if (rc == MDBX_SUCCESS) {
-      if (state->found_keys)
-        state->found_keys[i] = key;
-      state->data[i] = value;
-    } else {
-      state->data[i].iov_base = nullptr;
-      state->data[i].iov_len = 0;
-    }
-    state->handled[i] = true;
+    pgr_release(mc, &page);
+    async_batched_get_traverse_store_result(state, i, state->keys[i], value, rc);
   }
 }
 
@@ -17910,8 +18002,21 @@ static int async_batched_get_traverse_drive(async_batched_get_traverse_state_t *
       async_batched_get_traverse_consume_child(state);
       state->phase = async_batched_get_traverse_child_prepare;
       break;
-    case async_batched_get_traverse_seek:
-      async_batched_get_traverse_seek_complete(state);
+    case async_batched_get_traverse_seek: {
+      const int rc = async_batched_get_traverse_seek_complete(state);
+      if (rc == MDBX_RESULT_TRUE)
+        return rc;
+      break;
+    }
+    case async_batched_get_traverse_large_read: {
+      const int rc = async_batched_get_traverse_drive_page_batch(
+          state, wait, async_batched_get_traverse_large_consume);
+      if (rc == MDBX_RESULT_TRUE)
+        return rc;
+      break;
+    }
+    case async_batched_get_traverse_large_consume:
+      async_batched_get_traverse_consume_large(state);
       state->phase = async_batched_get_traverse_done;
       break;
     case async_batched_get_traverse_done:
