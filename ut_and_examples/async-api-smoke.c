@@ -3501,6 +3501,8 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
   } else if (mode == async_read_cursor_get_batch_nodup && rc == MDBX_SUCCESS && op == NULL) {
     operation_result = cursor_prime_result;
     cursor_batch_result = cursor_prime_result;
+  } else if (mode == async_read_cursor_get_prev_positioned && rc == MDBX_SUCCESS && op == NULL) {
+    operation_result = cursor_prime_result;
   } else if (rc == MDBX_SUCCESS) {
     rc = wait_result(read_name, &op, &operation_result, __FILE__, __LINE__);
     if (mode == async_read_cursor_get_batch ||
@@ -3766,8 +3768,16 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
                mode == async_read_sync_cursor_get_prev_positioned ||
                mode == async_read_sync_cursor_get_nodup ||
                mode == async_read_cursor_get_miss ||
+               mode == async_read_cursor_get_set ||
+               mode == async_read_cursor_get_range ||
+               mode == async_read_cursor_get_upperbound ||
+               mode == async_read_cursor_get_to_key_equal ||
+               mode == async_read_cursor_get_to_key_equal_miss ||
+               mode == async_read_cursor_get_to_key_gte ||
+               mode == async_read_cursor_get_to_key_gt ||
                mode == async_read_cursor_get_last ||
                mode == async_read_cursor_get_prev ||
+               mode == async_read_cursor_get_prev_positioned ||
                mode == async_read_cursor_get_to_key_lt ||
                mode == async_read_cursor_get_to_key_lte) {
       REQUIRE(operation_result == MDBX_EIO,
@@ -5838,14 +5848,30 @@ int main(void) {
     return exercise_async_read_path(path, true, async_read_cursor_get);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_GET_MISS_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_get_miss);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_GET_SET_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_set);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_GET_RANGE_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_range);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_GET_UPPERBOUND_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_upperbound);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_TO_KEY_LT_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_get_to_key_lt);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_TO_KEY_LTE_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_get_to_key_lte);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_TO_KEY_EQUAL_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_to_key_equal);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_TO_KEY_EQUAL_MISS_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_to_key_equal_miss);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_TO_KEY_GTE_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_to_key_gte);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_TO_KEY_GT_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_to_key_gt);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_LAST_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_get_last);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_PREV_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_get_prev);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_PREV_POSITIONED_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_prev_positioned);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_BATCH_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_get_batch);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_BATCH_NODUP_ONLY"))
