@@ -23490,6 +23490,8 @@ static bool async_cursor_seek_start_op_supported(MDBX_cursor_op op) {
   case MDBX_SET_RANGE:
   case MDBX_SET_LOWERBOUND:
   case MDBX_SET_UPPERBOUND:
+  case MDBX_TO_KEY_LESSER_THAN:
+  case MDBX_TO_KEY_LESSER_OR_EQUAL:
   case MDBX_TO_KEY_EQUAL:
   case MDBX_TO_KEY_GREATER_OR_EQUAL:
   case MDBX_TO_KEY_GREATER_THAN:
@@ -23769,6 +23771,8 @@ static int async_cursor_seek_finish_leaf(async_cursor_seek_pending_t *seek) {
     return async_cursor_seek_capture_result(seek, MDBX_SUCCESS);
   }
 
+  const bool lesser_key_seek = seek->op == MDBX_TO_KEY_LESSER_THAN ||
+                               seek->op == MDBX_TO_KEY_LESSER_OR_EQUAL;
   sfr_t sr = tree_search_foliage(mc, &seek->aligned.key);
   node_t *node = sr.node;
   int status = MDBX_SUCCESS;
@@ -23777,7 +23781,26 @@ static int async_cursor_seek_finish_leaf(async_cursor_seek_pending_t *seek) {
       mc->flags |= z_hollow;
       return MDBX_NOTFOUND;
     }
-    if (seek->op == MDBX_TO_KEY_EQUAL)
+    if (lesser_key_seek) {
+      const size_t nkeys = page_numkeys(mp);
+      cASSERT0(mc, nkeys > 0);
+      if (unlikely(nkeys == 0)) {
+        be_poor(mc);
+        return MDBX_CORRUPTED;
+      }
+      if (node == nullptr) {
+        mc->ki[mc->top] = (indx_t)(nkeys - 1);
+        node = page_node(mp, mc->ki[mc->top]);
+      } else if (mc->ki[mc->top] == 0) {
+        int rc = async_cursor_seek_prepare_sibling_left(seek);
+        if (unlikely(rc != MDBX_SUCCESS))
+          return rc;
+        return MDBX_RESULT_TRUE;
+      } else {
+        mc->ki[mc->top] -= 1;
+        node = page_node(mp, mc->ki[mc->top]);
+      }
+    } else if (seek->op == MDBX_TO_KEY_EQUAL)
       status = MDBX_NOTFOUND;
     else {
       const bool greater_key_status =
@@ -23815,6 +23838,17 @@ static int async_cursor_seek_finish_leaf(async_cursor_seek_pending_t *seek) {
       return MDBX_RESULT_TRUE;
     }
     mc->ki[mc->top] += 1;
+    node = page_node(mp, mc->ki[mc->top]);
+    status = MDBX_SUCCESS;
+  }
+  if (sr.exact && seek->op == MDBX_TO_KEY_LESSER_THAN) {
+    if (mc->ki[mc->top] == 0) {
+      int rc = async_cursor_seek_prepare_sibling_left(seek);
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+      return MDBX_RESULT_TRUE;
+    }
+    mc->ki[mc->top] -= 1;
     node = page_node(mp, mc->ki[mc->top]);
     status = MDBX_SUCCESS;
   }
@@ -24056,6 +24090,8 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
                cursor_op != MDBX_SET_RANGE &&
                cursor_op != MDBX_SET_LOWERBOUND &&
                cursor_op != MDBX_SET_UPPERBOUND &&
+               cursor_op != MDBX_TO_KEY_LESSER_THAN &&
+               cursor_op != MDBX_TO_KEY_LESSER_OR_EQUAL &&
                cursor_op != MDBX_TO_KEY_EQUAL &&
                cursor_op != MDBX_TO_KEY_GREATER_OR_EQUAL &&
                cursor_op != MDBX_TO_KEY_GREATER_THAN &&
@@ -24281,6 +24317,8 @@ static bool async_cursor_get_blocking_try(MDBX_cursor *mc, MDBX_val *key,
   case MDBX_SET_RANGE:
   case MDBX_SET_LOWERBOUND:
   case MDBX_SET_UPPERBOUND:
+  case MDBX_TO_KEY_LESSER_THAN:
+  case MDBX_TO_KEY_LESSER_OR_EQUAL:
   case MDBX_TO_KEY_EQUAL:
   case MDBX_TO_KEY_GREATER_OR_EQUAL:
   case MDBX_TO_KEY_GREATER_THAN:
