@@ -23407,9 +23407,11 @@ static int async_cursor_seek_finish_leaf(async_cursor_seek_pending_t *seek) {
       mc->flags |= z_hollow;
       return MDBX_NOTFOUND;
     }
-    status = seek->op == MDBX_SET_RANGE || seek->op == MDBX_SET_UPPERBOUND
-                 ? MDBX_SUCCESS
-                 : MDBX_RESULT_TRUE;
+    const bool greater_key_status =
+        seek->op == MDBX_SET_RANGE || seek->op == MDBX_SET_UPPERBOUND ||
+        seek->op == MDBX_TO_KEY_GREATER_OR_EQUAL ||
+        seek->op == MDBX_TO_KEY_GREATER_THAN;
+    status = greater_key_status ? MDBX_SUCCESS : MDBX_RESULT_TRUE;
     if (node == nullptr) {
       int rc = async_cursor_seek_prepare_sibling(seek);
       if (rc == MDBX_RESULT_TRUE)
@@ -23426,7 +23428,8 @@ static int async_cursor_seek_finish_leaf(async_cursor_seek_pending_t *seek) {
     return MDBX_CORRUPTED;
   }
 
-  if (sr.exact && seek->op == MDBX_SET_UPPERBOUND) {
+  if (sr.exact && (seek->op == MDBX_SET_UPPERBOUND ||
+                   seek->op == MDBX_TO_KEY_GREATER_THAN)) {
     const size_t nkeys = page_numkeys(mp);
     cASSERT0(mc, mc->ki[mc->top] < nkeys);
     if (mc->ki[mc->top] + (size_t)1 >= nkeys) {
@@ -23607,6 +23610,8 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
                cursor_op != MDBX_SET_RANGE &&
                cursor_op != MDBX_SET_LOWERBOUND &&
                cursor_op != MDBX_SET_UPPERBOUND &&
+               cursor_op != MDBX_TO_KEY_GREATER_OR_EQUAL &&
+               cursor_op != MDBX_TO_KEY_GREATER_THAN &&
                cursor_op != MDBX_SET_KEY && cursor_op != MDBX_SET)) {
     op->result = async_cursor_get_execute(op);
     return nullptr;
@@ -23678,6 +23683,8 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   if (cursor_op == MDBX_SET_RANGE ||
       cursor_op == MDBX_SET_LOWERBOUND ||
       cursor_op == MDBX_SET_UPPERBOUND ||
+      cursor_op == MDBX_TO_KEY_GREATER_OR_EQUAL ||
+      cursor_op == MDBX_TO_KEY_GREATER_THAN ||
       cursor_op == MDBX_SET_KEY || cursor_op == MDBX_SET) {
     async_cursor_get_batch_pending_free(batch);
     pending->batch_pending = nullptr;
@@ -23784,6 +23791,8 @@ static bool async_cursor_get_blocking_try(MDBX_cursor *mc, MDBX_val *key,
   case MDBX_SET_RANGE:
   case MDBX_SET_LOWERBOUND:
   case MDBX_SET_UPPERBOUND:
+  case MDBX_TO_KEY_GREATER_OR_EQUAL:
+  case MDBX_TO_KEY_GREATER_THAN:
   case MDBX_SET_KEY:
   case MDBX_SET:
     break;
