@@ -24427,7 +24427,9 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
       op->args.cursor_get_loop.from_key &&
       (op->args.cursor_get_loop.start_op == MDBX_SET_LOWERBOUND ||
        op->args.cursor_get_loop.start_op == MDBX_SET_KEY);
-  if (!(count && cursor->subcur == nullptr && op->args.cursor_get_loop.turn_op == MDBX_NEXT &&
+  if (!(count && cursor->subcur == nullptr &&
+        (op->args.cursor_get_loop.turn_op == MDBX_NEXT ||
+         op->args.cursor_get_loop.turn_op == MDBX_NEXT_NODUP) &&
         (plain_first_loop || positioned_loop))) {
     op->result = async_cursor_get_loop_execute(op);
     return nullptr;
