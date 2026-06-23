@@ -23264,6 +23264,21 @@ static int async_cursor_seek_start_read(async_cursor_seek_pending_t *seek,
   return MDBX_SUCCESS;
 }
 
+static bool async_cursor_seek_start_op_supported(MDBX_cursor_op op) {
+  switch (op) {
+  case MDBX_SET:
+  case MDBX_SET_KEY:
+  case MDBX_SET_RANGE:
+  case MDBX_SET_LOWERBOUND:
+  case MDBX_SET_UPPERBOUND:
+  case MDBX_TO_KEY_GREATER_OR_EQUAL:
+  case MDBX_TO_KEY_GREATER_THAN:
+    return true;
+  default:
+    return false;
+  }
+}
+
 static int async_cursor_seek_prepare(async_cursor_seek_pending_t *seek,
                                      MDBX_cursor *mc,
                                      const MDBX_val *key,
@@ -23694,13 +23709,8 @@ static async_cursor_get_pending_t *async_cursor_get_start(MDBX_async_op *op) {
   batch->result = MDBX_SUCCESS;
   batch->stop_after_limit = true;
 
-  if (cursor_op == MDBX_SET_RANGE ||
-      cursor_op == MDBX_SET_LOWERBOUND ||
-      cursor_op == MDBX_SET_UPPERBOUND ||
-      cursor_op == MDBX_TO_KEY_EQUAL ||
-      cursor_op == MDBX_TO_KEY_GREATER_OR_EQUAL ||
-      cursor_op == MDBX_TO_KEY_GREATER_THAN ||
-      cursor_op == MDBX_SET_KEY || cursor_op == MDBX_SET) {
+  if (async_cursor_seek_start_op_supported(cursor_op) ||
+      cursor_op == MDBX_TO_KEY_EQUAL) {
     async_cursor_get_batch_pending_free(batch);
     pending->batch_pending = nullptr;
     rc = async_cursor_seek_prepare(&pending->seek, mc, op->args.cursor_get.key,
@@ -24057,7 +24067,7 @@ static async_cursor_get_batches_pending_t *async_cursor_get_batches_start(MDBX_a
   if (op->args.cursor_get_batches.from_key) {
     MDBX_cursor *const cursor = op->args.cursor_get_batches.cursor;
     const MDBX_cursor_op from_op = op->args.cursor_get_batches.from_op;
-    if ((from_op == MDBX_SET_LOWERBOUND || from_op == MDBX_SET_KEY) &&
+    if (async_cursor_seek_start_op_supported(from_op) &&
         async_cursor_nodup_read_batchable(cursor)) {
       int rc = cursor_check_ro(cursor);
       if (unlikely(rc != MDBX_SUCCESS)) {
@@ -24486,8 +24496,7 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
       op->args.cursor_get_loop.start_op == MDBX_FIRST;
   const bool positioned_loop =
       op->args.cursor_get_loop.from_key &&
-      (op->args.cursor_get_loop.start_op == MDBX_SET_LOWERBOUND ||
-       op->args.cursor_get_loop.start_op == MDBX_SET_KEY);
+      async_cursor_seek_start_op_supported(op->args.cursor_get_loop.start_op);
   if (!(count && cursor->subcur == nullptr &&
         (op->args.cursor_get_loop.turn_op == MDBX_NEXT ||
          op->args.cursor_get_loop.turn_op == MDBX_NEXT_NODUP) &&
@@ -24518,9 +24527,7 @@ static async_cursor_get_loop_pending_t *async_cursor_get_loop_start(MDBX_async_o
     }
     be_poor(cursor);
   } else if (positioned_loop) {
-    if ((op->args.cursor_get_loop.start_op == MDBX_SET_LOWERBOUND ||
-         op->args.cursor_get_loop.start_op == MDBX_SET_KEY) &&
-        async_cursor_nodup_read_batchable(cursor)) {
+    if (async_cursor_nodup_read_batchable(cursor)) {
       int rc = cursor_check_ro(cursor);
       if (unlikely(rc != MDBX_SUCCESS)) {
         op->result = rc;
@@ -24905,7 +24912,7 @@ static async_cursor_scan_pending_t *async_cursor_scan_start(MDBX_async_op *op) {
       from_scan ? op->args.cursor_scan_from.from_op : op->args.cursor_scan.start_op;
   const bool plain_first_scan = !from_scan && start_op == MDBX_FIRST;
   const bool positioned_scan =
-      from_scan && (start_op == MDBX_SET_LOWERBOUND || start_op == MDBX_SET_KEY);
+      from_scan && async_cursor_seek_start_op_supported(start_op);
   if (!(cursor->subcur == nullptr && (turn_op == MDBX_NEXT || turn_op == MDBX_NEXT_NODUP) &&
         (plain_first_scan || positioned_scan))) {
     op->result = async_cursor_scan_execute(op);
@@ -24935,9 +24942,7 @@ static async_cursor_scan_pending_t *async_cursor_scan_start(MDBX_async_op *op) {
         return nullptr;
       }
       be_poor(cursor);
-    } else if (positioned_scan && (start_op == MDBX_SET_LOWERBOUND ||
-                                   start_op == MDBX_SET_KEY) &&
-        async_cursor_nodup_read_batchable(cursor)) {
+    } else if (positioned_scan && async_cursor_nodup_read_batchable(cursor)) {
       int rc = cursor_check_ro(cursor);
       if (unlikely(rc != MDBX_SUCCESS)) {
         op->result = rc;
