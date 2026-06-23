@@ -3498,6 +3498,9 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
       operation_result = MDBX_SUCCESS;
     }
     rc = MDBX_SUCCESS;
+  } else if (mode == async_read_cursor_get_batch_nodup && rc == MDBX_SUCCESS && op == NULL) {
+    operation_result = cursor_prime_result;
+    cursor_batch_result = cursor_prime_result;
   } else if (rc == MDBX_SUCCESS) {
     rc = wait_result(read_name, &op, &operation_result, __FILE__, __LINE__);
     if (mode == async_read_cursor_get_batch ||
@@ -3787,6 +3790,13 @@ static int exercise_async_read_path(const char *path, bool inject_fault, enum as
               "faulted cursor get batch NEXT_NODUP recorded wrong cursor result");
       REQUIRE(cursor_batch_count == 0,
               "faulted cursor get batch NEXT_NODUP returned items");
+    } else if (mode == async_read_cursor_get_batch_nodup) {
+      REQUIRE(operation_result == MDBX_EIO,
+              "faulted async cursor get batch NEXT_NODUP did not propagate read-completion failure");
+      REQUIRE(cursor_prime_result == MDBX_EIO || cursor_batch_result == MDBX_EIO,
+              "faulted async cursor get batch NEXT_NODUP recorded wrong cursor result");
+      REQUIRE(cursor_batch_count == 0,
+              "faulted async cursor get batch NEXT_NODUP returned items");
     } else if (large_cursor_stream_read) {
       REQUIRE(operation_result == MDBX_EIO,
               "faulted large cursor stream did not propagate read-completion failure");
@@ -5838,6 +5848,8 @@ int main(void) {
     return exercise_async_read_path(path, true, async_read_cursor_get_prev);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_BATCH_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_get_batch);
+  if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_BATCH_NODUP_ONLY"))
+    return exercise_async_read_path(path, true, async_read_cursor_get_batch_nodup);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_LOOP_ONLY"))
     return exercise_async_read_path(path, true, async_read_cursor_get_loop);
   if (env_enabled("MDBX_ASYNC_SMOKE_READ_FAULT_CURSOR_LOOP_CURRENT_ONLY"))
